@@ -1,0 +1,275 @@
+===============================================================
+ STOCK MANAGER — TÁVOLI (LINUX) SZERVERES TELEPÍTÉS,
+ TÖBB KASSZA/ESZKÖZ EGYIDEJŰ HASZNÁLATÁHOZ
+===============================================================
+
+Ez az útmutató attól különbözik az install.txt-től, hogy nem egyetlen
+helyi géprakerülő "php -S" fejlesztői szerverről szól, hanem egy
+VALÓDI, TÖBB ESZKÖZ ÁLTAL EGYSZERRE HASZNÁLHATÓ szerverfelállásról
+Linuxon (pl. bérelt VPS-en). A "php -S" beépített szerver EGYSZERRE
+CSAK EGY kérést tud kiszolgálni — ha több pénztári gép/tablet egyszerre
+próbálja használni, a kérések sorba állnak, és a program lassúnak vagy
+akadozónak tűnik. Erre a célra Nginx + PHP-FPM kell, ami valódi
+egyidejű kiszolgálásra való.
+
+Célgép feltételezve: Ubuntu vagy Debian szerver, root/sudo joggal.
+
+
+---------------------------------------------------------------
+1. CSOMAGOK TELEPÍTÉSE
+---------------------------------------------------------------
+
+    sudo apt update
+    sudo apt install nginx php8.3-fpm php8.3-cli php8.3-sqlite3 \
+        php8.3-curl php8.3-mbstring php8.3-gd php8.3-xml php8.3-zip \
+        certbot python3-certbot-nginx sqlite3
+
+(Ha az Ubuntu/Debian verziód repója nem 8.3-at ad alapból, adhatod
+hozzá az ondrej/php PPA-t: `sudo add-apt-repository ppa:ondrej/php`,
+vagy állítsd a fenti sorban 8.3 helyett a nálad elérhető, 8.1+
+verziószámra.)
+
+Ellenőrzés, hogy minden kiterjesztés tényleg bekapcsolt-e:
+
+    php -m | grep -iE "sqlite3|curl|mbstring|gd|xml|zip|fileinfo|openssl|opcache"
+
+Ha valamelyik hiányzik (pl. fileinfo vagy openssl néha külön
+csomagban van disztribúciónként), keresd meg és telepítsd:
+
+    apt search php8.3- | grep -iE "fileinfo|openssl"
+
+
+---------------------------------------------------------------
+2. A PROJEKT FELTÖLTÉSE
+---------------------------------------------------------------
+
+Töltsd fel a teljes "stock-manager-app" mappát a szerverre, pl.:
+
+    /var/www/stock-manager-app/
+
+(scp, rsync vagy git — bármelyik jó.)
+
+Jogosultságok — az Nginx/PHP-FPM alapból "www-data" felhasználóként
+fut Debian/Ubuntu alatt, neki kell írnia tudnia az adatokba:
+
+    sudo chown -R www-data:www-data /var/www/stock-manager-app/data \
+        /var/www/stock-manager-app/invoices \
+        /var/www/stock-manager-app/webroot/assets
+    sudo chmod -R 775 /var/www/stock-manager-app/data \
+        /var/www/stock-manager-app/invoices \
+        /var/www/stock-manager-app/webroot/assets
+
+
+---------------------------------------------------------------
+3. NGINX BEÁLLÍTÁSA
+---------------------------------------------------------------
+
+FONTOS: a "root" mindig a "webroot" ALMAPPÁRA mutasson, SOHA a projekt
+gyökerére! Ha véletlenül a projekt gyökerét szolgálod ki, bárki
+letöltheti a config/config.php-t (benne API-kulcsokkal) vagy magát az
+SQLite adatbázist. Ugyanezért a "data", "config", "src" mappákat is
+kifejezetten tiltsd.
+
+Az app mindig a domain GYÖKERÉBŐL várja magát (a JS mindenhol
+"/api/..." útvonalakat hív, nem relatívat) — ne tedd almappába (pl.
+példa.hu/kassza/), csak közvetlenül a domain/aldomain gyökerébe.
+
+Hozz létre egy fájlt: /etc/nginx/sites-available/stock-manager
+
+    server {
+        listen 80;
+        server_name kassza.pelda.hu;   # <- ide a saját domained/aldomained
+
+        root /var/www/stock-manager-app/webroot;
+        index index.php;
+
+        client_max_body_size 16m;   # logó/import feltöltéshez elég hely
+
+        location ~ /\.(?!well-known) { deny all; }   # rejtett fájlok tiltása
+
+        location / {
+            try_files $uri $uri/ =404;
+        }
+
+        location ~ \.php$ {
+            include snippets/fastcgi-php.conf;
+            fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+        }
+    }
+
+Engedélyezd, és teszteld a konfigurációt:
+
+    sudo ln -s /etc/nginx/sites-available/stock-manager /etc/nginx/sites-enabled/
+    sudo nginx -t
+    sudo systemctl reload nginx
+
+Ha ADATBÁZIS FÁJLNÉV/PATH miatt "unix:/run/php/php8.3-fpm.sock" nem
+létezik nálad, nézd meg a tényleges socket-elérési utat:
+
+    ls /run/php/
+
+
+---------------------------------------------------------------
+4. PHP-FPM ÉS PHP.INI HANGOLÁS
+---------------------------------------------------------------
+
+A /etc/php/8.3/fpm/php.ini fájlban ellenőrizd (állítsd, ha kell):
+
+    upload_max_filesize = 16M
+    post_max_size = 16M
+    opcache.enable=1
+    opcache.memory_consumption=64
+    opcache.max_accelerated_files=4000
+    opcache.revalidate_freq=2
+    opcache.validate_timestamps=1
+
+A pool-beállítás (/etc/php/8.3/fpm/pool.d/www.conf) egy néhány
+pénztáras kisboltnak alapból (pm = dynamic, pm.max_children = 5-10)
+bőven elég — csak akkor kell hangolni, ha sok tíz egyidejű eszközzel
+számolsz.
+
+Alkalmazd a változásokat:
+
+    sudo systemctl restart php8.3-fpm
+
+
+---------------------------------------------------------------
+5. HTTPS (Let's Encrypt) — ERŐSEN AJÁNLOTT
+---------------------------------------------------------------
+
+Mivel a szerver most már a nyílt interneten (nem csak helyi hálózaton)
+érhető el, a bejelentkezési jelszó és a session-süti védelme miatt
+mindenképp állíts be HTTPS-t:
+
+    sudo certbot --nginx -d kassza.pelda.hu
+
+Ez automatikusan beállítja a tanúsítványt ÉS a 80 -> 443 átirányítást
+is. Az app session-kezelése már felkészült erre — HTTPS alatt
+automatikusan bekapcsolja a "Secure" sütijelzőt.
+
+
+---------------------------------------------------------------
+6. TŰZFAL (alap)
+---------------------------------------------------------------
+
+    sudo ufw allow 'Nginx Full'   # 80 + 443
+    sudo ufw allow OpenSSH        # ha ufw-t most kapcsolod be, ezt előbb tedd, különben kizárod magad
+    sudo ufw enable
+
+
+---------------------------------------------------------------
+7. TELEPÍTŐ VARÁZSLÓ FUTTATÁSA
+---------------------------------------------------------------
+
+Nyisd meg https://kassza.pelda.hu — ugyanaz az install.php telepítő
+varázsló fut le, mint helyi telepítésnél (lásd install.txt 5. pontja).
+SQLite-tal itt is elég egy kattintás.
+
+
+---------------------------------------------------------------
+8. TÖBB KASSZA/ESZKÖZ EGYIDEJŰ HASZNÁLATA — MIT JELENT TECHNIKAILAG
+---------------------------------------------------------------
+
+Ehhez az üzemmódhoz a kódban is javítottam egy hiányosságot: a SQLite
+adatbázis eddig csak WAL módban futott (ez már jó, egyszerre enged
+olvasást és írást), de nem volt beállítva "busy_timeout" — enélkül, ha
+két eszköz PONTOSAN egyszerre próbált írni (pl. két kassza egyszerre
+zár le egy eladást), a második azonnal "database is locked" hibát
+kapott volna, ahelyett hogy pár másodpercet várt volna a sorára. Most
+5 másodperces türelmi időt kap minden írás, ami bőven elég egy normál
+eladás lezárásához — így a második eszköz kérése egyszerűen egy
+pillanattal később fut le, hibaüzenet helyett.
+
+Kis-közepes forgalmú boltnak (néhány kassza) ez a SQLite+WAL+
+busy_timeout kombináció megbízhatóan elég — nem kell hozzá külön
+adatbázis-szerver. Ha a jövőben sokkal nagyobb, sok egyidejű eladást
+bonyolító forgalmad lenne, a config/config.php-ban egy sor
+átállítással MySQL-re válthatsz (lásd README.md "Database: SQLite vs
+MySQL" szakaszát) — de ehhez a legtöbb kisboltnak nincs is szüksége.
+
+Amit még érdemes tudni több eszköz esetén:
+
+  - Mindegyik eszköz UGYANAZT a webcímet nyissa meg (pl.
+    https://kassza.pelda.hu) — nem külön-külön telepítést, hanem
+    ugyanazt a szervert böngészőből.
+  - Dolgozói PIN-bejelentkezés eszközönként külön történik (mindegyik
+    kasszán be kell jelentkezni a dolgozónak), de az alkalmazás-
+    jelszó (ha bekapcsolod) böngészőnként/eszközönként külön session.
+  - A sikertelen bejelentkezési/PIN-próbálkozások limitje IP-cím
+    alapú. Ha több kassza EGY boltban, egy router mögött, egy közös
+    nyilvános IP-vel megy ki az internetre, ezek OSZTOZNAK a
+    próbálkozás-limiten (egy kasszán elrontott PIN közelebb viheti a
+    zároláshoz a többi kasszát is ugyanabban a boltban). Kisboltnak ez
+    a gyakorlatban ritkán okoz gondot, de érdemes tudni róla.
+  - Nyomtatás: a hálózati (Ethernet/WiFi) hőnyomtató-integráció
+    (Beállítások → Nyomtató) a SZERVER gépéről küld ESC/POS parancsot
+    a nyomtató IP-jére — ha a szerver távoli VPS, ez csak akkor
+    működik, ha a nyomtató is elérhető onnan (VPN vagy publikus IP
+    esetén). Ha a nyomtató a boltban van, a szerver pedig távoli
+    VPS-en, a böngészős nyomtatás (mindig működik, driver nélkül) a
+    megbízhatóbb út helyi nyomtatóhoz.
+
+
+---------------------------------------------------------------
+9. AUTOMATIKUS FELADATOK (cron)
+---------------------------------------------------------------
+
+Linuxon a standard crontab-bal, magán a szerveren (mivel a webszerver
+is ott fut, a "localhost" cím itt is működik, csak nem a 8000-es
+porton, hanem a rendes 80/443-on):
+
+    sudo crontab -e -u www-data
+
+    * * * * *     curl -s https://kassza.pelda.hu/api/auto-sync-run.php > /dev/null
+    */15 * * * *  curl -s https://kassza.pelda.hu/api/auto-backup-run.php > /dev/null
+
+(A Beállítások oldal a "localhost:8000"-es változatot mutatja
+példaként, mert az a helyi/fejlesztői telepítésre utal — élesben a
+fenti, a saját domained szerinti sort használd.)
+
+
+---------------------------------------------------------------
+10. FRISSÍTÉS
+---------------------------------------------------------------
+
+Kódfrissítéskor NE írd felül a "data" mappát (abban van az élő
+adatbázis, biztonsági mentések) és a "config/installer-generated.php"
+fájlt (a telepítő varázsló írta, a bolt-specifikus beállításokat
+tartalmazza). Minden más fájl biztonságosan cserélhető.
+
+
+---------------------------------------------------------------
+11. HIBAELHÁRÍTÁS
+---------------------------------------------------------------
+
+502 Bad Gateway
+  -> A PHP-FPM nem fut, vagy rossz a socket-útvonal az Nginx
+     configban. Ellenőrizd: sudo systemctl status php8.3-fpm
+     és hogy /run/php/php8.3-fpm.sock létezik-e.
+
+"Permission denied" mentéskor / fájlfeltöltéskor
+  -> A "data", "invoices", "webroot/assets" mappák tulajdonosa nem
+     www-data, vagy nincs rajtuk írási jog. Ismételd meg a 2. pont
+     chown/chmod parancsait.
+
+413 Request Entity Too Large logó/import feltöltésnél
+  -> A client_max_body_size az Nginx configban túl alacsony (3. pont),
+     VAGY az upload_max_filesize/post_max_size a php.ini-ben (4. pont)
+     — mindkettőt állítsd legalább 16M-ra.
+
+"database is locked" hiba MÉG a busy_timeout beállítás UTÁN is
+  -> Rendkívül ritkán, nagyon hosszú (5 másodpercnél tovább tartó)
+     tranzakció esetén fordulhat elő. Ellenőrizd a data/stock.sqlite
+     fájl mellett nincs-e "-wal" és "-shm" fájl felhalmozódva
+     rendellenesen nagyra — ha igen, egy VACUUM (Beállítások → Mentés
+     → "Mentés most", ami VACUUM INTO-t használ) segíthet.
+
+Az oldal http-n működik, de a bejelentkezés után folyton kidob
+  -> HTTPS nélkül ez normális lehet, ha valamiért mégis "Secure"
+     sütit próbálna küldeni a böngésző — állítsd be a HTTPS-t (5.
+     pont), utána ez magától rendeződik.
+
+
+---------------------------------------------------------------
+Ennyi — jó munkát vele!
+---------------------------------------------------------------

@@ -1,0 +1,25 @@
+# Telepítéskor generált, gépspecifikus config (üzlet adatok, DB elérés)
+/config/installer-generated.php
+
+# Futásidejű adatok — ne kerüljenek verziókezelésbe
+/data/*.sqlite
+/data/*.sqlite-shm
+/data/*.sqlite-wal
+/data/.installed
+/data/settings.json
+/data/imports/*
+!/data/imports/.gitkeep
+/data/backups/*
+!/data/backups/.gitkeep
+
+# Feltöltött, valós számlák (PDF)
+/invoices/*
+!/invoices/.gitkeep
+
+# Feltöltött egyedi logók (az alapértelmezett logo-default.svg marad)
+/webroot/assets/logo.*
+/webroot/assets/print-logo.*
+
+# OS / szerkesztő
+Thumbs.db
+.DS_Store

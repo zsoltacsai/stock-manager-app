@@ -1,0 +1,278 @@
+===============================================================
+ STOCK MANAGER — TELEPÍTÉSI ÚTMUTATÓ (Windows)
+===============================================================
+
+Ez egy helyi (localhost) PHP alkalmazás vonalkódos pénztárgéphez /
+készletkezeléshez. Nincs szükség internetre, felhő-szolgáltatásra vagy
+adatbázis-szerverre — mindent egyetlen gépen, egyetlen SQLite fájlban
+tárol. Nem kell hozzá Composer és semmilyen külső program (LibreOffice
+sem, az Excel-import saját maga olvassa be az .xls/.xlsx fájlokat).
+
+
+---------------------------------------------------------------
+1. RENDSZERKÖVETELMÉNYEK
+---------------------------------------------------------------
+
+- Windows 10/11
+- PHP 8.1 vagy újabb (ez az útmutató PHP 8.3-mal lett tesztelve)
+- Az alábbi PHP-kiterjesztések bekapcsolva:
+    pdo_sqlite, sqlite3    -> az adatbázishoz
+    curl                   -> WooCommerce / Számlázz.hu / NAV / Dropbox /
+                              Google Drive hívásokhoz
+    mbstring               -> ékezetes szövegek, karakterkódolás
+    gd                     -> vonalkód-generálás / címkenyomtatás
+    xmlwriter              -> Számlázz.hu XML-hívásokhoz
+    zip                    -> .xlsx import beolvasásához
+    fileinfo               -> logó-feltöltésnél a fájltípus ellenőrzéséhez
+    openssl                -> biztonságos HTTPS-hívásokhoz
+    opcache (zend_extension) -> NEM kötelező, de erősen ajánlott: enélkül
+                              minden egyes kérésnél újra kell értelmeznie
+                              a szervernek a PHP-fájlokat, ami érezhetően
+                              lassítja az oldalbetöltést.
+- Egy USB vonalkódolvasó (billentyűzetként viselkedik, nem kell hozzá
+  driver — csak kattints a vonalkód mezőbe és húzd le vele a terméket)
+
+
+---------------------------------------------------------------
+2. PHP TELEPÍTÉSE
+---------------------------------------------------------------
+
+Ha a gépen még nincs PHP:
+
+  a) Legegyszerűbb: winget-tel (ha elérhető és nem 404-el a csomag)
+
+       winget install --id PHP.PHP.8.3 -e
+
+     Ha ez hibát dob (előfordul, hogy a winget-katalógus egy már nem
+     létező verziószámra mutat), töltsd le kézzel a következő lépésben
+     leírt módon.
+
+  b) Kézzel, hivatalos forrásból (ez működött nálam biztosan):
+
+     1. Nyisd meg: https://windows.php.net/download/
+     2. Töltsd le a "VS16 x64 Thread Safe" ZIP-et (pl.
+        php-8.3.xx-Win32-vs16-x64.zip — a Thread Safe (TS) verzió kell,
+        ez a "php -S" beépített szerverhez szükséges)
+     3. Csomagold ki pl. ide: C:\tools\php83
+     4. Másold át a mellékelt php.ini-development fájlt php.ini néven
+        ugyanabba a mappába:
+
+          copy php.ini-development php.ini
+
+     5. Nyisd meg a php.ini-t, és kapcsold be az alábbi sorok elejéről a
+        pontosvesszőt (;) az 1. pontban felsorolt kiterjesztéseknél,
+        pl.:
+
+          extension_dir = "ext"
+          extension=curl
+          extension=fileinfo
+          extension=gd
+          extension=mbstring
+          extension=openssl
+          extension=pdo_sqlite
+          extension=sqlite3
+          extension=xmlwriter
+          extension=zip
+
+        Az OPcache bekapcsolásához külön ezt is vedd ki kommentből:
+
+          zend_extension=opcache
+
+        ...és a fájl VÉGÉRE illeszd be (ha még nincs ott):
+
+          opcache.enable=1
+          opcache.enable_cli=0
+          opcache.memory_consumption=64
+          opcache.max_accelerated_files=4000
+          opcache.revalidate_freq=1
+          opcache.validate_timestamps=1
+
+     6. Add hozzá a mappát (pl. C:\tools\php83) a Windows PATH-hoz, VAGY
+        egyszerűen mindig a teljes elérési úttal hivatkozz rá.
+
+  Ellenőrzés parancssorból:
+
+    C:\tools\php83\php.exe -v
+    C:\tools\php83\php.exe -m
+
+  Az utóbbi kilistázza a betöltött kiterjesztéseket — ellenőrizd, hogy
+  mind a 8 fent felsorolt benne van-e, plusz a modullista alján, külön
+  "[Zend Modules]" alatt a "Zend OPcache" is szerepel.
+
+
+---------------------------------------------------------------
+3. A PROJEKT MÁSOLÁSA
+---------------------------------------------------------------
+
+Másold az egész "stock-manager-app" mappát a célgépre, tetszőleges
+helyre (pl. C:\stock-manager-app). A mappaszerkezet:
+
+    stock-manager-app\
+      config\config.php     <- alap beállítások (a telepítő is ír bele)
+      data\                 <- SQLite adatbázis, biztonsági mentések,
+                               import-ideiglenes fájlok (ÍRHATÓNAK KELL
+                               LENNIE a PHP folyamat számára)
+      invoices\              <- letöltött Számlázz.hu PDF-ek (ÍRHATÓ)
+      webroot\assets\        <- feltöltött logó (ÍRHATÓ)
+      webroot\               <- ez a szerver dokumentum-gyökere
+
+Windows alatt normál esetben nincs teendő a jogosultságokkal (a saját
+felhasználói mappádban minden írható) — ha mégis "permission denied"
+hibát kapnál, jobb klikk a "data" és "invoices" mappákon → Tulajdonságok
+→ Biztonság fülön adj Módosítás jogot a felhasználódnak.
+
+
+---------------------------------------------------------------
+4. SZERVER INDÍTÁSA
+---------------------------------------------------------------
+
+Nyiss egy parancssort (cmd vagy PowerShell) A PROJEKT GYÖKERÉBEN
+(abban a mappában, ahol a "webroot" mappa van), és futtasd:
+
+    C:\tools\php83\php.exe -S localhost:8000 -t webroot
+
+(Ha a PHP-t hozzáadtad a PATH-hoz, elég csak: php -S localhost:8000 -t webroot)
+
+Ez a parancssor-ablak addig fusson, amíg az appot használod — ha
+bezárod, a szerver is leáll. Éles/tartós használathoz érdemes ezt egy
+Windows szolgáltatásként vagy a Feladatütemezőben "bejelentkezéskor
+induljon" beállítással automatizálni (lásd 8. pont), vagy csak hagyd a
+parancssor-ablakot futni a háttérben a kasszagépen.
+
+
+---------------------------------------------------------------
+5. TELEPÍTŐ VARÁZSLÓ (első indítás)
+---------------------------------------------------------------
+
+Nyisd meg böngészőben: http://localhost:8000
+
+Ez automatikusan az install.php telepítő-oldalra irányít (amíg nincs
+telepítve), ahol:
+
+  - Megadhatod a bolt nevét és címét (ez jelenik meg a nyugtán)
+  - Kiválaszthatod az adatbázis-típust:
+      SQLite  -> AJÁNLOTT, nulla beállítás, egy fájlban tárol mindent
+      MySQL 8 -> csak akkor kell, ha sok forgalmú, több gépes
+                 beállításod van (lásd README.md "Database: SQLite vs
+                 MySQL" szakaszát)
+  - "Kihagyás — SQLite alapértelmezett" gombbal a legegyszerűbb út:
+    egyetlen kattintással kész is vagy.
+
+A varázsló a config\installer-generated.php fájlba írja a választásokat
+— ez felülírja a config\config.php alapértelmezéseit, de a config.php-t
+magát nem módosítja.
+
+Telepítés után egyenesen a Kasszára (index.php) kerülsz.
+
+
+---------------------------------------------------------------
+6. ELSŐ LÉPÉSEK HASZNÁLAT ELŐTT
+---------------------------------------------------------------
+
+a) Termékek felvitele — kétféleképpen:
+
+   - Kézzel: Árucikkek → "+ Új árucikk", vagy Beszerzés oldalon
+     vonalkód-szkenneléssel / "+ Új termék hozzáadása" gombbal.
+   - Tömegesen import: Beállítások → Importálás fülön feltöltheted a
+     korábbi programod (pl. Axel Pro) exportált CSV, XLS vagy XLSX
+     fájlját — ez automatikusan felismeri és beolvassa mindhárom
+     formátumot, külön program telepítése nélkül.
+
+b) WooCommerce-szinkron (ha van webáruházad):
+   Beállítások → WooCommerce fülön add meg a bolt URL-jét és a
+   REST API kulcsokat (WooCommerce → Beállítások → Speciális →
+   REST API → Kulcs hozzáadása, jogosultság: Írás/Olvasás), majd a
+   topbar szinkron-ikonjával húzhatod be a termékeket/készletet.
+
+c) Számlázz.hu (ha nyugta helyett/mellett számlát is akarsz kiállítani):
+   Beállítások → Számlázz.hu fülön add meg a Számla Agent kulcsot
+   (Számlázz.hu → Beállítások → Számla Agent → kulcs generálása).
+   Enélkül a kassza simán csak nyugtát rögzít, számla-hívás nélkül.
+
+d) Nyomtatás:
+   - Böngészős nyomtatás mindig működik, driver nélkül.
+   - Hálózati (Ethernet/WiFi) hőnyomtatóhoz: Beállítások → Nyomtató
+     fülön add meg az IP-címét (port 9100 szokásos).
+   - Külön nyomtatási logó is beállítható (Beállítások → Logó lent,
+     "Nyomtatási logó" blokk) — hasznos, ha a felületen használt logó
+     színes/részletes, és papíron nem mutatna jól.
+
+
+---------------------------------------------------------------
+7. BIZTONSÁG (opcionális, de ajánlott, ha nem csak Te éred el a gépet)
+---------------------------------------------------------------
+
+- Alkalmazás-jelszó: Beállítások → Biztonság → "Jelszavas védelem
+  bekapcsolva" — bekapcsolva minden oldal bejelentkezést kér. Ugyanitt
+  állítható az automatikus kijelentkezési idő és a sikertelen
+  próbálkozások limitje (alapértelmezetten 5 próba után zárol, 15
+  percre).
+- Dolgozói PIN: Beállítások → Dolgozók (vagy Kasszán a "Dolgozó
+  váltása" gomb) — ez NEM belépési védelem, csak elszámoltatás (ki
+  dolgozott a kasszánál egy adott eladásnál). 4-8 jegyű PIN-kódot
+  kérhetsz be dolgozónként, ezt is védi a fenti próbálkozás-limit.
+- Fontos: alapból NINCS bekapcsolva a jelszavas védelem — ha a gép
+  hálózaton (nem csak localhost-on) is elérhető, mindenképp állítsd be,
+  vagy kösd a PHP szervert kifejezetten 127.0.0.1-re.
+
+
+---------------------------------------------------------------
+8. AUTOMATIKUS FELADATOK (opcionális)
+---------------------------------------------------------------
+
+Az automatikus WooCommerce-szinkron és az automatikus napi biztonsági
+mentés csak akkor fut le ténylegesen a háttérben, ha valami rendszeresen
+"megkopogtatja" — a beépített PHP szerver magától nem ébred fel. Ehhez
+a Windows Feladatütemezőben (Task Scheduler) hozz létre két ismétlődő
+feladatot, amik ezt futtatják:
+
+  Szinkron (percenként elég):
+    curl -s http://localhost:8000/api/auto-sync-run.php
+
+  Biztonsági mentés (15 percenként elég):
+    curl -s http://localhost:8000/api/auto-backup-run.php
+
+Mindkettő ártalmatlan, ha gyakrabban hívod, mint kell — az endpoint
+saját maga dönti el, hogy tényleg esedékes-e a futás, és "skipped"-del
+tér vissza, ha még nem.
+
+A tényleges gyakoriságot/be- és kikapcsolást a Beállítások →
+Szinkronizálás és Beállítások → Mentés füleken állíthatod be.
+
+
+---------------------------------------------------------------
+9. HIBAELHÁRÍTÁS
+---------------------------------------------------------------
+
+"This site can't be reached" / nem töltődik be az oldal
+  -> Fut-e még a php -S parancssor-ablak? Ha bezártad, indítsd újra
+     (4. pont).
+
+Fehér oldal vagy "Call to undefined function" hiba
+  -> Valamelyik szükséges PHP-kiterjesztés nincs bekapcsolva. Nézd meg
+     a parancssor-ablakot, ott kiírja, melyik. Kapcsold be a php.ini-ben
+     (1-2. pont), majd indítsd újra a szervert.
+
+Lassú oldalbetöltés
+  -> Ellenőrizd, hogy az OPcache tényleg be van-e kapcsolva:
+       php -m
+     A lista alján, "[Zend Modules]" alatt szerepelnie kell a
+     "Zend OPcache" sornak. Ha nincs, nézd át újra az 1-2. pontot.
+
+.xls/.xlsx import hibát ad
+  -> Az app saját maga olvassa be ezeket a formátumokat (nincs szükség
+     LibreOffice-ra). Ha mégis hibát kapsz, valószínűleg a fájl sérült,
+     vagy nem szabványos .xls/.xlsx — nyisd meg Excelben/LibreOffice-ban
+     és mentsd el "CSV UTF-8 (vesszővel elválasztott)" formátumban,
+     majd töltsd fel azt.
+
+Elfelejtett alkalmazás-jelszó
+  -> Állítsd le a szervert, nyisd meg a data\settings.json fájlt
+     szövegszerkesztőben, és állítsd "app_password_enabled": false
+     értékre, mentsd el, majd indítsd újra a szervert. Ezután
+     Beállítások → Biztonság alatt állíts be új jelszót.
+
+
+---------------------------------------------------------------
+Ennyi — jó munkát vele!
+---------------------------------------------------------------

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<script>(function(){try{var t=localStorage.getItem("sm_theme");if(t==="light")document.documentElement.setAttribute("data-theme","light");}catch(e){}})();</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<title>Bejelentkezés — Stock Manager</title>
+<link rel="stylesheet" href="style.css">
+<style>
+    body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding-left: 0 !important; }
+    .login-card {
+        background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+        padding: 32px; width: 100%; max-width: 360px; margin: 20px;
+    }
+    .login-card h1 { font-size: 20px; margin: 0 0 20px; text-align: center; }
+    .login-logo { display: block; margin: 0 auto 16px; width: 48px; height: 48px; border-radius: 12px; }
+</style>
+</head>
+<body>
+
+<div class="login-card">
+    <img src="favicon.svg" class="login-logo" alt="">
+    <h1>Bejelentkezés</h1>
+    <label for="login-password">Jelszó</label>
+    <input type="password" id="login-password" autocomplete="current-password" autofocus>
+    <p id="login-feedback" class="feedback"></p>
+    <button id="login-btn" class="btn btn-primary" style="width:100%; margin-top:8px;">Belépés</button>
+</div>
+
+<script>
+const passwordInput = document.getElementById('login-password');
+const feedback = document.getElementById('login-feedback');
+const loginBtn = document.getElementById('login-btn');
+
+function targetAfterLogin() {
+    const params = new URLSearchParams(location.search);
+    const redirect = params.get('redirect');
+    // Csak saját, relatív útvonalra irányítunk vissza — soha ne fogadjunk el
+    // teljes URL-t a query paraméterből, hogy ne lehessen nyílt átirányítást
+    // (open redirect) csinálni belőle.
+    if (redirect && /^[a-zA-Z0-9_-]+\.(html|php)(\?.*)?$/.test(redirect)) {
+        return redirect;
+    }
+    return 'index.php';
+}
+
+async function doLogin() {
+    const password = passwordInput.value;
+    if (!password) return;
+    loginBtn.disabled = true;
+    feedback.textContent = 'Ellenőrzés...';
+    feedback.className = 'feedback';
+    try {
+        const res = await fetch('/api/login.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            feedback.textContent = data.error || 'Hibás jelszó.';
+            feedback.className = 'feedback error';
+            loginBtn.disabled = false;
+            passwordInput.select();
+            return;
+        }
+        location.href = targetAfterLogin();
+    } catch (err) {
+        feedback.textContent = 'Hiba: ' + err.message;
+        feedback.className = 'feedback error';
+        loginBtn.disabled = false;
+    }
+}
+
+loginBtn.addEventListener('click', doLogin);
+passwordInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+
+// Ha valaki úgy nyitja meg ezt az oldalt, hogy a jelszavas védelem ki van
+// kapcsolva (vagy már be van jelentkezve), nincs értelme itt tartani —
+// egyenesen a Kasszára irányítjuk.
+(async () => {
+    try {
+        const res = await fetch('/api/auth-status.php');
+        const data = await res.json();
+        if (!data.enabled || data.logged_in) {
+            location.href = targetAfterLogin();
+        }
+    } catch (e) { /* maradjon a login oldalon, ha ez sem elérhető */ }
+})();
+</script>
+</body>
+</html>

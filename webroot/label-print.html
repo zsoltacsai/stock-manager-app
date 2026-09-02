@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<title>Címke nyomtatása</title>
+<style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 20px; background: #f1f5f9; }
+    .toolbar { max-width: 400px; margin: 0 auto 16px; display: flex; gap: 8px; }
+    .toolbar button {
+        flex: 1; padding: 10px; border-radius: 8px; border: none; background: #22c55e;
+        color: #fff; font-weight: 600; cursor: pointer; font-size: 14px;
+    }
+    .toolbar button.secondary { background: #e2e8f0; color: #0f172a; }
+    .label {
+        width: 320px; margin: 0 auto; background: #fff; border: 1px solid #ccc;
+        border-radius: 6px; padding: 14px; text-align: center;
+    }
+    .label .name { font-size: 15px; font-weight: 700; margin-bottom: 4px; word-break: break-word; }
+    .label .price { font-size: 20px; font-weight: 800; margin: 6px 0; }
+    .label svg { max-width: 100%; }
+    @media print {
+        body { background: #fff; padding: 0; }
+        .toolbar { display: none; }
+        .label { border: none; margin: 0; }
+    }
+</style>
+</head>
+<body>
+<div class="toolbar">
+    <button class="secondary" onclick="window.close()">Bezárás</button>
+    <button onclick="window.print()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px;"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>Nyomtatás</button>
+</div>
+<div class="label">
+    <div class="name" id="label-name"></div>
+    <div class="price" id="label-price"></div>
+    <div id="label-barcode"></div>
+</div>
+
+<script src="ean13.js"></script>
+<script>
+const params = new URLSearchParams(location.search);
+const name = params.get('name') || '';
+const price = params.get('price') || '';
+const barcode = params.get('barcode') || '';
+
+document.getElementById('label-name').textContent = name;
+document.getElementById('label-price').textContent = price ? new Intl.NumberFormat('hu-HU').format(Math.round(Number(price))) + ' Ft' : '';
+document.getElementById('label-barcode').innerHTML = EAN13.isValid(barcode)
+    ? EAN13.renderSVG(barcode, { barWidth: 2, height: 70 })
+    : '<p style="color:#dc2626;">Nincs érvényes vonalkód megadva.</p>';
+</script>
+</body>
+</html>

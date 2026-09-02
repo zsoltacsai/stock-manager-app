@@ -593,6 +593,10 @@ html[data-theme="light"] #global-search-input {
 .modal-card h2 { margin-top: 0; font-size: 18px; }
 .modal-card .muted { margin-top: -8px; margin-bottom: 16px; }
 
+/* A TinyMCE szerkesztő sarkán húzva csak a magasság nő — a szélesség a
+   modal keretéhez van kötve, hogy húzáskor ne csússzon ki a kártyából. */
+.tox-tinymce { max-width: 100% !important; margin-bottom: 14px; }
+
 /* Camera barcode scanning — the icon button sits next to any barcode
    field and opens a shared modal with a live camera feed. */
 .input-icon-row { display: flex; gap: 8px; align-items: stretch; }

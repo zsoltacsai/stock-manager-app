@@ -169,6 +169,7 @@ if ('serviceWorker' in navigator) {
     const wcBarcodeMetaKey = document.getElementById('wc-barcode-meta-key');
     const wcWebhookSecret = document.getElementById('wc-webhook-secret');
     const wcPublicBaseUrl = document.getElementById('wc-public-base-url');
+    const productImageSize = document.getElementById('product-image-size');
     const settingsSaveWcBtn = document.getElementById('settings-save-wc-btn');
     const brandMappingReloadBtn = document.getElementById('brand-mapping-reload-btn');
     const brandMappingList = document.getElementById('brand-mapping-list');
@@ -337,6 +338,7 @@ if ('serviceWorker' in navigator) {
         if (wcBarcodeMetaKey) wcBarcodeMetaKey.value = data.wc_barcode_meta_key || '_barcode';
         if (wcWebhookSecret) wcWebhookSecret.value = data.wc_webhook_secret || '';
         if (wcPublicBaseUrl) wcPublicBaseUrl.value = data.wc_public_base_url || '';
+        if (productImageSize) productImageSize.value = String(data.product_image_size ?? 1200);
         currentBrandMapping = (data.brand_mapping && typeof data.brand_mapping === 'object') ? data.brand_mapping : {};
 
         if (lowStockDefault) lowStockDefault.value = String(data.low_stock_default_threshold ?? 5);
@@ -820,6 +822,7 @@ if ('serviceWorker' in navigator) {
                         wc_barcode_meta_key: wcBarcodeMetaKey.value.trim(),
                         wc_webhook_secret: wcWebhookSecret.value.trim(),
                         wc_public_base_url: wcPublicBaseUrl.value.trim(),
+                        product_image_size: parseInt(productImageSize.value, 10) || 1200,
                     }),
                 });
                 const data = await res.json();

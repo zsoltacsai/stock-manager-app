@@ -327,6 +327,15 @@ if (!Auth::isLoggedIn($appSettings)) {
                 (`http_allowed_safe_ports` szűrő).
             </p>
 
+            <label for="product-image-size">Termékkép mérete (px, négyzet alakú)</label>
+            <input type="text" id="product-image-size" placeholder="1200">
+            <p class="muted" style="margin-top:-6px;">
+                Ekkora négyzet méretre vágja/skálázza a szerver a termékekhez
+                feltöltött képet (200–4000 px között). A már feltöltött
+                képeket ez a beállítás nem alakítja át visszamenőleg, csak
+                az ezután feltöltötteket.
+            </p>
+
             <button id="settings-save-wc-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Mentés</button>
             <p id="settings-wc-feedback" class="modal-feedback"></p>
 

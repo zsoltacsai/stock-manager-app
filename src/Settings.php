@@ -82,6 +82,9 @@ class Settings
         // hogy a szinkron-kiküldéskor a helyi elnevezés eltérése esetén se
         // jöjjön létre felesleges duplikált márka a WooCommerce-ben.
         'brand_mapping'       => [],
+        // Termékkép feltöltéskor ekkora négyzet méretre (px) vágja/skálázza
+        // a szerver a képet.
+        'product_image_size'  => 1200,
 
         // NAV Online Számla technikai felhasználó — for company-lookup.php's
         // adószám-alapú cégadat kitöltés. See README for how to obtain these.

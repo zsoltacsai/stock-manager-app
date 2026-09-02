@@ -55,7 +55,15 @@ window.ProductModal = (function () {
     const pImageRemoveBtn = document.getElementById('p-image-remove-btn');
     const pImageAlt = document.getElementById('p-image-alt');
     const pImageFeedback = document.getElementById('p-image-feedback');
+    const pImageTargetSize = document.getElementById('p-image-target-size');
     let currentImageFilename = null;
+
+    if (pImageTargetSize && window.smSettingsPromise) {
+        window.smSettingsPromise.then(data => {
+            const size = data.product_image_size || 1200;
+            pImageTargetSize.textContent = size + '×' + size;
+        }).catch(() => { /* marad az alapértelmezett felirat */ });
+    }
 
     let onSavedCallback = null;
     let editingId = null;
@@ -84,22 +92,23 @@ window.ProductModal = (function () {
             menubar: false,
             skin: isDark ? 'oxide-dark' : 'oxide',
             content_css: isDark ? 'dark' : 'default',
-            plugins: 'lists link autolink advlist table code wordcount autoresize',
-            autoresize_bottom_margin: 16,
+            plugins: 'lists link autolink advlist table code wordcount',
+            // Kézzel, lefelé húzva átméretezhető a szerkesztő magassága —
+            // ehhez fix induló magasság kell, nem az automatikusan a
+            // tartalomhoz igazodó autoresize.
+            resize: true,
         };
         editorsReadyPromise = tinymce.init({
             ...baseConfig,
             selector: '#p-short-desc',
             toolbar: 'bold italic | bullist numlist | link | code',
-            autoresize_min_height: 90,
-            autoresize_max_height: 200,
+            height: 150,
             placeholder: 'Rövid, egy-két mondatos összefoglaló',
         }).then(() => tinymce.init({
             ...baseConfig,
             selector: '#p-long-desc',
             toolbar: 'undo redo | formatselect | bold italic | bullist numlist | link table | code',
-            autoresize_min_height: 200,
-            autoresize_max_height: 500,
+            height: 300,
             placeholder: 'Részletes termékleírás',
         }));
         return editorsReadyPromise;

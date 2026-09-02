@@ -247,8 +247,9 @@ if (!Auth::isLoggedIn($appSettings)) {
 
             <label>Termékkép</label>
             <p class="muted" style="margin-top:-6px;">
-                Javasolt méret 1200×1200 px, WEBP formátumban — de JPG, JPEG és GIF is
-                elfogadott. Ha a feltöltött kép nem négyzet alakú, automatikusan
+                A feltöltött kép <span id="p-image-target-size">1200×1200</span> px méretre kerül
+                (Beállítások → WooCommerce alatt módosítható), WEBP formátumban — de JPG, JPEG
+                és GIF is elfogadott. Ha a feltöltött kép nem négyzet alakú, automatikusan
                 középre vágva 1:1-es arányúra alakul.
             </p>
             <div style="display:flex; align-items:center; gap:14px; margin-bottom:10px;">

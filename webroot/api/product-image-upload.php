@@ -36,19 +36,21 @@ if ($source === false) {
     send_json(['error' => 'A képfájl nem olvasható be (sérült lehet).'], 400);
 }
 
+$targetSize = max(200, min(4000, (int) ($appSettings['product_image_size'] ?? 1200)));
+
 $srcWidth = imagesx($source);
 $srcHeight = imagesy($source);
 $side = min($srcWidth, $srcHeight);
 $cropX = (int) (($srcWidth - $side) / 2);
 $cropY = (int) (($srcHeight - $side) / 2);
 
-$target = imagecreatetruecolor(1200, 1200);
+$target = imagecreatetruecolor($targetSize, $targetSize);
 imagealphablending($target, false);
 imagesavealpha($target, true);
 $transparent = imagecolorallocatealpha($target, 0, 0, 0, 127);
-imagefilledrectangle($target, 0, 0, 1200, 1200, $transparent);
+imagefilledrectangle($target, 0, 0, $targetSize, $targetSize, $transparent);
 
-imagecopyresampled($target, $source, 0, 0, $cropX, $cropY, 1200, 1200, $side, $side);
+imagecopyresampled($target, $source, 0, 0, $cropX, $cropY, $targetSize, $targetSize, $side, $side);
 imagedestroy($source);
 
 $productsDir = __DIR__ . '/../assets/products';

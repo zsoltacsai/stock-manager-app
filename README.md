@@ -1,6 +1,6 @@
 # Stock Manager — localhost vonalkód-kassza
 
-**Verzió: 1.0 beta 6**
+**Verzió: 1.0 beta 7**
 
 Egy kicsi, localhost PHP alkalmazás, ami USB vonalkódolvasóval beolvasott
 termékekhez rögzít eladást, Számlázz.hu számlát állít ki, és a készletet
@@ -689,16 +689,21 @@ A termék-szerkesztő ablak új "Leírás és kép" füle:
   szerkesztő helyben van csomagolva (`webroot/vendor/tinymce/`, önállóan
   letöltött, nyílt forráskódú GPL kiadás), nincs hozzá API-kulcs vagy
   külső CDN-függőség, és automatikusan követi az app sötét/világos
-  sablonját is.
+  sablonját is. A szerkesztő jobb alsó sarkánál lefelé húzva a magassága
+  kézzel átméretezhető, ha a beépített (150 / 300 px) kezdőméret szűknek
+  bizonyulna egy hosszabb szöveghez.
 - **Márka** — a WooCommerce natív márka-taxonómiáján (`brands`) keresztül
   szinkronizál; a WooCommerce a nevet automatikusan hozzárendeli egy
   meglévő márkához, vagy létrehozza, ha még nem létezik.
 - **Termékkép** — feltöltéskor a szerver automatikusan középre vágja
-  1:1 arányúra (ha nem volt eleve négyzet alakú), 1200×1200 px méretre
-  skálázza, és WEBP formátumban menti (`webroot/assets/products/`).
-  WEBP, JPG/JPEG és GIF fogadható el bemenetként. Mellette megadható a
-  kép **alt szövege** is (SEO), ami a WooCommerce-be küldött képadat
-  `alt` mezőjébe kerül.
+  1:1 arányúra (ha nem volt eleve négyzet alakú), és WEBP formátumban
+  menti (`webroot/assets/products/`). A négyzet cél-mérete (alapból
+  1200×1200 px, 200–4000 px között állítható) a Beállítások →
+  WooCommerce fülön módosítható — a már feltöltött képeket ez
+  visszamenőleg nem alakítja át, csak az ezután feltöltötteket. WEBP,
+  JPG/JPEG és GIF fogadható el bemenetként. Mellette megadható a kép
+  **alt szövege** is (SEO), ami a WooCommerce-be küldött képadat `alt`
+  mezőjébe kerül.
 - **"Szinkronizáljon a WooCommerce-szel" kapcsoló** — alapból bekapcsolva.
   Kikapcsolva a termék "csak üzletben" marad: sem a Beszerzés oldal
   "Sync WooCommerce-ből" gombja (behúzás), sem az eladás/beszerzés utáni

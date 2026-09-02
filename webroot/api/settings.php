@@ -58,6 +58,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($input['backup_retention_count'])) {
         $update['backup_retention_count'] = max(1, min(100, (int) $input['backup_retention_count']));
     }
+    if (isset($input['product_image_size'])) {
+        $update['product_image_size'] = max(200, min(4000, (int) $input['product_image_size']));
+    }
     if (isset($input['brand_mapping']) && is_array($input['brand_mapping'])) {
         $mapping = [];
         foreach ($input['brand_mapping'] as $local => $wcName) {

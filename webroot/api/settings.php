@@ -23,7 +23,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'printer_ip', 'dropbox_access_token', 'dropbox_folder',
         'google_client_id', 'google_client_secret', 'google_refresh_token', 'google_folder_id',
         'szamlazz_agent_key', 'szamlazz_default_payment', 'szamlazz_default_vat',
-        'wc_store_url', 'wc_consumer_key', 'wc_consumer_secret', 'wc_barcode_source', 'wc_barcode_meta_key', 'wc_webhook_secret',
+        'wc_store_url', 'wc_consumer_key', 'wc_consumer_secret', 'wc_barcode_source', 'wc_barcode_meta_key', 'wc_webhook_secret', 'wc_public_base_url',
         'nav_login', 'nav_password', 'nav_signer_key', 'nav_exchange_key', 'nav_tax_number',
         'low_stock_notify_webhook', 'low_stock_notify_email',
         'receipt_header_lines', 'receipt_footer_lines',
@@ -57,6 +57,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     if (isset($input['backup_retention_count'])) {
         $update['backup_retention_count'] = max(1, min(100, (int) $input['backup_retention_count']));
+    }
+    if (isset($input['brand_mapping']) && is_array($input['brand_mapping'])) {
+        $mapping = [];
+        foreach ($input['brand_mapping'] as $local => $wcName) {
+            $local = trim((string) $local);
+            $wcName = trim((string) $wcName);
+            if ($local !== '' && $wcName !== '') {
+                $mapping[$local] = $wcName;
+            }
+        }
+        $update['brand_mapping'] = $mapping;
     }
     if (isset($input['backup_provider']) && in_array($input['backup_provider'], ['none', 'dropbox', 'googledrive'], true)) {
         $update['backup_provider'] = $input['backup_provider'];

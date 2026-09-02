@@ -49,6 +49,10 @@ try {
             $db->logSync('webhook', null, "Order #{$order['id']}: unknown wc_product_id $wcProductId");
             continue;
         }
+        if (empty($product['sync_to_woocommerce'])) {
+            $db->logSync('webhook', $product['id'], "Order #{$order['id']}: kihagyva, a termék szinkronja ki van kapcsolva");
+            continue;
+        }
 
         $newQty = (int) $product['stock_qty'] - $qty;
         $db->decrementStock($product['id'], $qty);

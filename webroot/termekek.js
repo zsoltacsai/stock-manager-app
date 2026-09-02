@@ -9,6 +9,7 @@ const fBarcode = document.getElementById('f-barcode');
 const fGroup = document.getElementById('f-group');
 const fDeleted = document.getElementById('f-deleted');
 const fZeroStock = document.getElementById('f-zero-stock');
+const fWebshopOnly = document.getElementById('f-webshop-only');
 
 const productsBody = document.getElementById('products-body');
 const productsCount = document.getElementById('products-count');
@@ -66,6 +67,7 @@ function renderTable() {
     const barcodeQ = fBarcode.value.trim().toLowerCase();
     const groupQ = fGroup.value;
     const zeroOnly = fZeroStock.checked;
+    const webshopOnly = fWebshopOnly.checked;
 
     const filtered = allProducts.filter(p => {
         if (nameQ && !p.name.toLowerCase().includes(nameQ)) return false;
@@ -73,6 +75,7 @@ function renderTable() {
         if (barcodeQ && !(p.barcode || '').toLowerCase().includes(barcodeQ)) return false;
         if (groupQ && p.group_name !== groupQ) return false;
         if (zeroOnly && Number(p.stock_qty) > 0) return false;
+        if (webshopOnly && !Number(p.show_webshop)) return false;
         return true;
     });
 
@@ -213,7 +216,7 @@ async function toggleDeleted(id) {
 }
 
 [fName, fCikkszam, fBarcode].forEach(input => input.addEventListener('input', renderTable));
-[fGroup, fZeroStock].forEach(input => input.addEventListener('change', renderTable));
+[fGroup, fZeroStock, fWebshopOnly].forEach(input => input.addEventListener('change', renderTable));
 fDeleted.addEventListener('change', loadProducts);
 
 newArticleBtn.addEventListener('click', () => {

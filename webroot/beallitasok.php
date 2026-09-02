@@ -311,8 +311,40 @@ if (!Auth::isLoggedIn($appSettings)) {
             </div>
             <label for="wc-webhook-secret">Webhook titkos kulcs</label>
             <input type="text" id="wc-webhook-secret">
+
+            <label for="wc-public-base-url">Kívülről elérhető alap URL (a termékkép-szinkronhoz)</label>
+            <input type="text" id="wc-public-base-url" placeholder="https://kassza.pelda.hu">
+            <p class="muted" style="margin-top:-6px;">
+                Opcionális. Csak akkor kell kitölteni, ha szeretnéd, hogy a termékekhez
+                feltöltött kép is kiküldésre kerüljön a WooCommerce felé — a
+                WooCommerce szerverének el kell tudnia érnie ezt a címet, hogy
+                letöltse a képet. Ha üresen hagyod, minden más mező (név, ár,
+                leírás, márka) továbbra is szinkronizál, csak a kép nem.
+                A WordPress alapból csak a 80, 443 és 8080 portokról fogad el
+                ilyen letöltést — ha a kassza-szerver más porton fut, és nincs
+                előtte reverse proxy (lásd a távoli szerveres telepítési
+                útmutatót), a WooCommerce oldalon ezt engedélyezni kell
+                (`http_allowed_safe_ports` szűrő).
+            </p>
+
             <button id="settings-save-wc-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Mentés</button>
             <p id="settings-wc-feedback" class="modal-feedback"></p>
+
+            <div style="border-top:1px solid var(--border); margin-top:20px; padding-top:14px;">
+                <strong>Márka-megfeleltetés</strong>
+                <p class="muted" style="margin-top:4px;">
+                    Ha egy helyi márkanév nem pontosan egyezik a WooCommerce-ben
+                    már meglévő márka nevével (pl. elírás, más írásmód), itt
+                    rendelheted hozzá a helyeset — így szinkron-kiküldéskor nem
+                    jön létre felesleges, duplikált márka a webshopban. Amit itt
+                    nem feleltetsz meg, az a helyi néven kerül kiküldésre
+                    (a WooCommerce automatikusan létrehozza, ha még nem létezik).
+                </p>
+                <button type="button" id="brand-mapping-reload-btn" class="btn btn-secondary" style="width:auto; padding:8px 14px;">WooCommerce márkák betöltése</button>
+                <div id="brand-mapping-list" style="margin-top:12px;"></div>
+                <button id="settings-save-brand-mapping-btn" class="btn btn-primary" style="width:auto; padding:10px 18px; margin-top:10px;">Megfeleltetés mentése</button>
+                <p id="settings-brand-mapping-feedback" class="modal-feedback"></p>
+            </div>
 
             <div class="muted" style="margin-top:20px; border-top:1px solid var(--border); padding-top:14px; line-height:1.6;">
                 <strong>Hogyan működik a szinkron?</strong><br>

@@ -21,6 +21,10 @@
 /webroot/assets/logo.*
 /webroot/assets/print-logo.*
 
+# Feltöltött termékképek
+/webroot/assets/products/*
+!/webroot/assets/products/.gitkeep
+
 # OS / szerkesztő
 Thumbs.db
 .DS_Store

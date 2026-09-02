@@ -168,7 +168,13 @@ if ('serviceWorker' in navigator) {
     const wcBarcodeMetaWrap = document.getElementById('wc-barcode-meta-wrap');
     const wcBarcodeMetaKey = document.getElementById('wc-barcode-meta-key');
     const wcWebhookSecret = document.getElementById('wc-webhook-secret');
+    const wcPublicBaseUrl = document.getElementById('wc-public-base-url');
     const settingsSaveWcBtn = document.getElementById('settings-save-wc-btn');
+    const brandMappingReloadBtn = document.getElementById('brand-mapping-reload-btn');
+    const brandMappingList = document.getElementById('brand-mapping-list');
+    const settingsSaveBrandMappingBtn = document.getElementById('settings-save-brand-mapping-btn');
+    const settingsBrandMappingFeedback = document.getElementById('settings-brand-mapping-feedback');
+    let currentBrandMapping = {};
     const settingsWcFeedback = document.getElementById('settings-wc-feedback');
 
     const lowStockDefault = document.getElementById('low-stock-default');
@@ -330,6 +336,8 @@ if ('serviceWorker' in navigator) {
         }
         if (wcBarcodeMetaKey) wcBarcodeMetaKey.value = data.wc_barcode_meta_key || '_barcode';
         if (wcWebhookSecret) wcWebhookSecret.value = data.wc_webhook_secret || '';
+        if (wcPublicBaseUrl) wcPublicBaseUrl.value = data.wc_public_base_url || '';
+        currentBrandMapping = (data.brand_mapping && typeof data.brand_mapping === 'object') ? data.brand_mapping : {};
 
         if (lowStockDefault) lowStockDefault.value = String(data.low_stock_default_threshold ?? 5);
         if (lowStockWebhook) lowStockWebhook.value = data.low_stock_notify_webhook || '';
@@ -811,6 +819,7 @@ if ('serviceWorker' in navigator) {
                         wc_barcode_source: wcBarcodeSource.value,
                         wc_barcode_meta_key: wcBarcodeMetaKey.value.trim(),
                         wc_webhook_secret: wcWebhookSecret.value.trim(),
+                        wc_public_base_url: wcPublicBaseUrl.value.trim(),
                     }),
                 });
                 const data = await res.json();
@@ -984,6 +993,81 @@ if ('serviceWorker' in navigator) {
         });
     }
 
+    async function loadBrandMappingUi() {
+        if (!brandMappingList) return;
+        brandMappingList.innerHTML = '<p class="muted" style="font-size:12px;">Betöltés...</p>';
+        try {
+            const [localRes, wcRes] = await Promise.all([
+                fetch('/api/product-brands-list.php'),
+                fetch('/api/wc-brands-list.php'),
+            ]);
+            const localData = await localRes.json();
+            const wcData = await wcRes.json();
+            const localBrands = localData.brands || [];
+            const wcBrands = wcRes.ok ? (wcData.brands || []) : null;
+
+            if (localBrands.length === 0) {
+                brandMappingList.innerHTML = '<p class="muted" style="font-size:12px;">Még nincs egyetlen árucikkhez sem márka megadva.</p>';
+                return;
+            }
+            if (!wcBrands) {
+                brandMappingList.innerHTML = '<p class="muted" style="font-size:12px;">A WooCommerce márkák betöltése sikertelen: '
+                    + escapeHtml(wcData.error || 'ismeretlen hiba') + '</p>';
+                return;
+            }
+
+            const options = '<option value="">— helyi néven, ahogy van —</option>' +
+                wcBrands.map(b => `<option value="${escapeHtml(b.name)}">${escapeHtml(b.name)}</option>`).join('');
+
+            brandMappingList.innerHTML = localBrands.map(brand => `
+                <div class="field-row" style="align-items:center; margin-top:0;">
+                    <div style="align-self:center;">${escapeHtml(brand)}</div>
+                    <div>
+                        <select data-local-brand="${escapeHtml(brand)}" class="brand-mapping-select">${options}</select>
+                    </div>
+                </div>
+            `).join('');
+
+            brandMappingList.querySelectorAll('.brand-mapping-select').forEach(sel => {
+                const local = sel.dataset.localBrand;
+                if (currentBrandMapping[local]) sel.value = currentBrandMapping[local];
+            });
+        } catch (e) {
+            brandMappingList.innerHTML = '<p class="muted" style="font-size:12px;">Betöltési hiba.</p>';
+        }
+    }
+
+    if (brandMappingReloadBtn) {
+        brandMappingReloadBtn.addEventListener('click', loadBrandMappingUi);
+    }
+
+    if (settingsSaveBrandMappingBtn) {
+        settingsSaveBrandMappingBtn.addEventListener('click', async () => {
+            settingsBrandMappingFeedback.textContent = 'Mentés...';
+            settingsBrandMappingFeedback.className = 'modal-feedback';
+            const mapping = {};
+            brandMappingList.querySelectorAll('.brand-mapping-select').forEach(sel => {
+                if (sel.value) mapping[sel.dataset.localBrand] = sel.value;
+            });
+            try {
+                const res = await fetch('/api/settings.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ brand_mapping: mapping }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+                applySettings(data);
+                settingsBrandMappingFeedback.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;vertical-align:-1px;margin-right:4px;"><polyline points="20 6 9 17 4 12"></polyline></svg>Mentve';
+                settingsBrandMappingFeedback.classList.add('saved-flash');
+                setTimeout(() => settingsBrandMappingFeedback.classList.remove('saved-flash'), 1200);
+            } catch (err) {
+                settingsBrandMappingFeedback.textContent = 'Hiba: ' + err.message;
+                settingsBrandMappingFeedback.className = 'modal-feedback error';
+            }
+        });
+    }
+
     if (geoBlockEnabled) {
         geoBlockEnabled.addEventListener('click', () => geoBlockEnabled.classList.toggle('on'));
     }
@@ -1018,6 +1102,9 @@ if ('serviceWorker' in navigator) {
     loadSettings();
     loadBackupList();
     loadGeoStatus();
+    if (brandMappingList) {
+        window.smSettingsPromise.then(() => loadBrandMappingUi());
+    }
 })();
 
 // =========================================================================

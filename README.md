@@ -674,6 +674,73 @@ kódolási táblázatok nulláról épített implementációja — nincs külső
 könyvtár vagy CDN-függőség, a kamerás szkenner és a PWA funkciók
 filozófiájával összhangban.
 
+## Termékleírás, kép, márka és WooCommerce-szinkron kapcsoló
+
+A termék-szerkesztő ablak új "Leírás és kép" füle:
+
+- **Rövid és hosszú leírás** — a WooCommerce `short_description` /
+  `description` mezőjének felelnek meg, és egy valódi **TinyMCE
+  szerkesztőt** kapnak (félkövér/dőlt, felsorolás, hivatkozás, táblázat,
+  HTML-nézet) — ugyanazt a szerkesztőmotort, amit a WordPress/WooCommerce
+  klasszikus termékleírás-mezője is használ. A kimenet ezért ugyanolyan
+  tiszta, szemantikus HTML (`<p>`, `<strong>`, `<ul><li>` stb.), mint amit
+  a WooCommerce oldalán szerkesztve kapnál — a WordPress oldalon
+  visszanyitva ugyanúgy formázva jelenik meg és marad szerkeszthető. A
+  szerkesztő helyben van csomagolva (`webroot/vendor/tinymce/`, önállóan
+  letöltött, nyílt forráskódú GPL kiadás), nincs hozzá API-kulcs vagy
+  külső CDN-függőség, és automatikusan követi az app sötét/világos
+  sablonját is.
+- **Márka** — a WooCommerce natív márka-taxonómiáján (`brands`) keresztül
+  szinkronizál; a WooCommerce a nevet automatikusan hozzárendeli egy
+  meglévő márkához, vagy létrehozza, ha még nem létezik.
+- **Termékkép** — feltöltéskor a szerver automatikusan középre vágja
+  1:1 arányúra (ha nem volt eleve négyzet alakú), 1200×1200 px méretre
+  skálázza, és WEBP formátumban menti (`webroot/assets/products/`).
+  WEBP, JPG/JPEG és GIF fogadható el bemenetként. Mellette megadható a
+  kép **alt szövege** is (SEO), ami a WooCommerce-be küldött képadat
+  `alt` mezőjébe kerül.
+- **"Szinkronizáljon a WooCommerce-szel" kapcsoló** — alapból bekapcsolva.
+  Kikapcsolva a termék "csak üzletben" marad: sem a Beszerzés oldal
+  "Sync WooCommerce-ből" gombja (behúzás), sem az eladás/beszerzés utáni
+  készlet-kiküldés, sem a webhook nem érinti többé — így a csak fizikai
+  boltban kapható termékek biztonságosan kizárhatók a webshop-szinkronból.
+
+**Márka-megfeleltetés**: Beállítások → WooCommerce → "Márka-megfeleltetés"
+felsorolja az összes, valamelyik termékhez már beírt helyi márkanevet, és
+mindegyikhez egy legördülőben kiválasztható a hozzá tartozó, tényleges
+WooCommerce márka (a WooCommerce natív `products/brands` végpontjáról
+élőben lekérve). Amit itt megfeleltetsz, az szinkron-kiküldéskor a
+kiválasztott WooCommerce márkanéven megy ki, függetlenül attól, hogy a
+helyi mező mit tartalmaz — ez akadályozza meg, hogy elgépelés vagy eltérő
+írásmód miatt felesleges, duplikált márka jöjjön létre a webshopban.
+Amit nem feleltetsz meg, az a helyi néven kerül kiküldésre.
+
+Amikor egy már szinkronizált (van `wc_product_id`-je) terméket
+módosítasz, a mentés — ha a szinkron be van kapcsolva — automatikusan
+kiküldi a nevet, árat, leírásokat és márkát (a fenti megfeleltetésen
+átvezetve) a WooCommerce felé (`WooCommerceClient::pushProduct()`).
+**Fontos technikai részlet, amit egy valódi WooCommerce teszt-példányon
+ellenőriztünk**: a WooCommerce REST API `brands` mezője — a `categories`
+mezővel ellentétben — kizárólag numerikus azonosítót fogad el, egy puszta
+`{"name": "..."}` bejegyzést csendben, hibaüzenet nélkül eldob. Emiatt a
+kiküldés előbb feloldja a márkanevet egy valódi WooCommerce márka-ID-ra
+(megkeresi a pontosan egyező nevű márkát, vagy létrehozza, ha még nincs).
+
+**A kép kiküldése külön feltételhez kötött**: a WooCommerce szerverének
+egy nyilvánosan elérhető URL-t kell tudnia letölteni, ezért ez csak akkor
+működik, ha a Beállítások → WooCommerce fülön ki van töltve egy "Kívülről
+elérhető alap URL" — enélkül minden más mező szinkronizál, csak a kép nem
+(a hiba nem állítja le a mentést, csak a `sync_log`-ban jelenik meg). Egy
+további, tesztelés közben feltárt korlát: a WordPress alapból csak a 80,
+443 és 8080 portokról fogad el ilyen kimenő letöltést (`http_allowed_safe_ports`
+szűrő) — ha a kassza szerver ettől eltérő, nem szabványos porton fut, és
+nincs elé állítva reverse proxy (lásd a távoli szerveres telepítési
+útmutatót, ahol Nginx a 80-as porton fogad), a WooCommerce oldalon ezt
+külön engedélyezni kell. A kép csak akkor kerül újra kiküldésre, ha
+ténylegesen változott (nem minden mentésnél), mivel a letöltés + több
+méretben történő újramintázás a WooCommerce oldalon számottevően tovább
+tarthat, mint egy sima mezőfrissítés.
+
 ## Mentés-visszaállítás (backup restore)
 
 A Beállítások → Mentés mostantól egy **Visszaállítás** gombot kínál

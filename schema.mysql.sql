@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS products (
     is_deleted          TINYINT(1) NOT NULL DEFAULT 0,
     low_stock_threshold INT NULL,               -- NULL = use global default
     preferred_supplier_id INT UNSIGNED NULL,    -- kitől szoktuk ezt beszerezni — a beszerzési javaslathoz
+    short_description   TEXT NULL,
+    long_description    TEXT NULL,
+    image_filename       VARCHAR(191) NULL,
+    image_alt            VARCHAR(191) NULL,
+    brand                VARCHAR(191) NULL,
+    sync_to_woocommerce TINYINT(1) NOT NULL DEFAULT 1,
     updated_at          DATETIME NULL,
     wc_synced_at        DATETIME NULL,
     UNIQUE KEY uq_products_barcode (barcode),
@@ -379,4 +385,4 @@ CREATE TABLE IF NOT EXISTS stock_transfers (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO schema_version (version)
-SELECT 13 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM schema_version);
+SELECT 15 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM schema_version);

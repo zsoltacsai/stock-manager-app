@@ -73,6 +73,15 @@ class Settings
         'wc_barcode_source'   => 'sku',
         'wc_barcode_meta_key' => '_barcode',
         'wc_webhook_secret'   => '',
+        // Kívülről elérhető alap URL (pl. https://kassza.pelda.hu) — enélkül
+        // a termékkép feltöltésekor a kép csak helyben menthető, a
+        // WooCommerce-nek kiküldött szinkron nem tudja csatolni, mert a
+        // WooCommerce szervere nem éri el a fájlt letöltésre.
+        'wc_public_base_url'  => '',
+        // Helyi márkanév → WooCommerce márka neve megfeleltetés (objektum),
+        // hogy a szinkron-kiküldéskor a helyi elnevezés eltérése esetén se
+        // jöjjön létre felesleges duplikált márka a WooCommerce-ben.
+        'brand_mapping'       => [],
 
         // NAV Online Számla technikai felhasználó — for company-lookup.php's
         // adószám-alapú cégadat kitöltés. See README for how to obtain these.

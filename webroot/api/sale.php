@@ -106,7 +106,7 @@ foreach ($cart as $line) {
 
     $lineItems[] = [
         'product_id' => $product['id'],
-        'wc_product_id' => $product['wc_product_id'],
+        'wc_product_id' => !empty($product['sync_to_woocommerce']) ? $product['wc_product_id'] : null,
         'name'       => $product['name'],
         'barcode'    => $product['barcode'],
         'qty'        => $qty,

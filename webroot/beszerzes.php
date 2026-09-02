@@ -163,6 +163,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <button class="tab-btn active" data-tab="tab-main">Fő adatok</button>
             <button class="tab-btn" data-tab="tab-prices">Árak</button>
             <button class="tab-btn" data-tab="tab-other">Egyéb</button>
+            <button class="tab-btn" data-tab="tab-media">Leírás és kép</button>
         </div>
 
         <div id="tab-main" class="tab-panel active">
@@ -277,6 +278,45 @@ if (!Auth::isLoggedIn($appSettings)) {
             </div>
         </div>
 
+        <div id="tab-media" class="tab-panel">
+            <label for="p-short-desc">Rövid leírás</label>
+            <textarea id="p-short-desc" rows="2" placeholder="Rövid, egy-két mondatos összefoglaló"></textarea>
+
+            <label for="p-long-desc">Hosszú leírás</label>
+            <textarea id="p-long-desc" rows="6" placeholder="Részletes termékleírás"></textarea>
+
+            <label for="p-brand">Márka</label>
+            <input type="text" id="p-brand" placeholder="pl. Bosch">
+
+            <label>Termékkép</label>
+            <p class="muted" style="margin-top:-6px;">
+                Javasolt méret 1200×1200 px, WEBP formátumban — de JPG, JPEG és GIF is
+                elfogadott. Ha a feltöltött kép nem négyzet alakú, automatikusan
+                középre vágva 1:1-es arányúra alakul.
+            </p>
+            <div style="display:flex; align-items:center; gap:14px; margin-bottom:10px;">
+                <img id="p-image-preview" src="" alt="" class="hidden" style="width:96px; height:96px; object-fit:cover; border-radius:8px; border:1px solid var(--border);">
+                <div style="flex:1;">
+                    <input type="file" id="p-image-input" accept="image/webp,image/jpeg,image/gif" class="hidden">
+                    <button type="button" id="p-image-upload-btn" class="btn btn-secondary" style="width:auto; padding:8px 14px;">Kép feltöltése</button>
+                    <button type="button" id="p-image-remove-btn" class="btn btn-secondary hidden" style="width:auto; padding:8px 14px;">Kép eltávolítása</button>
+                </div>
+            </div>
+            <label for="p-image-alt">Kép alt szövege (SEO)</label>
+            <input type="text" id="p-image-alt" placeholder="Rövid, leíró szöveg a képhez">
+            <p id="p-image-feedback" class="modal-feedback"></p>
+
+            <div class="toggle-line" style="margin-top:14px;">
+                <span>Szinkronizáljon a WooCommerce-szel</span>
+                <button type="button" class="toggle-switch on" id="p-sync-wc"></button>
+            </div>
+            <p class="muted" style="margin-top:-6px;">
+                Kikapcsolva a termék csak üzletben, helyben marad — a WooCommerce
+                sem behúzáskor nem írja felül, sem szinkron-kiküldéskor nem
+                frissül/nem csökken a webshopban a készlete.
+            </p>
+        </div>
+
         <p id="product-modal-feedback" class="modal-feedback"></p>
 
         <div class="modal-actions">
@@ -300,6 +340,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <script src="topbar.js"></script>
 <script src="barcode-scanner.js"></script>
+<script src="vendor/tinymce/tinymce.min.js"></script>
 <script src="product-modal.js"></script>
 <script src="beszerzes.js"></script>
 </body>

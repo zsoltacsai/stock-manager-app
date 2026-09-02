@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS products (
     is_deleted          INTEGER NOT NULL DEFAULT 0,  -- árucikk törölve
     low_stock_threshold INTEGER,               -- riasztási küszöb; NULL = globális alapérték használata
     preferred_supplier_id INTEGER REFERENCES suppliers(id), -- kitől szoktuk ezt beszerezni — a beszerzési javaslathoz
+    short_description   TEXT,                  -- rövid termékleírás
+    long_description    TEXT,                  -- hosszú termékleírás
+    image_filename       TEXT,                  -- termékkép fájlneve (webroot/assets/products/)
+    image_alt            TEXT,                  -- kép alt szövege (SEO)
+    brand                TEXT,                  -- márka — a WooCommerce natív brand mezőjével szinkronban
+    sync_to_woocommerce INTEGER NOT NULL DEFAULT 1, -- 0 = csak üzletben elérhető, ne szinkronizáljon
     updated_at          TEXT,                  -- last local change
     wc_synced_at        TEXT                   -- last successful sync with WooCommerce
 );
@@ -359,4 +365,4 @@ CREATE TABLE IF NOT EXISTS stock_transfers (
 );
 CREATE INDEX IF NOT EXISTS idx_stock_transfers_product_id ON stock_transfers(product_id);
 
-INSERT INTO schema_version (version) SELECT 13 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
+INSERT INTO schema_version (version) SELECT 15 WHERE NOT EXISTS (SELECT 1 FROM schema_version);

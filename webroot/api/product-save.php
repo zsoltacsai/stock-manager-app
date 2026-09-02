@@ -69,6 +69,12 @@ $productId = $db->saveProduct([
     'show_webshop'   => $p['show_webshop'] ?? true,
     'is_deleted'     => $p['is_deleted'] ?? false,
     'low_stock_threshold' => $p['low_stock_threshold'] ?? '',
+    'short_description' => $p['short_description'] ?? null,
+    'long_description' => $p['long_description'] ?? null,
+    'image_filename' => $p['image_filename'] ?? null,
+    'image_alt'      => $p['image_alt'] ?? null,
+    'brand'          => $p['brand'] ?? null,
+    'sync_to_woocommerce' => $p['sync_to_woocommerce'] ?? true,
 ]);
 
 if ($settingToDeleted) {
@@ -82,4 +88,45 @@ if ($settingToDeleted) {
     );
 }
 
-send_json(['product' => $db->findProductById($productId)]);
+$savedProduct = $db->findProductById($productId);
+
+$wcPushError = null;
+if (!empty($savedProduct['sync_to_woocommerce']) && !empty($savedProduct['wc_product_id'])) {
+    try {
+        $wc = new WooCommerceClient($config['woocommerce']);
+        $brandMapping = is_array($appSettings['brand_mapping'] ?? null) ? $appSettings['brand_mapping'] : [];
+        $localBrand = $savedProduct['brand'] ?? '';
+        $mappedBrand = $localBrand !== '' && !empty($brandMapping[$localBrand]) ? $brandMapping[$localBrand] : $localBrand;
+
+        $pushFields = [
+            'name'  => $savedProduct['name'],
+            'price' => $savedProduct['price'],
+            'short_description' => $savedProduct['short_description'] ?? '',
+            'long_description'  => $savedProduct['long_description'] ?? '',
+        ];
+        if ($mappedBrand !== '') {
+            $pushFields['brand_id'] = $wc->resolveBrandId($mappedBrand);
+        }
+        $imageChanged = ($existingProduct['image_filename'] ?? null) !== $savedProduct['image_filename']
+            || ($existingProduct['image_alt'] ?? null) !== $savedProduct['image_alt'];
+        if (!empty($savedProduct['image_filename']) && !empty($appSettings['wc_public_base_url']) && $imageChanged) {
+            $pushFields['image_url'] = rtrim($appSettings['wc_public_base_url'], '/')
+                . '/assets/products/' . $savedProduct['image_filename'];
+            $pushFields['image_alt'] = $savedProduct['image_alt'] ?? '';
+            // A WooCommerce oldalán a kép letöltése és többméretű újramintázása
+            // jóval tovább tarthat, mint a PHP alapértelmezett 30 másodperces
+            // végrehajtási korlátja — enélkül a kérés félbeszakadna, még ha a
+            // WooCommerce oldalon a művelet egyébként sikeresen befejeződne is.
+            // Csak akkor futtatjuk ezt a lassabb utat, ha a kép ténylegesen
+            // változott — egy sima név/ár-módosítás ne várjon emiatt feleslegesen.
+            set_time_limit(60);
+        }
+        $wc->pushProduct((int) $savedProduct['wc_product_id'], $pushFields);
+        $db->logSync('push', $productId, 'Termékadatok kiküldve a WooCommerce-nek');
+    } catch (Throwable $e) {
+        $wcPushError = $e->getMessage();
+        $db->logSync('push', $productId, 'FAILED: ' . $e->getMessage());
+    }
+}
+
+send_json(['product' => $savedProduct, 'wc_push_error' => $wcPushError]);

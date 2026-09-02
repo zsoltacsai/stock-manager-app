@@ -45,8 +45,73 @@ window.ProductModal = (function () {
     const pGenerateBarcodeBtn = document.getElementById('p-generate-barcode-btn');
     const pPrintLabelBtn = document.getElementById('p-print-label-btn');
 
+    const pShortDesc = document.getElementById('p-short-desc');
+    const pLongDesc = document.getElementById('p-long-desc');
+    const pBrand = document.getElementById('p-brand');
+    const pSyncWc = document.getElementById('p-sync-wc');
+    const pImagePreview = document.getElementById('p-image-preview');
+    const pImageInput = document.getElementById('p-image-input');
+    const pImageUploadBtn = document.getElementById('p-image-upload-btn');
+    const pImageRemoveBtn = document.getElementById('p-image-remove-btn');
+    const pImageAlt = document.getElementById('p-image-alt');
+    const pImageFeedback = document.getElementById('p-image-feedback');
+    let currentImageFilename = null;
+
     let onSavedCallback = null;
     let editingId = null;
+    let editorsReadyPromise = null;
+
+    // A rövid/hosszú leírás mezők egy valódi TinyMCE szerkesztőt kapnak —
+    // ugyanazt a motort, amit a WordPress/WooCommerce klasszikus
+    // termékleírás-szerkesztője is használ, így az itt létrehozott
+    // formázott szöveg (bekezdések, felsorolás, félkövér stb.) a
+    // WooCommerce oldalon is pontosan ugyanúgy jelenik meg és
+    // szerkeszthető marad. Csak a modal első megnyitásakor inicializáljuk,
+    // mert a modal addig display:none, amíg TinyMCE nem tudná helyesen
+    // felmérni a szerkesztő méretét.
+    function ensureRichTextEditors() {
+        if (editorsReadyPromise) return editorsReadyPromise;
+        if (typeof tinymce === 'undefined' || !pShortDesc || !pLongDesc) {
+            editorsReadyPromise = Promise.resolve();
+            return editorsReadyPromise;
+        }
+        const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+        const baseConfig = {
+            license_key: 'gpl',
+            base_url: 'vendor/tinymce',
+            branding: false,
+            promotion: false,
+            menubar: false,
+            skin: isDark ? 'oxide-dark' : 'oxide',
+            content_css: isDark ? 'dark' : 'default',
+            plugins: 'lists link autolink advlist table code wordcount autoresize',
+            autoresize_bottom_margin: 16,
+        };
+        editorsReadyPromise = tinymce.init({
+            ...baseConfig,
+            selector: '#p-short-desc',
+            toolbar: 'bold italic | bullist numlist | link | code',
+            autoresize_min_height: 90,
+            autoresize_max_height: 200,
+            placeholder: 'Rövid, egy-két mondatos összefoglaló',
+        }).then(() => tinymce.init({
+            ...baseConfig,
+            selector: '#p-long-desc',
+            toolbar: 'undo redo | formatselect | bold italic | bullist numlist | link table | code',
+            autoresize_min_height: 200,
+            autoresize_max_height: 500,
+            placeholder: 'Részletes termékleírás',
+        }));
+        return editorsReadyPromise;
+    }
+
+    function getRichTextValue(textareaEl, editorId) {
+        if (typeof tinymce !== 'undefined') {
+            const editor = tinymce.get(editorId);
+            if (editor) return editor.getContent();
+        }
+        return textareaEl ? textareaEl.value.trim() : '';
+    }
 
     const fmtPrice = (n) => new Intl.NumberFormat('hu-HU').format(Math.round(n)) + ' Ft';
 
@@ -90,9 +155,54 @@ window.ProductModal = (function () {
         });
     });
 
-    [pShowPricelist, pShowWebshop, pDeleted].forEach(toggle => {
+    [pShowPricelist, pShowWebshop, pDeleted, pSyncWc].forEach(toggle => {
         if (toggle) toggle.addEventListener('click', () => toggle.classList.toggle('on'));
     });
+
+    function updateImagePreview(imageUrl) {
+        if (imageUrl) {
+            pImagePreview.src = imageUrl;
+            pImagePreview.classList.remove('hidden');
+            if (pImageRemoveBtn) pImageRemoveBtn.classList.remove('hidden');
+        } else {
+            pImagePreview.src = '';
+            pImagePreview.classList.add('hidden');
+            if (pImageRemoveBtn) pImageRemoveBtn.classList.add('hidden');
+        }
+    }
+
+    if (pImageUploadBtn) {
+        pImageUploadBtn.addEventListener('click', () => pImageInput.click());
+    }
+    if (pImageInput) {
+        pImageInput.addEventListener('change', async () => {
+            const file = pImageInput.files[0];
+            if (!file) return;
+            pImageFeedback.textContent = 'Feltöltés és feldolgozás...';
+            pImageFeedback.className = 'modal-feedback';
+            try {
+                const formData = new FormData();
+                formData.append('image', file);
+                if (editingId) formData.append('product_id', editingId);
+                const res = await fetch('/api/product-image-upload.php', { method: 'POST', body: formData });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+                currentImageFilename = data.image_filename;
+                updateImagePreview(data.image_url);
+                pImageFeedback.textContent = '';
+            } catch (err) {
+                pImageFeedback.textContent = 'Hiba: ' + err.message;
+                pImageFeedback.className = 'modal-feedback error';
+            }
+            pImageInput.value = '';
+        });
+    }
+    if (pImageRemoveBtn) {
+        pImageRemoveBtn.addEventListener('click', () => {
+            currentImageFilename = '';
+            updateImagePreview(null);
+        });
+    }
 
     pNet.addEventListener('input', () => {
         if (pNet.value === '') return;
@@ -136,10 +246,28 @@ window.ProductModal = (function () {
         pShowWebshop.classList.toggle('on', existingProduct ? !!Number(existingProduct.show_webshop) : true);
         if (pDeleted) pDeleted.classList.toggle('on', existingProduct ? !!Number(existingProduct.is_deleted) : false);
 
+        const shortDescValue = existingProduct ? (existingProduct.short_description || '') : '';
+        const longDescValue = existingProduct ? (existingProduct.long_description || '') : '';
+        if (pShortDesc) pShortDesc.value = shortDescValue;
+        if (pLongDesc) pLongDesc.value = longDescValue;
+        if (pBrand) pBrand.value = existingProduct ? (existingProduct.brand || '') : '';
+        if (pSyncWc) pSyncWc.classList.toggle('on', existingProduct ? !!Number(existingProduct.sync_to_woocommerce) : true);
+        currentImageFilename = existingProduct ? (existingProduct.image_filename || null) : null;
+        if (pImageAlt) pImageAlt.value = existingProduct ? (existingProduct.image_alt || '') : '';
+        if (pImageFeedback) pImageFeedback.textContent = '';
+        updateImagePreview(currentImageFilename ? 'assets/products/' + currentImageFilename : null);
+
         modal.querySelector('.tab-btn[data-tab="tab-main"]').click();
         modal.classList.add('open');
         pName.focus();
         loadPriceHistory(editingId);
+
+        ensureRichTextEditors().then(() => {
+            const shortEditor = tinymce.get('p-short-desc');
+            const longEditor = tinymce.get('p-long-desc');
+            if (shortEditor) shortEditor.setContent(shortDescValue);
+            if (longEditor) longEditor.setContent(longDescValue);
+        });
     }
 
     document.getElementById('product-modal-cancel').addEventListener('click', () => {
@@ -181,6 +309,12 @@ window.ProductModal = (function () {
             show_pricelist: pShowPricelist.classList.contains('on'),
             show_webshop: pShowWebshop.classList.contains('on'),
             is_deleted: pDeleted ? pDeleted.classList.contains('on') : false,
+            short_description: getRichTextValue(pShortDesc, 'p-short-desc'),
+            long_description: getRichTextValue(pLongDesc, 'p-long-desc'),
+            brand: pBrand ? pBrand.value.trim() : '',
+            image_filename: currentImageFilename || '',
+            image_alt: pImageAlt ? pImageAlt.value.trim() : '',
+            sync_to_woocommerce: pSyncWc ? pSyncWc.classList.contains('on') : true,
         };
         try {
             const staffRaw = localStorage.getItem('sm_current_staff');

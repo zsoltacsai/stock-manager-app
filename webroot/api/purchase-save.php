@@ -43,7 +43,7 @@ foreach ($lines as $line) {
 
     $items[] = [
         'product_id'      => $product['id'],
-        'wc_product_id'   => $product['wc_product_id'],
+        'wc_product_id'   => !empty($product['sync_to_woocommerce']) ? $product['wc_product_id'] : null,
         'name'            => $product['name'],
         'qty'             => $qty,
         'vat_rate'        => $vatRate,

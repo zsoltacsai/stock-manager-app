@@ -2,7 +2,7 @@
 
 class Database
 {
-    private const SCHEMA_VERSION = 13;
+    private const SCHEMA_VERSION = 15;
 
     private PDO $pdo;
     private string $driver;
@@ -171,6 +171,12 @@ class Database
             'show_webshop'       => 'TINYINT(1) NOT NULL DEFAULT 1',
             'is_deleted'         => 'TINYINT(1) NOT NULL DEFAULT 0',
             'low_stock_threshold' => 'INT NULL',
+            'short_description'  => 'TEXT',
+            'long_description'   => 'TEXT',
+            'image_filename'     => 'VARCHAR(191)',
+            'image_alt'          => 'VARCHAR(191)',
+            'brand'              => 'VARCHAR(191)',
+            'sync_to_woocommerce' => 'TINYINT(1) NOT NULL DEFAULT 1',
         ];
         if ($this->driver !== 'mysql') {
             $columns = array_map(
@@ -598,6 +604,12 @@ class Database
         return $index;
     }
 
+    public function listDistinctBrands(): array
+    {
+        $stmt = $this->pdo->query("SELECT DISTINCT brand FROM products WHERE brand IS NOT NULL AND brand != '' ORDER BY brand");
+        return array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'brand');
+    }
+
     public function listProducts(int $limit = 200, bool $includeDeleted = false): array
     {
         $sql = 'SELECT * FROM products';
@@ -634,7 +646,10 @@ class Database
                     weight = :weight, volume = :volume, notes = :notes,
                     show_pricelist = :show_pricelist, show_webshop = :show_webshop,
                     is_deleted = :is_deleted, low_stock_threshold = :low_stock_threshold,
-                    preferred_supplier_id = :preferred_supplier_id, updated_at = :now
+                    preferred_supplier_id = :preferred_supplier_id,
+                    short_description = :short_description, long_description = :long_description,
+                    image_filename = :image_filename, image_alt = :image_alt, brand = :brand,
+                    sync_to_woocommerce = :sync_to_woocommerce, updated_at = :now
                 WHERE id = :id
             ');
             $stmt->execute($this->productParams($p, $now) + [':id' => $p['id']]);
@@ -659,11 +674,13 @@ class Database
             INSERT INTO products (
                 name, unit, group_name, cikkszam, vtsz, barcode, currency,
                 vat_rate, net_price, price, purchase_price_net, stock_qty,
-                weight, volume, notes, show_pricelist, show_webshop, is_deleted, low_stock_threshold, preferred_supplier_id, updated_at
+                weight, volume, notes, show_pricelist, show_webshop, is_deleted, low_stock_threshold, preferred_supplier_id,
+                short_description, long_description, image_filename, image_alt, brand, sync_to_woocommerce, updated_at
             ) VALUES (
                 :name, :unit, :group_name, :cikkszam, :vtsz, :barcode, :currency,
                 :vat_rate, :net_price, :price, 0, 0,
-                :weight, :volume, :notes, :show_pricelist, :show_webshop, :is_deleted, :low_stock_threshold, :preferred_supplier_id, :now
+                :weight, :volume, :notes, :show_pricelist, :show_webshop, :is_deleted, :low_stock_threshold, :preferred_supplier_id,
+                :short_description, :long_description, :image_filename, :image_alt, :brand, :sync_to_woocommerce, :now
             )
         ');
         $stmt->execute($this->productParams($p, $now));
@@ -691,6 +708,12 @@ class Database
             ':is_deleted'     => !empty($p['is_deleted']) ? 1 : 0,
             ':low_stock_threshold' => ($p['low_stock_threshold'] ?? '') !== '' ? (int) $p['low_stock_threshold'] : null,
             ':preferred_supplier_id' => !empty($p['preferred_supplier_id']) ? (int) $p['preferred_supplier_id'] : null,
+            ':short_description' => $p['short_description'] ?? null,
+            ':long_description' => $p['long_description'] ?? null,
+            ':image_filename'   => $p['image_filename'] ?? null,
+            ':image_alt'        => $p['image_alt'] ?? null,
+            ':brand'            => $p['brand'] ?? null,
+            ':sync_to_woocommerce' => array_key_exists('sync_to_woocommerce', $p) ? (!empty($p['sync_to_woocommerce']) ? 1 : 0) : 1,
             ':now'            => $now,
         ];
     }
@@ -718,6 +741,12 @@ class Database
             'show_webshop'   => $existing['show_webshop'] ?? true,
             'is_deleted'     => $existing['is_deleted'] ?? false,
             'low_stock_threshold' => $existing['low_stock_threshold'] ?? '',
+            'short_description' => $existing['short_description'] ?? null,
+            'long_description' => $existing['long_description'] ?? null,
+            'image_filename' => $existing['image_filename'] ?? null,
+            'image_alt'      => $existing['image_alt'] ?? null,
+            'brand'          => $existing['brand'] ?? null,
+            'sync_to_woocommerce' => $existing['sync_to_woocommerce'] ?? true,
         ]);
 
         $stmt = $this->pdo->prepare('
@@ -758,6 +787,13 @@ class Database
             $existing = $this->findProductByBarcode($p['barcode']);
         }
 
+        // Ha egy meglévő terméknél ki van kapcsolva a WooCommerce-szinkron
+        // ("csak üzletben"), a behúzás ne írja felül — se most, se a jövőben,
+        // amíg vissza nem kapcsolják.
+        if ($existing && empty($existing['sync_to_woocommerce'])) {
+            return;
+        }
+
         $now = date('c');
 
         if ($existing) {
@@ -769,6 +805,9 @@ class Database
                     name = :name,
                     price = :price,
                     stock_qty = :stock_qty,
+                    short_description = :short_description,
+                    long_description = :long_description,
+                    brand = :brand,
                     wc_synced_at = :now
                 WHERE id = :id
             ');
@@ -779,13 +818,16 @@ class Database
                 ':name'          => $p['name'],
                 ':price'         => $p['price'],
                 ':stock_qty'     => $p['stock_qty'],
+                ':short_description' => $p['short_description'] ?? null,
+                ':long_description'  => $p['long_description'] ?? null,
+                ':brand'         => $p['brand'] ?? null,
                 ':now'           => $now,
                 ':id'            => $existing['id'],
             ]);
         } else {
             $stmt = $this->pdo->prepare('
-                INSERT INTO products (wc_product_id, sku, barcode, name, price, stock_qty, updated_at, wc_synced_at)
-                VALUES (:wc_product_id, :sku, :barcode, :name, :price, :stock_qty, :now, :now)
+                INSERT INTO products (wc_product_id, sku, barcode, name, price, stock_qty, short_description, long_description, brand, updated_at, wc_synced_at)
+                VALUES (:wc_product_id, :sku, :barcode, :name, :price, :stock_qty, :short_description, :long_description, :brand, :now, :now)
             ');
             $stmt->execute([
                 ':wc_product_id' => $p['wc_product_id'],
@@ -794,6 +836,9 @@ class Database
                 ':name'          => $p['name'],
                 ':price'         => $p['price'],
                 ':stock_qty'     => $p['stock_qty'],
+                ':short_description' => $p['short_description'] ?? null,
+                ':long_description'  => $p['long_description'] ?? null,
+                ':brand'         => $p['brand'] ?? null,
                 ':now'           => $now,
             ]);
         }

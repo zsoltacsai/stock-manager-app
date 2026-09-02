@@ -3,6 +3,8 @@ declare(strict_types=1);
 require_once __DIR__ . '/../src/Settings.php';
 require_once __DIR__ . '/../src/Auth.php';
 $appSettings = (new Settings(__DIR__ . '/../data/settings.json'))->read();
+require_once __DIR__ . '/../src/GeoBlocker.php';
+GeoBlocker::enforce($appSettings);
 if (!Auth::isLoggedIn($appSettings)) {
     header('Location: login.html?redirect=' . basename($_SERVER['SCRIPT_NAME']));
     exit;
@@ -568,6 +570,53 @@ if (!Auth::isLoggedIn($appSettings)) {
 
             <button id="settings-save-security-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Mentés</button>
             <p id="settings-security-feedback" class="modal-feedback"></p>
+
+            <div style="border-top:1px solid var(--border); margin-top:24px; padding-top:16px;">
+                <strong>IP-cím / ország alapú védelem</strong>
+                <p class="muted" style="margin-top:4px;">
+                    Bekapcsolva a rendszer csak az alább felsorolt országokból (és a
+                    mindig-engedélyezett IP-címekről) éri el a valódi adatokat és
+                    funkciókat — mind IPv4, mind IPv6 címeket kezel. A felismerés egy
+                    külső, kulcs nélküli szolgáltatáson (ip-api.com) keresztül történik,
+                    az eredményt a szerver helyben, néhány hétig gyorsítótárazza, így
+                    ugyanaz a látogató nem terheli minden kéréssel újra a lekérdezést. A
+                    helyi hálózatról (pl. ugyanarról a gépről) érkező kéréseket ez a
+                    korlátozás sosem érinti.
+                </p>
+
+                <div class="toggle-line">
+                    <span>Bekapcsolva</span>
+                    <button type="button" class="toggle-switch" id="geo-block-enabled"></button>
+                </div>
+
+                <p class="muted" id="geo-current-info" style="margin-top:-6px;">Jelenlegi IP-cím lekérdezése...</p>
+
+                <label for="geo-block-countries">Engedélyezett országok (ISO kód, vesszővel elválasztva)</label>
+                <input type="text" id="geo-block-countries" placeholder="pl. HU,AT,DE,RO">
+                <p class="muted" style="margin-top:-6px;">
+                    Ha üresen hagyod, a bekapcsolt korlátozás ellenére mindenkit átenged
+                    — előbb töltsd ki a listát.
+                </p>
+
+                <label for="geo-block-allow-ips">Mindig engedélyezett IP-címek / tartományok (opcionális)</label>
+                <input type="text" id="geo-block-allow-ips" placeholder="pl. 89.132.1.5, 2001:db8::/32">
+                <p class="muted" style="margin-top:-6px;">
+                    Ide vessző-elválasztva vehetsz fel egyedi IP-címeket vagy CIDR-tartományokat
+                    (pl. az üzlet fix IP-je), amik az ország-listától függetlenül mindig átjutnak.
+                </p>
+
+                <p class="muted">
+                    A bekapcsolás előtt a mentés automatikusan leellenőrzi, hogy a jelenlegi
+                    IP-címed/országod szerepel-e a listán — ha nem, a mentést elutasítja,
+                    hogy véletlenül se zárd ki magad a rendszerből. A statikus bejelentkező
+                    oldal (login.html) kerete emiatt továbbra is betölt tiltott helyről is,
+                    de mögötte minden valódi funkció és adat az API-n keresztül ugyanúgy le
+                    van tiltva, mint bárhol máshol a programban.
+                </p>
+
+                <button id="settings-save-geo-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Mentés</button>
+                <p id="settings-geo-feedback" class="modal-feedback"></p>
+            </div>
 
             <div style="border-top:1px solid var(--border); margin-top:24px; padding-top:16px;">
                 <label>Kijelentkezés minden eszközről</label>

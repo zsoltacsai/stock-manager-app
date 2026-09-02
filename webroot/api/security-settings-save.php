@@ -41,6 +41,39 @@ if (isset($input['login_lockout_minutes'])) {
     $update['login_lockout_minutes'] = max(1, (int) $input['login_lockout_minutes']);
 }
 
+if (isset($input['geo_block_enabled']) || isset($input['geo_block_countries']) || isset($input['geo_block_allow_ips'])) {
+    $geoEnabled = isset($input['geo_block_enabled'])
+        ? !empty($input['geo_block_enabled'])
+        : !empty($appSettings['geo_block_enabled']);
+    $geoCountries = isset($input['geo_block_countries'])
+        ? strtoupper(trim((string) $input['geo_block_countries']))
+        : (string) ($appSettings['geo_block_countries'] ?? '');
+    $geoAllowIps = isset($input['geo_block_allow_ips'])
+        ? trim((string) $input['geo_block_allow_ips'])
+        : (string) ($appSettings['geo_block_allow_ips'] ?? '');
+
+    if ($geoEnabled) {
+        require_once __DIR__ . '/../../src/GeoBlocker.php';
+        $selfCheck = GeoBlocker::check([
+            'geo_block_enabled'   => true,
+            'geo_block_countries' => $geoCountries,
+            'geo_block_allow_ips' => $geoAllowIps,
+        ]);
+        if (!$selfCheck['allowed']) {
+            send_json([
+                'error' => 'A mentés meghiúsult: ezzel a beállítással a jelenlegi IP-címed'
+                    . ' (' . $selfCheck['ip'] . ($selfCheck['country'] ? ', ' . $selfCheck['country'] : '') . ')'
+                    . ' ki lenne zárva a rendszerből. Vedd fel az országodat vagy IP-címedet a listára,'
+                    . ' mielőtt bekapcsolod.',
+            ], 400);
+        }
+    }
+
+    $update['geo_block_enabled'] = $geoEnabled;
+    $update['geo_block_countries'] = $geoCountries;
+    $update['geo_block_allow_ips'] = $geoAllowIps;
+}
+
 $data = $settings->save($update);
 unset($data['app_password_hash']); // a hash sose menjen vissza a kliensnek
 

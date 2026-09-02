@@ -24,6 +24,17 @@ $config = require __DIR__ . '/../../config/config.php';
 // ezeket kapja meg.
 $appSettings = (new Settings(__DIR__ . '/../../data/settings.json'))->read();
 
+// IP-cím / ország alapú korlátozás — még a bejelentkezés-ellenőrzés előtt fut,
+// hogy egy nem engedélyezett országból/IP-ről semmilyen API-végpont (a
+// bejelentkezés sem) ne legyen elérhető.
+require_once __DIR__ . '/../../src/GeoBlocker.php';
+$geoCheck = GeoBlocker::check($appSettings);
+if (!$geoCheck['allowed']) {
+    http_response_code(403);
+    echo json_encode(['error' => 'Ez a rendszer erről az IP-címről/országból nem érhető el.', 'geo_blocked' => true], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 // Bejelentkezés-ellenőrzés — minden API-végpontra vonatkozik, kivéve a
 // bejelentkezéshez és a telepítő-állapot lekérdezéséhez szükséges pár
 // végpontot (ezeknek működniük kell MIELŐTT valaki be van jelentkezve).

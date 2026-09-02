@@ -113,6 +113,7 @@ function render(data) {
         <p>Számlázz.hu kulcs: ${badge(data.szamlazz_configured, 'megadva', 'hiányzik')}</p>
         <p>Törzsvásárlói pontrendszer: ${badge(data.loyalty_enabled, 'bekapcsolva', 'kikapcsolva')}</p>
         <p class="muted">PHP verzió: ${data.php_version}</p>
+        <p class="muted">Stock Manager verzió: ${data.app_version}</p>
     `;
 
     syncLogBody.innerHTML = data.recent_sync_log.length

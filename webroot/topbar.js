@@ -211,6 +211,13 @@ if ('serviceWorker' in navigator) {
     const settingsSecurityFeedback = document.getElementById('settings-security-feedback');
     const securityLogoutBtn = document.getElementById('security-logout-btn');
 
+    const geoBlockEnabled = document.getElementById('geo-block-enabled');
+    const geoBlockCountries = document.getElementById('geo-block-countries');
+    const geoBlockAllowIps = document.getElementById('geo-block-allow-ips');
+    const geoCurrentInfo = document.getElementById('geo-current-info');
+    const settingsSaveGeoBtn = document.getElementById('settings-save-geo-btn');
+    const settingsGeoFeedback = document.getElementById('settings-geo-feedback');
+
     function applyTheme(theme) {
         if (theme === 'light') {
             document.documentElement.setAttribute('data-theme', 'light');
@@ -344,6 +351,22 @@ if ('serviceWorker' in navigator) {
         if (securitySessionTimeout) securitySessionTimeout.value = String(data.session_timeout_minutes ?? 240);
         if (securityMaxAttempts) securityMaxAttempts.value = String(data.login_max_attempts ?? 5);
         if (securityLockoutMinutes) securityLockoutMinutes.value = String(data.login_lockout_minutes ?? 15);
+
+        if (geoBlockEnabled) geoBlockEnabled.classList.toggle('on', !!data.geo_block_enabled);
+        if (geoBlockCountries) geoBlockCountries.value = data.geo_block_countries || '';
+        if (geoBlockAllowIps) geoBlockAllowIps.value = data.geo_block_allow_ips || '';
+    }
+
+    async function loadGeoStatus() {
+        if (!geoCurrentInfo) return;
+        try {
+            const res = await fetch('/api/geo-status.php');
+            const data = await res.json();
+            geoCurrentInfo.textContent = 'Jelenlegi IP-címed: ' + data.ip +
+                (data.country ? ' (' + data.country + ')' : ' (ország nem állapítható meg)');
+        } catch (e) {
+            geoCurrentInfo.textContent = '';
+        }
     }
 
     if (wcBarcodeSource) {
@@ -953,8 +976,40 @@ if ('serviceWorker' in navigator) {
         });
     }
 
+    if (geoBlockEnabled) {
+        geoBlockEnabled.addEventListener('click', () => geoBlockEnabled.classList.toggle('on'));
+    }
+
+    if (settingsSaveGeoBtn) {
+        settingsSaveGeoBtn.addEventListener('click', async () => {
+            settingsGeoFeedback.textContent = 'Mentés...';
+            settingsGeoFeedback.className = 'modal-feedback';
+            try {
+                const res = await fetch('/api/security-settings-save.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        geo_block_enabled: geoBlockEnabled.classList.contains('on'),
+                        geo_block_countries: geoBlockCountries.value,
+                        geo_block_allow_ips: geoBlockAllowIps.value,
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+                applySettings(data);
+                settingsGeoFeedback.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;vertical-align:-1px;margin-right:4px;"><polyline points="20 6 9 17 4 12"></polyline></svg>Mentve';
+                settingsGeoFeedback.classList.add('saved-flash');
+                setTimeout(() => settingsGeoFeedback.classList.remove('saved-flash'), 1200);
+            } catch (err) {
+                settingsGeoFeedback.textContent = 'Hiba: ' + err.message;
+                settingsGeoFeedback.className = 'modal-feedback error';
+            }
+        });
+    }
+
     loadSettings();
     loadBackupList();
+    loadGeoStatus();
 })();
 
 // =========================================================================

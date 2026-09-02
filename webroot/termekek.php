@@ -3,6 +3,8 @@ declare(strict_types=1);
 require_once __DIR__ . '/../src/Settings.php';
 require_once __DIR__ . '/../src/Auth.php';
 $appSettings = (new Settings(__DIR__ . '/../data/settings.json'))->read();
+require_once __DIR__ . '/../src/GeoBlocker.php';
+GeoBlocker::enforce($appSettings);
 if (!Auth::isLoggedIn($appSettings)) {
     header('Location: login.html?redirect=' . basename($_SERVER['SCRIPT_NAME']));
     exit;

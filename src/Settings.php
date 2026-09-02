@@ -86,6 +86,11 @@ class Settings
         'low_stock_default_threshold' => 5,
         'low_stock_notify_webhook'    => '',
         'low_stock_notify_email'      => '',
+
+        // IP-cím / ország alapú hozzáférés-korlátozás (Beállítások → Biztonság)
+        'geo_block_enabled'   => false,
+        'geo_block_countries' => '',
+        'geo_block_allow_ips' => '',
     ];
 
     public function __construct(string $path)

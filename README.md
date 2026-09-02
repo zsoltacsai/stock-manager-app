@@ -1,151 +1,166 @@
-# Stock Manager — localhost barcode till
+# Stock Manager — localhost vonalkód-kassza
 
-A small localhost PHP app for scanning products with a USB barcode
-scanner, ringing up a sale, issuing a Szamlazz.hu invoice, and keeping
-stock two-way synced with a WooCommerce store.
+**Verzió: 1.0 beta 6**
 
-## Requirements
+Egy kicsi, localhost PHP alkalmazás, ami USB vonalkódolvasóval beolvasott
+termékekhez rögzít eladást, Számlázz.hu számlát állít ki, és a készletet
+kétirányban szinkronban tartja egy WooCommerce áruházzal.
 
-- PHP 8.1+ (developed and tested against **PHP 8.5**), with `curl`,
-  `xmlwriter`, `fileinfo` extensions, plus `pdo_sqlite` (default) or
-  `pdo_mysql` (if you switch to MySQL — see below)
-- `data/`, `invoices/`, and `webroot/assets/` must be writable by the PHP
-  process (SQLite file / local backups / invoice PDFs / an uploaded logo
-  all live there)
-- A Szamlazz.hu account with **Számla Agent** enabled (Beállítások →
-  Számla Agent → kulcs generálása) to get your `szamlaagentkulcs`
-- WooCommerce REST API keys (WooCommerce → Settings → Advanced → REST
-  API → Add key, permissions: **Read/Write**)
+## Követelmények
 
-By default, no Composer, no database server — everything runs off PHP's
-built-in web server and a single SQLite file. See "Database: SQLite vs
-MySQL" below if you outgrow that.
+- PHP 8.1+ (fejlesztve és tesztelve **PHP 8.5** ellen), `curl`,
+  `xmlwriter`, `fileinfo` kiterjesztésekkel, plusz `pdo_sqlite`
+  (alapértelmezett) vagy `pdo_mysql` (ha MySQL-re váltasz — lásd lentebb)
+- A `data/`, `invoices/` és `webroot/assets/` mappáknak írhatónak kell
+  lenniük a PHP folyamat számára (itt van az SQLite fájl / helyi
+  mentések / számla-PDF-ek / feltöltött logó)
+- Egy Számlázz.hu fiók, bekapcsolt **Számla Agent**-tel (Beállítások →
+  Számla Agent → kulcs generálása) a `szamlaagentkulcs` megszerzéséhez
+- WooCommerce REST API kulcsok (WooCommerce → Settings → Advanced →
+  REST API → Add key, jogosultság: **Read/Write**)
 
-## Setup
+Alapból nincs Composer, nincs adatbázis-szerver — minden PHP beépített
+webszerverén és egyetlen SQLite fájlon fut. Lásd lentebb az "Adatbázis:
+SQLite vs MySQL" szakaszt, ha ez már kevés lenne.
 
-1. Copy this whole folder somewhere on your machine.
-2. Edit `config/config.php`:
+## Beüzemelés
+
+1. Másold az egész mappát valahova a gépedre.
+2. Szerkeszd a `config/config.php` fájlt:
    - `woocommerce.store_url`, `consumer_key`, `consumer_secret`
-   - `woocommerce.barcode_source` — `'sku'` if you use the WooCommerce
-     SKU field as your barcode, or `'meta'` (+ `barcode_meta_key`) if a
-     plugin stores the barcode in a custom field
+   - `woocommerce.barcode_source` — `'sku'`, ha a WooCommerce SKU mezőt
+     használod vonalkódként, vagy `'meta'` (+ `barcode_meta_key`), ha
+     egy plugin egyéni mezőben tárolja a vonalkódot
    - `szamlazz.agent_key`
-   - `szamlazz.default_buyer` — used for walk-in/cash sales where you
-     don't capture real customer billing details
-3. Start the server from the project root:
+   - `szamlazz.default_buyer` — betérő/készpénzes eladásokhoz, ahol nem
+     rögzítesz valódi vevő-számlázási adatot
+3. Indítsd el a szervert a projekt gyökeréből:
 
    ```bash
    php -S localhost:8000 -t webroot
    ```
 
-4. Open http://localhost:8000 — you'll see an empty till until you sync.
-5. Click **"Sync WooCommerce-ből"** to pull your products (name, price,
-   stock, and barcode/SKU) into the local database.
-6. Plug in your USB barcode scanner (it behaves like a keyboard — no
-   drivers needed) and click into the barcode field, then scan.
+4. Nyisd meg a http://localhost:8000 címet — üres kasszát fogsz látni,
+   amíg nem szinkronizálsz.
+5. Kattints a **"Sync WooCommerce-ből"** gombra, hogy behúzd a
+   termékeket (név, ár, készlet, vonalkód/SKU) a helyi adatbázisba.
+6. Csatlakoztasd az USB vonalkódolvasót (billentyűzetként viselkedik —
+   nem kell driver), kattints a vonalkód mezőbe, majd szkennelj.
 
-## Beszerzés (incoming stock / purchases)
+## Beszerzés (bejövő készlet / beszerzések)
 
-Open `beszerzes.html` (linked from the top bar) to record deliveries from
-suppliers:
+Nyisd meg a `beszerzes.html` oldalt (a felső sávból linkelve) a
+beszállítói szállítmányok rögzítéséhez:
 
-- Scan a barcode to add an existing product to the incoming list, or use
-  **"+ Új termék hozzáadása"** to create a brand-new product on the spot
-  (name, unit, group, cikkszám, VAT rate, sale price, barcode, weight/
-  volume, price-list/webshop visibility — the same fields as the
-  "Árucikk módosítása" dialog).
-- Each line shows the last known purchase (cost) price for that product,
-  pre-filled and editable — update it when the supplier's price changes;
-  it's saved as the new "last known cost" for next time.
-- Optionally record supplier details, payment method, and paid status.
-- Saving a purchase adds the received quantity to stock and pushes the
-  new stock level to WooCommerce, the same way till sales do.
+- Szkennelj be egy vonalkódot egy meglévő termék listához adásához,
+  vagy használd a **"+ Új termék hozzáadása"** gombot egy vadonatúj
+  termék helyben történő létrehozásához (név, mértékegység, csoport,
+  cikkszám, áfakulcs, eladási ár, vonalkód, súly/térfogat, árlista/
+  webshop láthatóság — ugyanazok a mezők, mint az "Árucikk módosítása"
+  ablakban).
+- Minden sor mutatja az adott termék utolsó ismert beszerzési
+  (bekerülési) árát, előre kitöltve és szerkeszthetően — frissítsd, ha
+  változik a beszállító ára; ez mentésre kerül mint új "utolsó ismert
+  bekerülési ár" a következő alkalomra.
+- Opcionálisan rögzíthetők beszállítói adatok, fizetési mód és
+  fizetettségi állapot.
+- Egy beszerzés mentése hozzáadja a beérkezett mennyiséget a
+  készlethez, és a Kasszához hasonlóan pusholja az új készletszintet a
+  WooCommerce-be.
 
-## Árucikkek lista (products list)
+## Árucikkek lista (termékek listája)
 
-Open `termekek.html` (linked from the top bar) for a full, editable list of
-every product — the local equivalent of the "Árucikk lista" screen:
+Nyisd meg a `termekek.html` oldalt (a felső sávból linkelve) minden
+termék teljes, szerkeszthető listájához — ez a helyi megfelelője az
+"Árucikk lista" képernyőnek:
 
-- Filter by name, cikkszám, vonalkód, csoport, zero-stock only, or include
-  soft-deleted articles.
-- Click any row (or "Módosítás") to edit that product's full master data
-  in the same modal used from the Beszerzés page.
-- **"+ Új árucikk"** creates a brand-new product without needing a
-  purchase or a barcode scan first.
-- "Törlés" soft-deletes a product (sets `is_deleted`, hides it from the
-  till and search by default) rather than removing its row — sales/
-  purchase history stays intact. "Visszaállítás" undoes it.
+- Szűrés név, cikkszám, vonalkód, csoport, csak nulla készlet, vagy a
+  törölt cikkek megjelenítése szerint.
+- Kattints bármelyik sorra (vagy a "Módosítás" gombra) a termék teljes
+  törzsadatának szerkesztéséhez, ugyanabban az ablakban, amit a
+  Beszerzés oldalról is elérsz.
+- A **"+ Új árucikk"** gomb vadonatúj terméket hoz létre anélkül, hogy
+  előbb beszerzés vagy vonalkód-szkennelés kellene.
+- A "Törlés" egy terméket "soft"-töröl (beállítja az `is_deleted`
+  mezőt, alapból elrejti a Kasszáról és a keresésből), a sort magát nem
+  távolítja el — az eladási/beszerzési előzmények érintetlenek
+  maradnak. A "Visszaállítás" ezt vonja vissza.
 
-## Termék importálás (switching over from another program)
+## Termék importálás (átállás másik programról)
 
-If you've been running stock in another program (e.g. Axel Pro), the
-**Importálás** tab on `beallitasok.html` (Beállítások) migrates the whole
-product catalog in one pass:
+Ha eddig más programban (pl. Axel Pro) vezetted a készletet, a
+`beallitasok.html` (Beállítások) **Importálás** füle egy menetben
+átemeli a teljes termékkatalógust:
 
-1. Pick the source program from the dropdown.
-2. Upload the **CSV** it exports (if you only have .xls/.xlsx, save it as CSV
-   from Excel or LibreOffice first — the server can't parse binary Excel
-   files directly).
-3. **Előnézet (preview)**: shows how many rows will become new products vs.
-   update existing ones by barcode, and flags anything suspicious (missing
-   name, duplicate barcode in the file, an expected column that wasn't found).
-4. **Importálás indítása (commit)**: actually creates/updates the products —
-   name, cikkszám, csoport, unit, net purchase price, net and gross sale
-   price (VAT rate is inferred from their ratio), barcode — and **overwrites
-   stock directly** with the imported value (this models a full switch-over,
-   not a purchase/delivery).
+1. Válaszd ki a forrásprogramot a legördülő listából.
+2. Töltsd fel az onnan exportált **CSV**-t (ha csak .xls/.xlsx van,
+   mentsd előbb CSV-ként Excelből vagy LibreOffice-ból — a szerver nem
+   tudja közvetlenül feldolgozni a bináris Excel fájlokat).
+3. **Előnézet**: megmutatja, hány sorból lesz új termék, illetve hány
+   frissít meglévőt vonalkód alapján, és jelzi a gyanús eseteket
+   (hiányzó név, duplikált vonalkód a fájlban, egy várt oszlop, ami nem
+   található).
+4. **Importálás indítása**: ténylegesen létrehozza/frissíti a
+   termékeket — név, cikkszám, csoport, mértékegység, nettó beszerzési
+   ár, nettó és bruttó eladási ár (az áfakulcsot az arányukból
+   következteti ki), vonalkód — és **közvetlenül felülírja a
+   készletet** az importált értékkel (ez egy teljes átállást modellez,
+   nem egy beszerzést/szállítást).
 
-Matching is by barcode: an existing product with the same barcode gets
-updated; anything else is inserted as new. Rows with no barcode always
-insert as new, since there's nothing to safely match them against.
+Az egyeztetés vonalkód alapján történik: az azonos vonalkódú meglévő
+termék frissül; minden más újként kerül beszúrásra. A vonalkód nélküli
+sorok mindig újként kerülnek beszúrásra, hiszen nincs mihez biztonságosan
+egyeztetni őket.
 
-**Extending it for another program (e.g. Jutasoft):** the column mapping
-lives in `src/ImportProfiles.php`, one array per program. Supporting a new
-program is just adding an entry there (which column name maps to which
-field) — the page, upload handling, and matching logic are already generic
-and need no changes.
+**Bővítés másik programhoz (pl. Jutasoft):** az oszlop-hozzárendelés a
+`src/ImportProfiles.php` fájlban van, programonként egy tömb. Egy új
+program támogatása csak egy új bejegyzés felvétele (melyik oszlopnév
+melyik mezőnek felel meg) — az oldal, a feltöltés-kezelés és az
+egyeztetési logika már eleve generikus, nem kell hozzájuk nyúlni.
 
-## How the sync works (two-way)
+## A szinkronizálás működése (kétirányú)
 
-- **Pull (manual button, or run periodically via cron)**: reads all
-  products from WooCommerce and updates the local product list —
-  name, price, and stock quantity. `webroot/api/sync-pull.php`.
-- **Push (automatic, after every till sale)**: once a sale is recorded
-  locally, the new stock quantity for each sold product is pushed to
-  WooCommerce via the REST API. See `updateStock()` calls in
-  `webroot/api/sale.php`.
-- **Webhook (optional, for real-time pull)**: `webroot/api/webhook.php`
-  can receive a WooCommerce "Order updated" webhook and decrement local
-  stock immediately when a sale happens on the website, instead of
-  waiting for the next manual pull. This only works if WooCommerce can
-  reach this machine over the network (same LAN, or a tunnel like
-  ngrok) — on a fully offline localhost setup, rely on the manual pull
-  button instead.
+- **Behúzás (kézi gombbal, vagy időzítve cronból)**: beolvassa az összes
+  terméket a WooCommerce-ből, és frissíti a helyi terméklistát — név,
+  ár, és készletmennyiség. `webroot/api/sync-pull.php`.
+- **Kiküldés (automatikus, minden kassza-eladás után)**: amint egy
+  eladás helyben rögzítésre kerül, minden eladott termék új
+  készletmennyisége kiküldésre kerül a WooCommerce-be a REST API-n
+  keresztül. Lásd az `updateStock()` hívásokat a
+  `webroot/api/sale.php`-ban.
+- **Webhook (opcionális, valós idejű behúzáshoz)**: a
+  `webroot/api/webhook.php` fogadni tud egy WooCommerce "Rendelés
+  frissítve" webhookot, és azonnal csökkenti a helyi készletet, amikor
+  a weboldalon történik eladás, ahelyett hogy a következő kézi
+  behúzásra várna. Ez csak akkor működik, ha a WooCommerce el tudja
+  érni ezt a gépet a hálózaton keresztül (azonos LAN, vagy egy alagút,
+  mint az ngrok) — egy teljesen offline localhost-beállításnál inkább
+  a kézi behúzás gombra hagyatkozz.
 
-Because both sides can change stock independently, this is a
-last-write-wins sync, not a transactional one: if the same item sells
-on the website and at the till within the same sync interval, run a
-pull afterwards to reconcile. For a single small shop this is usually
-fine; flag it if you need stricter guarantees and we can add optimistic
-locking / conflict alerts.
+Mivel mindkét oldal függetlenül változtathatja a készletet, ez egy
+last-write-wins (utolsó írás nyer) szinkron, nem tranzakciós: ha
+ugyanaz a tétel elkel a weboldalon és a kasszánál is ugyanazon a
+szinkron-időközön belül, futtass utána egy behúzást az egyeztetéshez.
+Egy kis boltnak ez általában megfelelő; jelezd, ha szigorúbb garanciák
+kellenek, és hozzáadható optimista zárolás / ütközés-riasztás.
 
-## Invoicing
+## Számlázás
 
-Every till sale calls Szamlazz.hu's Számla Agent XML API
-(`src/SzamlazzClient.php`) to issue a real invoice and downloads the
-PDF into `invoices/`. If invoice creation fails (e.g. bad agent key,
-network hiccup), the sale is still recorded locally with status
-`invoice_failed` so you don't lose the transaction — you can reissue
-the invoice manually from the Szamlazz.hu dashboard using the sale
-details in the database.
+Minden kassza-eladás meghívja a Számlázz.hu Számla Agent XML API-ját
+(`src/SzamlazzClient.php`), hogy valódi számlát állítson ki, és letölti
+a PDF-et az `invoices/` mappába. Ha a számla létrehozása sikertelen
+(pl. hibás agent kulcs, hálózati akadozás), az eladás helyben ekkor is
+rögzítésre kerül `invoice_failed` státusszal, hogy ne vesszen el a
+tranzakció — a számla utólag manuálisan újra kiállítható a Számlázz.hu
+felületén, az adatbázisban lévő eladási adatok alapján.
 
-## Database: SQLite vs MySQL
+## Adatbázis: SQLite vs MySQL
 
-The app runs on either, chosen in `config/config.php` → `db.driver`:
+Az app mindkettőn fut, a `config/config.php` → `db.driver` állítja be:
 
 ```php
 'db' => [
-    'driver' => 'sqlite', // or 'mysql'
+    'driver' => 'sqlite', // vagy 'mysql'
     'sqlite' => ['path' => __DIR__ . '/../data/stock.sqlite'],
     'mysql'  => [
         'host' => '127.0.0.1', 'port' => 3306,
@@ -155,572 +170,656 @@ The app runs on either, chosen in `config/config.php` → `db.driver`:
 ],
 ```
 
-**SQLite** (default) needs zero setup and is genuinely fine for a single
-till doing normal retail volume — WAL mode is enabled automatically, which
-lets reads and writes overlap instead of blocking each other.
+Az **SQLite** (alapértelmezett) nulla beállítást igényel, és egy kassza
+normál kiskereskedelmi forgalmához tényleg megfelelő — a WAL mód
+automatikusan bekapcsol, ami lehetővé teszi, hogy az olvasások és
+írások egymást ne blokkolják.
 
-**MySQL 8** is worth switching to once you have real concurrent load —
-several people using the app at once, a busier shop with a lot of daily
-sales, or you just want a "real" database server for easier backups/
-replication/monitoring on shared hosting. To switch:
+A **MySQL 8**-ra érdemes váltani, ha már valódi egyidejű terhelés van —
+többen használják egyszerre az appot, forgalmasabb bolt sok napi
+eladással, vagy egyszerűen egy "valódi" adatbázis-szervert szeretnél a
+könnyebb mentés/replikáció/monitorozás miatt megosztott tárhelyen. A
+váltáshoz:
 
-1. Create a database and user in MySQL 8, then import the schema:
+1. Hozz létre egy adatbázist és felhasználót MySQL 8-ban, majd
+   importáld a sémát:
    ```
    mysql -u root -p -e "CREATE DATABASE stock_manager CHARACTER SET utf8mb4"
    mysql -u root -p stock_manager < schema.mysql.sql
    ```
-2. Fill in the `mysql` block in `config.php` and set `driver` to `'mysql'`.
-3. Make sure the `pdo_mysql` PHP extension is enabled.
+2. Töltsd ki a `mysql` blokkot a `config.php`-ban, és állítsd a
+   `driver`-t `'mysql'`-re.
+3. Győződj meg róla, hogy a `pdo_mysql` PHP kiterjesztés be van
+   kapcsolva.
 
-The schema (`schema.mysql.sql`) uses InnoDB, `DECIMAL` for every money
-column (no float rounding drift once there are years of sales history),
-`JSON` for the closing-report breakdowns, and indexes on every column the
-app actually filters by (`sales.created_at`, `sale_items.sale_id`,
-`products.barcode`/`group_name`, etc.).
+A séma (`schema.mysql.sql`) InnoDB-t használ, `DECIMAL`-t minden
+pénzösszeg-oszlophoz (nincs lebegőpontos kerekítési csúszás évek
+eladási előzménye után), `JSON`-t a napi zárás bontásaihoz, és
+indexeket minden oszlopon, ami szerint az app ténylegesen szűr
+(`sales.created_at`, `sale_items.sale_id`,
+`products.barcode`/`group_name`, stb.).
 
-Existing SQLite installs aren't touched automatically — there's no
-built-in SQLite→MySQL data migration tool here; for a one-off move at
-this scale, exporting the SQLite tables to CSV and loading them into the
-new MySQL schema (matching column order) is the pragmatic path.
+A meglévő SQLite telepítések automatikusan nem módosulnak — nincs
+beépített SQLite→MySQL adatmigráló eszköz; egy egyszeri, ekkora
+léptékű átköltözéshez a SQLite táblák CSV-be exportálása és az új
+MySQL sémába (oszlopsorrendet egyeztetve) töltése a pragmatikus út.
 
-### What was optimized for larger sales volume
+### Amit a nagyobb eladási volumenhez optimalizáltunk
 
-- **No more N+1 queries**: the napi zárás report used to run one query per
-  sale to fetch its line items; it now fetches all of a day's items in a
-  single `WHERE sale_id IN (...)` query.
-- **Transactions around multi-write operations**: a till sale, a beszerzés
-  with many line items, a WooCommerce pull, and the CSV import are each
-  wrapped in one transaction instead of committing every statement
-  individually — the CSV import in particular (thousands of rows) is far
-  faster this way on both SQLite and MySQL.
-- **Fewer round trips per line item**: stock updates used to re-`SELECT`
-  the product right after `UPDATE`ing it just to log the new quantity; the
-  new value is now computed from data already in memory instead.
-- **Schema/migration checks are now cached**: previously every single API
-  request re-ran the full migration set (several `ALTER TABLE` attempts
-  wrapped in try/catch, discarded every time). A `schema_version` table
-  now makes that a single indexed `SELECT` on the fast path — migrations
-  only actually run once, the first time a database needs them.
-- **Indexes added** on `sales.created_at`, `sale_items.sale_id`,
-  `purchase_items.purchase_id`, and `products.group_name` (present in both
-  `schema.sql` and `schema.mysql.sql`).
+- **Nincs több N+1 lekérdezés**: a napi zárás riport korábban
+  eladásonként egy külön lekérdezést futtatott a tételek behúzásához;
+  most egyetlen `WHERE sale_id IN (...)` lekérdezéssel húzza be egy
+  nap összes tételét.
+- **Tranzakciók a több-írásos műveletek körül**: egy kassza-eladás, egy
+  sok tételes beszerzés, egy WooCommerce behúzás és a CSV import
+  mindegyike egy tranzakcióba van csomagolva, ahelyett hogy minden
+  utasítást külön committálna — a CSV import esetében (több ezer sor)
+  ez különösen sokkal gyorsabb, mind SQLite-on, mind MySQL-en.
+- **Kevesebb kör soronként**: a készletfrissítés korábban újra
+  lekérdezte (`SELECT`) a terméket rögtön az `UPDATE` után, csak hogy
+  naplózza az új mennyiséget; az új érték most a memóriában már
+  meglévő adatokból számolódik.
+- **A séma/migrációs ellenőrzések most gyorsítótárazva vannak**:
+  korábban minden egyes API-kérés újrafuttatta a teljes migrációs
+  készletet (több `ALTER TABLE` próbálkozás try/catch-be csomagolva,
+  minden alkalommal eldobva). Egy `schema_version` tábla most egyetlen
+  indexelt `SELECT`-té teszi ezt a gyors útvonalon — a migrációk csak
+  egyszer futnak ténylegesen le, amikor egy adatbázisnak először
+  szüksége van rájuk.
+- **Indexek hozzáadva** a `sales.created_at`, `sale_items.sale_id`,
+  `purchase_items.purchase_id`, és `products.group_name` oszlopokra
+  (mind a `schema.sql`, mind a `schema.mysql.sql` tartalmazza).
 
-None of this changes behavior — it's the same features, just cheaper to
-run as the sales table grows into the tens or hundreds of thousands of
-rows.
+Ez semmin nem változtat viselkedésben — ugyanazok a funkciók, csak
+olcsóbb futtatni, ahogy az eladási tábla tízezres-százezres sorszámra
+nő.
 
-## Logo and automatic sync (topbar settings)
+## Logó és automatikus szinkron (felső sáv beállításai)
 
-Every page's topbar has a logo (top-left), a sync icon, and a gear icon
-that both link to the dedicated **`beallitasok.html`** (Beállítások) page —
-settings are no longer a popup, so they're easy to bookmark or link to
-directly. That page is a full-width tabbed layout:
+Minden oldal felső sávjában van egy logó (bal felül), egy szinkron
+ikon és egy fogaskerék ikon, mindkettő a dedikált **`beallitasok.html`**
+(Beállítások) oldalra mutat — a beállítások már nem egy felugró ablak,
+így könnyen könyvjelzőzhetők vagy közvetlenül linkelhetők. Az az oldal
+egy teljes szélességű, fülekre bontott elrendezés:
 
-- **Logo**: go to Beállítások → Logó tab to upload a PNG/JPG/WEBP/SVG (max 2 MB).
-  It's saved to `webroot/assets/logo.<ext>`, replacing any previous upload.
-  "Alaplogóra visszaállítás" removes it and falls back to the bundled
-  `assets/logo-default.svg`.
-- **Sync icon**: click it any time for an on-demand WooCommerce pull (same
-  as the old button, just an icon now — spins while running, shows a toast
-  with the result).
-- **Automatic sync**: Beállítások → Szinkronizálás tab lets you turn it on and
-  pick an interval. This flips a setting in `data/settings.json` — it does
-  **not** run in the background by itself, since nothing keeps a PHP built-in
-  server "awake" between requests. To make it actually run, add a cron job
-  that hits the check-and-run endpoint (safe to call every minute — it
-  no-ops until the configured interval has elapsed):
+- **Logó**: menj a Beállítások → Logó fülre PNG/JPG/WEBP/SVG
+  feltöltéséhez (max 2 MB). A `webroot/assets/logo.<kiterjesztés>`
+  helyre mentődik, felülírva bármely korábbi feltöltést. Az
+  "Alaplogóra visszaállítás" eltávolítja, és visszaesik a becsomagolt
+  `assets/logo-default.svg`-re.
+- **Szinkron ikon**: bármikor kattintható egy azonnali WooCommerce
+  behúzáshoz (ugyanaz, mint a régi gomb, csak most ikon — pörög futás
+  közben, toast-üzenetben mutatja az eredményt).
+- **Automatikus szinkron**: a Beállítások → Szinkronizálás fülön
+  kapcsolható be és állítható be az időköz. Ez egy beállítást vált a
+  `data/settings.json`-ban — **nem** fut magától a háttérben, mivel
+  semmi nem tartja "ébren" a PHP beépített szerverét a kérések között.
+  Hogy ténylegesen fusson, adj hozzá egy cron feladatot, ami meghívja
+  az ellenőrző-és-futtató végpontot (biztonságos percenként hívni —
+  no-op marad, amíg a beállított időköz le nem telik):
 
   ```
   * * * * * curl -s http://localhost:8000/api/auto-sync-run.php > /dev/null
   ```
 
-  The last automatic run's time and result are shown in that same settings
-  tab.
+  Az utolsó automatikus futás időpontja és eredménye ugyanazon a
+  beállítás-fülön jelenik meg.
 
-## Napi zárás (daily closing / sales summary)
+## Napi zárás (napi zárás / eladási összesítő)
 
-`zaras.html` (linked from every page) shows a forgalmi összesítő for any
-date:
+A `zaras.html` (minden oldalról linkelve) egy forgalmi összesítőt mutat
+bármely dátumra:
 
-- Totals: number of sales, gross/net revenue, VAT collected
-- Breakdown by payment method (Készpénz/Átutalás/Bankkártya/...) — every
-  till sale now captures a payment method (a selector next to the total,
-  always visible, not just when an invoice is requested)
-- Breakdown by VAT rate
-- The day's individual transactions, each with a "Nyugta" link to reprint
-  its receipt
-- **"Nyomtatás"** prints the whole summary page via the browser (a print
-  stylesheet hides the nav/buttons and keeps just the report)
-- **"Napi zárás rögzítése"** stores a closing record for that date in the
-  `closings` table. Re-running it for the same date overwrites the record
-  (useful if a late invoice retry changed the numbers) — it's a bookkeeping
-  snapshot, not something that blocks further sales on that date.
+- Összesítők: eladások száma, bruttó/nettó bevétel, beszedett áfa
+- Bontás fizetési mód szerint (Készpénz/Átutalás/Bankkártya/...) —
+  minden kassza-eladás mostantól rögzít egy fizetési módot (egy
+  választó a végösszeg mellett, mindig látható, nem csak számla
+  igénylésekor)
+- Bontás áfakulcs szerint
+- A nap egyedi tranzakciói, mindegyikhez egy "Nyugta" link a nyugta
+  újranyomtatásához
+- A **"Nyomtatás"** kinyomtatja a teljes összesítő oldalt a böngészőn
+  keresztül (egy nyomtatási stíluslap elrejti a navigációt/gombokat,
+  csak a riportot hagyja meg)
+- A **"Napi zárás rögzítése"** eltárol egy zárási rekordot az adott
+  dátumra a `closings` táblában. Ugyanarra a dátumra újra futtatva
+  felülírja a rekordot (hasznos, ha egy késői számla-újrapróbálkozás
+  megváltoztatta a számokat) — ez egy könyvelési pillanatkép, nem
+  valami, ami blokkolná a további eladásokat azon a dátumon.
 
-## Nyugtanyomtató (receipt printer) support
+## Nyugtanyomtató támogatás
 
-Two independent ways to print a receipt, available from `receipt.html`
-(opened via "Nyugta megtekintése/nyomtatása" after checkout, or "Nyugta"
-on the Napi zárás page):
+Két független mód a nyugta nyomtatására, a `receipt.html`-ről elérhetők
+(fizetés után a "Nyugta megtekintése/nyomtatása" gombbal nyílik meg,
+vagy a "Nyugta" linkkel a Napi zárás oldalról):
 
-- **Böngészőből (browser print)**: always available, works with literally
-  any printer your OS already has a driver for — it's just `window.print()`
-  on a formatted receipt view.
-- **Hálózati nyomtatóra (network printer)**: sends raw ESC/POS commands
-  over TCP to a network thermal printer's "raw"/port 9100 interface — the
-  same mechanism used by most affordable Ethernet/WiFi receipt printers
-  (Epson TM-*, Xprinter, Zjiang, etc.), no special driver needed. Configure
-  the IP/port/paper width and send a test page from Beállítások → Nyomtató.
+- **Böngészőből**: mindig elérhető, szó szerint bármelyik nyomtatóval
+  működik, amihez az operációs rendszerednek már van drivere — ez
+  egyszerűen `window.print()` egy formázott nyugta-nézeten.
+- **Hálózati nyomtatóra**: nyers ESC/POS parancsokat küld TCP-n
+  keresztül egy hálózati hőnyomtató "raw"/9100-as portos felületére —
+  ugyanaz a mechanizmus, amit a legtöbb megfizethető Ethernet/WiFi
+  nyugtanyomtató használ (Epson TM-*, Xprinter, Zjiang, stb.), nem kell
+  hozzá speciális driver. Állítsd be az IP-t/portot/papírszélességet,
+  és küldj egy teszt oldalt a Beállítások → Nyomtató alól.
 
-**Limitation worth knowing:** ESC/POS printers need a printer-specific
-codepage command to show accented characters correctly, and that varies by
-model/firmware. Rather than risk garbled text, `EscPosPrinter` transliterates
-everything to plain ASCII before printing (á→a, ő→o, etc.) — accents are
-lost on the network-printed receipt, but nothing prints as mojibake. The
-browser-print receipt has no such limitation since it's normal HTML/CSS —
-use it if accented text on the physical receipt matters to you.
+**Érdemes tudni erről a korlátról**: az ESC/POS nyomtatóknak egy
+nyomtató-specifikus kódlap-parancs kell az ékezetes karakterek helyes
+megjelenítéséhez, ami modellenként/firmware-enként eltér. Ahelyett hogy
+kockáztatná a torz szöveget, az `EscPosPrinter` mindent egyszerű
+ASCII-re alakít nyomtatás előtt (á→a, ő→o, stb.) — az ékezetek elvesznek
+a hálózaton nyomtatott nyugtán, de semmi nem jelenik meg halandzsaként.
+A böngészős nyomtatásnak nincs ilyen korlátja, mivel az normál HTML/CSS
+— használd ezt, ha számít az ékezetes szöveg a fizikai nyugtán.
 
-USB-only (non-networked) thermal printers aren't supported directly; either
-put a small print server in front of them or rely on the browser-print path
-if the OS already has a driver for it.
+A csak-USB (nem hálózati) hőnyomtatók közvetlenül nem támogatottak;
+vagy állíts eléjük egy kis nyomtatószervert, vagy hagyatkozz a
+böngészős nyomtatásra, ha az operációs rendszernek már van hozzá
+drivere.
 
-## Automatic backups (local + Dropbox/Google Drive)
+## Automatikus mentések (helyi + Dropbox/Google Drive)
 
-Beállítások → Mentés (linked from every page) configures automatic daily
-backups of the database — works the same way regardless of which driver
-you're using:
+A Beállítások → Mentés (minden oldalról linkelve) beállítja az
+adatbázis automatikus napi mentését — ugyanúgy működik, függetlenül
+attól, melyik drivert használod:
 
-- **Mentés most**: creates a backup immediately, regardless of schedule.
-- **Automatikus napi mentés**: enable it and pick a time. On **SQLite**, a
-  full snapshot is taken via `VACUUM INTO` (safe even while the app is
-  being used, unlike copying the raw file) — output is a `.sqlite` file.
-  On **MySQL**, it shells out to `mysqldump` if available (`--single-
-  transaction` for a consistent snapshot without locking tables), or
-  falls back to a pure-PHP dumper that streams rows to disk if `exec()`
-  is disabled — output is a plain `.sql` file either way, restorable with
-  `mysql -u ... database < backup.sql`. Like auto-sync, this needs a cron
-  job to actually fire while the browser isn't open:
+- **Mentés most**: azonnal készít egy mentést, az ütemezéstől
+  függetlenül.
+- **Automatikus napi mentés**: kapcsold be, és válassz egy időpontot.
+  **SQLite**-on egy teljes pillanatkép készül `VACUUM INTO` paranccsal
+  (biztonságos akkor is, ha az app közben használatban van, szemben a
+  nyers fájl másolásával) — az eredmény egy `.sqlite` fájl.
+  **MySQL**-en a `mysqldump`-ot hívja meg, ha elérhető
+  (`--single-transaction`, hogy konzisztens pillanatkép legyen
+  táblazárolás nélkül), vagy egy tisztán PHP-alapú dumper-re esik
+  vissza, ami sorban a lemezre streameli a sorokat, ha az `exec()` le
+  van tiltva — az eredmény mindkét esetben egy sima `.sql` fájl, ami
+  `mysql -u ... database < backup.sql` paranccsal visszaállítható. Az
+  automatikus szinkronhoz hasonlóan ehhez is kell egy cron feladat,
+  hogy ténylegesen elsüljön, amíg a böngésző nincs nyitva:
 
   ```
   */15 * * * * curl -s http://localhost:8000/api/auto-backup-run.php > /dev/null
   ```
 
-  The endpoint itself only runs once per calendar day, at or after the
-  configured time — scheduling the cron more often than that is harmless.
+  Maga a végpont csak naponta egyszer fut le, a beállított időpontban
+  vagy azután — a cron gyakoribb ütemezése ennél ártalmatlan.
 
-- **Megőrzött mentések (retention)**: defaults to **7** — after each backup,
-  older ones beyond that count are deleted, both locally (`data/backups/`)
-  and in the cloud if a provider is configured. Change it in the same tab.
+- **Megőrzött mentések (retention)**: alapból **7** — minden mentés
+  után az ennél régebbi mentések törlődnek, mind helyben
+  (`data/backups/`), mind a felhőben, ha be van állítva egy
+  szolgáltató. Ugyanezen a fülön állítható.
 
-### Cloud sync
+### Felhő szinkron
 
-Two optional providers, chosen from the "Felhő szinkronizálás" dropdown:
+Két opcionális szolgáltató választható a "Felhő szinkronizálás"
+legördülőből:
 
-- **Dropbox** — the simple path. In the [Dropbox App
-  Console](https://www.dropbox.com/developers/apps), create an app, then
-  under its Permissions tab enable `files.content.write` and
-  `files.content.read`, then generate an access token from the app's
-  settings page and paste it in. No browser OAuth flow needed for a
-  single-install personal use case like this.
+- **Dropbox** — az egyszerűbb út. A [Dropbox App
+  Console](https://www.dropbox.com/developers/apps) oldalon hozz létre
+  egy appot, majd a Permissions fülön kapcsold be a
+  `files.content.write` és `files.content.read` jogokat, aztán
+  generálj egy hozzáférési tokent az app beállítás-oldalán, és illeszd
+  be. Nincs szükség böngészős OAuth folyamatra egy ilyen egyszeri,
+  személyes használati esethez.
 
-- **Google Drive** — no equivalent one-click token, unfortunately; Google
-  requires a one-time OAuth2 setup:
-  1. In [Google Cloud Console](https://console.cloud.google.com/), create a
-     project, enable the **Google Drive API**, and create OAuth 2.0
-     credentials of type "Desktop app" — this gives you a Client ID and
-     Client Secret.
-  2. Get a refresh token once using those credentials — the quickest way is
-     [Google's OAuth 2.0 Playground](https://developers.google.com/oauthplayground):
-     gear icon → check "Use your own OAuth credentials" → paste your Client
-     ID/Secret → in step 1 select the Drive API v3 `drive.file` scope →
-     authorize → in step 2 click "Exchange authorization code for tokens" →
-     copy the **refresh token** shown.
-  3. Paste the Client ID, Client Secret, and refresh token into Beállítások.
-     (Optionally set a target folder's Drive ID too — leave blank to upload
-     to your Drive root.)
+- **Google Drive** — sajnos nincs hasonló egy-kattintásos token; a
+  Google egyszeri OAuth2 beállítást igényel:
+  1. A [Google Cloud Console](https://console.cloud.google.com/)
+     oldalon hozz létre egy projektet, kapcsold be a **Google Drive
+     API**-t, és hozz létre "Desktop app" típusú OAuth 2.0 hitelesítő
+     adatokat — ez ad egy Client ID-t és Client Secret-et.
+  2. Szerezz egy refresh tokent egyszer, ezekkel az adatokkal — a
+     leggyorsabb út a [Google OAuth 2.0
+     Playground](https://developers.google.com/oauthplayground):
+     fogaskerék ikon → "Use your own OAuth credentials" bejelölése →
+     illeszd be a Client ID-t/Secret-et → az 1. lépésben válaszd a
+     Drive API v3 `drive.file` hatókört → engedélyezés → a 2. lépésben
+     kattints az "Exchange authorization code for tokens" gombra →
+     másold ki a megjelenő **refresh tokent**.
+  3. Illeszd be a Client ID-t, Client Secret-et és a refresh tokent a
+     Beállításokba. (Opcionálisan egy célmappa Drive ID-ja is
+     megadható — üresen hagyva a Drive gyökerébe tölt fel.)
 
-  Access tokens expire hourly; `GoogleDriveProvider` re-exchanges the
-  refresh token for a fresh one on every backup, so once this is set up it
-  keeps working unless the refresh token itself is revoked.
+  Az access tokenek óránként lejárnak; a `GoogleDriveProvider` minden
+  mentéskor újra becseréli a refresh tokent egy frissre, így egyszeri
+  beállítás után ez működni fog, amíg maga a refresh token nincs
+  visszavonva.
 
-Only one provider is used at a time (whichever is selected) — this isn't
-meant to mirror to both simultaneously.
+Egyszerre csak egy szolgáltató van használatban (amelyik ki van
+választva) — ez nem egyidejű, mindkettőre való tükrözésre lett
+tervezve.
 
-## Known limitations / things to decide as you go
+## Ismert korlátok / útközben eldöntendő dolgok
 
-- VAT rate is stored per product (`vat_rate`, default from config) —
-  make sure it matches what's set on the WooCommerce product, since
-  WooCommerce's REST API doesn't reliably expose the tax rate value
-  itself.
-- The buyer on the invoice defaults to a generic "cash customer" —
-  wire up a real customer lookup/form if you need named invoices at
-  the till.
-- No authentication on the local web UI — it's meant to run on a
-  single till machine on a trusted local network. Add HTTP basic auth
-  in front of it (or bind PHP's server to 127.0.0.1 only) if that's
-  not your setup.
+- Az áfakulcs termékenként van tárolva (`vat_rate`, alapból a
+  configból) — győződj meg róla, hogy egyezik a WooCommerce terméken
+  beállítottal, mivel a WooCommerce REST API-ja nem ad megbízhatóan
+  hozzáférést magához az adókulcs-értékhez.
+- A számla vevője alapból egy általános "készpénzes vevő" — köss be
+  egy valódi vevő-keresést/űrlapot, ha névre szóló számla kell a
+  kasszánál.
+- Nincs hitelesítés a helyi web-felületen — egyetlen kassza-gépen, egy
+  megbízható helyi hálózaton futásra lett szánva. Tégy elé HTTP basic
+  auth-ot (vagy kösd a PHP szerverét kizárólag a 127.0.0.1-hez), ha
+  nálad nem ez a beállítás.
 
-## New in this round
+## Legújabb ebben a körben
 
-- **Import fix**: `.xls`/`.xlsx` files now upload directly — the server
-  detects binary Excel files (by file signature, not extension) and
-  auto-converts them via `soffice --headless --convert-to csv` if
-  LibreOffice is installed. If it isn't, you get a clear error telling
-  you to convert manually instead of the old silent-garbage-parse.
-- **Irányítószám → Település autofill**: typing a 4-digit irányítószám
-  in the "Vevő számlát kér" form fills in the town automatically, from a
-  bundled `data/irsz.csv` (3,038 postal codes).
-- **NAV cégadat lekérdezés** (best-effort): a "Lekérdezés" button next to
-  the adószám field can fill in company name/address via NAV's Online
-  Számla `queryTaxpayer` API. **This needs your own NAV technical-user
-  credentials** (Beállítások → Számlázz.hu → NAV cégadat lekérdezés) and
-  hasn't been tested against a live NAV account — validate against
-  `api-test.onlineszamla.nav.gov.hu` before relying on it in production.
-  To get credentials: register a free "technikai felhasználó" at
-  onlineszamla.nav.gov.hu (Beállítások → Technikai felhasználó
-  létrehozása), which gives you a login/password plus signer and
-  exchange keys.
-- **Settings, not just config.php**: Számlázz.hu and WooCommerce
-  credentials can now be set from Beállítások (with a short explanation
-  of pull/push/webhook sync in the WooCommerce tab) — they override
-  `config.php` when filled in, so you don't have to edit files by hand
-  for day-to-day key rotation.
-- **Alacsony készlet riasztás**: a global default threshold (Beállítások
-  → Készlet riasztás), overridable per product (Árucikkek → Módosítás).
-  Products at or below their threshold get a yellow badge in Árucikkek;
-  an optional webhook and/or email fires right after a sale that crosses
-  the line.
-- **Overselling is allowed**: the till no longer blocks a sale for
-  insufficient stock — it records the sale, lets stock go negative, and
-  flags it in the checkout response and the cart (rows going negative
-  are highlighted). Correct it on the next beszerzés.
-- **Árucikkek lista**: column headers are now clickable to sort (name,
-  cikkszám, csoport, vonalkód, készlet, prices) — click again to reverse.
-- **Eladások** and **Beszerzések** are now their own pages: every past
-  sale/purchase, searchable by date (native calendar picker), id, and
-  name/cégnév, with a click-through detail view.
-- **Left icon sidebar** added across every page, alongside the existing
-  top nav — Kassza/Beszerzés/Árucikkek/Napi zárás plus your logo and a
-  settings shortcut, for faster switching without reading link labels.
-- Date fields (Napi zárás, Eladások, Beszerzések) are now native
-  `<input type="date">` — click anywhere in the field for a calendar.
-- The "Fizetési mód" dropdown (and all `<select>` elements generally) now
-  match the app's dark theme instead of using the browser's default style.
-- **Világos sablon (light theme)**: Beállítások → Megjelenés lets you switch
-  between dark and light. Since colors are defined once as CSS variables
-  and referenced everywhere, the light theme is a single override block in
-  `style.css` — no per-page styling needed. The choice is saved both to
-  `localStorage` (so it applies instantly on the next page load, before
-  the stylesheet would otherwise flash dark) and to `data/settings.json`
-  (so it's remembered even from a fresh browser profile).
-- **Kamerás vonalkód-olvasás**: every barcode field (Kassza, Beszerzés, the
-  product edit modal, and the Árucikkek search filter) now has a camera
-  icon next to it that opens a live scanner using the browser's built-in
-  `BarcodeDetector` API — no external library or CDN dependency. **Browser
-  support caveat**: as of early 2026 this API only exists in Chromium
-  browsers (Chrome, Edge, Opera, Android WebView) — Safari and Firefox
-  don't implement it, so on those the button shows a clear message
-  pointing back to manual entry or a USB scanner instead of failing
-  silently. It also requires HTTPS or `localhost` (browsers block camera
-  access on plain HTTP for any other host) — if you're running the app on
-  a LAN IP over HTTP, the camera button won't work there either; the
-  manual/USB-scanner input is unaffected either way.
+- **Import javítás**: `.xls`/`.xlsx` fájlok mostantól közvetlenül
+  feltölthetők — a szerver felismeri a bináris Excel fájlokat
+  (fájl-aláírás alapján, nem kiterjesztés alapján), és automatikusan
+  konvertálja `soffice --headless --convert-to csv` paranccsal, ha
+  telepítve van a LibreOffice. Ha nincs, egyértelmű hibaüzenetet kapsz,
+  ami kézi konverzióra kér a régi, csendben félreértelmezett adat
+  helyett.
+- **Irányítószám → Település automatikus kitöltés**: egy 4-jegyű
+  irányítószám begépelése a "Vevő számlát kér" űrlapon automatikusan
+  kitölti a települést, egy becsomagolt `data/irsz.csv` fájlból (3038
+  irányítószám).
+- **NAV cégadat lekérdezés** (best-effort): egy "Lekérdezés" gomb az
+  adószám mező mellett kitöltheti a cégnevet/címet a NAV Online Számla
+  `queryTaxpayer` API-ján keresztül. **Ehhez saját NAV technikai
+  felhasználó hitelesítő adat kell** (Beállítások → Számlázz.hu → NAV
+  cégadat lekérdezés), és nincs élő NAV-fiókon letesztelve — ellenőrizd
+  az `api-test.onlineszamla.nav.gov.hu`-val, mielőtt élesben
+  hagyatkoznál rá. Hitelesítő adatok szerzéséhez: regisztrálj egy
+  ingyenes "technikai felhasználót" az onlineszamla.nav.gov.hu oldalon
+  (Beállítások → Technikai felhasználó létrehozása), ami ad egy
+  login/jelszó párost, plusz aláíró és csere kulcsokat.
+- **Beállítások, nem csak config.php**: a Számlázz.hu és WooCommerce
+  hitelesítő adatok mostantól a Beállításokból is beállíthatók (a
+  WooCommerce fülön egy rövid magyarázattal a behúzás/kiküldés/webhook
+  szinkronról) — felülírják a `config.php`-t, ha ki vannak töltve, így
+  nem kell fájlokat kézzel szerkeszteni a napi kulcs-rotációhoz.
+- **Alacsony készlet riasztás**: egy globális alapértelmezett küszöb
+  (Beállítások → Készlet riasztás), termékenként felülírható (Árucikkek
+  → Módosítás). A küszöbön vagy az alatt lévő termékek sárga jelvényt
+  kapnak az Árucikkeknél; egy opcionális webhook és/vagy e-mail elsül
+  közvetlenül egy olyan eladás után, ami átlépi a határt.
+- **Túlértékesítés engedélyezett**: a kassza már nem blokkol egy
+  eladást elégtelen készlet miatt — rögzíti az eladást, hagyja
+  negatívba menni a készletet, és jelzi a fizetési válaszban és a
+  kosárban is (a negatívba forduló sorok kiemelve). A következő
+  beszerzésnél korrigálható.
+- **Árucikkek lista**: az oszlopfejlécek mostantól kattinthatók a
+  rendezéshez (név, cikkszám, csoport, vonalkód, készlet, árak) — újra
+  kattintva megfordítja.
+- Az **Eladások** és **Beszerzések** mostantól saját oldalak: minden
+  korábbi eladás/beszerzés kereshető dátum (natív naptár-választó),
+  azonosító, és név/cégnév szerint, átkattintható részletnézettel.
+- **Bal oldali ikon-oldalsáv** került minden oldalra, a meglévő felső
+  navigáció mellé — Kassza/Beszerzés/Árucikkek/Napi zárás plusz a
+  logód és egy beállítás-gyorsgomb, gyorsabb váltáshoz a linkfeliratok
+  olvasása nélkül.
+- A dátummezők (Napi zárás, Eladások, Beszerzések) mostantól natív
+  `<input type="date">` mezők — kattints bárhova a mezőben egy
+  naptárért.
+- A "Fizetési mód" legördülő (és általában minden `<select>` elem)
+  mostantól illeszkedik az app sötét sablonjához, a böngésző
+  alapértelmezett stílusa helyett.
+- **Világos sablon**: Beállítások → Megjelenés lehetővé teszi a váltást
+  sötét és világos között. Mivel a színek egyszer vannak definiálva CSS
+  változóként, és mindenhol azokra hivatkozik a kód, a világos sablon
+  egyetlen felülíró blokk a `style.css`-ben — nincs szükség
+  oldalankénti stílusra. A választás mentésre kerül mind a
+  `localStorage`-ba (hogy azonnal érvényesüljön a következő
+  oldalbetöltéskor, mielőtt a stíluslap egyébként sötétre villanna),
+  mind a `data/settings.json`-ba (hogy egy friss böngésző-profilból is
+  emlékezzen rá).
+- **Kamerás vonalkód-olvasás**: minden vonalkód mező (Kassza,
+  Beszerzés, a termék-szerkesztő ablak, és az Árucikkek keresőszűrő)
+  mostantól egy kamera ikont kap mellette, ami egy élő szkennert nyit a
+  böngésző beépített `BarcodeDetector` API-jával — nincs külső könyvtár
+  vagy CDN-függőség. **Böngésző-támogatási korlát**: 2026 eleje szerint
+  ez az API csak Chromium-alapú böngészőkben létezik (Chrome, Edge,
+  Opera, Android WebView) — a Safari és a Firefox nem implementálja,
+  így ott a gomb egy egyértelmű üzenetet mutat, ami visszairányít a
+  kézi bevitelhez vagy egy USB-szkennerhez, ahelyett hogy csendben
+  elhasalna. Emellett HTTPS-t vagy `localhost`-ot igényel (a böngészők
+  letiltják a kamera-hozzáférést sima HTTP-n bármely más hoszton) — ha
+  az app egy LAN IP-n fut HTTP-n, a kamera gomb ott sem fog működni; a
+  kézi/USB-szkenneres bevitelt ez egyik esetben sem érinti.
 
-## Beszállító-törzs (supplier master data)
+## Beszállító-törzs
 
-A new `beszallitok.html` page manages saved suppliers (name, contact,
-address, tax number, payment terms). On the Beszerzés page, picking a
-saved supplier from the new dropdown auto-fills the existing free-text
-fields and links `supplier_id` on the purchase record — one-off/unregistered
-suppliers still work exactly as before by just typing in the fields directly.
+Egy új `beszallitok.html` oldal kezeli a mentett beszállítókat (név,
+kapcsolat, cím, adószám, fizetési feltételek). A Beszerzés oldalon egy
+mentett beszállító kiválasztása az új legördülőből automatikusan
+kitölti a meglévő szabadszöveges mezőket, és összeköti a
+`supplier_id`-t a beszerzési rekorddal — az egyszeri/nem regisztrált
+beszállítók továbbra is pontosan úgy működnek, mint korábban, ha
+közvetlenül begépeled a mezőket.
 
-## Törzsvásárlói / hűségpont rendszer (loyalty points)
+## Törzsvásárlói / hűségpont rendszer
 
-Off by default — turn it on in Beállítások → Törzsvásárlói pontok, where
-you also set the two ratios: how many Ft of spending earns 1 point, and
-how much discount 1 point is worth when redeemed. Once enabled:
+Alapból kikapcsolva — kapcsold be a Beállítások → Törzsvásárlói pontok
+alatt, ahol a két arányt is beállítod: hány Ft költés ér 1 pontot, és 1
+pont mennyi kedvezményt ér beváltáskor. Bekapcsolva:
 
-- The Kassza checkout gets a customer search field (by name or phone).
-  Picking a customer shows their point balance and lets the cashier redeem
-  some as a discount before finishing the sale; points are then earned on
-  whatever's actually paid.
-- `vasarlok.html` manages the customer list and shows each customer's full
-  point history (every earn/redeem, with the sale it came from).
-- **Known limitation**: if a customer both redeems points *and* requests a
-  named invoice in the same sale, the Szamlazz.hu invoice is issued for the
-  full pre-discount amount, not the reduced total actually charged —
-  correctly prorating a discount across mixed VAT rates was judged not
-  worth the complexity for what should be a rare combination in practice
-  (walk-in loyalty redemptions and named B2B invoices don't usually overlap).
+- A Kassza fizetés egy vásárló-keresőmezőt kap (név vagy telefonszám
+  szerint). Egy vásárló kiválasztása megmutatja a pontegyenlegét, és
+  lehetővé teszi az eladónak, hogy némelyiket kedvezményként beváltsa
+  az eladás befejezése előtt; a pontok utána a ténylegesen kifizetett
+  összeg alapján íródnak jóvá.
+- A `vasarlok.html` kezeli a vásárlólistát, és megmutatja minden
+  vásárló teljes pontelőzményét (minden jóváírás/beváltás, azzal az
+  eladással, amiből származott).
+- **Ismert korlát**: ha egy vásárló egyszerre vált be pontokat *és* kér
+  névre szóló számlát ugyanabban az eladásban, a Számlázz.hu számla a
+  teljes, kedvezmény előtti összegre kerül kiállításra, nem a
+  ténylegesen fizetett, csökkentett végösszegre — egy kedvezmény
+  helyes, vegyes áfakulcsok közötti arányosítása nem tűnt megérni a
+  bonyolultságot egy a gyakorlatban valószínűleg ritka kombinációhoz (a
+  betérő hűségpont-beváltás és a névre szóló B2B számla általában nem
+  szokott egybeesni).
 
-## Rendszerállapot (system status page)
+## Rendszerállapot (rendszerállapot oldal)
 
-`rendszerallapot.html` pulls together everything that's otherwise spread
-across Beállítások tabs and the sync log into one glance: last WooCommerce
-sync and backup times/results, counts of low-stock products and recent
-invoice failures, whether the printer/Szamlazz.hu/loyalty features are
-configured, and the last 20 sync-log entries (failures highlighted).
+A `rendszerallapot.html` egy pillantásra összefogja mindazt, ami
+egyébként szét van szórva a Beállítások fülein és a szinkron-naplóban:
+az utolsó WooCommerce szinkron és mentés időpontjai/eredményei, az
+alacsony készletű termékek és a legutóbbi számla-hibák száma, hogy a
+nyomtató/Számlázz.hu/hűségprogram funkciók be vannak-e állítva, és a
+szinkron-napló utolsó 20 bejegyzése (a hibák kiemelve).
 
 ## Telepíthető mobil-app (PWA)
 
-The app is installable — "Add to Home Screen" on mobile, or the install
-icon in Chrome/Edge's address bar on desktop — via a manifest and service
-worker (`manifest.json`, `sw.js`). What this does and doesn't give you:
+Az app telepíthető — "Hozzáadás a kezdőképernyőhöz" mobilon, vagy a
+telepítés ikon a Chrome/Edge címsorában asztali gépen — egy manifest és
+egy service worker segítségével (`manifest.json`, `sw.js`). Amit ez ad,
+és amit nem:
 
-- **Does**: an app icon, a standalone window (no browser chrome), and the
-  UI shell (HTML/CSS/JS) loads instantly from cache even on a flaky
-  connection.
-- **Doesn't**: work fully offline for actual tills use. Product prices,
-  stock levels, and every write (sales, purchases, sync) still need the
-  server — the service worker deliberately never caches `/api/` responses,
-  since showing a stale price or stock count at checkout would be worse
-  than a clear "you're offline" failure. If the network drops mid-shift,
-  the app shell still opens, but ringing up a sale won't work until it's
-  back.
-- Like the camera scanner, installability itself requires HTTPS or
-  `localhost` — browsers won't register a service worker over plain HTTP
-  on a LAN IP.
+- **Ad**: egy app ikont, egy önálló ablakot (böngésző-keret nélkül), és
+  a felület (HTML/CSS/JS) azonnal betölt gyorsítótárból, még egy
+  akadozó kapcsolaton is.
+- **Nem ad**: teljesen offline működést a tényleges kasszahasználathoz.
+  A termékárak, készletszintek, és minden írás (eladás, beszerzés,
+  szinkron) továbbra is a szervert igényli — a service worker
+  szándékosan sosem gyorsítótáraz `/api/` válaszokat, mivel egy
+  elavult ár vagy készletszám mutatása fizetéskor rosszabb lenne, mint
+  egy egyértelmű "nincs kapcsolat" hiba. Ha a hálózat kiesik műszak
+  közben, az app kerete még megnyílik, de az eladás rögzítése nem fog
+  működni, amíg vissza nem jön.
+- A kamerás szkennerhez hasonlóan a telepíthetőség maga is HTTPS-t vagy
+  `localhost`-ot igényel — a böngészők nem regisztrálnak service
+  workert sima HTTP-n egy LAN IP-n.
 
-## Vásárlói törzs az invoice form-on (Kassza)
+## Vásárlói törzs a számla-űrlapon (Kassza)
 
-The `customers` table (already used for loyalty points) now also stores
-billing details (zip, city, address, country), so it doubles as an
-address book for invoices. On the "Vevő számlát kér" form:
+A `customers` tábla (amit már a hűségpontok is használnak) mostantól
+számlázási adatokat is tárol (irányítószám, város, cím, ország), így
+egyben címjegyzékként is szolgál számlákhoz. A "Vevő számlát kér"
+űrlapon:
 
-- Typing in **Név / Cégnév** live-searches saved customers and shows
-  matches below the field — picking one fills in the address, tax number,
-  and switches to "céges" automatically if the customer has a tax number.
-- The icon next to the field opens a full picker: every saved customer,
-  searchable, with **Kiválasztás** (fill the form) and **Szerkesztés**
-  (edit their saved details) per row, plus **+ Új vásárló** to save a new
-  one — pre-filled from whatever's already typed in Név / Cégnév.
-- This is the same customer list managed on `vasarlok.html` — editing or
-  adding someone here updates that list too, and vice versa.
+- A **Név / Cégnév** mezőbe gépelés élőben keres a mentett vásárlók
+  között, és a találatokat a mező alatt mutatja — egy kiválasztása
+  kitölti a címet, adószámot, és automatikusan "céges"-re vált, ha a
+  vásárlónak van adószáma.
+- A mező melletti ikon egy teljes választót nyit meg: minden mentett
+  vásárló, kereshetően, soronként **Kiválasztás** (kitölti az
+  űrlapot) és **Szerkesztés** (a mentett adatok szerkesztése)
+  gombokkal, plusz **+ Új vásárló** egy új felvételéhez — előre
+  kitöltve azzal, ami már be van gépelve a Név / Cégnév mezőbe.
+- Ez ugyanaz a vásárlólista, amit a `vasarlok.html` kezel — itt egy
+  szerkesztése vagy felvétele azt a listát is frissíti, és fordítva.
 
 ## Kézi tétel hozzáadása eladáskor
 
-The Kassza has a "+ Kézi tétel hozzáadása" button (below the product
-search) for something that isn't in the inventory at all — a service, a
-delivery fee, a one-off item — but still needs to be on the customer's
-receipt or invoice. A manual item:
+A Kasszán van egy "+ Kézi tétel hozzáadása" gomb (a termékkereső
+alatt) valami olyasmihez, ami egyáltalán nincs a készletben — egy
+szolgáltatás, egy szállítási díj, egy egyszeri tétel — de mégis
+szerepelnie kell a vásárló nyugtáján vagy számláján. Egy kézi tétel:
 
-- Has its own name, quantity, gross unit price, and VAT rate, entered
-  directly at the till.
-- Appears in the cart and counts toward the total exactly like a normal
-  product line.
-- Is saved on the sale and included on the Szamlazz.hu invoice / printed
-  receipt the same way a real product line is.
-- Does **not** touch stock or WooCommerce in any way — there's no product
-  behind it to update.
-- This needed `sale_items.product_id` to become nullable. MySQL supports
-  that as a direct `ALTER TABLE ... MODIFY COLUMN`; SQLite doesn't support
-  relaxing a `NOT NULL` constraint via `ALTER TABLE` at all, so upgrading
-  an existing SQLite database rebuilds the `sale_items` table (copy →
-  drop → rename) — the standard, documented way to do this in SQLite. This
-  runs automatically and once, the first time the app starts after
-  updating.
+- Saját neve, mennyisége, bruttó egységára és áfakulcsa van,
+  közvetlenül a kasszánál megadva.
+- Megjelenik a kosárban, és pontosan úgy számít bele a végösszegbe,
+  mint egy normál terméksor.
+- Mentésre kerül az eladáson, és ugyanúgy szerepel a Számlázz.hu
+  számlán / nyomtatott nyugtán, mint egy valódi terméksor.
+- **Nem** érinti semmilyen módon a készletet vagy a WooCommerce-t —
+  nincs mögötte termék, amit frissíteni kellene.
+- Ehhez a `sale_items.product_id` mezőnek nullázhatóvá kellett válnia.
+  A MySQL ezt közvetlen `ALTER TABLE ... MODIFY COLUMN`-nal támogatja;
+  az SQLite egyáltalán nem támogatja egy `NOT NULL` megszorítás
+  lazítását `ALTER TABLE`-lel, így egy meglévő SQLite adatbázis
+  frissítése újraépíti a `sale_items` táblát (másolás → törlés →
+  átnevezés) — ez a szokásos, dokumentált módja ennek SQLite-ban. Ez
+  automatikusan, egyszer fut le, amikor az app először indul a
+  frissítés után.
 
-## Telepítő (first-run installer)
+## Telepítő (első indításos telepítő)
 
-Opening the app for the first time redirects to `install.php` — a small,
-**skippable** wizard, not a hard requirement. Since SQLite already works
-with zero configuration, the installer exists for two things:
+Az app első megnyitása átirányít az `install.php`-ra — egy kicsi,
+**kihagyható** varázsló, nem kemény követelmény. Mivel az SQLite már
+nulla konfigurációval is működik, a telepítő két dologért létezik:
 
-- **Choosing MySQL instead of SQLite**, with a form for host/port/database/
-  credentials instead of hand-editing `config/config.php`. It tests the
-  connection and creates the database (`CREATE DATABASE IF NOT EXISTS`) if
-  it doesn't exist yet, before writing anything.
-- **Setting the shop name/address** shown on receipts, without opening a
-  code editor.
+- **MySQL választása SQLite helyett**, egy host/port/adatbázis/
+  hitelesítő adat űrlappal, ahelyett hogy kézzel kellene szerkeszteni a
+  `config/config.php`-t. Teszteli a kapcsolatot, és létrehozza az
+  adatbázist (`CREATE DATABASE IF NOT EXISTS`), ha még nem létezik,
+  mielőtt bármit is írna.
+- **A bolt nevének/címének beállítása**, ami a nyugtákon jelenik meg,
+  kódszerkesztő megnyitása nélkül.
 
-Whichever path you take (or "Kihagyás" to skip entirely and keep the
-SQLite default), it writes `config/installer-generated.php` — config.php
-merges this in automatically if present — and creates `data/.installed`
-so the wizard never shows again. Deleting that marker file would make it
-reappear, but there's normally no reason to.
+Bármelyik utat is választod (vagy a "Kihagyás"-t a teljes kihagyáshoz
+és az SQLite alapértelmezett megtartásához), megírja a
+`config/installer-generated.php` fájlt — a config.php ezt automatikusan
+beolvasztja, ha létezik — és létrehozza a `data/.installed` fájlt, hogy
+a varázsló többé ne jelenjen meg. A jelzőfájl törlése újra
+megjelenítené, de erre normál esetben nincs ok.
 
-**Upgrading from a version without the installer**: nothing changes for
-you. Every page checks install status via a fast local file check before
-anything else loads; if a working SQLite database file is already there
-(or you've already hand-edited config.php), it's automatically treated as
-already installed rather than interrupting a working setup.
+**Frissítés egy telepítő nélküli verzióról**: semmi nem változik.
+Minden oldal egy gyors, helyi fájl-ellenőrzéssel ellenőrzi a telepítési
+állapotot, mielőtt bármi más betöltődne; ha már van egy működő SQLite
+adatbázisfájl (vagy már kézzel szerkesztetted a config.php-t),
+automatikusan már telepítettként kezeli, ahelyett hogy megszakítana
+egy működő beállítást.
 
-**Why it lives at `webroot/install.php` and not the project root**: only
-`webroot/` is served by the web server — `config/`, `src/`, `data/`, and
-`schema*.sql` are deliberately outside it so they're never reachable by a
-direct URL. The installer needs to be reachable, so it has to live inside
-`webroot/` alongside `index.html`, even though what it's setting up
-(`config/`, `data/`) lives one level up.
+**Miért a `webroot/install.php`-ban van, és nem a projekt gyökerében**:
+csak a `webroot/`-ot szolgálja ki a webszerver — a `config/`, `src/`,
+`data/`, és a `schema*.sql` szándékosan azon kívül vannak, hogy sose
+legyenek közvetlen URL-lel elérhetők. A telepítőnek elérhetőnek kell
+lennie, így a `webroot/`-on belül kell lennie, az `index.html` mellett,
+még ha az, amit beállít (`config/`, `data/`), egy szinttel feljebb is
+van.
 
 ## Kedvezménykód / kupon
 
-`kedvezmenyek.html` manages coupons — a code, a discount (percent or fixed
-Ft), and optional rules (expiry date, usage limit, minimum purchase). On
-the Kassza, entering a code validates and applies it live; the discount
-applies against the subtotal, before loyalty points or a gift card.
+A `kedvezmenyek.html` kezeli a kuponokat — egy kód, egy kedvezmény
+(százalékos vagy fix Ft), és opcionális szabályok (lejárati dátum,
+felhasználási limit, minimum vásárlási összeg). A Kasszán egy kód
+beírása élőben ellenőrzi és alkalmazza; a kedvezmény a részösszegre
+vonatkozik, a hűségpontok vagy egy ajándékutalvány előtt.
 
 ## Ajándékutalvány
 
-Same page, second tab. Unlike a coupon, a gift card carries a **balance**
-rather than a one-time discount — issue one with a starting amount, and it
-can be spent across multiple purchases until the balance reaches zero.
-Redeeming one at the till covers as much of the remaining total as the
-balance allows (after coupon and loyalty discounts are already applied),
-and its full transaction history (issued, each redemption) is visible from
-its row in the list.
+Ugyanaz az oldal, második fül. A kuponnal ellentétben egy
+ajándékutalvány egy **egyenleget** hordoz, nem egy egyszeri
+kedvezményt — indíts egyet egy kezdő összeggel, és több vásárláson
+keresztül is elkölthető, amíg az egyenleg nullára nem fogy. Egy
+beváltása a kasszánál annyit fedez a fennmaradó összegből, amennyit az
+egyenleg enged (a kupon és hűségpont-kedvezmények alkalmazása után), és
+a teljes tranzakciós előzménye (kiállítás, minden beváltás) látható a
+lista soránál.
 
-**Discount order at checkout**: coupon → loyalty points → gift card. Each
-is re-validated server-side at the moment of sale — not trusted from
-whatever the till UI already showed — since this is where money actually
-changes hands. Same known limitation as loyalty points: if any of these
-combine with a requested named invoice in the same sale, the Szamlazz.hu
-invoice is issued for the full pre-discount amount (prorating a discount
-across mixed VAT rates was judged not worth the complexity for what
-should be an uncommon combination in practice).
+**Kedvezmény sorrend fizetéskor**: kupon → hűségpontok →
+ajándékutalvány. Mindegyik szerver-oldalon újra ellenőrzésre kerül az
+eladás pillanatában — nem a kassza felületén már megjelenítettre
+hagyatkozva —, mivel itt cserél ténylegesen gazdát pénz. Ugyanaz az
+ismert korlát, mint a hűségpontoknál: ha ezek bármelyike kombinálódik
+egy ugyanabban az eladásban kért névre szóló számlával, a Számlázz.hu
+számla a teljes, kedvezmény előtti összegre kerül kiállításra (egy
+kedvezmény vegyes áfakulcsok közötti arányosítása nem tűnt megérni a
+bonyolultságot egy a gyakorlatban valószínűleg ritka kombinációhoz).
 
 ## Ártörténet
 
-Every time a product's net or gross price changes (via the edit modal —
-not via CSV import, which would otherwise flood this with bulk-import
-noise), the old and new values are logged. Reopening that product's edit
-modal shows the history right there, no separate page needed.
+Minden alkalommal, amikor egy termék nettó vagy bruttó ára változik (a
+szerkesztő ablakon keresztül — nem CSV importon, ami különben
+elárasztaná ezt tömeges import-zajjal), a régi és új érték naplózásra
+kerül. A termék szerkesztő ablakának újranyitása rögtön ott mutatja az
+előzményt, nem kell hozzá külön oldal.
 
 ## Vonalkód-generálás + címke nyomtatás
 
-The product edit modal has a **Generálás** button that fills the barcode
-field with a fresh, valid EAN-13 code — using the "20" prefix, which GS1
-reserves for internal/in-store use, so a generated code can never collide
-with a real manufacturer's actual barcode later. **Címke nyomtatása** opens
-a small printable label (name, price, and a scannable barcode) in a new
-window. The barcode itself is rendered as SVG by `ean13.js`, a from-scratch
-implementation of the EAN-13 encoding tables — no external library or CDN
-dependency, consistent with the camera scanner and PWA features.
+A termék-szerkesztő ablaknak van egy **Generálás** gombja, ami egy
+friss, érvényes EAN-13 kóddal tölti ki a vonalkód mezőt — a "20"
+előtaggal, amit a GS1 belső/bolti használatra tart fenn, így egy
+generált kód sosem ütközhet később egy valódi gyártó tényleges
+vonalkódjával. A **Címke nyomtatása** egy kis nyomtatható címkét (név,
+ár, és egy szkennelhető vonalkód) nyit meg egy új ablakban. Maga a
+vonalkód SVG-ként renderelődik az `ean13.js`-ben, ami az EAN-13
+kódolási táblázatok nulláról épített implementációja — nincs külső
+könyvtár vagy CDN-függőség, a kamerás szkenner és a PWA funkciók
+filozófiájával összhangban.
 
 ## Mentés-visszaállítás (backup restore)
 
-Beállítások → Mentés now has a **Visszaállítás** button next to every
-listed local backup, plus a file upload for restoring a backup from
-somewhere else (another machine, a cloud download). Either way:
+A Beállítások → Mentés mostantól egy **Visszaállítás** gombot kínál
+minden listázott helyi mentés mellett, plusz egy fájlfeltöltést egy
+máshonnan (másik gépről, felhő-letöltésből) származó mentés
+visszaállításához. Bármelyik úton:
 
-- A fresh safety backup of the **current** live data is taken automatically
-  before anything is touched — so a restore is itself undoable if it turns
-  out to be the wrong file.
-- SQLite: the uploaded/selected file is opened and sanity-checked (a real
-  SQLite file, not corrupt or unrelated) before it replaces the live
-  database file.
-- MySQL: prefers the `mysql` CLI binary to run the dump (matches how
-  backups themselves prefer `mysqldump`); falls back to executing the
-  dump's statements one by one via PHP if the CLI isn't available (common
-  on shared hosting).
-- There's a confirmation dialog before either restore path proceeds —
-  this action overwrites live data.
+- Egy friss biztonsági mentés a **jelenlegi** élő adatokról
+  automatikusan elkészül, mielőtt bármihez is hozzányúlna — így a
+  visszaállítás maga is visszavonható, ha kiderül, hogy rossz fájl
+  volt.
+- SQLite: a feltöltött/kiválasztott fájl megnyitásra és ellenőrzésre
+  kerül (valódi SQLite fájl, nem sérült vagy nem odaillő), mielőtt
+  lecserélné az élő adatbázisfájlt.
+- MySQL: előnyben részesíti a `mysql` CLI binárist a dump futtatásához
+  (ugyanígy, ahogy a mentések maguk is a `mysqldump`-ot részesítik
+  előnyben); ha a CLI nem elérhető (gyakori megosztott tárhelyen), egy
+  PHP-n keresztüli, a dump utasításait egyenként végrehajtó megoldásra
+  esik vissza.
+- Egy megerősítő párbeszédablak jelenik meg, mielőtt bármelyik
+  visszaállítási út folytatódna — ez a művelet felülírja az élő
+  adatokat.
 
 ## Részleges visszáru / sztornó
 
-On an Eladások sale's detail view, "Visszáru rögzítése" reveals a quantity
-input per line, capped at however much of that line hasn't already been
-returned (so a second partial return on the same sale can't over-return).
-Confirming restores stock for the returned items and logs the return.
+Egy Eladások eladás részletnézetén a "Visszáru rögzítése" soronként egy
+mennyiség-mezőt tár fel, felső korláttal az adott sorból még vissza nem
+küldött mennyiségre (így ugyanazon eladás egy második részleges
+visszárúja sem tud túl sokat visszaküldeni). A megerősítés
+visszaállítja a készletet a visszaküldött tételekre, és naplózza a
+visszárut.
 
-**Known limitation**: the `sales` table only stores the buyer's name, not
-the full billing address/tax number the original Szamlazz.hu invoice
-used — so a credit note is never auto-generated. If the original sale had
-an invoice, the return screen just surfaces that invoice number so you can
-issue the credit note manually on Szamlazz.hu, referencing it. A
-`SzamlazzClient::createCreditNote()` method exists for future use if full
-buyer billing details ever get stored on the sale record, but it's
-untested against Szamlazz.hu's actual credit-note behavior — verify it
-against current documentation before relying on it.
+**Ismert korlát**: a `sales` tábla csak a vevő nevét tárolja, nem az
+eredeti Számlázz.hu számlán szereplő teljes számlázási címet/adószámot
+— így jóváíró számla sosem generálódik automatikusan. Ha az eredeti
+eladáshoz tartozott számla, a visszáru képernyő csak felszínre hozza
+azt a számlaszámot, hogy manuálisan ki lehessen állítani a jóváíró
+számlát a Számlázz.hu-n, hivatkozva rá. Egy
+`SzamlazzClient::createCreditNote()` metódus létezik jövőbeli
+használatra, ha valaha a teljes vevő-számlázási adat eltárolásra kerül
+az eladási rekordon, de nincs letesztelve a Számlázz.hu tényleges
+jóváíró-számla viselkedése ellen — ellenőrizd az aktuális
+dokumentációval, mielőtt hagyatkoznál rá.
 
 ## Több felhasználó / PIN-kód
 
-`staff.html` manages staff members (name + a 4-8 digit PIN, hashed with
-`password_hash`). The Kassza topbar shows who's logged in — clicking it
-opens a PIN prompt; the logged-in staff member is remembered in
-`localStorage` (not a real session) and attached to every sale from then
-on. This is meant for accountability (who rang up what), not real access
-control — anyone can open the login prompt and pick a different name if
-they know a PIN, same as most small-shop till setups.
+A `staff.html` kezeli a dolgozókat (név + egy 4-8 jegyű PIN,
+`password_hash`-sel hash-elve). A Kassza felső sávja mutatja, ki van
+bejelentkezve — rákattintva egy PIN-kérő nyílik meg; a bejelentkezett
+dolgozó a `localStorage`-ban van megjegyezve (nem egy valódi
+munkamenet), és onnantól minden eladáshoz hozzá van rendelve. Ez
+elszámoltatásra való (ki ütötte be mit), nem valódi
+hozzáférés-vezérlésre — bárki megnyithatja a bejelentkező ablakot, és
+választhat másik nevet, ha ismeri egy PIN-t, ahogy a legtöbb kisbolti
+kassza-beállításnál.
 
 ## Leltározás
 
-`leltar.html` starts a stock take by snapshotting every active product's
-current stock as the "expected" count, then lets you enter a counted
-quantity per product (search to narrow a long list), showing the
-difference live. Closing it optionally applies the counted quantities as
-corrections to live stock — or just records the discrepancy report without
-touching stock, if you leave that unchecked.
+A `leltar.html` egy leltározást indít, ami minden aktív termék
+jelenlegi készletét "várt" mennyiségként pillanatképezi le, majd
+lehetővé teszi egy megszámolt mennyiség megadását termékenként
+(kereséssel szűkíthető a hosszú lista), élőben mutatva a különbséget. A
+lezárás opcionálisan a megszámolt mennyiségeket alkalmazza
+korrekcióként az élő készletre — vagy csak rögzíti az eltérési
+riportot a készlet érintése nélkül, ha ez nincs bepipálva.
 
 ## Kimutatás / Export CSV
 
-Eladások, Beszerzések, and Napi zárás each have an "Export CSV" button
-that respects whatever filters are currently applied (date, ID, search).
-The file includes a UTF-8 BOM so Excel on Windows detects the encoding
-correctly instead of mangling accented Hungarian characters.
+Az Eladások, Beszerzések, és Napi zárás mindegyikének van egy "Export
+CSV" gombja, ami figyelembe veszi az éppen alkalmazott szűrőket
+(dátum, azonosító, keresés). A fájl tartalmaz egy UTF-8 BOM-ot, hogy a
+Windows-os Excel helyesen felismerje a kódolást, ahelyett hogy
+összezavarná az ékezetes magyar karaktereket.
 
 ## Dashboard grafikonokkal
 
-Rendszerállapot now has a revenue trend chart (14/30/90 days) — a plain
-SVG bar chart built from scratch in `rendszerallapot.js`, no charting
-library, consistent with the EAN-13 barcode renderer's philosophy. Hover
-over a bar for that day's exact total and sale count.
+A Rendszerállapot mostantól egy bevétel-trend grafikont is tartalmaz
+(14/30/90 nap) — egy nulláról épített, egyszerű SVG oszlopdiagram a
+`rendszerallapot.js`-ben, grafikon-könyvtár nélkül, az EAN-13
+vonalkód-renderelő filozófiájával összhangban. Vidd az egeret egy
+oszlop fölé az adott nap pontos összegéért és eladásszámáért.
 
 ## Digitális nyugta e-mailben
 
-After a sale, the receipt panel has an email field (pre-filled from the
-selected törzsvásárló's saved email, if any) and a "E-mail küldése"
-button that sends an HTML version of the receipt.
+Egy eladás után a nyugta panel egy e-mail mezőt kap (előre kitöltve a
+kiválasztott törzsvásárló mentett e-mail címével, ha van), és egy
+"E-mail küldése" gombot, ami a nyugta egy HTML változatát küldi el.
 
-**Important**: this uses PHP's built-in `mail()` function — no SMTP
-library, no external dependency, consistent with the rest of the app. But
-`mail()` only works if the server has a configured mail transport
-(sendmail/postfix, common on real shared hosting). It will **not** work
-out of the box on `php -S` local development or most fresh VPS installs
-without separately setting up mail — the endpoint returns a clear error
-explaining this rather than silently failing when `mail()` reports
-failure.
+**Fontos**: ez a PHP beépített `mail()` függvényét használja — nincs
+SMTP könyvtár, nincs külső függőség, összhangban az app többi részével.
+De a `mail()` csak akkor működik, ha a szervernek van beállított
+levelezés-továbbítója (sendmail/postfix, gyakori valódi megosztott
+tárhelyen). Ez **nem** fog magától működni `php -S` helyi fejlesztésen
+vagy a legtöbb friss VPS telepítésen, külön levelezés-beállítás nélkül
+— a végpont egy egyértelmű hibát ad vissza, ami ezt elmagyarázza,
+ahelyett hogy csendben elhasalna, amikor a `mail()` hibát jelez.
 
 ## Dolgozói jogszintek
 
-Staff members now have a role (Eladó/cashier or Vezető/admin) set on
-`staff.html`. This stays an accountability tool, not a real access-control
-system — as documented earlier, anyone can open the PIN prompt and pick a
-different name. What's real: **product deletion is enforced server-side**
-in `product-save.php` — if a staff member is logged in and isn't an admin,
-the request is rejected (403), regardless of what the UI shows. If no
-staff is logged in at all (PIN feature unused), this stays permissive.
+A dolgozóknak mostantól van egy szerepköre (Eladó vagy Vezető), a
+`staff.html`-en beállítva. Ez továbbra is elszámoltatási eszköz marad,
+nem valódi hozzáférés-vezérlő rendszer — ahogy korábban is
+dokumentálva, bárki megnyithatja a PIN-kérő ablakot, és választhat
+másik nevet. Ami valódi: a **termék-törlés szerver-oldalon van
+kikényszerítve** a `product-save.php`-ban — ha egy dolgozó be van
+jelentkezve, és nem admin, a kérés elutasításra kerül (403),
+függetlenül attól, mit mutat a felület. Ha egyáltalán nincs
+bejelentkezett dolgozó (a PIN funkció nincs használva), ez megengedő
+marad.
 
 ## Tevékenységnapló (audit log)
 
-`audit-log.html` shows logged actions (currently: product deletions,
-with room to extend to other actions later) with who did it and when.
-Retention defaults to 30 days and is configurable in Beállítások →
-Tevékenységnapló — older entries are pruned automatically on the next
-write, no separate cron needed.
+Az `audit-log.html` mutatja a naplózott műveleteket (jelenleg:
+termék-törlések, bővíthető más műveletekre később), azzal, hogy ki és
+mikor csinálta. A megőrzési idő alapból 30 nap, és beállítható a
+Beállítások → Tevékenységnapló alatt — a régebbi bejegyzések
+automatikusan törlődnek a következő íráskor, nem kell hozzá külön
+cron.
 
 ## Hűségszintek (loyalty tiers)
 
-On top of the existing point system, customers now also get an automatic
-percentage discount based on lifetime spend (`customers.total_spent`,
-tracked on every completed sale) — Bronze (no discount) → Ezüst → Arany,
-with thresholds and discount percentages configurable in Beállítások →
-Törzsvásárlói pontok. Applied automatically after coupon and point
-discounts, before a gift card. `vasarlok.html` shows each customer's
-current tier.
+A meglévő pontrendszer tetejére a vásárlók mostantól automatikus
+százalékos kedvezményt is kapnak az élettartam-költésük alapján
+(`customers.total_spent`, minden befejezett eladáson követve) — Bronz
+(nincs kedvezmény) → Ezüst → Arany, a küszöbökkel és
+kedvezmény-százalékokkal a Beállítások → Törzsvásárlói pontok alatt
+állíthatók. Automatikusan alkalmazva a kupon és pont-kedvezmények után,
+egy ajándékutalvány előtt. A `vasarlok.html` mutatja minden vásárló
+jelenlegi szintjét.
 
 ## Globális kereső (Ctrl+K)
 
-Press **Ctrl+K** (or click the search icon) on any page to search
-products, customers, and sales at once. This is injected into every
-page's topbar from `topbar.js` rather than being added to each page's
-HTML individually — `.topbar-actions` already exists consistently across
-pages, so this stays a one-file change instead of touching ~15 pages.
+Nyomd meg a **Ctrl+K**-t (vagy kattints a kereső ikonra) bármelyik
+oldalon, hogy egyszerre keress termékek, vásárlók és eladások között.
+Ez a `topbar.js`-ből van beinjektálva minden oldal felső sávjába,
+ahelyett hogy minden oldal HTML-jéhez külön hozzá lenne adva — a
+`.topbar-actions` már egységesen jelen van az oldalakon, így ez egy
+egyfájlos változtatás marad ~15 oldal módosítása helyett.
 
 ## Értesítési központ (notification center)
 
-A bell icon next to the search icon (same injection approach) shows a
-badge when there's something to look at — low stock, sync failures,
-invoice failures — pulled from the same data `rendszerallapot.html`
-already surfaces. Clicking an alert jumps to the relevant page.
+Egy harang ikon a kereső ikon mellett (ugyanazzal az injektálási
+móddal) egy jelvényt mutat, ha van mire figyelni — alacsony készlet,
+szinkron-hibák, számla-hibák — ugyanabból az adatból húzva, amit a
+`rendszerallapot.html` már úgyis felszínre hoz. Egy riasztásra
+kattintva a releváns oldalra ugrik.
 
 ## Mobil UI-átvizsgálás és javítások
 
@@ -892,6 +991,43 @@ dolgozott a Kasszánál), ez itt a teljes programhoz való hozzáférést zárja
 mostantól bejelentkezés nélkül is biztonságosan megtekinthető, mert egy
 titkos, kitalálhatatlan tokent tartalmaz (lásd lentebb, "Titkos
 nyugta-token" szakasz) — nem a kitalálható eladás-sorszámra támaszkodik.
+
+### IP-cím / ország alapú hozzáférés-korlátozás
+
+Opcionális, alapból kikapcsolva. A Beállítások → Biztonság → "IP-cím /
+ország alapú védelem" az egész appot egy engedélyezett ország-listára
+(ISO 3166-1 alpha-2 kódok) és/vagy adott IP-címekre vagy CIDR-tartományokra
+korlátozza — mind IPv4, mind IPv6 támogatott.
+
+- Szerver-oldalon két helyen érvényesül: minden `api/*.php` kérésnél (a
+  `_bootstrap.php`-ban, a bejelentkezés-ellenőrzés előtt), és minden
+  oldal-szintű fájlnál (a `GeoBlocker::enforce()`-on keresztül), így mind
+  az adathozzáférés, mind az oldalbetöltés blokkolva van a nem
+  engedélyezett látogatóknak.
+- Az ország-felismerés az ingyenes, kulcs nélküli `ip-api.com`
+  szolgáltatást használja; az eredményeket a szerver helyben, a
+  `data/geoip-cache.json`-ban gyorsítótárazza 30 napig, hogy ugyanaz a
+  látogató ne legyen minden kérésnél újra lekérdezve. Ez azt jelenti,
+  hogy a szervernek kimenő internet-hozzáférésre van szüksége ahhoz,
+  hogy a korlátozás egyáltalán működjön — ha a lekérdezés sikertelen
+  (nincs internet, korlátozott a kéréshatár, stb.), a látogató
+  átengedésre kerül tiltás helyett, hogy egy külső szolgáltatás kiesése
+  ne zárhasson ki mindenkit.
+- A privát/loopback IP-kről (LAN, localhost) érkező kérések mindig
+  megkerülik a korlátozást — az azonos gépről vagy azonos hálózatról
+  érkező hozzáférés emiatt sosem zárható ki.
+- Egy olyan beállítás mentése, ami kizárná a mentést végző IP-t,
+  hibaüzenettel elutasításra kerül, hogy elkerülje a véletlen
+  önkizárást.
+- Az `X-Forwarded-For`/`X-Real-IP` fejlécek csak akkor megbízhatók, ha a
+  közvetlen TCP-partner (`REMOTE_ADDR`) maga is egy privát cím (azaz egy
+  helyi reverse proxy áll előtte) — egy közvetlenül a nyilvános
+  internetről csatlakozó kliens nem tudja meghamisítani az országát egy
+  hamis fejléc küldésével.
+- Maga a statikus `login.html` keret nincs korlátozva (nem tud PHP-t
+  futtatni), de minden mögötte lévő funkció — beleértve magát a
+  bejelentkezés API-hívást is — igen, így egy blokkolt látogató
+  legfeljebb egy üres, működésképtelen keretet kap.
 
 ### HTTP biztonsági fejlécek
 

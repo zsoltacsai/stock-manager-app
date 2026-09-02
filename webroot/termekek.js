@@ -94,7 +94,7 @@ function renderTable() {
     updateSortIndicators();
 
     if (filtered.length === 0) {
-        productsBody.innerHTML = '<tr><td colspan="9" class="muted" style="text-align:center; padding:24px;">Nincs a szűrésnek megfelelő árucikk.</td></tr>';
+        productsBody.innerHTML = '<tr><td colspan="10" class="muted" style="text-align:center; padding:24px;">Nincs a szűrésnek megfelelő árucikk.</td></tr>';
         return;
     }
 
@@ -122,6 +122,9 @@ function renderTable() {
             <td>${fmt(p.net_price)}</td>
             <td>${fmt(p.price)}</td>
             <td>
+                <button type="button" class="toggle-switch webshop-toggle-btn${Number(p.show_webshop) ? ' on' : ''}" data-id="${p.id}" title="Feltüntetve a webáruházban"></button>
+            </td>
+            <td>
                 <div class="row-actions">
                     <button class="edit-btn" data-id="${p.id}">Módosítás</button>
                     <button class="toggle-delete-btn danger" data-id="${p.id}">${Number(p.is_deleted) ? 'Visszaállítás' : 'Törlés'}</button>
@@ -129,7 +132,7 @@ function renderTable() {
             </td>
         `;
         tr.addEventListener('click', (e) => {
-            if (e.target.closest('.row-actions')) return;
+            if (e.target.closest('.row-actions') || e.target.closest('.webshop-toggle-btn')) return;
             openEdit(p.id);
         });
         productsBody.appendChild(tr);
@@ -145,6 +148,14 @@ function renderTable() {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             toggleDeleted(Number(btn.dataset.id));
+        });
+    });
+    productsBody.querySelectorAll('.webshop-toggle-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const nextValue = !btn.classList.contains('on');
+            btn.classList.toggle('on', nextValue);
+            toggleWebshop(Number(btn.dataset.id), nextValue);
         });
     });
 }
@@ -177,6 +188,41 @@ function openEdit(id) {
     ProductModal.open(product, '', () => loadProducts());
 }
 
+// A product-save.php a teljes árucikk-rekordot várja (nem részleges
+// frissítést) — ez a segédfüggvény minden mezőt kitölt a már betöltött
+// listaadatból, hogy egy gyors lista-kapcsoló (törlés, webshop) se
+// nullázza ki véletlenül a leírást, márkát, képet vagy a szinkron-
+// beállítást.
+function buildFullProductPayload(product, overrides) {
+    return Object.assign({
+        id: product.id,
+        name: product.name,
+        unit: product.unit,
+        group_name: product.group_name,
+        cikkszam: product.cikkszam,
+        vtsz: product.vtsz,
+        currency: product.currency,
+        vat_rate: product.vat_rate,
+        net_price: product.net_price,
+        gross_price: product.price,
+        barcode: product.barcode,
+        weight: product.weight,
+        volume: product.volume,
+        notes: product.notes,
+        low_stock_threshold: product.low_stock_threshold,
+        preferred_supplier_id: product.preferred_supplier_id,
+        show_pricelist: !!Number(product.show_pricelist),
+        show_webshop: !!Number(product.show_webshop),
+        is_deleted: !!Number(product.is_deleted),
+        short_description: product.short_description || '',
+        long_description: product.long_description || '',
+        brand: product.brand || '',
+        image_filename: product.image_filename || '',
+        image_alt: product.image_alt || '',
+        sync_to_woocommerce: !!Number(product.sync_to_woocommerce),
+    }, overrides);
+}
+
 async function toggleDeleted(id) {
     const product = allProducts.find(p => p.id === id);
     if (!product) return;
@@ -190,29 +236,23 @@ async function toggleDeleted(id) {
     await fetch('/api/product-save.php', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            id: product.id,
-            name: product.name,
-            unit: product.unit,
-            group_name: product.group_name,
-            cikkszam: product.cikkszam,
-            vtsz: product.vtsz,
-            currency: product.currency,
-            vat_rate: product.vat_rate,
-            net_price: product.net_price,
-            gross_price: product.price,
-            barcode: product.barcode,
-            weight: product.weight,
-            volume: product.volume,
-            notes: product.notes,
-            low_stock_threshold: product.low_stock_threshold,
-            show_pricelist: !!Number(product.show_pricelist),
-            show_webshop: !!Number(product.show_webshop),
-            is_deleted: nextDeleted,
-        }),
+        body: JSON.stringify(buildFullProductPayload(product, { is_deleted: nextDeleted })),
     });
 
     loadProducts();
+}
+
+async function toggleWebshop(id, nextValue) {
+    const product = allProducts.find(p => p.id === id);
+    if (!product) return;
+
+    await fetch('/api/product-save.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildFullProductPayload(product, { show_webshop: nextValue })),
+    });
+
+    product.show_webshop = nextValue ? 1 : 0;
 }
 
 [fName, fCikkszam, fBarcode].forEach(input => input.addEventListener('input', renderTable));

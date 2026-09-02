@@ -8,30 +8,141 @@
 <title>Bejelentkezés — Stock Manager</title>
 <link rel="stylesheet" href="style.css">
 <style>
-    body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding-left: 0 !important; }
+    body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding-left: 0 !important; overflow: hidden; }
+
+    .login-stage { position: relative; width: 100%; max-width: 360px; margin: 20px; }
+
     .login-card {
-        background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-        padding: 32px; width: 100%; max-width: 360px; margin: 20px;
+        position: relative;
+        background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+        padding: 32px; width: 100%; overflow: hidden;
+        box-shadow: 0 20px 50px -20px rgba(0,0,0,0.5);
+        animation: cardIn .5s cubic-bezier(.22,1,.36,1) both;
     }
-    .login-card h1 { font-size: 20px; margin: 0 0 20px; text-align: center; }
+    .login-handle {
+        width: 40px; height: 4px; border-radius: 999px; background: var(--border);
+        margin: 0 auto 20px;
+    }
+    .login-card.shake { animation: shake .4s ease; }
+
     .login-logo { display: block; margin: 0 auto 16px; width: 48px; height: 48px; border-radius: 12px; }
+    .login-card h1 { font-size: 20px; margin: 0 0 6px; text-align: center; }
+    .login-sub { text-align: center; color: var(--muted); font-size: 13px; margin: 0 0 22px; }
+
+    .login-field-glow {
+        position: relative; border-radius: 10px;
+        box-shadow: 0 0 0 0 rgba(34,197,94,0);
+        transition: box-shadow .25s ease;
+    }
+    .login-field-glow:focus-within {
+        box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent),
+                    0 0 18px color-mix(in srgb, var(--accent) 35%, transparent);
+    }
+    .login-field-glow input { margin-bottom: 0; }
+    .login-field-glow:focus-within input { border-color: var(--accent); }
+
+    .login-hint {
+        text-align: center; color: var(--muted); font-size: 12px; margin: 16px 0 0;
+    }
+    .login-hint kbd {
+        background: var(--panel-light); border: 1px solid var(--border); border-radius: 4px;
+        padding: 1px 6px; font-size: 11px; font-family: inherit;
+    }
+
+    /* Sikeres belépés — a kártya tartalma helyén egy izzó, pipával jelzett
+       "feloldás" animáció fut le, mielőtt átirányítanánk. */
+    .login-success {
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        opacity: 0; pointer-events: none; transition: opacity .25s ease;
+    }
+    .login-success.show { opacity: 1; }
+    .success-ring {
+        position: relative; width: 84px; height: 84px; border-radius: 22px;
+        border: 2px solid var(--accent);
+        box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+        display: flex; align-items: center; justify-content: center;
+        animation: successPop .5s cubic-bezier(.22,1,.36,1) both;
+    }
+    .success-ring svg { width: 34px; height: 34px; stroke: var(--accent); }
+    .success-ring svg path {
+        fill: none; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round;
+        stroke-dasharray: 28; stroke-dashoffset: 28;
+        animation: successCheck .35s ease .25s forwards;
+    }
+    .success-spark {
+        position: absolute; left: 50%; top: 50%; width: 3px; height: 10px; border-radius: 2px;
+        background: var(--accent); transform-origin: center 40px;
+        opacity: 0; animation: sparkOut .55s ease .1s both;
+    }
+
+    @keyframes cardIn {
+        from { opacity: 0; transform: translateY(14px) scale(.97); }
+        to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes shake {
+        10%, 90% { transform: translateX(-1px); }
+        20%, 80% { transform: translateX(2px); }
+        30%, 50%, 70% { transform: translateX(-5px); }
+        40%, 60% { transform: translateX(5px); }
+    }
+    @keyframes successPop {
+        0%   { transform: scale(.6); box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
+        60%  { transform: scale(1.06); box-shadow: 0 0 24px 6px color-mix(in srgb, var(--accent) 45%, transparent); }
+        100% { transform: scale(1); box-shadow: 0 0 16px 2px color-mix(in srgb, var(--accent) 35%, transparent); }
+    }
+    @keyframes successCheck {
+        to { stroke-dashoffset: 0; }
+    }
+    @keyframes sparkOut {
+        0%   { opacity: 1; transform: translate(-50%, -40px) rotate(var(--a)) translateY(0) scaleY(1); }
+        100% { opacity: 0; transform: translate(-50%, -40px) rotate(var(--a)) translateY(-16px) scaleY(.4); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .login-card, .success-ring, .success-ring svg path, .success-spark { animation: none !important; }
+    }
 </style>
 </head>
 <body>
 
-<div class="login-card">
-    <img src="favicon.svg" class="login-logo" alt="">
-    <h1>Bejelentkezés</h1>
-    <label for="login-password">Jelszó</label>
-    <input type="password" id="login-password" autocomplete="current-password" autofocus>
-    <p id="login-feedback" class="feedback"></p>
-    <button id="login-btn" class="btn btn-primary" style="width:100%; margin-top:8px;">Belépés</button>
+<div class="login-stage">
+    <div class="login-card" id="login-card">
+        <div class="login-handle" aria-hidden="true"></div>
+        <img src="favicon.svg" class="login-logo" alt="">
+        <h1>Bejelentkezés</h1>
+        <p class="login-sub">Add meg a jelszavad a folytatáshoz</p>
+
+        <label for="login-password">Jelszó</label>
+        <div class="login-field-glow">
+            <input type="password" id="login-password" autocomplete="current-password" autofocus>
+        </div>
+        <p id="login-feedback" class="feedback"></p>
+        <button id="login-btn" class="btn btn-primary" style="width:100%; margin-top:8px;">Belépés</button>
+
+        <p class="login-hint">Írd be, illeszd be, vagy nyomj <kbd>Enter</kbd>-t</p>
+
+        <div class="login-success" id="login-success">
+            <div class="success-ring">
+                <svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>
+                <span class="success-spark" style="--a:0deg"></span>
+                <span class="success-spark" style="--a:45deg"></span>
+                <span class="success-spark" style="--a:90deg"></span>
+                <span class="success-spark" style="--a:135deg"></span>
+                <span class="success-spark" style="--a:180deg"></span>
+                <span class="success-spark" style="--a:225deg"></span>
+                <span class="success-spark" style="--a:270deg"></span>
+                <span class="success-spark" style="--a:315deg"></span>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script>
+const card = document.getElementById('login-card');
 const passwordInput = document.getElementById('login-password');
 const feedback = document.getElementById('login-feedback');
 const loginBtn = document.getElementById('login-btn');
+const successOverlay = document.getElementById('login-success');
 
 function targetAfterLogin() {
     const params = new URLSearchParams(location.search);
@@ -63,9 +174,14 @@ async function doLogin() {
             feedback.className = 'feedback error';
             loginBtn.disabled = false;
             passwordInput.select();
+            card.classList.remove('shake');
+            void card.offsetWidth;
+            card.classList.add('shake');
             return;
         }
-        location.href = targetAfterLogin();
+        feedback.textContent = '';
+        successOverlay.classList.add('show');
+        setTimeout(() => { location.href = targetAfterLogin(); }, 650);
     } catch (err) {
         feedback.textContent = 'Hiba: ' + err.message;
         feedback.className = 'feedback error';

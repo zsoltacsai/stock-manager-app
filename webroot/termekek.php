@@ -100,11 +100,12 @@ if (!Auth::isLoggedIn($appSettings)) {
                     <th data-sort="purchase_price_net" class="sortable">Nettó Beszerzési ár</th>
                     <th data-sort="net_price" class="sortable">Nettó Eladási ár</th>
                     <th data-sort="price" class="sortable">Bruttó Eladási ár</th>
+                    <th title="Feltüntetve a webáruházban">WS</th>
                     <th></th>
                 </tr>
             </thead>
             <tbody id="products-body">
-                <tr><td colspan="9" class="muted" style="text-align:center; padding:24px;">Betöltés...</td></tr>
+                <tr><td colspan="10" class="muted" style="text-align:center; padding:24px;">Betöltés...</td></tr>
             </tbody>
         </table>
     </div>

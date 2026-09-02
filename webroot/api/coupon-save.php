@@ -11,8 +11,15 @@ $input = json_input();
 if (trim((string) ($input['code'] ?? '')) === '') {
     send_json(['error' => 'A kuponkód megadása kötelező.'], 400);
 }
-if (empty($input['value']) && $input['value'] !== '0') {
+if (!isset($input['value']) || $input['value'] === '' || $input['value'] === null) {
     send_json(['error' => 'Az érték megadása kötelező.'], 400);
+}
+$couponValue = (float) $input['value'];
+if ($couponValue < 0) {
+    send_json(['error' => 'Az érték nem lehet negatív.'], 400);
+}
+if (($input['type'] ?? '') === 'percent' && $couponValue > 100) {
+    send_json(['error' => 'Százalékos kupon értéke legfeljebb 100 lehet.'], 400);
 }
 
 try {

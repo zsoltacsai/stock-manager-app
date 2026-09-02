@@ -15,6 +15,9 @@ $countedQty = $input['counted_qty'] === null || $input['counted_qty'] === '' ? n
 if (!$stockTakeId || !$productId) {
     send_json(['error' => 'Hiányzó stock_take_id vagy product_id.'], 400);
 }
+if ($countedQty !== null && $countedQty < 0) {
+    send_json(['error' => 'A megszámolt mennyiség nem lehet negatív.'], 400);
+}
 
 $db->updateStockTakeCount($stockTakeId, $productId, $countedQty);
 send_json(['ok' => true]);

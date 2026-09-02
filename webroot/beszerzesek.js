@@ -53,7 +53,7 @@ async function openDetail(id) {
         const res = await fetch('/api/purchase-detail.php?id=' + id);
         const data = await res.json();
         if (!res.ok) {
-            detailContent.innerHTML = `<p class="feedback error">${data.error || 'ismeretlen hiba'}</p>`;
+            detailContent.innerHTML = `<p class="feedback error">${escapeHtml(data.error || 'ismeretlen hiba')}</p>`;
             return;
         }
         const p = data.purchase;

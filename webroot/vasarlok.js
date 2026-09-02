@@ -101,6 +101,12 @@ async function toggleDeletedCustomer(id) {
     }
     if (!confirm(confirmMsg)) return;
 
+    let staffId;
+    try {
+        const staffRaw = localStorage.getItem('sm_current_staff');
+        if (staffRaw) staffId = JSON.parse(staffRaw).id;
+    } catch (e) { /* ignore corrupt storage */ }
+
     await fetch('/api/customer-save.php', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -116,6 +122,7 @@ async function toggleDeletedCustomer(id) {
             country: customer.country,
             notes: customer.notes,
             is_deleted: nextDeleted,
+            staff_id: staffId,
         }),
     });
     loadCustomers();
@@ -237,6 +244,10 @@ saveBtn.addEventListener('click', async () => {
         notes: el.notes.value.trim(),
         is_deleted: deletedToggle.classList.contains('on'),
     };
+    try {
+        const staffRaw = localStorage.getItem('sm_current_staff');
+        if (staffRaw) payload.staff_id = JSON.parse(staffRaw).id;
+    } catch (e) { /* ignore corrupt storage */ }
     modalFeedback.textContent = 'Mentés...';
     modalFeedback.className = 'modal-feedback';
     try {

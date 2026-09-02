@@ -30,6 +30,11 @@ if (!empty($_FILES['file']['tmp_name']) && is_uploaded_file($_FILES['file']['tmp
     send_json(['error' => 'Válassz egy meglévő mentést, vagy tölts fel egy fájlt.'], 400);
 }
 
+$staffId = !empty($_POST['staff_id']) ? (int) $_POST['staff_id'] : null;
+if ($db->listStaff(true) && !$db->isStaffAdmin($staffId)) {
+    send_json(['error' => 'Az adatbázis visszaállításához vezetői jogszint szükséges.'], 403);
+}
+
 try {
     $result = $manager->restoreFromFile($sourcePath);
 

@@ -46,7 +46,7 @@ if (!empty($p['id'])) {
     $wasDeleted = $existingProduct && !empty($existingProduct['is_deleted']);
 }
 $settingToDeleted = !empty($p['is_deleted']) && !$wasDeleted;
-if ($settingToDeleted && !empty($p['staff_id']) && !$db->isStaffAdmin((int) $p['staff_id'])) {
+if ($settingToDeleted && $db->listStaff(true) && !$db->isStaffAdmin(!empty($p['staff_id']) ? (int) $p['staff_id'] : null)) {
     send_json(['error' => 'Termék törléséhez vezetői jogszint szükséges.'], 403);
 }
 

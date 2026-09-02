@@ -65,7 +65,7 @@ async function openDetail(id) {
         ]);
         const data = await saleRes.json();
         if (!saleRes.ok) {
-            detailContent.innerHTML = `<p class="feedback error">${data.error || 'ismeretlen hiba'}</p>`;
+            detailContent.innerHTML = `<p class="feedback error">${escapeHtml(data.error || 'ismeretlen hiba')}</p>`;
             return;
         }
         const returnsData = await returnsRes.json();

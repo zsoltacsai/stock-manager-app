@@ -16,16 +16,16 @@ class GeoBlocker
     {
         $remote = $_SERVER['REMOTE_ADDR'] ?? '';
 
-        if (self::isPublicIp($remote)) {
+        // Csak akkor hihetünk a proxy által beállított fejlécnek, ha a
+        // közvetlen TCP-kapcsolat magáról a gépről jön (127.0.0.1 / ::1) —
+        // ez a dokumentált telepítési forma (Nginx ugyanazon a hoszton, mint
+        // a PHP-FPM). Bármilyen más privát tartomány (Docker híd-hálózat,
+        // VPN, tágabb LAN) esetén a kliens saját maga is beállíthatná ezt a
+        // fejlécet a korlátozás megkerülésére, ezért ott nem bízunk benne.
+        if (!in_array($remote, ['127.0.0.1', '::1'], true)) {
             return $remote;
         }
 
-        // A közvetlen TCP-kapcsolat egy privát/belső címről érkezik — ez arra
-        // utal, hogy egy helyi reverse proxy (pl. Nginx ugyanazon a gépen)
-        // áll előtte, ezért itt hihetünk a proxy által beállított fejlécnek.
-        // Ha nincs proxy, a REMOTE_ADDR eleve a valódi publikus cím, ide nem
-        // is jutunk el — így ezt a fejlécet közvetlenül az internetről érkező
-        // kliens nem tudja meghamisítani a korlátozás megkerülésére.
         foreach (['HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP'] as $header) {
             if (!empty($_SERVER[$header])) {
                 $candidate = trim(explode(',', (string) $_SERVER[$header])[0]);
@@ -177,16 +177,27 @@ class GeoBlocker
     private static function lookupCountry(string $ip): ?string
     {
         $cachePath = __DIR__ . '/../data/geoip-cache.json';
+        $handle = fopen($cachePath, 'c+');
+        if ($handle === false) {
+            return self::fetchCountryFromApi($ip);
+        }
+
+        flock($handle, LOCK_EX);
+
+        $raw = stream_get_contents($handle);
         $cache = [];
-        if (is_file($cachePath)) {
-            $decoded = json_decode((string) file_get_contents($cachePath), true);
+        if ($raw !== false && $raw !== '') {
+            $decoded = json_decode($raw, true);
             if (is_array($decoded)) {
                 $cache = $decoded;
             }
         }
 
         if (isset($cache[$ip]) && (time() - ($cache[$ip]['ts'] ?? 0)) < self::CACHE_TTL_SECONDS) {
-            return $cache[$ip]['country'] ?: null;
+            $country = $cache[$ip]['country'] ?: null;
+            flock($handle, LOCK_UN);
+            fclose($handle);
+            return $country;
         }
 
         $country = self::fetchCountryFromApi($ip);
@@ -197,7 +208,12 @@ class GeoBlocker
             $cache = array_slice($cache, -2000, null, true);
         }
 
-        @file_put_contents($cachePath, json_encode($cache, JSON_UNESCAPED_UNICODE));
+        rewind($handle);
+        ftruncate($handle, 0);
+        fwrite($handle, json_encode($cache, JSON_UNESCAPED_UNICODE));
+        fflush($handle);
+        flock($handle, LOCK_UN);
+        fclose($handle);
         return $country;
     }
 

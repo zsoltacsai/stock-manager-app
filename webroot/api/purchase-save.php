@@ -31,9 +31,15 @@ foreach ($lines as $line) {
     $vatPct  = is_numeric($vatRate) ? ((float) $vatRate) / 100 : 0.0;
 
     $unitCostNet = (float) $line['unit_cost_net'];
+    if ($unitCostNet < 0) {
+        send_json(['error' => "Érvénytelen beszerzési ár: {$product['name']}"], 400);
+    }
     $unitCostGross = isset($line['unit_cost_gross']) && $line['unit_cost_gross'] !== ''
         ? (float) $line['unit_cost_gross']
         : round($unitCostNet * (1 + $vatPct), 2);
+    if ($unitCostGross < 0) {
+        send_json(['error' => "Érvénytelen beszerzési ár: {$product['name']}"], 400);
+    }
 
     $items[] = [
         'product_id'      => $product['id'],
@@ -46,6 +52,11 @@ foreach ($lines as $line) {
     ];
 }
 
+$discountPercent = (float) ($input['discount_percent'] ?? 0);
+if ($discountPercent < 0 || $discountPercent > 100) {
+    send_json(['error' => 'Érvénytelen kedvezmény százalék.'], 400);
+}
+
 $purchase = [
     'supplier_id'         => !empty($input['supplier_id']) ? (int) $input['supplier_id'] : null,
     'supplier_name'       => $supplier['nev'] ?? null,
@@ -56,7 +67,7 @@ $purchase = [
     'supplier_address'    => $supplier['cim'] ?? null,
     'payment_method'      => $input['payment_method'] ?? 'készpénz',
     'currency'            => $input['currency'] ?? 'HUF',
-    'discount_percent'    => $input['discount_percent'] ?? 0,
+    'discount_percent'    => $discountPercent,
     'paid'                => $input['paid'] ?? true,
     'note'                => $input['note'] ?? null,
 ];

@@ -72,6 +72,10 @@ saveBtn.addEventListener('click', async () => {
         is_active: stfActive.checked,
     };
     if (stfPin.value.trim()) payload.pin = stfPin.value.trim();
+    try {
+        const staffRaw = localStorage.getItem('sm_current_staff');
+        if (staffRaw) payload.staff_id = JSON.parse(staffRaw).id;
+    } catch (e) { /* ignore corrupt storage */ }
 
     modalFeedback.textContent = 'Mentés...';
     modalFeedback.className = 'modal-feedback';

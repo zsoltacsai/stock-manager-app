@@ -41,7 +41,7 @@ if (!$geoCheck['allowed']) {
 // Ez a VALÓDI védelmi réteg: mivel minden adat és minden művelet
 // kizárólag ezen az API-n keresztül érhető el, a statikus HTML-oldalak
 // megtekintése önmagában nem tesz elérhetővé semmilyen valós adatot.
-$authWhitelist = ['login.php', 'logout.php', 'auth-status.php', 'install-status.php', 'receipt-detail.php'];
+$authWhitelist = ['login.php', 'logout.php', 'auth-status.php', 'install-status.php', 'receipt-detail.php', 'webhook.php'];
 $currentScript = basename($_SERVER['SCRIPT_NAME'] ?? '');
 if (!in_array($currentScript, $authWhitelist, true) && !Auth::isLoggedIn($appSettings)) {
     http_response_code(401);

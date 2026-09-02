@@ -39,7 +39,7 @@ async function loadSummary() {
         const res = await fetch('/api/daily-summary.php?date=' + encodeURIComponent(date));
         const data = await res.json();
         if (!res.ok) {
-            statsGrid.innerHTML = `<div class="feedback error">Hiba: ${data.error || 'ismeretlen hiba'}</div>`;
+            statsGrid.innerHTML = `<div class="feedback error">Hiba: ${escapeHtml(data.error || 'ismeretlen hiba')}</div>`;
             return;
         }
         renderSummary(data.summary);

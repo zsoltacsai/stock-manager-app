@@ -14,9 +14,10 @@ if (!Auth::isEnabled($appSettings)) {
 $input = json_input();
 $password = (string) ($input['password'] ?? '');
 
+require_once __DIR__ . '/../../src/GeoBlocker.php';
 $maxAttempts = (int) ($appSettings['login_max_attempts'] ?? 5);
 $lockoutMinutes = (int) ($appSettings['login_lockout_minutes'] ?? 15);
-$rateLimitKey = 'app-login-' . ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+$rateLimitKey = 'app-login-' . GeoBlocker::resolveClientIp();
 
 $limit = Auth::checkRateLimit($rateLimitKey, $maxAttempts, $lockoutMinutes);
 if ($limit['locked']) {

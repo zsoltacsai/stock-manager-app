@@ -18,5 +18,15 @@ if (!empty($input['pin']) && !preg_match('/^\d{4,8}$/', (string) $input['pin']))
     send_json(['error' => 'A PIN-kód 4-8 számjegy legyen.'], 400);
 }
 
+// Admin szerepkör adása vagy egy meglévő dolgozó szerkesztése (pl. PIN
+// visszaállítása) vezetői jogszintet kér — de csak akkor, ha már van
+// felvéve dolgozó (ha a PIN-rendszer még be sincs üzemelve, az első
+// dolgozó felvétele szabadon engedélyezett).
+$requestedRole = ($input['role'] ?? 'cashier') === 'admin' ? 'admin' : 'cashier';
+$privileged = $requestedRole === 'admin' || !empty($input['id']);
+if ($privileged && $db->listStaff(true) && !$db->isStaffAdmin(!empty($input['staff_id']) ? (int) $input['staff_id'] : null)) {
+    send_json(['error' => 'Ehhez vezetői jogszint szükséges.'], 403);
+}
+
 $id = $db->saveStaff($input);
 send_json(['id' => $id]);

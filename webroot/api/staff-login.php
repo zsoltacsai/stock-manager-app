@@ -12,9 +12,10 @@ if ($pin === '') {
 
 // Ugyanazokkal a limitekkel védve, mint az alkalmazás-jelszó — a PIN-ek
 // rövidsége (4-8 számjegy) miatt brute-force elleni védelem itt is fontos.
+require_once __DIR__ . '/../../src/GeoBlocker.php';
 $maxAttempts = (int) ($appSettings['login_max_attempts'] ?? 5);
 $lockoutMinutes = (int) ($appSettings['login_lockout_minutes'] ?? 15);
-$rateLimitKey = 'staff-pin-' . ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+$rateLimitKey = 'staff-pin-' . GeoBlocker::resolveClientIp();
 
 $limit = Auth::checkRateLimit($rateLimitKey, $maxAttempts, $lockoutMinutes);
 if ($limit['locked']) {

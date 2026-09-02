@@ -25,28 +25,40 @@ if (!$relevant) {
 }
 
 $wcOrderId = (int) ($order['id'] ?? 0);
-if ($wcOrderId && !$db->markWebhookOrderProcessed($wcOrderId)) {
-    send_json(['ignored' => true, 'reason' => 'already processed', 'order_id' => $wcOrderId]);
+if (!$wcOrderId) {
+    send_json(['ignored' => true, 'reason' => 'missing order id']);
 }
 
-$updated = [];
-foreach ($order['line_items'] as $li) {
-    $wcProductId = (int) ($li['product_id'] ?? 0);
-    $qty = (int) ($li['quantity'] ?? 0);
-    if (!$wcProductId || !$qty) {
-        continue;
+$db->beginTransaction();
+try {
+    if (!$db->markWebhookOrderProcessed($wcOrderId)) {
+        $db->rollBack();
+        send_json(['ignored' => true, 'reason' => 'already processed', 'order_id' => $wcOrderId]);
     }
 
-    $product = $db->findProductByWcId($wcProductId);
-    if (!$product) {
-        $db->logSync('webhook', null, "Order #{$order['id']}: unknown wc_product_id $wcProductId");
-        continue;
-    }
+    $updated = [];
+    foreach ($order['line_items'] as $li) {
+        $wcProductId = (int) ($li['product_id'] ?? 0);
+        $qty = (int) ($li['quantity'] ?? 0);
+        if (!$wcProductId || !$qty) {
+            continue;
+        }
 
-    $newQty = (int) $product['stock_qty'] - $qty;
-    $db->decrementStock($product['id'], $qty);
-    $db->logSync('webhook', $product['id'], "Order #{$order['id']}: -$qty (now $newQty)");
-    $updated[] = ['product_id' => $product['id'], 'name' => $product['name'], 'new_stock' => $newQty];
+        $product = $db->findProductByWcId($wcProductId);
+        if (!$product) {
+            $db->logSync('webhook', null, "Order #{$order['id']}: unknown wc_product_id $wcProductId");
+            continue;
+        }
+
+        $newQty = (int) $product['stock_qty'] - $qty;
+        $db->decrementStock($product['id'], $qty);
+        $db->logSync('webhook', $product['id'], "Order #{$order['id']}: -$qty (now $newQty)");
+        $updated[] = ['product_id' => $product['id'], 'name' => $product['name'], 'new_stock' => $newQty];
+    }
+    $db->commit();
+} catch (Throwable $e) {
+    $db->rollBack();
+    throw $e;
 }
 
 send_json(['ok' => true, 'updated' => $updated]);

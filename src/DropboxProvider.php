@@ -86,7 +86,7 @@ class DropboxProvider implements CloudBackupProvider
 
         return array_map(fn($e) => ['id' => $e['path_lower'], 'name' => $e['name']], array_filter(
             $entries,
-            fn($e) => ($e['.tag'] ?? '') === 'file'
+            fn($e) => ($e['.tag'] ?? '') === 'file' && str_contains($e['name'] ?? '', 'stockmanager_backup_')
         ));
     }
 

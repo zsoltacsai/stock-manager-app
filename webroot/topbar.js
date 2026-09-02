@@ -421,6 +421,10 @@ if ('serviceWorker' in navigator) {
         try {
             const formData = new FormData();
             formData.append('filename', filename);
+            try {
+                const staffRaw = localStorage.getItem('sm_current_staff');
+                if (staffRaw) formData.append('staff_id', JSON.parse(staffRaw).id);
+            } catch (e) { /* ignore corrupt storage */ }
             const res = await fetch('/api/backup-restore.php', { method: 'POST', body: formData });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
@@ -458,6 +462,10 @@ if ('serviceWorker' in navigator) {
             try {
                 const formData = new FormData();
                 formData.append('file', restoreFileInput.files[0]);
+                try {
+                    const staffRaw = localStorage.getItem('sm_current_staff');
+                    if (staffRaw) formData.append('staff_id', JSON.parse(staffRaw).id);
+                } catch (e) { /* ignore corrupt storage */ }
                 const res = await fetch('/api/backup-restore.php', { method: 'POST', body: formData });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');

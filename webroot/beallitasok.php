@@ -640,8 +640,11 @@ if (!Auth::isLoggedIn($appSettings)) {
                 </p>
 
                 <label for="geo-block-allow-ips">Mindig engedélyezett IP-címek / tartományok (opcionális)</label>
-                <input type="text" id="geo-block-allow-ips" placeholder="pl. 89.132.1.5, 2001:db8::/32">
-                <p class="muted" style="margin-top:-6px;">
+                <div class="input-icon-row">
+                    <input type="text" id="geo-block-allow-ips" placeholder="pl. 89.132.1.5, 2001:db8::/32">
+                    <button type="button" id="geo-add-own-ip-btn" class="btn btn-secondary" style="width:auto; padding:0 14px; white-space:nowrap;">Saját IP hozzáadása</button>
+                </div>
+                <p class="muted" style="margin-top:10px;">
                     Ide vessző-elválasztva vehetsz fel egyedi IP-címeket vagy CIDR-tartományokat
                     (pl. az üzlet fix IP-je), amik az ország-listától függetlenül mindig átjutnak.
                 </p>

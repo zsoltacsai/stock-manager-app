@@ -221,6 +221,7 @@ if ('serviceWorker' in navigator) {
     const geoBlockEnabled = document.getElementById('geo-block-enabled');
     const geoBlockCountries = document.getElementById('geo-block-countries');
     const geoBlockAllowIps = document.getElementById('geo-block-allow-ips');
+    const geoAddOwnIpBtn = document.getElementById('geo-add-own-ip-btn');
     const geoCurrentInfo = document.getElementById('geo-current-info');
     const settingsSaveGeoBtn = document.getElementById('settings-save-geo-btn');
     const settingsGeoFeedback = document.getElementById('settings-geo-feedback');
@@ -377,6 +378,25 @@ if ('serviceWorker' in navigator) {
         } catch (e) {
             geoCurrentInfo.textContent = '';
         }
+    }
+
+    if (geoAddOwnIpBtn) {
+        geoAddOwnIpBtn.addEventListener('click', async () => {
+            geoAddOwnIpBtn.disabled = true;
+            try {
+                const res = await fetch('/api/geo-status.php');
+                const data = await res.json();
+                if (!data.ip) throw new Error('ismeretlen IP-cím');
+                const existing = geoBlockAllowIps.value.split(',').map(s => s.trim()).filter(Boolean);
+                if (!existing.includes(data.ip)) {
+                    existing.push(data.ip);
+                    geoBlockAllowIps.value = existing.join(', ');
+                }
+            } catch (e) {
+                alert('A saját IP-cím lekérdezése sikertelen: ' + e.message);
+            }
+            geoAddOwnIpBtn.disabled = false;
+        });
     }
 
     if (wcBarcodeSource) {

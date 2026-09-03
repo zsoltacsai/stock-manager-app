@@ -10,6 +10,7 @@ send_json([
     'products' => $db->countProducts(),
     'sales_today' => $db->countSalesToday(),
     'low_stock_count' => $db->countLowStockProducts($lowStockThreshold),
+    'webshop_orders_draft_count' => $db->countDraftWebshopOrders(),
     'invoice_failures_7d' => $db->countRecentInvoiceFailures(7),
     'sync_failures_24h' => $db->countRecentSyncFailures(24),
 

@@ -19,7 +19,7 @@ function paymentBadge(method) {
         'PayPal': 'pm-paypal', 'Utánvét': 'pm-cod',
     };
     const cls = map[method] || 'pm-other';
-    return `<span class="pm-badge ${cls}">${method}</span>`;
+    return `<span class="pm-badge ${cls}">${escapeHtml(method)}</span>`;
 }
 
 function todayLocalISO() {
@@ -60,7 +60,7 @@ function renderSummary(summary) {
     const paymentRows = Object.entries(summary.by_payment_method);
     paymentTableBody.innerHTML = paymentRows.length
         ? paymentRows.map(([method, row]) => `
-            <tr><td>${method}</td><td>${row.count}</td><td>${fmt(row.total)}</td></tr>
+            <tr><td>${escapeHtml(method)}</td><td>${row.count}</td><td>${fmt(row.total)}</td></tr>
         `).join('')
         : '<tr><td colspan="3" class="muted">Nincs adat erre a napra.</td></tr>';
 

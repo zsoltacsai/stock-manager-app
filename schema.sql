@@ -365,4 +365,28 @@ CREATE TABLE IF NOT EXISTS stock_transfers (
 );
 CREATE INDEX IF NOT EXISTS idx_stock_transfers_product_id ON stock_transfers(product_id);
 
-INSERT INTO schema_version (version) SELECT 15 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
+-- Beérkező webshop-rendelések (WooCommerce webhook) — piszkozatként várnak
+-- emberi ellenőrzésre, mielőtt "leadásra" kerülnének (készletcsökkenés +
+-- valódi eladás-rekord). Lásd api/webhook.php és api/webshop-order-*.php.
+CREATE TABLE IF NOT EXISTS webshop_orders (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    wc_order_id     INTEGER NOT NULL,
+    order_number    TEXT,
+    status          TEXT NOT NULL DEFAULT 'draft',   -- draft | confirmed | rejected
+    wc_status       TEXT,                            -- a WooCommerce-beli rendelésstátusz (processing, completed, ...)
+    customer_name   TEXT,
+    customer_email  TEXT,
+    billing_json    TEXT,                            -- SzamlazzClient buyer-alakban tárolt számlázási cím
+    payment_method  TEXT,
+    currency        TEXT,
+    total           REAL NOT NULL DEFAULT 0,
+    items_json      TEXT,
+    customer_note   TEXT,
+    sale_id         INTEGER REFERENCES sales(id),     -- leadás után az ebből létrejött eladás
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    confirmed_at    TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_webshop_orders_wc_order_id ON webshop_orders(wc_order_id);
+CREATE INDEX IF NOT EXISTS idx_webshop_orders_status ON webshop_orders(status);
+
+INSERT INTO schema_version (version) SELECT 16 WHERE NOT EXISTS (SELECT 1 FROM schema_version);

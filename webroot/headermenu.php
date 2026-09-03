@@ -8,6 +8,7 @@ $__smHeaderLinks = [
     ['href' => 'beszerzes.php', 'label' => 'Új beszerzés'],
     ['href' => 'beszerzesek.php', 'label' => 'Beszerzések'],
     ['href' => 'eladasok.php', 'label' => 'Eladások'],
+    ['href' => 'beerkezo-eladasok.php', 'label' => 'Beérkező eladások'],
     ['href' => 'termekek.php', 'label' => 'Árucikkek'],
     ['href' => 'zaras.php', 'label' => 'Napi zárás'],
 ];

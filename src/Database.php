@@ -2,7 +2,7 @@
 
 class Database
 {
-    private const SCHEMA_VERSION = 15;
+    private const SCHEMA_VERSION = 16;
 
     private PDO $pdo;
     private string $driver;
@@ -113,6 +113,9 @@ class Database
             }
             if ($version < 13) {
                 $this->migrateV13WebhookIdempotency();
+            }
+            if ($version < 16) {
+                $this->migrateV16WebshopOrders();
             }
         }
 
@@ -568,6 +571,54 @@ class Database
             wc_order_id INTEGER PRIMARY KEY,
             processed_at TEXT NOT NULL
         )');
+    }
+
+    // Beérkező webshop-rendelések: a webhook.php mostantól NEM csökkenti
+    // azonnal a készletet, hanem ide ment egy piszkozatot — ezt egy ember
+    // ellenőrzi (lásd api/webshop-order-*.php), majd "leadja" (ekkor lesz
+    // belőle valódi eladás + készletcsökkenés), vagy elutasítja.
+    private function migrateV16WebshopOrders(): void
+    {
+        $isMysql = $this->driver === 'mysql';
+        $pk = $isMysql ? 'INT UNSIGNED AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
+        $intCol = $isMysql ? 'INT UNSIGNED NULL' : 'INTEGER';
+        $moneyCol = $isMysql ? 'DECIMAL(12,2)' : 'REAL';
+        $textCol = $isMysql ? 'TEXT' : 'TEXT';
+        $ts = $isMysql ? 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' : "TEXT NOT NULL DEFAULT (datetime('now'))";
+        $tsNull = $isMysql ? 'DATETIME NULL' : 'TEXT';
+        $engine = $isMysql ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : '';
+
+        try {
+            $this->pdo->exec("CREATE TABLE IF NOT EXISTS webshop_orders (
+                id $pk,
+                wc_order_id INTEGER NOT NULL,
+                order_number VARCHAR(64),
+                status VARCHAR(16) NOT NULL DEFAULT 'draft',
+                wc_status VARCHAR(32),
+                customer_name VARCHAR(191),
+                customer_email VARCHAR(191),
+                billing_json $textCol,
+                payment_method VARCHAR(64),
+                currency VARCHAR(8),
+                total $moneyCol NOT NULL DEFAULT 0,
+                items_json $textCol,
+                customer_note $textCol,
+                sale_id $intCol,
+                created_at $ts,
+                confirmed_at $tsNull
+            )$engine");
+        } catch (PDOException $e) { /* already exists */ }
+
+        foreach ([
+            $isMysql
+                ? 'ALTER TABLE webshop_orders ADD UNIQUE KEY uq_webshop_orders_wc_order_id (wc_order_id)'
+                : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_webshop_orders_wc_order_id ON webshop_orders(wc_order_id)',
+            'CREATE INDEX idx_webshop_orders_status ON webshop_orders(status)',
+        ] as $sql) {
+            try {
+                $this->pdo->exec($sql);
+            } catch (PDOException $e) { /* already exists */ }
+        }
     }
 
     public function findProductByBarcode(string $barcode): ?array
@@ -1317,6 +1368,117 @@ class Database
         } catch (PDOException $e) {
             return false;
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Beérkező webshop-rendelések (WooCommerce webhook → piszkozat → leadás)
+    // ---------------------------------------------------------------
+
+    /**
+     * Új piszkozat-rendelés mentése. Ha ez a wc_order_id már ismert (a
+     * webhook újraküldi ugyanazt a rendelést minden mentésnél), nem hoz
+     * létre duplikátumot — null-t ad vissza.
+     */
+    public function insertWebshopOrderDraft(array $o): ?int
+    {
+        try {
+            $stmt = $this->pdo->prepare('
+                INSERT INTO webshop_orders
+                    (wc_order_id, order_number, status, wc_status, customer_name, customer_email,
+                     billing_json, payment_method, currency, total, items_json, customer_note, created_at)
+                VALUES (:wc_order_id, :order_number, :status, :wc_status, :customer_name, :customer_email,
+                        :billing_json, :payment_method, :currency, :total, :items_json, :customer_note, :created_at)
+            ');
+            $stmt->execute([
+                ':wc_order_id'    => $o['wc_order_id'],
+                ':order_number'   => $o['order_number'] ?? (string) $o['wc_order_id'],
+                ':status'         => 'draft',
+                ':wc_status'      => $o['wc_status'] ?? '',
+                ':customer_name'  => $o['customer_name'] ?? '',
+                ':customer_email' => $o['customer_email'] ?? '',
+                ':billing_json'   => json_encode($o['billing'] ?? [], JSON_UNESCAPED_UNICODE),
+                ':payment_method' => $o['payment_method'] ?? '',
+                ':currency'       => $o['currency'] ?? 'HUF',
+                ':total'          => $o['total'] ?? 0,
+                ':items_json'     => json_encode($o['items'] ?? [], JSON_UNESCAPED_UNICODE),
+                ':customer_note'  => $o['customer_note'] ?? '',
+                ':created_at'     => date('Y-m-d H:i:s'),
+            ]);
+            return (int) $this->pdo->lastInsertId();
+        } catch (PDOException $e) {
+            // UNIQUE constraint ütközés = már ismert rendelés — ez a webhook
+            // idempotenciájának alapja, nem hibaállapot.
+            return null;
+        }
+    }
+
+    public function listWebshopOrders(string $status = ''): array
+    {
+        if ($status !== '') {
+            $stmt = $this->pdo->prepare('SELECT * FROM webshop_orders WHERE status = ? ORDER BY created_at DESC LIMIT 300');
+            $stmt->execute([$status]);
+        } else {
+            $stmt = $this->pdo->query('SELECT * FROM webshop_orders ORDER BY created_at DESC LIMIT 300');
+        }
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($rows as &$row) {
+            $row['billing'] = json_decode((string) $row['billing_json'], true) ?: [];
+            $row['items'] = json_decode((string) $row['items_json'], true) ?: [];
+            unset($row['billing_json'], $row['items_json']);
+        }
+        return $rows;
+    }
+
+    public function getWebshopOrder(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM webshop_orders WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            return null;
+        }
+        $row['billing'] = json_decode((string) $row['billing_json'], true) ?: [];
+        $row['items'] = json_decode((string) $row['items_json'], true) ?: [];
+        unset($row['billing_json'], $row['items_json']);
+        return $row;
+    }
+
+    public function countDraftWebshopOrders(): int
+    {
+        return (int) $this->pdo->query("SELECT COUNT(*) FROM webshop_orders WHERE status = 'draft'")->fetchColumn();
+    }
+
+    /**
+     * Atomikusan lefoglalja a piszkozatot feldolgozásra (draft -> confirmed),
+     * mielőtt az eladás-rekord létrejönne — ez zárja ki, hogy két majdnem
+     * egyidejű "Rendelés leadása" kattintás (pl. két dolgozó ugyanazt a
+     * rendelést nyitja meg) kétszer hozzon létre eladást/készletcsökkenést.
+     * Igaz-t ad vissza, ha ez a hívás nyerte a versenyt (a sor még draft
+     * volt), hamisat, ha valaki más már időközben feldolgozta.
+     */
+    public function claimDraftWebshopOrder(int $id): bool
+    {
+        $stmt = $this->pdo->prepare("UPDATE webshop_orders SET status = 'confirmed' WHERE id = :id AND status = 'draft'");
+        $stmt->execute([':id' => $id]);
+        return $stmt->rowCount() > 0;
+    }
+
+    public function setWebshopOrderSale(int $id, int $saleId, string $paymentMethod): void
+    {
+        $stmt = $this->pdo->prepare("
+            UPDATE webshop_orders
+            SET sale_id = :sale_id, payment_method = :payment_method, confirmed_at = :now
+            WHERE id = :id
+        ");
+        $stmt->execute([':sale_id' => $saleId, ':payment_method' => $paymentMethod, ':now' => date('Y-m-d H:i:s'), ':id' => $id]);
+    }
+
+    /** Lásd claimDraftWebshopOrder — ugyanaz a versenyhelyzet-védelem elutasításra. */
+    public function claimAndRejectDraftWebshopOrder(int $id): bool
+    {
+        $stmt = $this->pdo->prepare("UPDATE webshop_orders SET status = 'rejected', confirmed_at = :now WHERE id = :id AND status = 'draft'");
+        $stmt->execute([':now' => date('Y-m-d H:i:s'), ':id' => $id]);
+        return $stmt->rowCount() > 0;
     }
 
     // ---------------------------------------------------------------

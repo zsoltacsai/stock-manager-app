@@ -142,7 +142,13 @@ body { padding-left: 72px; }
     align-items: center; justify-content: center; color: var(--sidebar-icon, var(--muted));
     text-decoration: none; border: none; flex-shrink: 0; cursor: pointer;
     background: none; transition: background-color .12s ease, color .12s ease;
+    position: relative;
 }
+.sidebar-badge-dot {
+    position: absolute; top: 4px; right: 6px; min-width: 8px; height: 8px;
+    border-radius: 50%; background: var(--danger, #ef4444); border: 2px solid var(--sidebar-bg, var(--panel));
+}
+.sidebar-badge-dot.hidden { display: none; }
 .icon-sidebar .sidebar-link svg { width: 20px; height: 20px; }
 .icon-sidebar .sidebar-link:hover { color: var(--sidebar-icon-hover, var(--text)); background: rgba(255,255,255,0.08); }
 .icon-sidebar .sidebar-link.active {
@@ -453,6 +459,8 @@ html[data-theme="light"] #global-search-input {
 .copy-code-btn-done { color: var(--accent); }
 
 /* Fizetési mód szerinti színkód a listákban */
+.wo-tab-btn.active { background: var(--accent); color: #052e12; border-color: var(--accent); }
+.wo-tab-count { font-weight: 700; }
 .pm-badge { display: inline-block; padding: 3px 9px; border-radius: 12px; font-size: 12px; font-weight: 600; }
 .pm-cash { background: rgba(34, 197, 94, 0.15); color: #16a34a; }
 .pm-card { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }

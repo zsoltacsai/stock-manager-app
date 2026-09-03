@@ -105,6 +105,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($input['audit_log_retention_days'])) {
         $update['audit_log_retention_days'] = max(1, (int) $input['audit_log_retention_days']);
     }
+    if (isset($input['payment_methods']) && is_array($input['payment_methods'])) {
+        $methods = [];
+        $seen = [];
+        foreach ($input['payment_methods'] as $m) {
+            $value = trim((string) (is_array($m) ? ($m['value'] ?? '') : $m));
+            if ($value === '' || isset($seen[mb_strtolower($value)])) {
+                continue;
+            }
+            $seen[mb_strtolower($value)] = true;
+            $color = is_array($m) && preg_match('/^#[0-9a-fA-F]{6}$/', (string) ($m['color'] ?? ''))
+                ? $m['color']
+                : '#64748b';
+            $methods[] = ['value' => $value, 'color' => $color];
+        }
+        if ($methods) {
+            $update['payment_methods'] = $methods;
+        }
+    }
 
     $data = $settings->save($update);
 } else {

@@ -17,7 +17,7 @@ function paymentBadge(method) {
         'PayPal': 'pm-paypal', 'Utánvét': 'pm-cod',
     };
     const cls = map[method] || 'pm-other';
-    return `<span class="pm-badge ${cls}">${method}</span>`;
+    return `<span class="pm-badge ${cls}">${escapeHtml(method)}</span>`;
 }
 
 async function loadSales() {

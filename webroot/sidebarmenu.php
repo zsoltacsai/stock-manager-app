@@ -15,6 +15,12 @@ $__smSidebarLinks = [
         'icon' => '<line x1="16.5" y1="9.4" x2="7.5" y2="4.21"></line><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line>',
     ],
     [
+        'href' => 'beerkezo-eladasok.php',
+        'title' => 'Beérkező eladások',
+        'icon' => '<path d="M22 12h-6l-2 3h-4l-2-3H2"></path><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path>',
+        'badge_id' => 'sidebar-webshop-badge',
+    ],
+    [
         'href' => 'termekek.php',
         'title' => 'Árucikkek',
         'icon' => '<rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect>',
@@ -41,6 +47,9 @@ $__smSidebarLinks = [
 <?php foreach ($__smSidebarLinks as $__smLink): ?>
     <a href="<?= $__smLink['href'] ?>" class="sidebar-link<?= $__smLink['href'] === $__smSidebarCurrent ? ' active' : '' ?>" title="<?= $__smLink['title'] ?>">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><?= $__smLink['icon'] ?></svg>
+<?php if (!empty($__smLink['badge_id'])): ?>
+        <span class="sidebar-badge-dot hidden" id="<?= $__smLink['badge_id'] ?>"></span>
+<?php endif; ?>
     </a>
 <?php endforeach; ?>
     <div class="sidebar-spacer"></div>

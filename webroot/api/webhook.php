@@ -29,40 +29,85 @@ if (!$wcOrderId) {
     send_json(['ignored' => true, 'reason' => 'missing order id']);
 }
 
-$db->beginTransaction();
-try {
-    if (!$db->markWebhookOrderProcessed($wcOrderId)) {
-        $db->rollBack();
-        send_json(['ignored' => true, 'reason' => 'already processed', 'order_id' => $wcOrderId]);
+// A rendelés NEM csökkenti azonnal a készletet — ehelyett piszkozatként
+// bekerül a "Beérkező eladások" listába, ahol egy ember ellenőrzi (a
+// tételek termékpárosítását, a fizetési módot), majd "leadja". Ez védi ki,
+// hogy egy hibás/duplikált/gyanús webhook-hívás észrevétlenül módosítsa a
+// helyi készletet — lásd api/webshop-order-confirm.php.
+$billing = $order['billing'] ?? [];
+$buyerName = trim(($billing['company'] ?? '') !== ''
+    ? (string) $billing['company']
+    : trim(($billing['first_name'] ?? '') . ' ' . ($billing['last_name'] ?? '')));
+
+// A SzamlazzClient buyer-tömbjével megegyező alakban tároljuk, hogy a
+// számla egy kattintással, átalakítás nélkül kiállítható legyen belőle.
+$euVatOrTaxNumber = '';
+foreach (($order['meta_data'] ?? []) as $meta) {
+    $key = strtolower((string) ($meta['key'] ?? ''));
+    if (in_array($key, ['_billing_vat_number', '_billing_eu_vat_number', 'vat_number', '_billing_tax_number'], true) && !empty($meta['value'])) {
+        $euVatOrTaxNumber = (string) $meta['value'];
+        break;
+    }
+}
+$buyer = [
+    'nev'        => $buyerName,
+    'orszag'     => $billing['country'] ?? '',
+    'irsz'       => $billing['postcode'] ?? '',
+    'telepules'  => $billing['city'] ?? '',
+    'cim'        => trim(($billing['address_1'] ?? '') . ' ' . ($billing['address_2'] ?? '')),
+    'email'      => $billing['email'] ?? '',
+    'adoszam'    => $euVatOrTaxNumber,
+    'megjegyzes' => 'WooCommerce rendelés #' . ($order['number'] ?? $wcOrderId),
+];
+
+$items = [];
+foreach ($order['line_items'] as $li) {
+    $wcProductId = (int) ($li['product_id'] ?? 0);
+    $qty = (int) ($li['quantity'] ?? 0);
+    if ($qty <= 0) {
+        continue;
     }
 
-    $updated = [];
-    foreach ($order['line_items'] as $li) {
-        $wcProductId = (int) ($li['product_id'] ?? 0);
-        $qty = (int) ($li['quantity'] ?? 0);
-        if (!$wcProductId || !$qty) {
-            continue;
-        }
+    $product = $wcProductId ? $db->findProductByWcId($wcProductId) : null;
+    $lineTotal = (float) ($li['total'] ?? 0) + (float) ($li['total_tax'] ?? 0);
+    $unitPrice = $qty > 0 ? round($lineTotal / $qty, 2) : (float) ($li['price'] ?? 0);
 
-        $product = $db->findProductByWcId($wcProductId);
-        if (!$product) {
-            $db->logSync('webhook', null, "Order #{$order['id']}: unknown wc_product_id $wcProductId");
-            continue;
-        }
-        if (empty($product['sync_to_woocommerce'])) {
-            $db->logSync('webhook', $product['id'], "Order #{$order['id']}: kihagyva, a termék szinkronja ki van kapcsolva");
-            continue;
-        }
-
-        $newQty = (int) $product['stock_qty'] - $qty;
-        $db->decrementStock($product['id'], $qty);
-        $db->logSync('webhook', $product['id'], "Order #{$order['id']}: -$qty (now $newQty)");
-        $updated[] = ['product_id' => $product['id'], 'name' => $product['name'], 'new_stock' => $newQty];
-    }
-    $db->commit();
-} catch (Throwable $e) {
-    $db->rollBack();
-    throw $e;
+    $items[] = [
+        'wc_product_id' => $wcProductId ?: null,
+        'product_id'    => $product['id'] ?? null,
+        'name'          => (string) ($li['name'] ?? ''),
+        'sku'           => (string) ($li['sku'] ?? ''),
+        'qty'           => $qty,
+        'unit_price'    => $unitPrice,
+        'vat_rate'      => $product['vat_rate'] ?? ($appSettings['szamlazz_default_vat'] ?? '27'),
+        'matched'       => $product !== null,
+    ];
 }
 
-send_json(['ok' => true, 'updated' => $updated]);
+if (!$items) {
+    send_json(['ignored' => true, 'reason' => 'no usable line items']);
+}
+
+$total = array_sum(array_map(fn($i) => $i['qty'] * $i['unit_price'], $items));
+
+$draftId = $db->insertWebshopOrderDraft([
+    'wc_order_id'    => $wcOrderId,
+    'order_number'   => (string) ($order['number'] ?? $wcOrderId),
+    'wc_status'      => $status,
+    'customer_name'  => $buyerName,
+    'customer_email' => $billing['email'] ?? '',
+    'billing'        => $buyer,
+    'payment_method' => (string) ($order['payment_method_title'] ?? $order['payment_method'] ?? ''),
+    'currency'       => (string) ($order['currency'] ?? 'HUF'),
+    'total'          => round($total, 2),
+    'items'          => $items,
+    'customer_note'  => (string) ($order['customer_note'] ?? ''),
+]);
+
+if ($draftId === null) {
+    send_json(['ok' => true, 'ignored' => true, 'reason' => 'already imported', 'order_id' => $wcOrderId]);
+}
+
+$db->logSync('webhook', null, "Rendelés #{$wcOrderId} piszkozatként importálva (Beérkező eladások, #$draftId)");
+
+send_json(['ok' => true, 'draft_id' => $draftId, 'order_id' => $wcOrderId]);

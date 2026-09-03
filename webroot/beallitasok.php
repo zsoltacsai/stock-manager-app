@@ -230,16 +230,26 @@ if (!Auth::isLoggedIn($appSettings)) {
         </div>
 
         <div id="tab-szamlazz-settings" class="tab-panel">
-            <label for="szamlazz-agent-key">Számla Agent kulcs</label>
+            <strong>Fizetési módok</strong>
+            <p class="muted" style="margin-top:4px;">
+                A kasszán és a beérkező webshop-rendelések leadásakor választható
+                fizetési módok listája — bővítsd ki pl. "Stripe"-pal, ha a
+                webáruházban ezt is elfogadod.
+            </p>
+            <div id="payment-methods-list" style="margin-top:8px;"></div>
+            <div class="field-row" style="margin-top:10px;">
+                <input type="text" id="payment-methods-add-input" placeholder="Új fizetési mód neve (pl. Stripe)">
+                <button type="button" id="payment-methods-add-btn" class="btn btn-secondary" style="width:auto; padding:0 16px;">Hozzáadás</button>
+            </div>
+            <button id="settings-save-payment-methods-btn" class="btn btn-primary" style="width:auto; padding:10px 18px; margin-top:10px;">Mentés</button>
+            <p id="settings-payment-methods-feedback" class="modal-feedback"></p>
+
+            <label for="szamlazz-agent-key" style="margin-top:20px; display:block; border-top:1px solid var(--border); padding-top:14px;">Számla Agent kulcs</label>
             <input type="text" id="szamlazz-agent-key" placeholder="A Számlázz.hu Beállítások → Számla Agent oldaláról">
             <div class="field-row">
                 <div>
                     <label for="szamlazz-default-payment">Alapértelmezett fizetési mód</label>
-                    <select id="szamlazz-default-payment">
-                        <option value="Készpénz">Készpénz</option>
-                        <option value="Átutalás">Átutalás</option>
-                        <option value="Bankkártya">Bankkártya</option>
-                    </select>
+                    <select id="szamlazz-default-payment"></select>
                 </div>
                 <div>
                     <label for="szamlazz-default-vat">Alapértelmezett áfakulcs</label>
@@ -365,7 +375,9 @@ if (!Auth::isLoggedIn($appSettings)) {
                 terméknél, hogy a webáruház is naprakész maradjon.<br><br>
                 <strong>Webhook (valós idejű)</strong> — ha a WooCommerce webhookot állítasz be
                 (Woo → Beállítások → Speciális → Webhookok) a "Rendelés frissítve" eseményre, a
-                webshopon történt eladások azonnal csökkentik a helyi készletet, pull nélkül is.
+                webshopon történt (fizetett) rendelések a <strong>Beérkező eladások</strong> menüpontban
+                jelennek meg piszkozatként (piros jelzéssel + felugró értesítéssel) — a készlet csak
+                akkor csökken, ha ott ellenőrzés után leadod a rendelést.
             </div>
         </div>
 

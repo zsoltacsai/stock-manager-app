@@ -384,5 +384,27 @@ CREATE TABLE IF NOT EXISTS stock_transfers (
     CONSTRAINT fk_stock_transfers_staff FOREIGN KEY (staff_id) REFERENCES staff(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS webshop_orders (
+    id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    wc_order_id     INT UNSIGNED NOT NULL,
+    order_number    VARCHAR(64),
+    status          VARCHAR(16) NOT NULL DEFAULT 'draft',
+    wc_status       VARCHAR(32),
+    customer_name   VARCHAR(191),
+    customer_email  VARCHAR(191),
+    billing_json    TEXT,
+    payment_method  VARCHAR(64),
+    currency        VARCHAR(8),
+    total           DECIMAL(12,2) NOT NULL DEFAULT 0,
+    items_json      TEXT,
+    customer_note   TEXT,
+    sale_id         INT UNSIGNED NULL,
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    confirmed_at    DATETIME NULL,
+    UNIQUE KEY uq_webshop_orders_wc_order_id (wc_order_id),
+    KEY idx_webshop_orders_status (status),
+    CONSTRAINT fk_webshop_orders_sale FOREIGN KEY (sale_id) REFERENCES sales(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 INSERT INTO schema_version (version)
-SELECT 15 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM schema_version);
+SELECT 16 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM schema_version);

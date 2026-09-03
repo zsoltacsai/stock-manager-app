@@ -62,6 +62,17 @@ class Settings
         'google_refresh_token' => '',
         'google_folder_id'     => '',
 
+        // Fizetési módok listája (kassza + beérkező webshop-rendelések
+        // fizetésimód-választója) — bővíthető a Beállítások alatt, hogy pl.
+        // egy webshopban használt "Stripe" is választható legyen helyben.
+        'payment_methods' => [
+            ['value' => 'Készpénz', 'color' => '#16a34a'],
+            ['value' => 'Átutalás', 'color' => '#a855f7'],
+            ['value' => 'Bankkártya', 'color' => '#3b82f6'],
+            ['value' => 'PayPal', 'color' => '#14b8a6'],
+            ['value' => 'Utánvét', 'color' => '#f97316'],
+        ],
+
         'szamlazz_agent_key'       => '',
         'szamlazz_default_payment' => 'Készpénz',
         'szamlazz_default_vat'     => '27',

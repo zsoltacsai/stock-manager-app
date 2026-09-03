@@ -36,7 +36,7 @@ function renderResults(purchases) {
                 <td>${escapeHtml(p.supplier_name || '—')}</td>
                 <td>${fmt(p.total_net)}</td>
                 <td>${fmt(p.total_gross)}</td>
-                <td>${p.payment_method || ''}</td>
+                <td>${escapeHtml(p.payment_method || '')}</td>
             </tr>
         `).join('')
         : '<tr><td colspan="6" class="muted" style="text-align:center; padding:24px;">Nincs a szűrésnek megfelelő beszerzés.</td></tr>';

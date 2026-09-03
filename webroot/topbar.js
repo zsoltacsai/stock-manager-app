@@ -145,6 +145,13 @@ if ('serviceWorker' in navigator) {
     const settingsBackupFeedback = document.getElementById('settings-backup-feedback');
     const backupListEl = document.getElementById('backup-list');
 
+    const paymentMethodsList = document.getElementById('payment-methods-list');
+    const paymentMethodsAddInput = document.getElementById('payment-methods-add-input');
+    const paymentMethodsAddBtn = document.getElementById('payment-methods-add-btn');
+    const settingsSavePaymentMethodsBtn = document.getElementById('settings-save-payment-methods-btn');
+    const settingsPaymentMethodsFeedback = document.getElementById('settings-payment-methods-feedback');
+    let currentPaymentMethods = [];
+
     const szamlazzAgentKey = document.getElementById('szamlazz-agent-key');
     const szamlazzDefaultPayment = document.getElementById('szamlazz-default-payment');
     const szamlazzDefaultVat = document.getElementById('szamlazz-default-vat');
@@ -315,6 +322,14 @@ if ('serviceWorker' in navigator) {
                 ? `Utolsó mentés: ${new Date(data.last_backup_at).toLocaleString('hu-HU')}` +
                   (data.last_backup_summary ? ` — ${data.last_backup_summary}` : '')
                 : 'Még nem történt mentés.';
+        }
+
+        currentPaymentMethods = Array.isArray(data.payment_methods) && data.payment_methods.length ? data.payment_methods : [
+            { value: 'Készpénz', color: '#16a34a' }, { value: 'Bankkártya', color: '#3b82f6' },
+        ];
+        renderPaymentMethodsList();
+        if (szamlazzDefaultPayment) {
+            szamlazzDefaultPayment.innerHTML = currentPaymentMethods.map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.value)}</option>`).join('');
         }
 
         if (szamlazzAgentKey) szamlazzAgentKey.value = data.szamlazz_agent_key || '';
@@ -1016,6 +1031,68 @@ if ('serviceWorker' in navigator) {
         });
     }
 
+    // --- Fizetési módok: bővíthető lista (kassza + beérkező webshop-
+    // rendelések fizetésimód-választója innen olvassa a beállítást). ---
+    function renderPaymentMethodsList() {
+        if (!paymentMethodsList) return;
+        paymentMethodsList.innerHTML = currentPaymentMethods.map((m, idx) => `
+            <div class="search-result-item" data-idx="${idx}">
+                <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:${escapeHtml(m.color || '#64748b')}; margin-right:8px; vertical-align:-1px;"></span>${escapeHtml(m.value)}</span>
+                <button type="button" class="row-actions-btn danger payment-method-remove-btn" data-idx="${idx}"${currentPaymentMethods.length <= 1 ? ' disabled' : ''}>Törlés</button>
+            </div>
+        `).join('');
+        paymentMethodsList.querySelectorAll('.payment-method-remove-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                currentPaymentMethods.splice(parseInt(btn.dataset.idx, 10), 1);
+                renderPaymentMethodsList();
+            });
+        });
+    }
+
+    const PAYMENT_METHOD_COLOR_PALETTE = ['#16a34a', '#a855f7', '#3b82f6', '#14b8a6', '#f97316', '#e11d48', '#64748b', '#eab308'];
+
+    if (paymentMethodsAddBtn) {
+        paymentMethodsAddBtn.addEventListener('click', () => {
+            const value = (paymentMethodsAddInput.value || '').trim();
+            if (!value) return;
+            if (currentPaymentMethods.some(m => m.value.toLowerCase() === value.toLowerCase())) {
+                paymentMethodsAddInput.value = '';
+                return;
+            }
+            const color = PAYMENT_METHOD_COLOR_PALETTE[currentPaymentMethods.length % PAYMENT_METHOD_COLOR_PALETTE.length];
+            currentPaymentMethods.push({ value, color });
+            paymentMethodsAddInput.value = '';
+            renderPaymentMethodsList();
+        });
+    }
+    if (paymentMethodsAddInput) {
+        paymentMethodsAddInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); paymentMethodsAddBtn.click(); }
+        });
+    }
+    if (settingsSavePaymentMethodsBtn) {
+        settingsSavePaymentMethodsBtn.addEventListener('click', async () => {
+            settingsPaymentMethodsFeedback.textContent = 'Mentés...';
+            settingsPaymentMethodsFeedback.className = 'modal-feedback';
+            try {
+                const res = await fetch('/api/settings.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ payment_methods: currentPaymentMethods }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+                applySettings(data);
+                settingsPaymentMethodsFeedback.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;vertical-align:-1px;margin-right:4px;"><polyline points="20 6 9 17 4 12"></polyline></svg>Mentve';
+                settingsPaymentMethodsFeedback.classList.add('saved-flash');
+                setTimeout(() => settingsPaymentMethodsFeedback.classList.remove('saved-flash'), 1200);
+            } catch (err) {
+                settingsPaymentMethodsFeedback.textContent = 'Hiba: ' + err.message;
+                settingsPaymentMethodsFeedback.className = 'modal-feedback error';
+            }
+        });
+    }
+
     async function loadBrandMappingUi() {
         if (!brandMappingList) return;
         brandMappingList.innerHTML = '<p class="muted" style="font-size:12px;">Betöltés...</p>';
@@ -1252,6 +1329,9 @@ if ('serviceWorker' in navigator) {
             const res = await fetch('/api/system-status.php');
             const data = await res.json();
             const alerts = [];
+            if (data.webshop_orders_draft_count > 0) {
+                alerts.push({ text: `${data.webshop_orders_draft_count} új rendelés a webáruházból`, href: 'beerkezo-eladasok.php' });
+            }
             if (data.low_stock_count > 0) {
                 alerts.push({ text: `${data.low_stock_count} termék alacsony készleten`, href: 'termekek.php' });
             }
@@ -1266,6 +1346,7 @@ if ('serviceWorker' in navigator) {
             notifDropdown.innerHTML = alerts.length
                 ? alerts.map(a => `<div class="search-result-item" onclick="location.href='${a.href}'" style="cursor:pointer;"><span>${a.text}</span></div>`).join('')
                 : '<p class="muted" style="margin:0;">Nincs aktív értesítés.</p>';
+            refreshWebshopOrderBadge(data.webshop_orders_draft_count || 0);
         } catch (e) {
             notifDropdown.innerHTML = '<p class="muted" style="margin:0;">Az értesítések betöltése sikertelen.</p>';
         }
@@ -1284,6 +1365,48 @@ if ('serviceWorker' in navigator) {
     });
 
     loadNotifications();
+
+    // --- Beérkező webshop-rendelések: piros pötty a sidebaron + felugró
+    // értesítés, ha a piszkozatok száma nő két lekérdezés között. A
+    // lekérdezés a system-status.php-t használja (amit a fenti bell-ikon
+    // is hív), ezért itt csak a sidebar-badge frissítésére és az
+    // esetleges popupra koncentrál — a bell-dropdown tartalmát a fenti
+    // loadNotifications() adja.
+    let lastKnownDraftCount = null;
+
+    function refreshWebshopOrderBadge(count) {
+        const badge = document.getElementById('sidebar-webshop-badge');
+        if (badge) badge.classList.toggle('hidden', count === 0);
+    }
+
+    function showOrderPopup(newCount, total) {
+        const popup = document.createElement('div');
+        popup.className = 'sync-toast show ok';
+        popup.style.cursor = 'pointer';
+        popup.style.zIndex = '60';
+        popup.textContent = newCount === 1
+            ? `Új rendelés érkezett a webáruházból! (összesen ${total} feldolgozatlan)`
+            : `${newCount} új rendelés érkezett a webáruházból! (összesen ${total} feldolgozatlan)`;
+        popup.addEventListener('click', () => { location.href = 'beerkezo-eladasok.php'; });
+        document.body.appendChild(popup);
+        setTimeout(() => popup.remove(), 7000);
+    }
+
+    async function pollWebshopOrders() {
+        try {
+            const res = await fetch('/api/system-status.php');
+            const data = await res.json();
+            const count = data.webshop_orders_draft_count || 0;
+            refreshWebshopOrderBadge(count);
+            if (lastKnownDraftCount !== null && count > lastKnownDraftCount && !location.pathname.endsWith('/beerkezo-eladasok.php')) {
+                showOrderPopup(count - lastKnownDraftCount, count);
+                document.getElementById('notif-badge-dot').style.display = 'block';
+            }
+            lastKnownDraftCount = count;
+        } catch (e) { /* a következő lekérdezés úgyis újrapróbálja */ }
+    }
+    pollWebshopOrders();
+    setInterval(pollWebshopOrders, 25000);
 
     // --- Sötét/világos gyorsváltó ---
     const themeToggleBtn = document.createElement('button');

@@ -746,6 +746,51 @@ ténylegesen változott (nem minden mentésnél), mivel a letöltés + több
 méretben történő újramintázás a WooCommerce oldalon számottevően tovább
 tarthat, mint egy sima mezőfrissítés.
 
+## Beérkező eladások (webshop-rendelések jóváhagyással)
+
+A WooCommerce webhookja (Woo → Beállítások → Speciális → Webhookok, "Rendelés
+frissítve" esemény) mostantól **nem csökkenti azonnal a helyi készletet** —
+ehelyett a fizetett (`processing`/`completed` állapotú) rendelés
+piszkozatként bekerül az új **Beérkező eladások** menüpontba
+(`beerkezo-eladasok.php`, elérhető az oldalsávból és a felső navigációból
+is). Ez a review-lépés védi ki, hogy egy hibás/gyanús/kétszer kiküldött
+webhook-hívás észrevétlenül módosítsa a raktárkészletet.
+
+- **Értesítés**: amíg piszkozat vár, piros pötty jelenik meg az oldalsáv
+  "Beérkező eladások" ikonján és a felső harang-értesítésen is; ha a
+  piszkozatok száma nő két lekérdezés között (kb. 25 másodpercenként
+  ellenőrizve), egy felugró értesítés is megjelenik ("Új rendelés érkezett a
+  webáruházból").
+- **Tétel-párosítás**: minden rendeléstétel megpróbálódik párosítani egy
+  helyi termékkel a WooCommerce termék-ID alapján (`wc_product_id`) — a
+  párosítottak zöld "Párosítva" jelvényt kapnak, a párosítatlanok piros
+  "Nincs helyi termék" jelvényt (ezek az összegben/számlán szerepelnek, de a
+  leadáskor nem csökkentik semmelyik termék készletét).
+- **Rendelés leadása**: ellenőrzés után a "Rendelés leadása" gomb valódi
+  eladás-rekordot hoz létre (megjelenik az Eladások listában is), és csak
+  ekkor csökkenti a párosított tételek helyi készletét — a WooCommerce felé
+  nem küld vissza készlet-frissítést, mivel a rendelés maga onnan érkezett
+  (a Woo már a saját oldalán kezeli a készletét).
+- **Fizetési mód**: a rendeléshez a WooCommerce-ből érkező fizetési mód
+  (`payment_method_title`, pl. "Stripe") van előre kiválasztva egy
+  szerkeszthető legördülőben — lásd lent a bővíthető fizetési módok listát.
+- **Egy kattintásos számlázás**: a "Számla kiállítása azonnal" jelölőnégyzet
+  (leadáskor), vagy utólag egy "Számla kiállítása" gomb (a leadott
+  rendelés részletei alatt) a Számlázz.hu integrációval, a rendelés
+  számlázási címéből (WooCommerce billing-mezők) automatikusan összeállítva
+  állítja ki a számlát — nem kell újra begépelni a vevő adatait. Ha a
+  rendelés számlázási címe hiányos (név/irányítószám/település/cím
+  bármelyike hiányzik), a jelölőnégyzet/gomb egyértelmű üzenettel jelzi ezt.
+- **Elutasítás**: ha egy rendelés hibás vagy nem kell feldolgozni,
+  "Elutasítás"-sal archiválható — a készletet ez sem érinti.
+
+**Bővíthető fizetési módok**: Beállítások → Számlázz.hu fül tetején egy
+"Fizetési módok" lista kezelhető (hozzáadás/törlés) — ez adja a kasszán és a
+Beérkező eladásoknál is választható fizetési módokat. Alapból Készpénz,
+Átutalás, Bankkártya, PayPal, Utánvét szerepel; webshopos fizetési
+szolgáltatók (pl. Stripe) hozzáadhatók, hogy a webshop-rendelések leadásakor
+a valódi fizetési mód legyen kiválasztható, ne csak a kasszás alapértelmezés.
+
 ## Mentés-visszaállítás (backup restore)
 
 A Beállítások → Mentés mostantól egy **Visszaállítás** gombot kínál

@@ -29,20 +29,34 @@ const paymentMethodSelect = document.getElementById('payment-method');
 // --- Fizetési mód: egyedi (ikonos) legördülő, natív <select>-tel nem
 // lehetne opciónként más ikont mutatni böngészőkön átívelően. A tényleges
 // érték a rejtett #payment-method mezőben marad, hogy a checkout-kód
-// (paymentMethodSelect.value) változatlanul működjön. ---
-const PAYMENT_METHODS = [
-    { value: 'Készpénz', color: '#16a34a', icon: '<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"></path><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"></path><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"></path>' },
-    { value: 'Átutalás', color: '#a855f7', icon: '<polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path>' },
-    { value: 'Bankkártya', color: '#3b82f6', icon: '<rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line>' },
-    { value: 'PayPal', color: '#14b8a6', icon: '<circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>' },
-    { value: 'Utánvét', color: '#f97316', icon: '<rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle>' },
+// (paymentMethodSelect.value) változatlanul működjön.
+// A lista a Beállítások → Számlázz.hu fülön bővíthető (pl. "Stripe"), lásd
+// topbar.js payment_methods mentése — itt csak az ismert nevekhez van
+// egyedi ikon, egy újonnan hozzáadotthoz az általános kártya-ikon jár. ---
+const PAYMENT_METHOD_ICONS = {
+    'Készpénz': '<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"></path><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"></path><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"></path>',
+    'Átutalás': '<polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path>',
+    'Bankkártya': '<rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line>',
+    'PayPal': '<circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>',
+    'Utánvét': '<rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle>',
+};
+const PAYMENT_METHOD_ICON_DEFAULT = '<rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line>';
+
+let PAYMENT_METHODS = [
+    { value: 'Készpénz', color: '#16a34a' },
+    { value: 'Átutalás', color: '#a855f7' },
+    { value: 'Bankkártya', color: '#3b82f6' },
+    { value: 'PayPal', color: '#14b8a6' },
+    { value: 'Utánvét', color: '#f97316' },
 ];
 
 function pmSvg(method) {
-    return `<svg viewBox="0 0 24 24" fill="none" stroke="${method.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${method.icon}</svg>`;
+    const icon = PAYMENT_METHOD_ICONS[method.value] || PAYMENT_METHOD_ICON_DEFAULT;
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="${method.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon}</svg>`;
 }
 
 let setPaymentMethod = (value) => { paymentMethodSelect.value = value; };
+let renderPaymentMethodOptions = () => {};
 
 (function initPaymentMethodSelect() {
     const wrap = document.getElementById('pm-select');
@@ -53,12 +67,15 @@ let setPaymentMethod = (value) => { paymentMethodSelect.value = value; };
     const triggerIcon = trigger.querySelector('.pm-select-icon');
     const triggerLabel = document.getElementById('payment-method-label');
 
-    list.innerHTML = PAYMENT_METHODS.map(m => `
-        <button type="button" class="pm-select-option" data-value="${m.value}" role="option">
-            <span class="pm-select-icon">${pmSvg(m)}</span>
-            <span>${m.value}</span>
-        </button>
-    `).join('');
+    renderPaymentMethodOptions = function () {
+        list.innerHTML = PAYMENT_METHODS.map(m => `
+            <button type="button" class="pm-select-option" data-value="${m.value}" role="option">
+                <span class="pm-select-icon">${pmSvg(m)}</span>
+                <span>${m.value}</span>
+            </button>
+        `).join('');
+    };
+    renderPaymentMethodOptions();
 
     setPaymentMethod = function (value) {
         const method = PAYMENT_METHODS.find(m => m.value === value) || PAYMENT_METHODS[0];
@@ -97,6 +114,17 @@ let setPaymentMethod = (value) => { paymentMethodSelect.value = value; };
 
     setPaymentMethod(paymentMethodSelect.value || 'Készpénz');
 })();
+
+// A Beállítások alatt bővíthető lista betöltése után frissítjük a
+// legördülőt — ha nincs egyetlen mentett fizetési mód sem, a fenti
+// beépített alapértelmezés marad érvényben.
+window.smSettingsPromise.then((data) => {
+    if (Array.isArray(data.payment_methods) && data.payment_methods.length) {
+        PAYMENT_METHODS = data.payment_methods;
+        renderPaymentMethodOptions();
+        setPaymentMethod(paymentMethodSelect.value || PAYMENT_METHODS[0].value);
+    }
+}).catch(() => { /* marad a beépített alapértelmezés */ });
 const receiptLinkWrap = document.getElementById('receipt-link-wrap');
 const viewReceiptBtn = document.getElementById('view-receipt-btn');
 const receiptEmailInput = document.getElementById('receipt-email-input');

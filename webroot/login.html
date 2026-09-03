@@ -136,8 +136,12 @@
         </div>
     </div>
 </div>
+<div id="app-footer-badge"></div>
 
 <script>
+document.getElementById('app-footer-badge').textContent =
+    `© ${new Date().getFullYear()} Fountainbridge.hu | verzió: 1.0 beta 9`;
+
 const card = document.getElementById('login-card');
 const passwordInput = document.getElementById('login-password');
 const feedback = document.getElementById('login-feedback');

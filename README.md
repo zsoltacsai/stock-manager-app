@@ -1,6 +1,6 @@
 # Stock Manager — localhost vonalkód-kassza
 
-**Verzió: 1.0 beta 8**
+**Verzió: 1.0 beta 9**
 
 Egy kicsi, localhost PHP alkalmazás, ami USB vonalkódolvasóval beolvasott
 termékekhez rögzít eladást, Számlázz.hu számlát állít ki, és a készletet

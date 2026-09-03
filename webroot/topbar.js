@@ -1437,6 +1437,21 @@ if ('serviceWorker' in navigator) {
         topbarActions.insertBefore(helpBtn, topbarActions.firstChild);
     }
 
+    // --- Verzió-lábléc (jobb alsó sarok, apró betűkkel) ---
+    const footerBadge = document.createElement('div');
+    footerBadge.id = 'app-footer-badge';
+    document.body.appendChild(footerBadge);
+    const currentYear = new Date().getFullYear();
+    footerBadge.textContent = `© ${currentYear} Fountainbridge.hu`;
+    fetch('/api/system-status.php')
+        .then(r => r.json())
+        .then(data => {
+            if (data.app_version) {
+                footerBadge.textContent = `© ${currentYear} Fountainbridge.hu | verzió: ${data.app_version}`;
+            }
+        })
+        .catch(() => { /* marad a verzió nélküli felirat */ });
+
     // --- Escape zárja be a nyitott modalt ---
     // A globális kereső modalnak saját Escape-kezelője már van (lásd
     // fentebb) — az itt a "topmost" nyitott .modal-overlay-t zárja be,

@@ -96,10 +96,12 @@ async function openDetail(id) {
 
         detailContent.innerHTML = `
             <p class="muted">Eladás #${sale.id} · ${sale.created_at} · ${paymentBadge(sale.payment_method)}${sale.buyer_name ? ' · ' + escapeHtml(sale.buyer_name) : ''}</p>
+            <div class="sample-table-wrap">
             <table class="sample-table">
                 <thead><tr><th>Termék</th><th>Menny.</th><th>Egységár</th><th>Össz.</th><th class="return-qty-header hidden">Visszaveendő</th></tr></thead>
                 <tbody>${rows}</tbody>
             </table>
+            </div>
             <p style="text-align:right; font-weight:700; font-size:16px; margin-top:10px;">Összesen: ${fmt(sale.total)}</p>
             <button class="btn btn-secondary" style="width:100%; margin-top:10px;" onclick="window.open('receipt.html?sale_id=${sale.id}','_blank')">Nyugta megtekintése</button>
 

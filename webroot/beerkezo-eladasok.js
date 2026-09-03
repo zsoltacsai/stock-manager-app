@@ -94,10 +94,12 @@ function itemsTableHtml(items) {
         </tr>
     `).join('');
     return `
+        <div class="sample-table-wrap">
         <table class="sample-table">
             <thead><tr><th>Termék</th><th>Menny.</th><th>Egységár</th><th>Össz.</th><th>Készlet</th></tr></thead>
             <tbody>${rows}</tbody>
         </table>
+        </div>
     `;
 }
 

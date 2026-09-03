@@ -66,6 +66,21 @@ body {
                             sideways — anything wide (tables, the chart) has its own scroll wrapper */
 }
 
+/* Alap linkstílus — a szövegbe ágyazott hivatkozásokhoz (pl. "kezelés",
+   "Kuponok / utalványok kezelése"), amik korábban a böngésző alapértelmezett
+   kék/lila (:link/:visited) színét kapták — sötét sablonon rossz kontraszt,
+   accessibility-hiba. Az egyedi class-t viselő linkek (nav-link,
+   sidebar-link, icon-btn stb.) nagyobb specificitásuk miatt változatlanul
+   a saját színüket használják. */
+a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    text-underline-offset: 2px;
+}
+a:hover { text-decoration-color: currentColor; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
 .topbar {
     display: flex;
     justify-content: space-between;
@@ -98,11 +113,14 @@ body {
     display: flex; align-items: center; justify-content: center;
 }
 .topbar-icon-square svg { width: 20px; height: 20px; }
-/* Below ~640px, .topbar-brand (logo+title) and .topbar-actions (nav-track
+/* Below ~900px, .topbar-brand (logo+title) and .topbar-actions (nav-track
    + icon buttons) no longer fit on one row — without this, .topbar-actions
    keeps trying to hug the right edge of that same row and its wrapped
-   nav-track ends up floating over the title instead of pushing it down. */
-@media (max-width: 640px) {
+   nav-track ends up floating over the title instead of pushing it down.
+   (900px, not 640px: the nav-track got a 6th link — "Beérkező eladások" —
+   which pushed the natural wrap point well above the old breakpoint,
+   leaving a ~640–880px dead zone where the title got overlapped.) */
+@media (max-width: 900px) {
     .topbar { flex-wrap: wrap; row-gap: 12px; }
     .topbar-brand { width: 100%; }
     .topbar-actions { width: 100%; justify-content: flex-start; }
@@ -603,7 +621,7 @@ html[data-theme="light"] #global-search-input {
 .modal-overlay.open { display: flex; }
 .modal-card {
     background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-    width: 100%; max-width: 560px; max-height: 90vh; overflow-y: auto; padding: 24px;
+    width: 100%; max-width: 560px; max-height: 90vh; overflow-y: auto; overflow-x: hidden; padding: 24px;
 }
 .modal-card h2 { margin-top: 0; font-size: 18px; }
 .modal-card .muted { margin-top: -8px; margin-bottom: 16px; }

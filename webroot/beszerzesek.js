@@ -62,10 +62,12 @@ async function openDetail(id) {
         `).join('');
         detailContent.innerHTML = `
             <p class="muted">Beszerzés #${p.id} · ${p.created_at}${p.supplier_name ? ' · ' + escapeHtml(p.supplier_name) : ''} · ${escapeHtml(p.payment_method || '')}</p>
+            <div class="sample-table-wrap">
             <table class="sample-table">
                 <thead><tr><th>Termék</th><th>Menny.</th><th>Nettó egységár</th><th>Bruttó érték</th></tr></thead>
                 <tbody>${rows}</tbody>
             </table>
+            </div>
             <p style="text-align:right; font-weight:700; font-size:16px; margin-top:10px;">
                 Nettó: ${fmt(p.total_net)} · Bruttó: ${fmt(p.total_gross)}
             </p>

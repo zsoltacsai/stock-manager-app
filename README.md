@@ -2,9 +2,13 @@
 
 **Verzió: 1.0 beta 9**
 
-Egy kicsi, localhost PHP alkalmazás, ami USB vonalkódolvasóval beolvasott
-termékekhez rögzít eladást, Számlázz.hu számlát állít ki, és a készletet
-kétirányban szinkronban tartja egy WooCommerce áruházzal.
+Egy önállóan üzemeltethető PHP alkalmazás egy kisbolt/webshop teljes napi
+üzemeltetéséhez: USB vonalkódolvasós kassza, beszerzés és leltár, több
+telephely és dolgozói jogszint, törzsvásárlói/hűségpont-rendszer, kuponok
+és ajándékutalványok, Számlázz.hu számlázás, automatikus mentés, és
+kétirányú WooCommerce-szinkron — beleértve a webáruházból beérkező
+rendelések ellenőrzött, piszkozat-alapú feldolgozását is (lásd lent:
+Beérkező eladások).
 
 ## Követelmények
 

@@ -47,6 +47,9 @@ if (!Auth::isLoggedIn($appSettings)) {
             <button id="export-customers-xls-btn" class="btn btn-secondary toolbar-btn" style="width:auto;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>Export XLS</button>
             <button id="new-customer-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">+ Új vásárló</button>
         </div>
+        <div id="customers-bulk-bar" class="products-toolbar hidden" style="margin-top:-10px;">
+            <button id="bulk-delete-customers-btn" class="btn btn-secondary" style="width:auto; border-color:var(--danger); color:var(--danger);">Kijelöltek törlése</button>
+        </div>
         <div class="sample-table-wrap">
 <table class="sample-table">
             <thead>
@@ -114,6 +117,21 @@ if (!Auth::isLoggedIn($appSettings)) {
             <div class="toggle-line" style="margin-top:14px; border-bottom:none;">
                 <span>Vásárló törölve</span>
                 <button type="button" class="toggle-switch" id="c-deleted"></button>
+            </div>
+
+            <div id="c-gdpr-section" class="hidden" style="margin-top:16px; border-top:1px solid var(--border); padding-top:14px;">
+                <strong>GDPR</strong>
+                <p class="muted" style="margin-top:4px;">
+                    "Adatok exportálása" letölt egy fájlt a vásárlóhoz tartozó összes
+                    személyes és vásárlási adattal. "Végleges törlés" a személyazonosításra
+                    alkalmas mezőket (név, telefon, email, cím, adószám) helyrehozhatatlanul
+                    eltávolítja — az eladás- és hűségpont-történet a könyvelés/egyenleg
+                    konzisztenciája miatt megmarad, de már nem köthető a személyhez.
+                </p>
+                <div style="display:flex; gap:10px;">
+                    <button type="button" class="btn btn-secondary" id="c-gdpr-export-btn" style="flex:1;">Adatok exportálása</button>
+                    <button type="button" class="btn btn-secondary" id="c-gdpr-delete-btn" style="flex:1; border-color:var(--danger); color:var(--danger);">Végleges törlés (GDPR)</button>
+                </div>
             </div>
         </div>
 

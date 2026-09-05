@@ -310,6 +310,8 @@ if (!Auth::isLoggedIn($appSettings)) {
                     <input type="text" id="wc-consumer-secret" placeholder="cs_...">
                 </div>
             </div>
+            <button type="button" id="wc-test-connection-btn" class="btn btn-secondary" style="width:auto; padding:8px 14px;">Kapcsolat tesztelése</button>
+            <p id="wc-test-connection-feedback" class="modal-feedback"></p>
             <label for="wc-barcode-source">Vonalkód forrása a WooCommerce oldalon</label>
             <select id="wc-barcode-source">
                 <option value="sku">SKU mező</option>

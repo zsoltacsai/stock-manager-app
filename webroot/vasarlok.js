@@ -9,6 +9,15 @@ const customersSelectedCount = document.getElementById('customers-selected-count
 const selectAllCustomers = document.getElementById('select-all-customers');
 const exportCustomersCsvBtn = document.getElementById('export-customers-csv-btn');
 const exportCustomersXlsBtn = document.getElementById('export-customers-xls-btn');
+const customersBulkBar = document.getElementById('customers-bulk-bar');
+const bulkDeleteCustomersBtn = document.getElementById('bulk-delete-customers-btn');
+
+function currentStaffId() {
+    try {
+        const raw = localStorage.getItem('sm_current_staff');
+        return raw ? JSON.parse(raw).id : null;
+    } catch (e) { return null; }
+}
 
 const modal = document.getElementById('customer-modal');
 const modalTitle = document.getElementById('customer-modal-title');
@@ -111,6 +120,7 @@ function renderTable() {
 function updateSelectedCustomerCount() {
     const visibleSelected = lastFilteredCustomerIds.filter(id => selectedCustomerIds.has(id)).length;
     if (customersSelectedCount) customersSelectedCount.textContent = visibleSelected > 0 ? `${visibleSelected} kijelölve` : '';
+    if (customersBulkBar) customersBulkBar.classList.toggle('hidden', visibleSelected === 0);
 }
 
 function updateSelectAllCustomersCheckbox() {
@@ -147,6 +157,27 @@ if (exportCustomersXlsBtn) {
     exportCustomersXlsBtn.addEventListener('click', () => {
         const ids = exportCustomerIdsForCurrentView();
         window.location.href = '/api/export-customers.php?format=xls&ids=' + ids.join(',');
+    });
+}
+
+if (bulkDeleteCustomersBtn) {
+    bulkDeleteCustomersBtn.addEventListener('click', async () => {
+        const ids = lastFilteredCustomerIds.filter(id => selectedCustomerIds.has(id));
+        if (!ids.length) return;
+        if (!confirm(`Biztosan törlöd a kijelölt ${ids.length} vásárlót?`)) return;
+        try {
+            const res = await fetch('/api/customers-bulk.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'delete', ids, staff_id: currentStaffId() }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+            selectedCustomerIds.clear();
+            loadCustomers();
+        } catch (err) {
+            alert('Hiba: ' + err.message);
+        }
     });
 }
 
@@ -233,6 +264,9 @@ async function openEdit(id) {
     modalFeedback.textContent = '';
     resetToDataTab();
 
+    const gdprSection = document.getElementById('c-gdpr-section');
+    if (gdprSection) gdprSection.classList.toggle('hidden', !customer);
+
     if (customer) {
         tabStatsBtn.classList.remove('hidden');
         tabItemsBtn.classList.remove('hidden');
@@ -287,6 +321,37 @@ deletedToggle.addEventListener('click', () => deletedToggle.classList.toggle('on
 closeBtn.addEventListener('click', () => modal.classList.remove('open'));
 newCustomerBtn.addEventListener('click', () => openEdit(null));
 searchInput.addEventListener('input', renderTable);
+
+const gdprExportBtn = document.getElementById('c-gdpr-export-btn');
+const gdprDeleteBtn = document.getElementById('c-gdpr-delete-btn');
+
+if (gdprExportBtn) {
+    gdprExportBtn.addEventListener('click', () => {
+        const id = el.id.value;
+        if (!id) return;
+        window.location.href = '/api/customer-gdpr-export.php?id=' + id;
+    });
+}
+if (gdprDeleteBtn) {
+    gdprDeleteBtn.addEventListener('click', async () => {
+        const id = el.id.value;
+        if (!id) return;
+        if (!confirm('Biztosan véglegesen törlöd ennek a vásárlónak a személyes adatait? Ez a művelet nem visszavonható — a név, telefon, email, cím és adószám helyrehozhatatlanul elvész.')) return;
+        try {
+            const res = await fetch('/api/customer-gdpr-delete.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: Number(id), staff_id: currentStaffId() }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+            modal.classList.remove('open');
+            loadCustomers();
+        } catch (err) {
+            alert('Hiba: ' + err.message);
+        }
+    });
+}
 
 saveBtn.addEventListener('click', async () => {
     if (!el.name.value.trim()) {

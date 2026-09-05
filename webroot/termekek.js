@@ -20,6 +20,18 @@ const selectAllProducts = document.getElementById('select-all-products');
 const exportProductsCsvBtn = document.getElementById('export-products-csv-btn');
 const exportProductsXlsBtn = document.getElementById('export-products-xls-btn');
 const newArticleBtn = document.getElementById('new-article-btn');
+const productsBulkBar = document.getElementById('products-bulk-bar');
+const bulkGroupInput = document.getElementById('bulk-group-input');
+const bulkGroupList = document.getElementById('bulk-group-list');
+const bulkSetGroupBtn = document.getElementById('bulk-set-group-btn');
+const bulkDeleteBtn = document.getElementById('bulk-delete-btn');
+
+function currentStaffId() {
+    try {
+        const raw = localStorage.getItem('sm_current_staff');
+        return raw ? JSON.parse(raw).id : null;
+    } catch (e) { return null; }
+}
 
 const fmt = (n) => new Intl.NumberFormat('hu-HU').format(Math.round(Number(n) || 0)) + ' Ft';
 
@@ -45,6 +57,10 @@ function populateGroupFilter() {
     fGroup.innerHTML = '<option value="">- Mind -</option>' +
         groups.map(g => `<option value="${g}">${g}</option>`).join('');
     fGroup.value = groups.includes(current) ? current : '';
+
+    if (bulkGroupList) {
+        bulkGroupList.innerHTML = groups.map(g => `<option value="${escapeHtml(g)}">`).join('');
+    }
 }
 
 function effectiveThreshold(p) {
@@ -188,6 +204,7 @@ function updateSelectedCount() {
     // most épp nem látszó elem miatt.
     const visibleSelected = lastFilteredIds.filter(id => selectedProductIds.has(id)).length;
     productsSelectedCount.textContent = visibleSelected > 0 ? `${visibleSelected} kijelölve` : '';
+    if (productsBulkBar) productsBulkBar.classList.toggle('hidden', visibleSelected === 0);
 }
 
 function updateSelectAllCheckbox() {
@@ -224,6 +241,41 @@ if (exportProductsXlsBtn) {
     exportProductsXlsBtn.addEventListener('click', () => {
         const ids = exportIdsForCurrentView();
         window.location.href = '/api/export-products.php?format=xls&ids=' + ids.join(',');
+    });
+}
+
+async function runBulkAction(action, extra) {
+    const ids = lastFilteredIds.filter(id => selectedProductIds.has(id));
+    if (!ids.length) return;
+    try {
+        const res = await fetch('/api/products-bulk.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.assign({ action, ids, staff_id: currentStaffId() }, extra || {})),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+        selectedProductIds.clear();
+        loadProducts();
+    } catch (err) {
+        alert('Hiba: ' + err.message);
+    }
+}
+
+if (bulkDeleteBtn) {
+    bulkDeleteBtn.addEventListener('click', () => {
+        const count = lastFilteredIds.filter(id => selectedProductIds.has(id)).length;
+        if (!confirm(`Biztosan törlöd a kijelölt ${count} árucikket?`)) return;
+        runBulkAction('delete');
+    });
+}
+if (bulkSetGroupBtn) {
+    bulkSetGroupBtn.addEventListener('click', () => {
+        const groupName = bulkGroupInput.value.trim();
+        const count = lastFilteredIds.filter(id => selectedProductIds.has(id)).length;
+        const label = groupName ? `"${groupName}"` : '(üres — csoport törlése)';
+        if (!confirm(`Beállítod a(z) ${count} kijelölt árucikk csoportját erre: ${label}?`)) return;
+        runBulkAction('set_group', { group_name: groupName });
     });
 }
 

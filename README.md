@@ -1,6 +1,8 @@
 # Stock Manager — localhost vonalkód-kassza
 
-**Verzió: 1.0 beta 9**
+**Verzió: 1.0 RC1** (release candidate — a fejlesztés innentől kizárólag
+hibakeresésre és bugfixekre koncentrál, új funkció tervezetten nem kerül
+bele az 1.0 véglegesig)
 
 Egy önállóan üzemeltethető PHP alkalmazás egy kisbolt/webshop teljes napi
 üzemeltetéséhez: USB vonalkódolvasós kassza, beszerzés és leltár, több
@@ -1228,3 +1230,39 @@ session-cookie adja a gyakorlati védelmet, mivel több tucat meglévő
 API-hívás módosítása jelentős kockázattal járt volna egy ilyen nagy
 kódbázisban. Az `Auth` osztály tartalmazza a szükséges építőelemeket
 (`csrfToken()`, `verifyCsrf()`), ha valaha szükség lenne rá.
+
+## Automatizált tesztek
+
+A projektnek nincs Composer-függősége, ezért a [PHPUnit](https://phpunit.de/)
+egyetlen önálló `.phar` fájlként fut, letöltés után:
+
+```bash
+mkdir -p tools
+curl -L https://phar.phpunit.de/phpunit-10.phar -o tools/phpunit.phar
+php tools/phpunit.phar
+```
+
+A `tests/` mappa a `Database`, `GeoBlocker` és `SimpleXlsWriter`
+osztályok kritikus, üzletileg fontos útvonalait fedi le — mindegyik
+teszt egy egyszer használatos, ideiglenes SQLite fájllal dolgozik
+(`tests/bootstrap.php`), így az éles `data/stock.sqlite`-ot soha nem
+érinti:
+
+- eladás rögzítése + készletcsökkentés (pozitív és negatív/túlértékesített
+  készlet esetén is),
+- vonalkód-keresés és az automatikusan generált EAN-13 vonalkód
+  ellenőrzőszámának helyessége,
+- kuponérvényesítés (aktív/inaktív, lejárat, felhasználási korlát,
+  minimum vásárlási összeg, százalékos vs. fix kedvezmény),
+- dolgozói admin-jogosultság és PIN-ellenőrzés,
+- IP-cím/ország alapú hozzáférés-korlátozás (privát IP, allow-lista,
+  CIDR-tartomány, kikapcsolt állapot) — a valódi ország-lekérdezés
+  (külső hálózati hívás az ip-api.com felé) szándékosan nincs lefedve,
+  hogy a tesztek gyorsak és hálózatfüggetlenek maradjanak,
+- az XLS-export XML-kimenetének érvényessége és HTML-escapelése.
+
+Ez a kezdeti kör nem törekszik teljes lefedettségre (nincsenek HTTP-szintű
+végpont-tesztek, pl. `webroot/api/*.php` közvetlen hívásai) — a cél az
+volt, hogy a legkockázatosabb, pénzügyi hatású logika (készlet, kupon,
+jogosultság) automatikusan ellenőrizhető legyen egy jövőbeli módosítás
+után is.

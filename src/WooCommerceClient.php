@@ -17,6 +17,18 @@ class WooCommerceClient
         $this->barcodeMetaKey = $cfg['barcode_meta_key'] ?? '_barcode';
     }
 
+    /**
+     * Könnyű, csak-olvasó kapcsolat-teszt (Beállítások → WooCommerce
+     * "Kapcsolat tesztelése" gombja) — egyetlen terméket kér le, hogy a
+     * hitelesítő adatok hibáját (rossz URL, kulcs, jogosultság) még
+     * mentés előtt, egyértelmű hibaüzenettel jelezze, ne csak élesben
+     * derüljön ki egy sikertelen szinkronnál.
+     */
+    public function testConnection(): void
+    {
+        $this->request('GET', '/products', ['per_page' => 1]);
+    }
+
     public function fetchAllProducts(): array
     {
         $all = [];

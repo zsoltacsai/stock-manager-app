@@ -91,6 +91,13 @@ if (!Auth::isLoggedIn($appSettings)) {
         <button id="new-article-btn" class="btn btn-primary" style="width:auto; padding: 10px 18px;">+ Új árucikk</button>
     </div>
 
+    <div id="products-bulk-bar" class="products-toolbar hidden" style="margin-top:-10px;">
+        <input type="text" id="bulk-group-input" placeholder="Csoport neve..." list="bulk-group-list" style="max-width:220px; margin-bottom:0;">
+        <datalist id="bulk-group-list"></datalist>
+        <button id="bulk-set-group-btn" class="btn btn-secondary" style="width:auto;">Csoport módosítása a kijelölteken</button>
+        <button id="bulk-delete-btn" class="btn btn-secondary" style="width:auto; border-color:var(--danger); color:var(--danger);">Kijelöltek törlése</button>
+    </div>
+
     <div class="products-table-wrap">
         <table class="products-table">
             <thead id="products-table-head">

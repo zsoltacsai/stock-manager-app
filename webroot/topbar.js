@@ -171,6 +171,8 @@ if ('serviceWorker' in navigator) {
     const wcStoreUrl = document.getElementById('wc-store-url');
     const wcConsumerKey = document.getElementById('wc-consumer-key');
     const wcConsumerSecret = document.getElementById('wc-consumer-secret');
+    const wcTestConnectionBtn = document.getElementById('wc-test-connection-btn');
+    const wcTestConnectionFeedback = document.getElementById('wc-test-connection-feedback');
     const wcBarcodeSource = document.getElementById('wc-barcode-source');
     const wcBarcodeMetaWrap = document.getElementById('wc-barcode-meta-wrap');
     const wcBarcodeMetaKey = document.getElementById('wc-barcode-meta-key');
@@ -837,6 +839,34 @@ if ('serviceWorker' in navigator) {
             } catch (err) {
                 settingsNavFeedback.textContent = 'Hiba: ' + err.message;
                 settingsNavFeedback.className = 'modal-feedback error';
+            }
+        });
+    }
+
+    if (wcTestConnectionBtn) {
+        wcTestConnectionBtn.addEventListener('click', async () => {
+            wcTestConnectionBtn.disabled = true;
+            wcTestConnectionFeedback.textContent = 'Tesztelés...';
+            wcTestConnectionFeedback.className = 'modal-feedback';
+            try {
+                const res = await fetch('/api/wc-test-connection.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        store_url: wcStoreUrl.value.trim(),
+                        consumer_key: wcConsumerKey.value.trim(),
+                        consumer_secret: wcConsumerSecret.value.trim(),
+                    }),
+                });
+                const data = await res.json();
+                if (!data.success) throw new Error(data.error || 'ismeretlen hiba');
+                wcTestConnectionFeedback.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;vertical-align:-1px;margin-right:4px;"><polyline points="20 6 9 17 4 12"></polyline></svg>Sikeres kapcsolat.';
+                wcTestConnectionFeedback.className = 'modal-feedback';
+            } catch (err) {
+                wcTestConnectionFeedback.textContent = 'Sikertelen: ' + err.message;
+                wcTestConnectionFeedback.className = 'modal-feedback error';
+            } finally {
+                wcTestConnectionBtn.disabled = false;
             }
         });
     }

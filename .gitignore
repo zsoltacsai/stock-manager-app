@@ -28,3 +28,8 @@
 # OS / szerkesztő
 Thumbs.db
 .DS_Store
+
+# Teszteléshez letöltött eszköz (nincs Composer ebben a projektben) —
+# lásd README "Automatizált tesztek" szakasz a letöltéshez.
+/tools/phpunit.phar
+/.phpunit.cache

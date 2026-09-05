@@ -742,17 +742,17 @@ class Database
     {
         return [
             ':name'           => $p['name'],
-            ':unit'           => $p['unit'] ?: 'db',
+            ':unit'           => ($p['unit'] ?? '') ?: 'db',
             ':group_name'     => $p['group_name'] ?? null,
             ':cikkszam'       => $p['cikkszam'] ?? null,
             ':vtsz'           => $p['vtsz'] ?? null,
-            ':barcode'        => $p['barcode'] ?: null,
-            ':currency'       => $p['currency'] ?: 'HUF',
+            ':barcode'        => ($p['barcode'] ?? '') ?: null,
+            ':currency'       => ($p['currency'] ?? '') ?: 'HUF',
             ':vat_rate'       => (string) $p['vat_rate'],
             ':net_price'      => (float) $p['net_price'],
             ':price'          => (float) $p['price'],
-            ':weight'         => $p['weight'] !== '' && $p['weight'] !== null ? (float) $p['weight'] : null,
-            ':volume'         => $p['volume'] !== '' && $p['volume'] !== null ? (float) $p['volume'] : null,
+            ':weight'         => ($p['weight'] ?? '') !== '' ? (float) $p['weight'] : null,
+            ':volume'         => ($p['volume'] ?? '') !== '' ? (float) $p['volume'] : null,
             ':notes'          => $p['notes'] ?? null,
             ':show_pricelist' => !empty($p['show_pricelist']) ? 1 : 0,
             ':show_webshop'   => !empty($p['show_webshop']) ? 1 : 0,
@@ -1331,6 +1331,26 @@ class Database
         ];
     }
 
+    public function bulkSetProductsDeleted(array $ids, bool $deleted): void
+    {
+        if (!$ids) {
+            return;
+        }
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = $this->pdo->prepare("UPDATE products SET is_deleted = ?, updated_at = ? WHERE id IN ($placeholders)");
+        $stmt->execute(array_merge([$deleted ? 1 : 0, date('c')], array_values($ids)));
+    }
+
+    public function bulkSetProductsGroup(array $ids, ?string $groupName): void
+    {
+        if (!$ids) {
+            return;
+        }
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = $this->pdo->prepare("UPDATE products SET group_name = ?, updated_at = ? WHERE id IN ($placeholders)");
+        $stmt->execute(array_merge([$groupName !== '' ? $groupName : null, date('c')], array_values($ids)));
+    }
+
     public function findProductsByIds(array $ids): array
     {
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
@@ -1569,6 +1589,36 @@ class Database
         return $row ?: null;
     }
 
+    /**
+     * GDPR "elfeledtetéshez való jog" — a személyazonosításra alkalmas
+     * mezőket törli/felülírja, de magát a sort (és a hozzá tartozó
+     * eladás-/hűségpont-történetet) megtartja, mert azok a számviteli
+     * és hűségpont-egyenleg konzisztenciájához szükségesek. Ez nem
+     * ugyanaz, mint a sima "Törlés" (is_deleted) — az visszaállítható,
+     * ez nem: a személyes adat véglegesen elvész.
+     */
+    public function anonymizeCustomer(int $id): void
+    {
+        $stmt = $this->pdo->prepare("
+            UPDATE customers
+            SET name = :name, phone = NULL, email = NULL, tax_number = NULL,
+                zip = NULL, city = NULL, address = NULL, country = NULL, notes = NULL,
+                is_deleted = 1, updated_at = :now
+            WHERE id = :id
+        ");
+        $stmt->execute([':name' => 'Törölt vásárló (GDPR) #' . $id, ':now' => date('c'), ':id' => $id]);
+    }
+
+    public function bulkSetCustomersDeleted(array $ids, bool $deleted): void
+    {
+        if (!$ids) {
+            return;
+        }
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = $this->pdo->prepare("UPDATE customers SET is_deleted = ?, updated_at = ? WHERE id IN ($placeholders)");
+        $stmt->execute(array_merge([$deleted ? 1 : 0, date('c')], array_values($ids)));
+    }
+
     public function findCustomersByIds(array $ids): array
     {
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
@@ -1759,8 +1809,8 @@ class Database
             ':type'         => $c['type'] === 'fixed' ? 'fixed' : 'percent',
             ':value'        => (float) $c['value'],
             ':is_active'    => !empty($c['is_active']) ? 1 : 0,
-            ':expiry_date'  => $c['expiry_date'] ?: null,
-            ':usage_limit'  => $c['usage_limit'] !== '' && $c['usage_limit'] !== null ? (int) $c['usage_limit'] : null,
+            ':expiry_date'  => ($c['expiry_date'] ?? '') ?: null,
+            ':usage_limit'  => ($c['usage_limit'] ?? '') !== '' ? (int) $c['usage_limit'] : null,
             ':min_purchase' => (float) ($c['min_purchase'] ?? 0),
             ':notes'        => $c['notes'] ?? null,
         ];

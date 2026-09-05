@@ -42,12 +42,15 @@ if (!Auth::isLoggedIn($appSettings)) {
     <div class="import-card">
         <div class="products-toolbar">
             <input type="text" id="search-input" placeholder="Keresés név, telefon, email alapján..." style="max-width:320px; margin-bottom:0;">
+            <span id="customers-selected-count" class="muted"></span>
+            <button id="export-customers-csv-btn" class="btn btn-secondary toolbar-btn" style="width:auto;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>Export CSV</button>
+            <button id="export-customers-xls-btn" class="btn btn-secondary toolbar-btn" style="width:auto;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>Export XLS</button>
             <button id="new-customer-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">+ Új vásárló</button>
         </div>
         <div class="sample-table-wrap">
 <table class="sample-table">
             <thead>
-                <tr><th>Név</th><th>Telefon</th><th>Email</th><th>Pontegyenleg</th><th></th></tr>
+                <tr><th style="width:32px;"><input type="checkbox" id="select-all-customers" title="Mind kijelölése"></th><th>Név</th><th>Telefon</th><th>Email</th><th>Pontegyenleg</th><th></th></tr>
             </thead>
             <tbody id="customers-body"></tbody>
         </table>

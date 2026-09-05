@@ -1,8 +1,14 @@
 let allCustomers = [];
+let selectedCustomerIds = new Set();
+let lastFilteredCustomerIds = [];
 
 const searchInput = document.getElementById('search-input');
 const customersBody = document.getElementById('customers-body');
 const newCustomerBtn = document.getElementById('new-customer-btn');
+const customersSelectedCount = document.getElementById('customers-selected-count');
+const selectAllCustomers = document.getElementById('select-all-customers');
+const exportCustomersCsvBtn = document.getElementById('export-customers-csv-btn');
+const exportCustomersXlsBtn = document.getElementById('export-customers-xls-btn');
 
 const modal = document.getElementById('customer-modal');
 const modalTitle = document.getElementById('customer-modal-title');
@@ -49,10 +55,14 @@ function renderTable() {
         !q || c.name.toLowerCase().includes(q) || (c.phone || '').includes(q) || (c.email || '').toLowerCase().includes(q)
     );
 
+    lastFilteredCustomerIds = filtered.map(c => c.id);
+    updateSelectedCustomerCount();
+
     customersBody.innerHTML = filtered.length ? filtered.map(c => {
         const tier = tierFor(c.total_spent);
         return `
         <tr class="clickable-row ${Number(c.is_deleted) ? 'deleted-row' : ''}" data-id="${c.id}">
+            <td><input type="checkbox" class="row-select-checkbox" data-id="${c.id}"${selectedCustomerIds.has(c.id) ? ' checked' : ''}></td>
             <td>${escapeHtml(c.name)}${Number(c.is_deleted) ? ' <span class="muted">(törölve)</span>' : ''}</td>
             <td>${escapeHtml(c.phone || '—')}</td>
             <td>${escapeHtml(c.email || '—')}</td>
@@ -65,14 +75,25 @@ function renderTable() {
             </td>
         </tr>
     `;
-    }).join('') : '<tr><td colspan="5" class="muted" style="text-align:center; padding:24px;">Nincs a szűrésnek megfelelő vásárló.</td></tr>';
+    }).join('') : '<tr><td colspan="6" class="muted" style="text-align:center; padding:24px;">Nincs a szűrésnek megfelelő vásárló.</td></tr>';
 
     customersBody.querySelectorAll('.clickable-row').forEach(row => {
         row.addEventListener('click', (e) => {
-            if (e.target.closest('.row-actions')) return;
+            if (e.target.closest('.row-actions') || e.target.closest('.row-select-checkbox')) return;
             openEdit(Number(row.dataset.id));
         });
     });
+    customersBody.querySelectorAll('.row-select-checkbox').forEach(cb => {
+        cb.addEventListener('click', (e) => e.stopPropagation());
+        cb.addEventListener('change', () => {
+            const id = Number(cb.dataset.id);
+            if (cb.checked) selectedCustomerIds.add(id); else selectedCustomerIds.delete(id);
+            updateSelectedCustomerCount();
+            updateSelectAllCustomersCheckbox();
+        });
+    });
+    updateSelectAllCustomersCheckbox();
+
     customersBody.querySelectorAll('.edit-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -84,6 +105,48 @@ function renderTable() {
             e.stopPropagation();
             toggleDeletedCustomer(Number(btn.dataset.id));
         });
+    });
+}
+
+function updateSelectedCustomerCount() {
+    const visibleSelected = lastFilteredCustomerIds.filter(id => selectedCustomerIds.has(id)).length;
+    if (customersSelectedCount) customersSelectedCount.textContent = visibleSelected > 0 ? `${visibleSelected} kijelölve` : '';
+}
+
+function updateSelectAllCustomersCheckbox() {
+    if (!selectAllCustomers) return;
+    const allSelected = lastFilteredCustomerIds.length > 0 && lastFilteredCustomerIds.every(id => selectedCustomerIds.has(id));
+    const someSelected = lastFilteredCustomerIds.some(id => selectedCustomerIds.has(id));
+    selectAllCustomers.checked = allSelected;
+    selectAllCustomers.indeterminate = someSelected && !allSelected;
+}
+
+function exportCustomerIdsForCurrentView() {
+    const visibleSelected = lastFilteredCustomerIds.filter(id => selectedCustomerIds.has(id));
+    return visibleSelected.length > 0 ? visibleSelected : lastFilteredCustomerIds;
+}
+
+if (selectAllCustomers) {
+    selectAllCustomers.addEventListener('change', () => {
+        if (selectAllCustomers.checked) {
+            lastFilteredCustomerIds.forEach(id => selectedCustomerIds.add(id));
+        } else {
+            lastFilteredCustomerIds.forEach(id => selectedCustomerIds.delete(id));
+        }
+        renderTable();
+    });
+}
+
+if (exportCustomersCsvBtn) {
+    exportCustomersCsvBtn.addEventListener('click', () => {
+        const ids = exportCustomerIdsForCurrentView();
+        window.location.href = '/api/export-customers.php?format=csv&ids=' + ids.join(',');
+    });
+}
+if (exportCustomersXlsBtn) {
+    exportCustomersXlsBtn.addEventListener('click', () => {
+        const ids = exportCustomerIdsForCurrentView();
+        window.location.href = '/api/export-customers.php?format=xls&ids=' + ids.join(',');
     });
 }
 

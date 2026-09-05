@@ -1569,6 +1569,19 @@ class Database
         return $row ?: null;
     }
 
+    public function findCustomersByIds(array $ids): array
+    {
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = $this->pdo->prepare("SELECT * FROM customers WHERE id IN ($placeholders)");
+        $stmt->execute(array_values($ids));
+
+        $byId = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $byId[(int) $row['id']] = $row;
+        }
+        return $byId;
+    }
+
     public function saveCustomer(array $c): int
     {
         $now = date('Y-m-d H:i:s');

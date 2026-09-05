@@ -2,6 +2,8 @@ let allProducts = [];
 let globalLowStockThreshold = 5;
 let sortColumn = 'name';
 let sortDir = 'asc';
+let selectedProductIds = new Set();
+let lastFilteredIds = [];
 
 const fName = document.getElementById('f-name');
 const fCikkszam = document.getElementById('f-cikkszam');
@@ -13,6 +15,10 @@ const fWebshopOnly = document.getElementById('f-webshop-only');
 
 const productsBody = document.getElementById('products-body');
 const productsCount = document.getElementById('products-count');
+const productsSelectedCount = document.getElementById('products-selected-count');
+const selectAllProducts = document.getElementById('select-all-products');
+const exportProductsCsvBtn = document.getElementById('export-products-csv-btn');
+const exportProductsXlsBtn = document.getElementById('export-products-xls-btn');
 const newArticleBtn = document.getElementById('new-article-btn');
 
 const fmt = (n) => new Intl.NumberFormat('hu-HU').format(Math.round(Number(n) || 0)) + ' Ft';
@@ -90,11 +96,14 @@ function renderTable() {
 
     productsCount.textContent = `${filtered.length} / ${allProducts.length} árucikk`;
     productsBody.innerHTML = '';
+    lastFilteredIds = filtered.map(p => p.id);
+    updateSelectedCount();
 
     updateSortIndicators();
 
     if (filtered.length === 0) {
-        productsBody.innerHTML = '<tr><td colspan="10" class="muted" style="text-align:center; padding:24px;">Nincs a szűrésnek megfelelő árucikk.</td></tr>';
+        productsBody.innerHTML = '<tr><td colspan="11" class="muted" style="text-align:center; padding:24px;">Nincs a szűrésnek megfelelő árucikk.</td></tr>';
+        updateSelectAllCheckbox();
         return;
     }
 
@@ -113,6 +122,7 @@ function renderTable() {
             : '';
 
         tr.innerHTML = `
+            <td><input type="checkbox" class="row-select-checkbox" data-id="${p.id}"${selectedProductIds.has(p.id) ? ' checked' : ''}></td>
             <td>${escapeHtml(p.name)}</td>
             <td>${escapeHtml(p.cikkszam || '')}</td>
             <td>${escapeHtml(p.group_name || '')}</td>
@@ -132,11 +142,22 @@ function renderTable() {
             </td>
         `;
         tr.addEventListener('click', (e) => {
-            if (e.target.closest('.row-actions') || e.target.closest('.webshop-toggle-btn')) return;
+            if (e.target.closest('.row-actions') || e.target.closest('.webshop-toggle-btn') || e.target.closest('.row-select-checkbox')) return;
             openEdit(p.id);
         });
         productsBody.appendChild(tr);
     }
+
+    productsBody.querySelectorAll('.row-select-checkbox').forEach(cb => {
+        cb.addEventListener('click', (e) => e.stopPropagation());
+        cb.addEventListener('change', () => {
+            const id = Number(cb.dataset.id);
+            if (cb.checked) selectedProductIds.add(id); else selectedProductIds.delete(id);
+            updateSelectedCount();
+            updateSelectAllCheckbox();
+        });
+    });
+    updateSelectAllCheckbox();
 
     productsBody.querySelectorAll('.edit-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -157,6 +178,52 @@ function renderTable() {
             btn.classList.toggle('on', nextValue);
             toggleWebshop(Number(btn.dataset.id), nextValue);
         });
+    });
+}
+
+function updateSelectedCount() {
+    // A kijelölés a szűrés/lapozás nélküli teljes listán él tovább, de a
+    // számláló csak az aktuálisan látható (szűrt) sorok közül kijelölteket
+    // mutatja, hogy ne legyen zavaró egy korábbi szűrés alatt kijelölt,
+    // most épp nem látszó elem miatt.
+    const visibleSelected = lastFilteredIds.filter(id => selectedProductIds.has(id)).length;
+    productsSelectedCount.textContent = visibleSelected > 0 ? `${visibleSelected} kijelölve` : '';
+}
+
+function updateSelectAllCheckbox() {
+    if (!selectAllProducts) return;
+    const allSelected = lastFilteredIds.length > 0 && lastFilteredIds.every(id => selectedProductIds.has(id));
+    const someSelected = lastFilteredIds.some(id => selectedProductIds.has(id));
+    selectAllProducts.checked = allSelected;
+    selectAllProducts.indeterminate = someSelected && !allSelected;
+}
+
+function exportIdsForCurrentView() {
+    const visibleSelected = lastFilteredIds.filter(id => selectedProductIds.has(id));
+    return visibleSelected.length > 0 ? visibleSelected : lastFilteredIds;
+}
+
+if (selectAllProducts) {
+    selectAllProducts.addEventListener('change', () => {
+        if (selectAllProducts.checked) {
+            lastFilteredIds.forEach(id => selectedProductIds.add(id));
+        } else {
+            lastFilteredIds.forEach(id => selectedProductIds.delete(id));
+        }
+        renderTable();
+    });
+}
+
+if (exportProductsCsvBtn) {
+    exportProductsCsvBtn.addEventListener('click', () => {
+        const ids = exportIdsForCurrentView();
+        window.location.href = '/api/export-products.php?format=csv&ids=' + ids.join(',');
+    });
+}
+if (exportProductsXlsBtn) {
+    exportProductsXlsBtn.addEventListener('click', () => {
+        const ids = exportIdsForCurrentView();
+        window.location.href = '/api/export-products.php?format=xls&ids=' + ids.join(',');
     });
 }
 

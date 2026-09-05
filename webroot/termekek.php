@@ -85,6 +85,9 @@ if (!Auth::isLoggedIn($appSettings)) {
 <div class="products-page-body">
     <div class="products-toolbar">
         <span id="products-count" class="muted"></span>
+        <span id="products-selected-count" class="muted"></span>
+        <button id="export-products-csv-btn" class="btn btn-secondary toolbar-btn" style="width:auto;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>Export CSV</button>
+        <button id="export-products-xls-btn" class="btn btn-secondary toolbar-btn" style="width:auto;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;vertical-align:-2px;margin-right:5px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>Export XLS</button>
         <button id="new-article-btn" class="btn btn-primary" style="width:auto; padding: 10px 18px;">+ Új árucikk</button>
     </div>
 
@@ -92,6 +95,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <table class="products-table">
             <thead id="products-table-head">
                 <tr>
+                    <th style="width:32px;"><input type="checkbox" id="select-all-products" title="Mind kijelölése"></th>
                     <th data-sort="name" class="sortable">Megnevezés</th>
                     <th data-sort="cikkszam" class="sortable">Cikkszám</th>
                     <th data-sort="group_name" class="sortable">Csoport</th>
@@ -105,7 +109,7 @@ if (!Auth::isLoggedIn($appSettings)) {
                 </tr>
             </thead>
             <tbody id="products-body">
-                <tr><td colspan="10" class="muted" style="text-align:center; padding:24px;">Betöltés...</td></tr>
+                <tr><td colspan="11" class="muted" style="text-align:center; padding:24px;">Betöltés...</td></tr>
             </tbody>
         </table>
     </div>

@@ -869,6 +869,19 @@ CSV" gombja, ami figyelembe veszi az éppen alkalmazott szűrőket
 Windows-os Excel helyesen felismerje a kódolást, ahelyett hogy
 összezavarná az ékezetes magyar karaktereket.
 
+Az **Árucikkek** és a **Vásárlók** listája ezen felül soronkénti
+kijelölő jelölőnégyzetet is kapott (fejlécben "mind kijelölése"
+opcióval), és két export gombot: "Export CSV" és "Export XLS". Ha van
+kijelölt sor, csak azokat exportálja; ha nincs, az éppen szűrt/látható
+listát. Az XLS export a széles körben támogatott "Excel 2003 XML"
+(SpreadsheetML) formátumot írja — ehhez nincs szükség a `zip`
+kiterjesztésre (a valódi, tömörített .xlsx-hez az kellene), csak a már
+amúgy is kötelező `xmlwriter`-re. Ennek egyetlen ártalmatlan
+mellékhatása, hogy egy újabb Excel megnyitáskor egy "a fájlformátum és
+a kiterjesztés nem egyezik" figyelmeztetést mutathat — ez "Igen"-nel
+simán megnyílik, ez egy elterjedt technika .xls export generálására
+natív bináris író könyvtár nélkül.
+
 ## Dashboard grafikonokkal
 
 A Rendszerállapot mostantól egy bevétel-trend grafikont is tartalmaz

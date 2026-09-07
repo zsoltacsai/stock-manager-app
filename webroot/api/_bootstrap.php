@@ -94,3 +94,21 @@ function send_json($data, int $status = 200): void
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
+
+/**
+ * CSV/formula-injekció elleni védelem (CWE-1236) minden CSV-exporthoz. Ha
+ * egy cella (pl. termék/vásárló/beszállító neve, megjegyzés) `=`, `+`, `-`
+ * vagy `@` karakterrel kezdődik, Excel/LibreOffice megnyitáskor képletként
+ * értelmezheti — egy `=HYPERLINK(...)`-szerű névvel elmentett rekord
+ * exportálásakor futtatható "képletet" csempészhetne be. Egy vezető
+ * aposztróf hozzáfűzése Excelben "szövegként kezelendő"-t jelent, a
+ * megjelenített értéket nem változtatja meg.
+ */
+function csv_safe($value): string
+{
+    $str = (string) ($value ?? '');
+    if ($str !== '' && strpbrk($str[0], "=+-@") !== false) {
+        return "'" . $str;
+    }
+    return $str;
+}

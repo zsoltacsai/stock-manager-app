@@ -46,6 +46,6 @@ echo "\xEF\xBB\xBF";
 $out = fopen('php://output', 'w');
 fputcsv($out, $headers, ';');
 foreach ($rows as $row) {
-    fputcsv($out, $row, ';');
+    fputcsv($out, array_map(static fn($v) => is_string($v) ? csv_safe($v) : $v, $row), ';');
 }
 fclose($out);

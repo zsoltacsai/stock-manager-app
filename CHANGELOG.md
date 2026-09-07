@@ -4,6 +4,35 @@ Ez a fájl a Stock Manager verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## 1.0 RC2 (2026-09-07)
+
+Teljes kódátvizsgálás második köre: WooCommerce-szinkron, biztonság,
+import/export, nyomtatás, és egy élő funkcionális teszt.
+
+### Javítva
+- Eladás/leltár utáni WooCommerce-készletszinkron versenyhelyzetek.
+- API-titkok (WooCommerce, Számlázz.hu, NAV, Dropbox, Google) maszkolva
+  a Beállítások válaszában.
+- Bejelentkezési/PIN rate-limit versenyhelyzet, adatbázis-visszaállítás
+  jogosultság-megkerülés, ajándékutalvány/kupon versenyhelyzetek.
+- 8+ helyen hiányzó `escapeHtml()` — tárolt XSS.
+- Teljes visszárunál a hűségpontok/kupon/utalvány visszapörgetése.
+- CSV-export képlet-injekció (CWE-1236) minden export-végpontnál.
+- Tömeges termékimport vezetői jogszinthez kötve, naplózva.
+- `.xlsx` zip-bomb DoS elleni méretkorlát.
+- `preferred_supplier_id` csendben kinullázódott minden termékmentésnél
+  (nem csak importnál).
+- ESC/POS nyomtató-parancs-befecskendezés (termék-/kosártétel-névből).
+- Nyugta QR-kódja többé nem küldi a titkos megtekintési tokent egy
+  külső szolgáltatásnak — helyben, becsomagolt könyvtárral generálódik.
+- Nyomtató-teszt végpont vezetői jogszinthez kötve (belső hálózat
+  feltérképezésének megakadályozása).
+- Napi zárás ÁFA/Nettó bontása mostantól figyelembe veszi a
+  rendelés-szintű kedvezményeket (korábban túlbecsülte az ÁFA-t).
+- Kassza checkout gomb felirata igazodik a számla-jelölőnégyzethez.
+
+Alap PHPUnit-készlet 28 tesztre bővítve.
+
 ## 1.0 RC1 (2026-09-05)
 
 A projekt innentől **release candidate** állapotban van — új funkció

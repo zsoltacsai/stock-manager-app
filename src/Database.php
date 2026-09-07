@@ -792,6 +792,7 @@ class Database
             'show_webshop'   => $existing['show_webshop'] ?? true,
             'is_deleted'     => $existing['is_deleted'] ?? false,
             'low_stock_threshold' => $existing['low_stock_threshold'] ?? '',
+            'preferred_supplier_id' => $existing['preferred_supplier_id'] ?? null,
             'short_description' => $existing['short_description'] ?? null,
             'long_description' => $existing['long_description'] ?? null,
             'image_filename' => $existing['image_filename'] ?? null,
@@ -1156,10 +1157,24 @@ class Database
             $byPayment[$method]['count'] = ($byPayment[$method]['count'] ?? 0) + 1;
             $byPayment[$method]['total'] = ($byPayment[$method]['total'] ?? 0) + $sale['total'];
 
+            // A sale_items.unit_price a kedvezmény ELŐTTI (tétel-szintű) árat
+            // tartalmazza — ha az eladáson bármilyen rendelés-szintű
+            // kedvezmény érvényesült (kupon, hűségpont-beváltás, hűségszint),
+            // a sales.total ennél alacsonyabb. E nélkül az arányosítás nélkül
+            // a Nettó+ÁFA sor összege meghaladná a tényleges Bruttó forgalmat
+            // minden olyan napon, amikor bármelyik eladásnál kedvezmény volt —
+            // pontosan ugyanaz a probléma és ugyanaz a megoldás, mint a
+            // részleges visszáru arányosításánál (lásd api/return-create.php).
+            $saleSubtotal = 0.0;
+            foreach ($sale['items'] as $item) {
+                $saleSubtotal += (float) $item['unit_price'] * (int) $item['qty'];
+            }
+            $discountRatio = $saleSubtotal > 0 ? min(1, (float) $sale['total'] / $saleSubtotal) : 1.0;
+
             foreach ($sale['items'] as $item) {
                 $vatRate = (string) $item['vat_rate'];
                 $vatPct = is_numeric($vatRate) ? ((float) $vatRate) / 100 : 0.0;
-                $lineGross = (float) $item['unit_price'] * (int) $item['qty'];
+                $lineGross = round((float) $item['unit_price'] * (int) $item['qty'] * $discountRatio, 2);
                 $lineNet = is_numeric($vatRate) ? round($lineGross / (1 + $vatPct), 2) : $lineGross;
                 $lineVat = round($lineGross - $lineNet, 2);
 

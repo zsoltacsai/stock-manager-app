@@ -12,9 +12,19 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $input = json_input();
 $token = $input['token'] ?? '';
 $profileKey = $input['profile'] ?? '';
+$staffId = !empty($input['staff_id']) ? (int) $input['staff_id'] : null;
 
 if (!preg_match('/^[a-f0-9]{16}$/', $token)) {
     send_json(['error' => 'Érvénytelen import token.'], 400);
+}
+
+// Egy import egyetlen kéréssel akár több száz/ezer terméket írhat felül —
+// jóval nagyobb hatókör, mint egyetlen termék törlése, amihez az app már
+// vezetői jogszintet követel meg (lásd product-save.php/products-bulk.php).
+// Ugyanazt a szabályt itt is érvényesítjük, csak akkor, ha egyáltalán van
+// dolgozói PIN-rendszer használatban.
+if ($db->listStaff(true) && !$db->isStaffAdmin($staffId)) {
+    send_json(['error' => 'Tömeges termékimporthoz vezetői jogszint szükséges.'], 403);
 }
 
 $profiles = require __DIR__ . '/../../src/ImportProfiles.php';
@@ -62,6 +72,15 @@ try {
     $db->rollBack();
     send_json(['error' => 'Import sikertelen, semmi nem került mentésre: ' . $e->getMessage()], 500);
 }
+
+$db->logAudit(
+    $staffId,
+    'product_import',
+    'product',
+    null,
+    "Forrás: {$profile['label']} — $inserted új, $updated frissítve, $skipped kihagyva (összesen " . count($parsed['rows']) . ' sor)',
+    (int) ($appSettings['audit_log_retention_days'] ?? 30)
+);
 
 send_json([
     'total'    => count($parsed['rows']),

@@ -20,6 +20,16 @@ if ($ip === '') {
     send_json(['error' => 'Add meg a nyomtató IP címét.'], 400);
 }
 
+// Tetszőleges IP:port pár felé indít kapcsolatot, és a válaszból (sikeres/
+// elutasított/időtúllépéses) kikövetkeztethető, mi fut az adott címen és
+// porton — ez elméletileg belső hálózat feltérképezésére is használható
+// lenne. Ugyanaz a "csak vezetői jogszinttel" szabály vonatkozik rá, mint
+// a többi, hasonlóan érzékeny Beállítások-műveletre, csak akkor
+// kényszerítve, ha egyáltalán van dolgozói PIN-rendszer használatban.
+if ($db->listStaff(true) && !$db->isStaffAdmin(!empty($input['staff_id']) ? (int) $input['staff_id'] : null)) {
+    send_json(['error' => 'A nyomtató tesztjéhez vezetői jogszint szükséges.'], 403);
+}
+
 $logoPath = null;
 if (!empty($appSettings['receipt_show_logo']) && !empty($appSettings['logo_filename'])) {
     $candidate = __DIR__ . '/../assets/' . $appSettings['logo_filename'];

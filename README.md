@@ -1,6 +1,6 @@
 # Stock Manager — localhost vonalkód-kassza
 
-**Verzió: 1.0 RC1** (release candidate — a fejlesztés innentől kizárólag
+**Verzió: 1.0 RC2** (release candidate — a fejlesztés innentől kizárólag
 hibakeresésre és bugfixekre koncentrál, új funkció tervezetten nem kerül
 bele az 1.0 véglegesig)
 
@@ -1002,12 +1002,15 @@ A `receipt.html` most egy QR-kódot is tartalmaz, ami visszamutat magára a
 nyugtára — a vásárló ezt beszkennelve digitálisan is elmentheti, e-mail
 küldés (és így szerver-oldali levelezés-konfiguráció) nélkül.
 
-**Tervezési döntés**: saját QR-enkóder helyett egy külső, publikus
-QR-generáló képszolgáltatást (`api.qrserver.com`) használ. Egy hibás saját
-implementáció (a QR hibajavítás/maszkolás sokkal összetettebb, mint az
-EAN-13 vonalkód kódtáblája volt) egy nem-olvasható kódot eredményezhetne —
-ez rosszabb, mint egyáltalán nem mutatni QR-kódot. Ha nincs internet a
-nyugta megnyitásakor, a kép csendben eltűnik, nem dob hibát.
+**Tervezési döntés**: a QR-kódot a böngésző generálja helyben, egy
+becsomagolt, nyílt forráskódú (MIT licenc) JS-könyvtárral
+(`webroot/vendor/qrcode-generator/`, kazuhikoarase/qrcode-generator) — nem
+egy külső, publikus QR-generáló képszolgáltatással. Ennek oka nem csak
+megbízhatóság: a QR-kód a nyugta **titkos, bejelentkezés nélküli
+megtekintést lehetővé tevő tokenjét** is tartalmazza a linkben — egy
+külső szolgáltatásnak elküldve ez a token (és ezzel a nyugta tartalma)
+megjelenne annak a szolgáltatásnak a szerver-naplóiban is, nem csak a
+vásárlónál. A helyi generálás nem igényel internetkapcsolatot sem.
 
 **Fontos korlátozás**: a QR-kód a nyugta oldalának **aktuális URL-jére**
 mutat. Ha az app `localhost`-on vagy egy csak a kassza gépéről elérhető

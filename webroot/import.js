@@ -131,10 +131,16 @@ commitBtn.addEventListener('click', async () => {
     commitFeedback.className = 'feedback';
 
     try {
+        let staffId = null;
+        try {
+            const staffRaw = localStorage.getItem('sm_current_staff');
+            if (staffRaw) staffId = JSON.parse(staffRaw).id;
+        } catch (e) { /* ignore corrupt storage */ }
+
         const res = await fetch('/api/import-commit.php', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token: currentToken, profile: profileSelect.value }),
+            body: JSON.stringify({ token: currentToken, profile: profileSelect.value, staff_id: staffId }),
         });
         const data = await res.json();
 

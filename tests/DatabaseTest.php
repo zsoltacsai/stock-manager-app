@@ -242,6 +242,66 @@ final class DatabaseTest extends TestCase
         $this->assertSame(200, (int) $customer['loyalty_points'], 'Részleges visszárunál a pontok ne változzanak.');
     }
 
+    public function testDailySummaryVatBreakdownAccountsForOrderLevelDiscount(): void
+    {
+        $db = tests_new_database();
+        $today = date('Y-m-d');
+
+        // 1000 Ft-os tétel, 27% áfával, de az eladás sales.total-ja csak
+        // 900 Ft (mintha egy 10%-os kupon érvényesült volna) — a
+        // sale_items.unit_price a kedvezmény ELŐTTI árat tárolja, ahogy
+        // az api/sale.php-ban is történik.
+        $saleId = $db->insertSale(900.0, 'Készpénz');
+        $db->insertSaleItem($saleId, ['product_id' => null, 'name' => 'Tétel', 'qty' => 1, 'unit_price' => 1000, 'vat_rate' => '27']);
+
+        $summary = $db->getDailySummary($today);
+
+        $this->assertSame(900.0, $summary['total_gross']);
+        // Nettó + ÁFA összegének a kedvezményes (tényleges) bruttóval kell
+        // egyeznie, NEM a kedvezmény előtti tétel-összeggel (1000 Ft) —
+        // ez volt a hiba: korábban itt 1000 Ft körüli összeg jött volna ki.
+        $this->assertEqualsWithDelta(900.0, round($summary['total_net'] + $summary['total_vat'], 2), 0.02);
+
+        $vatRow = $summary['by_vat_rate']['27'];
+        $this->assertEqualsWithDelta(900.0, $vatRow['gross'], 0.02);
+    }
+
+    public function testSaveProductPreservesPreferredSupplierIdOnUpdate(): void
+    {
+        $db = tests_new_database();
+        $supplierId = $db->saveSupplier(['name' => 'Teszt Beszállító']);
+        $productId = $db->saveProduct($this->sampleProduct(['preferred_supplier_id' => $supplierId]));
+
+        $product = $db->findProductById($productId);
+        $this->assertSame($supplierId, (int) $product['preferred_supplier_id']);
+
+        // Egy újabb mentés (mintha a szerkesztő modalból jönne) ugyanazt a
+        // preferred_supplier_id-t küldi újra — ennek meg kell maradnia.
+        $db->saveProduct($this->sampleProduct(['id' => $productId, 'preferred_supplier_id' => $supplierId]));
+        $product = $db->findProductById($productId);
+        $this->assertSame($supplierId, (int) $product['preferred_supplier_id'], 'A preferred_supplier_id-nak meg kell maradnia mentés után.');
+    }
+
+    public function testImportUpsertProductPreservesExistingPreferredSupplierId(): void
+    {
+        $db = tests_new_database();
+        $supplierId = $db->saveSupplier(['name' => 'Teszt Beszállító 2']);
+        $productId = $db->saveProduct($this->sampleProduct(['barcode' => '1112223334445', 'preferred_supplier_id' => $supplierId]));
+
+        // Egy importált sor ugyanazzal a vonalkóddal (import fájlok nem
+        // ismerik/küldik a preferred_supplier_id-t) — a meglévő
+        // hozzárendelésnek meg kell maradnia, nem szabad kinullázódnia.
+        $db->importUpsertProduct([
+            'name' => 'Teszt termék (frissítve)', 'unit' => 'db', 'group_name' => '', 'cikkszam' => '',
+            'barcode' => '1112223334445', 'currency' => 'HUF', 'vat_rate' => '27',
+            'net_price' => 1000, 'price' => 1270, 'notes' => '', 'stock_qty' => 5, 'purchase_price_net' => 800,
+        ]);
+
+        $product = $db->findProductById($productId);
+        $this->assertSame($supplierId, (int) $product['preferred_supplier_id'], 'Import után is meg kell maradnia a preferred_supplier_id-nak.');
+        $this->assertSame('Teszt termék (frissítve)', $product['name']);
+    }
+
     public function testStaffAdminRoleCheck(): void
     {
         $db = tests_new_database();

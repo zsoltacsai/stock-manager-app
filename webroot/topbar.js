@@ -723,6 +723,11 @@ if ('serviceWorker' in navigator) {
             settingsPrinterFeedback.textContent = 'Nyomtatás...';
             settingsPrinterFeedback.className = 'modal-feedback';
             try {
+                let staffId = null;
+                try {
+                    const staffRaw = localStorage.getItem('sm_current_staff');
+                    if (staffRaw) staffId = JSON.parse(staffRaw).id;
+                } catch (e) { /* ignore corrupt storage */ }
                 const res = await fetch('/api/printer-test.php', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -730,6 +735,7 @@ if ('serviceWorker' in navigator) {
                         printer_ip: printerIp.value.trim(),
                         printer_port: parseInt(printerPort.value, 10) || 9100,
                         printer_paper_width: parseInt(printerPaperWidth.value, 10) || 42,
+                        staff_id: staffId,
                     }),
                 });
                 const data = await res.json();

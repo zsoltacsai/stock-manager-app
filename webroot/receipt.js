@@ -69,14 +69,26 @@ function renderReceipt(data) {
         ? receipt.footer_lines.map(line => `<div class="footer-note">${escapeHtml(line)}</div>`).join('')
         : '';
 
-    const qrTargetUrl = window.location.href;
-    const qrImageUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=110x110&data=' + encodeURIComponent(qrTargetUrl);
-    const qrHtml = `
-        <div style="text-align:center; margin-top:14px;">
-            <img src="${qrImageUrl}" alt="QR kód" width="90" height="90" style="display:inline-block;" onerror="this.parentElement.style.display='none';">
-            <div style="font-size:10px; color:#888; margin-top:4px;">Digitális nyugta megtekintése</div>
-        </div>
-    `;
+    // A QR-kód a nyugta URL-jét (a titkos, bejelentkezés nélküli
+    // megtekintést lehetővé tevő tokent is beleértve) kódolja — ezt
+    // SZÁNDÉKOSAN helyben, a böngészőben állítjuk elő (vendor/qrcode-generator),
+    // nem egy külső API-nak (pl. api.qrserver.com) elküldve a data
+    // paraméterben, mert az a titkos tokent egy harmadik fél szerverének
+    // naplóiba juttatná — a token attól még ugyanúgy felhasználható lenne
+    // a nyugta megtekintésére, csak már nem csak a vevő ismerné.
+    let qrHtml = '';
+    try {
+        const qr = qrcode(0, 'M');
+        qr.addData(window.location.href);
+        qr.make();
+        const qrSvg = qr.createSvgTag({ cellSize: 4, margin: 4, scalable: true });
+        qrHtml = `
+            <div style="text-align:center; margin-top:14px;">
+                <div style="display:inline-block; width:90px; height:90px;">${qrSvg}</div>
+                <div style="font-size:10px; color:#888; margin-top:4px;">Digitális nyugta megtekintése</div>
+            </div>
+        `;
+    } catch (e) { /* ha a QR-generálás sikertelen, a nyugta QR-kód nélkül is teljes értékű */ }
 
     receiptContent.innerHTML = `
         ${logoHtml}

@@ -18,8 +18,8 @@ $out = fopen('php://output', 'w');
 fputcsv($out, ['Azonosító', 'Időpont', 'Összeg', 'Fizetési mód', 'Vevő', 'Számlaszám'], ';');
 foreach ($summary['sales'] as $s) {
     fputcsv($out, [
-        $s['id'], $s['created_at'], $s['total'], $s['payment_method'],
-        $s['buyer_name'] ?? '', $s['szamlazz_invoice_number'] ?? '',
+        $s['id'], $s['created_at'], $s['total'], csv_safe($s['payment_method']),
+        csv_safe($s['buyer_name'] ?? ''), csv_safe($s['szamlazz_invoice_number'] ?? ''),
     ], ';');
 }
 fputcsv($out, [], ';');

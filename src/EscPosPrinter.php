@@ -169,6 +169,11 @@ class EscPosPrinter
         if (!$socket) {
             throw new RuntimeException("Nem sikerült csatlakozni a nyomtatóhoz ({$this->ip}:{$this->port}): $errstr");
         }
+        // A fsockopen() 5 mp-es timeoutja csak a kapcsolódásra vonatkozik —
+        // enélkül egy olyan cél, ami elfogadja a TCP-kapcsolatot, de sosem
+        // olvassa ki a socketet, a fwrite()-ot akár a PHP script-időkorlátig
+        // (max_execution_time) is blokkolhatná, egy PHP worker-t lefoglalva.
+        stream_set_timeout($socket, 5);
         fwrite($socket, $data);
         fclose($socket);
     }
@@ -180,11 +185,25 @@ class EscPosPrinter
      * olvashatatlan szöveget nyomtatnánk, ez sima ASCII-re alakít
      * (á→a, ő→o, stb.), így a kimenet mindig olvasható marad —
      * az ékezetek elvesznek, de sosem lesz belőle "mojibake".
+     *
+     * Emellett ez az EGYETLEN hely, ahol a nyers ESC/POS bájtfolyamba
+     * kerülő, kívülről befolyásolható szöveg (termék-/vevőnév, fizetési
+     * mód, kézi tétel neve stb.) átmegy — ezért itt szűrjük ki a
+     * vezérlőbájtokat (0x00-0x1F) is. Az iconv TRANSLIT/IGNORE ugyanis
+     * csak a nem-ASCII karaktereket alakítja/dobja el, egy már ASCII-
+     * tartományba eső vezérlőbájtot (pl. 0x1B = ESC, 0x1D = GS)
+     * változatlanul hagyna — enélkül egy erre felkészített termék- vagy
+     * vevőnév (pl. egy kézi kosártétel neve) tetszőleges nyomtató-
+     * parancsot csempészhetne be (pénztárfiók nyitása, papírvágás stb.),
+     * a nyugtán legfeljebb egy hiányzó karakterként észrevehetően.
+     * A saját magunk beszúrt sortöréseit ("\n") ez nem érinti, mert
+     * azokat mindig a toAscii() hívása UTÁN fűzzük hozzá, sose ide adjuk be.
      */
     private function toAscii(string $s): string
     {
         $transliterated = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $s);
-        return $transliterated !== false ? $transliterated : preg_replace('/[^\x20-\x7E]/', '', $s);
+        $ascii = $transliterated !== false ? $transliterated : preg_replace('/[^\x20-\x7E]/', '', $s);
+        return preg_replace('/[\x00-\x1F]/', '', $ascii);
     }
 
     private function bold(bool $on): string

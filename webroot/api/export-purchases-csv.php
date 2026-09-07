@@ -20,8 +20,8 @@ $out = fopen('php://output', 'w');
 fputcsv($out, ['Azonosító', 'Dátum', 'Beszállító', 'Nettó összeg', 'Bruttó összeg', 'Fizetési mód', 'Fizetve'], ';');
 foreach ($purchases as $p) {
     fputcsv($out, [
-        $p['id'], $p['created_at'], $p['supplier_name'] ?? '',
-        $p['total_net'], $p['total_gross'], $p['payment_method'], $p['paid'] ? 'Igen' : 'Nem',
+        $p['id'], $p['created_at'], csv_safe($p['supplier_name'] ?? ''),
+        $p['total_net'], $p['total_gross'], csv_safe($p['payment_method']), $p['paid'] ? 'Igen' : 'Nem',
     ], ';');
 }
 fclose($out);

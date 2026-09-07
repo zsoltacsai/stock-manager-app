@@ -2,17 +2,31 @@
 
 class XlsxReader
 {
+    // Egy .xlsx belső XML-részének max. kicsomagolt mérete — egy néhány KB-os,
+    // szándékosan roppant tömöríthető ("zip bomb") payloaddal becsomagolt
+    // fájl enélkül GB-os memóriafoglalást okozhatna kicsomagoláskor, még
+    // mielőtt bármi mást ellenőriznénk. Egy valódi, akár több tízezer soros
+    // termékkatalógus XML-je is jóval e alatt marad.
+    private const MAX_ENTRY_UNCOMPRESSED_BYTES = 100 * 1024 * 1024;
+
     public static function readRows(string $path): array
     {
         $zip = new ZipArchive();
         if ($zip->open($path) !== true) {
             throw new RuntimeException('Az .xlsx fájlt nem sikerült megnyitni (érvénytelen vagy sérült fájl).');
         }
+        // Egy valódi .xlsx néhány tucat belső fájlból áll — egy ennél
+        // jóval nagyobb bejegyzésszám gyanús (pl. egy másfajta zip-bomb
+        // variáns sok apró, de számban töméntelen bejegyzéssel).
+        if ($zip->numFiles > 500) {
+            $zip->close();
+            throw new RuntimeException('Az .xlsx fájl szerkezete gyanús (túl sok belső bejegyzés).');
+        }
 
         try {
             $sharedStrings = self::readSharedStrings($zip);
             $sheetPath = self::firstSheetPath($zip);
-            $sheetXml = $zip->getFromName($sheetPath);
+            $sheetXml = self::safeGetFromName($zip, $sheetPath);
             if ($sheetXml === false) {
                 throw new RuntimeException('Az .xlsx fájlban nem található munkalap.');
             }
@@ -22,9 +36,27 @@ class XlsxReader
         }
     }
 
+    /**
+     * Ugyanaz, mint a ZipArchive::getFromName(), de előbb a kicsomagolt
+     * méretet ellenőrzi (ZipArchive::statName() a tömörített adatot nem
+     * csomagolja ki, csak a központi könyvtár bejegyzését olvassa) — így
+     * egy túl nagyra kicsomagolódó bejegyzést sose csomagolunk ki ténylegesen.
+     */
+    private static function safeGetFromName(ZipArchive $zip, string $name)
+    {
+        $stat = $zip->statName($name);
+        if ($stat === false) {
+            return false;
+        }
+        if ($stat['size'] > self::MAX_ENTRY_UNCOMPRESSED_BYTES) {
+            throw new RuntimeException('Az .xlsx fájl egyik belső része gyanúsan nagy — a fájl feldolgozása megszakítva.');
+        }
+        return $zip->getFromName($name);
+    }
+
     private static function readSharedStrings(ZipArchive $zip): array
     {
-        $xml = $zip->getFromName('xl/sharedStrings.xml');
+        $xml = self::safeGetFromName($zip, 'xl/sharedStrings.xml');
         if ($xml === false) {
             return [];
         }
@@ -47,8 +79,8 @@ class XlsxReader
 
     private static function firstSheetPath(ZipArchive $zip): string
     {
-        $workbookXml = $zip->getFromName('xl/workbook.xml');
-        $relsXml = $zip->getFromName('xl/_rels/workbook.xml.rels');
+        $workbookXml = self::safeGetFromName($zip, 'xl/workbook.xml');
+        $relsXml = self::safeGetFromName($zip, 'xl/_rels/workbook.xml.rels');
 
         if ($workbookXml !== false && $relsXml !== false) {
             $wb = self::loadXml($workbookXml);

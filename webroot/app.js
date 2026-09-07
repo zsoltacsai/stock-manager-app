@@ -530,9 +530,18 @@ redeemPointsInput.addEventListener('input', updateRedeemHint);
 
 const fmt = (n) => new Intl.NumberFormat('hu-HU').format(Math.round(n)) + ' Ft';
 
+const checkoutBtnLabel = document.getElementById('checkout-btn-label');
+function updateCheckoutBtnLabel() {
+    if (checkoutBtnLabel) {
+        checkoutBtnLabel.textContent = invoiceRequested.checked ? 'Eladás rögzítése + Számla' : 'Eladás rögzítése';
+    }
+}
+
 invoiceRequested.addEventListener('change', () => {
     buyerFields.classList.toggle('hidden', !invoiceRequested.checked);
+    updateCheckoutBtnLabel();
 });
+updateCheckoutBtnLabel();
 buyerIsPrivate.addEventListener('change', () => {
     const isCompany = !buyerIsPrivate.checked;
     buyerTaxnumWrap.style.display = isCompany ? 'block' : 'none';
@@ -612,6 +621,7 @@ function collectBuyerInput() {
 
 function resetBuyerForm() {
     invoiceRequested.checked = false;
+    updateCheckoutBtnLabel();
     buyerFields.classList.add('hidden');
     buyerIsPrivate.checked = true;
     buyerTaxnumWrap.style.display = 'none';

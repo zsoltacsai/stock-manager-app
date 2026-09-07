@@ -69,6 +69,7 @@ $productId = $db->saveProduct([
     'show_webshop'   => $p['show_webshop'] ?? true,
     'is_deleted'     => $p['is_deleted'] ?? false,
     'low_stock_threshold' => $p['low_stock_threshold'] ?? '',
+    'preferred_supplier_id' => $p['preferred_supplier_id'] ?? null,
     'short_description' => $p['short_description'] ?? null,
     'long_description' => $p['long_description'] ?? null,
     'image_filename' => $p['image_filename'] ?? null,

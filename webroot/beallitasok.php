@@ -164,13 +164,20 @@ if (!Auth::isLoggedIn($appSettings)) {
                 </div>
             </div>
             <p class="muted" id="last-backup"></p>
+
+            <label for="cron-secret">Cron titkos token</label>
+            <input type="text" id="cron-secret" placeholder="hagyd üresen, ha nem használsz külső cron-t">
             <p class="muted">
-                Az automatikus futtatáshoz egy rendszer cron bejegyzés szükséges (pl. 15
-                percenként), ami maga dönti el, hogy esedékes-e a mentés a fenti időpont
-                alapján, naponta legfeljebb egyszer:
+                Az automatikus futtatáshoz (mentés és WooCommerce-szinkron is) egy
+                rendszer cron bejegyzés szükséges, ami maga dönti el, hogy esedékes-e a
+                művelet — ezek a végpontok viszont bejelentkezés nélkül futnak (cron nem
+                tud böngészőben bejelentkezni), ezért ide egy titkos tokent kell megadni,
+                amit a cron-parancs is ismer. Token nélkül ezek a végpontok továbbra is
+                bejelentkezést kérnek, és a cron nem tudja lefuttatni őket.
             </p>
             <p class="muted" style="font-family: monospace; background: var(--panel-light); padding: 8px 10px; border-radius: 6px;">
-                */15 * * * * curl -s http://localhost:8000/api/auto-backup-run.php &gt; /dev/null
+                */15 * * * * curl -s "http://localhost:8000/api/auto-backup-run.php?token=IDE_A_TOKEN" &gt; /dev/null<br>
+                */15 * * * * curl -s "http://localhost:8000/api/auto-sync-run.php?token=IDE_A_TOKEN" &gt; /dev/null
             </p>
 
             <label for="backup-provider">Felhő szinkronizálás</label>

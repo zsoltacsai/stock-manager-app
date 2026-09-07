@@ -10,7 +10,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $input = json_input();
 $action = (string) ($input['action'] ?? '');
 $ids = array_values(array_unique(array_map('intval', $input['ids'] ?? [])));
-$staffId = !empty($input['staff_id']) ? (int) $input['staff_id'] : null;
+$staffId = Auth::currentStaffId();
 
 if (!$ids) {
     send_json(['error' => 'Nincs kijelölt vásárló.'], 400);

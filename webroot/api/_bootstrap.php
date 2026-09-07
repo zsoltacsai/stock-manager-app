@@ -43,7 +43,24 @@ if (!$geoCheck['allowed']) {
 // megtekintése önmagában nem tesz elérhetővé semmilyen valós adatot.
 $authWhitelist = ['login.php', 'logout.php', 'auth-status.php', 'install-status.php', 'receipt-detail.php', 'webhook.php'];
 $currentScript = basename($_SERVER['SCRIPT_NAME'] ?? '');
-if (!in_array($currentScript, $authWhitelist, true) && !Auth::isLoggedIn($appSettings)) {
+
+// Az automatikus mentés/szinkron (auto-backup-run.php, auto-sync-run.php)
+// dokumentáltan egy rendszer cron bejegyzésről indul (lásd README/telepítési
+// útmutatók), tehát session-sütire épülő bejelentkezés-ellenőrzéssel sose
+// tudna lefutni — cron nem tud böngészőben bejelentkezni. Enélkül a fenti
+// blanket session-ellenőrzés miatt ezek a végpontok minden cron-hívásnál
+// csendben 401-et adnának, és az automatikus mentés/szinkron sose futna le,
+// észrevétlenül. Ehelyett egy külön, megosztott titkot fogadnak el — csak
+// akkor, ha a Beállítások alatt be van állítva —, ami a cron-parancssorba
+// kerül, sose a böngésző session-jébe.
+$cronScripts = ['auto-backup-run.php', 'auto-sync-run.php'];
+$cronAuthorized = false;
+if (in_array($currentScript, $cronScripts, true) && !empty($appSettings['cron_secret'])) {
+    $suppliedToken = (string) ($_GET['token'] ?? $_SERVER['HTTP_X_CRON_TOKEN'] ?? '');
+    $cronAuthorized = $suppliedToken !== '' && hash_equals((string) $appSettings['cron_secret'], $suppliedToken);
+}
+
+if (!in_array($currentScript, $authWhitelist, true) && !$cronAuthorized && !Auth::isLoggedIn($appSettings)) {
     http_response_code(401);
     echo json_encode(['error' => 'Bejelentkezés szükséges.', 'auth_required' => true], JSON_UNESCAPED_UNICODE);
     exit;

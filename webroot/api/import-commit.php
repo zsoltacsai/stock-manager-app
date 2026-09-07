@@ -12,7 +12,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $input = json_input();
 $token = $input['token'] ?? '';
 $profileKey = $input['profile'] ?? '';
-$staffId = !empty($input['staff_id']) ? (int) $input['staff_id'] : null;
+$staffId = Auth::currentStaffId();
 
 if (!preg_match('/^[a-f0-9]{16}$/', $token)) {
     send_json(['error' => 'Érvénytelen import token.'], 400);

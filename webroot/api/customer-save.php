@@ -18,7 +18,7 @@ if (!empty($input['id'])) {
     $wasDeleted = $existing && !empty($existing['is_deleted']);
 }
 $settingToDeleted = !empty($input['is_deleted']) && !$wasDeleted;
-if ($settingToDeleted && $db->listStaff(true) && !$db->isStaffAdmin(!empty($input['staff_id']) ? (int) $input['staff_id'] : null)) {
+if ($settingToDeleted && $db->listStaff(true) && !$db->isStaffAdmin(Auth::currentStaffId())) {
     send_json(['error' => 'Vásárló törléséhez vezetői jogszint szükséges.'], 403);
 }
 
@@ -26,7 +26,7 @@ $id = $db->saveCustomer($input);
 
 if ($settingToDeleted) {
     $db->logAudit(
-        !empty($input['staff_id']) ? (int) $input['staff_id'] : null,
+        Auth::currentStaffId(),
         'customer_delete',
         'customer',
         $id,

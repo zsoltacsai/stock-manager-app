@@ -30,4 +30,5 @@ if (!$staff) {
 }
 
 Auth::clearRateLimit($rateLimitKey);
+Auth::setCurrentStaff($staff);
 send_json(['ok' => true, 'staff' => $staff]);

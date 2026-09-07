@@ -27,6 +27,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'nav_login', 'nav_password', 'nav_signer_key', 'nav_exchange_key', 'nav_tax_number',
         'low_stock_notify_webhook', 'low_stock_notify_email',
         'receipt_header_lines', 'receipt_footer_lines',
+        'cron_secret',
     ];
     // Ezeknél a mezőknél a válasz (lásd lentebb) sose küldi ki a valódi
     // értéket — a felület üresen, egy "(mentve)" jelzéssel mutatja őket.
@@ -36,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $secretFields = [
         'dropbox_access_token', 'google_client_secret', 'google_refresh_token',
         'szamlazz_agent_key', 'wc_consumer_secret', 'wc_webhook_secret',
-        'nav_password', 'nav_signer_key', 'nav_exchange_key',
+        'nav_password', 'nav_signer_key', 'nav_exchange_key', 'cron_secret',
     ];
     foreach ($stringFields as $field) {
         if (!isset($input[$field])) {
@@ -157,7 +158,7 @@ unset($data['app_password_hash']); // a hash sose menjen ki a klienshez, semmily
 $secretResponseFields = [
     'dropbox_access_token', 'google_client_secret', 'google_refresh_token',
     'szamlazz_agent_key', 'wc_consumer_secret', 'wc_webhook_secret',
-    'nav_password', 'nav_signer_key', 'nav_exchange_key',
+    'nav_password', 'nav_signer_key', 'nav_exchange_key', 'cron_secret',
 ];
 foreach ($secretResponseFields as $field) {
     $data[$field . '_set'] = !empty($data[$field]);

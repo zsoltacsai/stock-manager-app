@@ -9,7 +9,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 $input = json_input();
 $id = (int) ($input['id'] ?? 0);
-$staffId = !empty($input['staff_id']) ? (int) $input['staff_id'] : null;
+$staffId = Auth::currentStaffId();
 
 $customer = $id ? $db->findCustomerById($id) : null;
 if (!$customer) {
@@ -24,12 +24,16 @@ if ($db->listStaff(true) && !$db->isStaffAdmin($staffId)) {
 
 $db->anonymizeCustomer($id);
 
+// SZÁNDÉKOSAN nem a vásárló (törlés előtti) nevét írjuk ide — az pont azt
+// az adatot pörgetné vissza az audit naplóba, amit ez a művelet törölni
+// hivatott (az audit_log-ot anonymizeCustomer() nem érinti, és a
+// megőrzési idő lejártáig itt olvasható maradna).
 $db->logAudit(
     $staffId,
     'customer_gdpr_delete',
     'customer',
     $id,
-    'Korábbi név: ' . $customer['name'],
+    'Vásárló #' . $id,
     (int) ($appSettings['audit_log_retention_days'] ?? 30)
 );
 

@@ -130,6 +130,7 @@ if ('serviceWorker' in navigator) {
     const backupEnabled = document.getElementById('backup-enabled');
     const backupTime = document.getElementById('backup-time');
     const backupRetention = document.getElementById('backup-retention');
+    const cronSecret = document.getElementById('cron-secret');
     const backupProvider = document.getElementById('backup-provider');
     const backupDropboxFields = document.getElementById('backup-dropbox-fields');
     const backupGoogleFields = document.getElementById('backup-google-fields');
@@ -321,6 +322,7 @@ if ('serviceWorker' in navigator) {
         if (backupEnabled) backupEnabled.checked = !!data.backup_enabled;
         if (backupTime) backupTime.value = data.backup_time || '23:30';
         if (backupRetention) backupRetention.value = String(data.backup_retention_count || 7);
+        applySecretField(cronSecret, data, 'cron_secret', '');
         if (backupProvider) {
             backupProvider.value = data.backup_provider || 'none';
             toggleProviderFields(backupProvider.value);
@@ -761,6 +763,7 @@ if ('serviceWorker' in navigator) {
                         backup_time: backupTime.value.trim() || '23:30',
                         backup_retention_count: parseInt(backupRetention.value, 10) || 7,
                         backup_provider: backupProvider.value,
+                        cron_secret: cronSecret ? cronSecret.value.trim() : '',
                         dropbox_access_token: dropboxAccessToken.value.trim(),
                         dropbox_folder: dropboxFolder.value.trim(),
                         google_client_id: googleClientId.value.trim(),

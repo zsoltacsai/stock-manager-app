@@ -187,40 +187,71 @@ if ($giftCardCode !== '') {
     $total = max(0, round($total - $giftCardRedeemed, 2));
 }
 
+$giftCardNewBalance = null;
+$claimError = null;
+
 $db->beginTransaction();
 try {
-    $saleId = $db->insertSale(
-        round($total, 2),
-        $paymentMethod,
-        $buyer['nev'] ?? null,
-        $customer ? $customerId : null,
-        $pointsEarned,
-        $customer ? $redeemPoints : 0,
-        $coupon['id'] ?? null,
-        $couponDiscount,
-        $giftCardRedeemed,
-        !empty($input['staff_id']) ? (int) $input['staff_id'] : null
-    );
-    foreach ($lineItems as $item) {
-        $db->insertSaleItem($saleId, $item);
-        if (empty($item['manual'])) {
-            $db->decrementStock($item['product_id'], $item['qty']);
-            if ($locationId) {
-                $db->decrementLocationStock($item['product_id'], $locationId, $item['qty']);
+    // Atomikusan lefoglaljuk a szűkös erőforrásokat (kupon-felhasználás,
+    // hűségpont-egyenleg, ajándékutalvány-egyenleg) MIELŐTT maga az eladás
+    // rögzülne, ugyanabban a tranzakcióban — különben két majdnem egyidejű
+    // eladás mindkettő sikeresen elkölthetné ugyanazt a már csak egyszer
+    // meglévő kedvezményt: az eladás a kedvezménnyel együtt rögzülne, és
+    // csak UTÁNA (ha egyáltalán) derülne ki, hogy a fedezet már elfogyott —
+    // ekkor viszont már késő, az eladás nem vonható vissza csendben.
+    if ($coupon && !$db->incrementCouponUsage((int) $coupon['id'])) {
+        $claimError = 'Ezt a kupont időközben valaki más felhasználta. Kérlek, próbáld újra.';
+    } elseif ($customer && $redeemPoints > 0 && !$db->tryClaimLoyaltyPoints($customerId, $redeemPoints)) {
+        $claimError = 'A vásárlónak időközben már nincs elég pontja. Kérlek, próbáld újra.';
+    } elseif ($giftCard && $giftCardRedeemed > 0 && !$db->tryClaimGiftCardBalance((int) $giftCard['id'], $giftCardRedeemed)) {
+        $claimError = 'Az ajándékutalvány egyenlege időközben megváltozott. Kérlek, próbáld újra.';
+    }
+
+    if ($claimError !== null) {
+        $db->rollBack();
+    } else {
+        $saleId = $db->insertSale(
+            round($total, 2),
+            $paymentMethod,
+            $buyer['nev'] ?? null,
+            $customer ? $customerId : null,
+            $pointsEarned,
+            $customer ? $redeemPoints : 0,
+            $coupon['id'] ?? null,
+            $couponDiscount,
+            $giftCardRedeemed,
+            Auth::currentStaffId()
+        );
+        foreach ($lineItems as $item) {
+            $db->insertSaleItem($saleId, $item);
+            if (empty($item['manual'])) {
+                $db->decrementStock($item['product_id'], $item['qty']);
+                if ($locationId) {
+                    $db->decrementLocationStock($item['product_id'], $locationId, $item['qty']);
+                }
             }
         }
+
+        if ($customer && $redeemPoints > 0) {
+            $db->recordLoyaltyPointsRedemption($customerId, $redeemPoints, $saleId);
+        }
+        if ($giftCard && $giftCardRedeemed > 0) {
+            $giftCardNewBalance = $db->recordGiftCardRedemption((int) $giftCard['id'], $giftCardRedeemed, $saleId);
+        }
+
+        $db->commit();
     }
-    $db->commit();
 } catch (Throwable $e) {
     $db->rollBack();
     send_json(['error' => 'Az eladás rögzítése sikertelen: ' . $e->getMessage()], 500);
 }
 
+if ($claimError !== null) {
+    send_json(['error' => $claimError], 409);
+}
+
 $newPointsBalance = null;
 if ($customer) {
-    if ($redeemPoints > 0) {
-        $db->applyLoyaltyPoints($customerId, -$redeemPoints, $saleId, "Beváltva eladás #$saleId-nél");
-    }
     if ($pointsEarned > 0) {
         $newPointsBalance = $db->applyLoyaltyPoints($customerId, $pointsEarned, $saleId, "Jóváírva eladás #$saleId-nél");
     } else {
@@ -228,23 +259,24 @@ if ($customer) {
     }
     $db->addCustomerSpend($customerId, round($loyaltyBasisTotal, 2));
 }
-if ($coupon) {
-    $db->incrementCouponUsage((int) $coupon['id']);
-}
-$giftCardNewBalance = null;
-if ($giftCard && $giftCardRedeemed > 0) {
-    $giftCardNewBalance = $db->redeemGiftCard((int) $giftCard['id'], $giftCardRedeemed, $saleId);
-}
 
 $invoiceResult = null;
 
 if ($buyer !== null) {
     $szamlazz = new SzamlazzClient($config['szamlazz']);
 
+    // A lineItems[]['unit_price'] a kedvezmény ELŐTTI (kosár-összeállításkori)
+    // egységárat tartalmazza — enélkül az arányosítás nélkül a Számlázz.hu
+    // felé mindig a teljes, kedvezmény nélküli összeg menne ki, akkor is, ha
+    // kupon/hűségpont/hűségszint/ajándékutalvány miatt a vevő ténylegesen
+    // kevesebbet fizetett (lásd sales.total). Ugyanaz az arányosítási minta,
+    // mint getDailySummary()-ban és api/return-create.php-ban.
+    $invoiceDiscountRatio = $subtotal > 0 ? min(1, $total / $subtotal) : 1.0;
+
     $invoiceItems = array_map(fn($i) => [
         'name'             => $i['name'],
         'qty'              => $i['qty'],
-        'unit_price_gross' => $i['unit_price'],
+        'unit_price_gross' => round($i['unit_price'] * $invoiceDiscountRatio, 2),
         'vat_rate'         => $i['vat_rate'],
     ], $lineItems);
 

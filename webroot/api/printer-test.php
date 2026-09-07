@@ -26,7 +26,7 @@ if ($ip === '') {
 // lenne. Ugyanaz a "csak vezetői jogszinttel" szabály vonatkozik rá, mint
 // a többi, hasonlóan érzékeny Beállítások-műveletre, csak akkor
 // kényszerítve, ha egyáltalán van dolgozói PIN-rendszer használatban.
-if ($db->listStaff(true) && !$db->isStaffAdmin(!empty($input['staff_id']) ? (int) $input['staff_id'] : null)) {
+if ($db->listStaff(true) && !$db->isStaffAdmin(Auth::currentStaffId())) {
     send_json(['error' => 'A nyomtató tesztjéhez vezetői jogszint szükséges.'], 403);
 }
 

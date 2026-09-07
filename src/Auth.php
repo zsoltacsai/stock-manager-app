@@ -91,6 +91,35 @@ final class Auth
         session_destroy();
     }
 
+    /**
+     * A ténylegesen PIN-nel ellenőrzött "aktuális dolgozó" a szerver-oldali
+     * session-ben — NEM a kliens által minden kéréssel újraküldött staff_id.
+     * Korábban minden "csak vezetői jogszinttel" végpont egy sima
+     * $_POST['staff_id']-t hitt el, amit bárki, aki be van jelentkezve az
+     * appba (akár egy egyszerű pénztáros is), a böngésző konzoljából
+     * átírhatott egy vezető azonosítójára — ezzel megkerülve az admin-kaput.
+     * Mivel a dolgozói PIN már itt, staff-login.php-n keresztül egyszer
+     * ténylegesen ellenőrzésre kerül, ennek eredményét a session-ben tároljuk,
+     * és minden admin-kapu innen olvassa ki, nem a kérés törzséből.
+     */
+    public static function setCurrentStaff(?array $staff): void
+    {
+        self::ensureSession();
+        if ($staff) {
+            $_SESSION['staff_id'] = (int) $staff['id'];
+            $_SESSION['staff_role'] = $staff['role'] ?? null;
+            $_SESSION['staff_name'] = $staff['name'] ?? null;
+        } else {
+            unset($_SESSION['staff_id'], $_SESSION['staff_role'], $_SESSION['staff_name']);
+        }
+    }
+
+    public static function currentStaffId(): ?int
+    {
+        self::ensureSession();
+        return isset($_SESSION['staff_id']) ? (int) $_SESSION['staff_id'] : null;
+    }
+
     public static function csrfToken(): string
     {
         self::ensureSession();

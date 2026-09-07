@@ -50,11 +50,15 @@ async function loadSummary() {
 }
 
 function renderSummary(summary) {
+    const returnsBox = summary.total_returns > 0
+        ? `<div class="stat-box"><div class="value">−${fmt(summary.total_returns)}</div><div class="label">Visszáru (a fentiekben már levonva)</div></div>`
+        : '';
     statsGrid.innerHTML = `
         <div class="stat-box"><div class="value">${summary.sales_count}</div><div class="label">Eladások száma</div></div>
         <div class="stat-box"><div class="value">${fmt(summary.total_gross)}</div><div class="label">Bruttó forgalom</div></div>
         <div class="stat-box"><div class="value">${fmt(summary.total_net)}</div><div class="label">Nettó forgalom</div></div>
         <div class="stat-box"><div class="value">${fmt(summary.total_vat)}</div><div class="label">ÁFA összesen</div></div>
+        ${returnsBox}
     `;
 
     const paymentRows = Object.entries(summary.by_payment_method);
@@ -68,7 +72,7 @@ function renderSummary(summary) {
     vatTableBody.innerHTML = vatRows.length
         ? vatRows.map(([rate, row]) => `
             <tr>
-                <td>${isNaN(parseFloat(rate)) ? rate : rate + '%'}</td>
+                <td>${escapeHtml(isNaN(parseFloat(rate)) ? rate : rate + '%')}</td>
                 <td>${fmt(row.net)}</td>
                 <td>${fmt(row.vat)}</td>
                 <td>${fmt(row.gross)}</td>

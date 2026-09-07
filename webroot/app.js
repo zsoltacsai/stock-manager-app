@@ -218,6 +218,7 @@ staffLogoutBtn.addEventListener('click', () => {
     localStorage.removeItem('sm_current_staff');
     updateStaffBadge();
     staffLoginModal.classList.remove('open');
+    fetch('/api/staff-logout.php', { method: 'POST' }).catch(() => {});
 });
 
 staffPinInput.addEventListener('keydown', (e) => {

@@ -1188,6 +1188,82 @@ class Database
         }
         unset($sale);
 
+        // A visszáruk (returns) a NAP FOLYAMÁN keletkezett jóváírások — az
+        // eredeti eladás-rekord (fent) szándékosan változatlanul megmarad
+        // (lásd api/return-create.php), így enélkül a napi zárás minden
+        // olyan napon túlbecsülné a valós forgalmat, amikor visszáru történt.
+        // A visszáru SAJÁT napja számít (nem az eredeti eladásé), mert a
+        // kasszazárás mindig az adott napi tényleges pénzmozgást összegzi.
+        $totalReturnsGross = 0.0;
+        // Saját, EXPLICIT módon a returns táblára ("r.") minősített
+        // dátum-kifejezés kell — a fenti $dateExpr szándékosan minősítetlen
+        // (csak "sales" ellen futott eddig), és mivel a returns ÉS a sales
+        // tábla is rendelkezik created_at oszloppal, a JOIN-elt lekérdezésben
+        // a minősítetlen változat kétértelmű oszlopnév-hibát adna.
+        $returnDateExpr = $this->driver === 'mysql' ? 'DATE(r.created_at)' : "substr(r.created_at, 1, 10)";
+        $returnsStmt = $this->pdo->prepare("
+            SELECT r.*, s.payment_method
+            FROM returns r
+            JOIN sales s ON s.id = r.sale_id
+            WHERE $returnDateExpr = ?
+            ORDER BY r.created_at
+        ");
+        $returnsStmt->bindValue(1, $date);
+        $returnsStmt->execute();
+        $returns = $returnsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if ($returns) {
+            $returnIds = array_column($returns, 'id');
+            $riPlaceholders = implode(',', array_fill(0, count($returnIds), '?'));
+            $riStmt = $this->pdo->prepare("
+                SELECT ri.*, si.vat_rate AS vat_rate
+                FROM return_items ri
+                LEFT JOIN sale_items si ON si.id = ri.sale_item_id
+                WHERE ri.return_id IN ($riPlaceholders)
+            ");
+            $riStmt->execute($returnIds);
+            $returnItemsByReturn = [];
+            foreach ($riStmt->fetchAll(PDO::FETCH_ASSOC) as $ri) {
+                $returnItemsByReturn[$ri['return_id']][] = $ri;
+            }
+
+            foreach ($returns as $ret) {
+                $refund = (float) $ret['total_refund'];
+                $totalGross -= $refund;
+                $totalReturnsGross += $refund;
+
+                $method = $ret['payment_method'] ?: 'Készpénz';
+                $byPayment[$method]['count'] = $byPayment[$method]['count'] ?? 0;
+                $byPayment[$method]['total'] = ($byPayment[$method]['total'] ?? 0) - $refund;
+
+                $retItems = $returnItemsByReturn[$ret['id']] ?? [];
+                $rawRefund = 0.0;
+                foreach ($retItems as $ri) {
+                    $rawRefund += (float) $ri['unit_price'] * (int) $ri['qty'];
+                }
+                // Ugyanaz az arányosítás, amit a visszáru LÉTREHOZÁSAKOR is
+                // alkalmaztunk (lásd api/return-create.php) — itt visszafejtjük
+                // a már eltárolt total_refund-ból, mert magát az arányt nem
+                // tároljuk el külön a returns táblán.
+                $retRatio = $rawRefund > 0 ? ($refund / $rawRefund) : 1.0;
+
+                foreach ($retItems as $ri) {
+                    $vatRate = (string) ($ri['vat_rate'] ?? '');
+                    $vatPct = is_numeric($vatRate) ? ((float) $vatRate) / 100 : 0.0;
+                    $lineGross = round((float) $ri['unit_price'] * (int) $ri['qty'] * $retRatio, 2);
+                    $lineNet = is_numeric($vatRate) ? round($lineGross / (1 + $vatPct), 2) : $lineGross;
+                    $lineVat = round($lineGross - $lineNet, 2);
+
+                    $totalNet -= $lineNet;
+                    $totalVat -= $lineVat;
+
+                    $byVatRate[$vatRate]['net'] = ($byVatRate[$vatRate]['net'] ?? 0) - $lineNet;
+                    $byVatRate[$vatRate]['vat'] = ($byVatRate[$vatRate]['vat'] ?? 0) - $lineVat;
+                    $byVatRate[$vatRate]['gross'] = ($byVatRate[$vatRate]['gross'] ?? 0) - $lineGross;
+                }
+            }
+        }
+
         foreach ($byPayment as &$row) {
             $row['total'] = round($row['total'], 2);
         }
@@ -1205,6 +1281,7 @@ class Database
             'total_gross'       => round($totalGross, 2),
             'total_net'         => round($totalNet, 2),
             'total_vat'         => round($totalVat, 2),
+            'total_returns'     => round($totalReturnsGross, 2),
             'by_payment_method' => $byPayment,
             'by_vat_rate'       => $byVatRate,
             'sales'             => $sales,
@@ -1639,6 +1716,7 @@ class Database
      */
     public function anonymizeCustomer(int $id): void
     {
+        $anonName = 'Törölt vásárló (GDPR) #' . $id;
         $stmt = $this->pdo->prepare("
             UPDATE customers
             SET name = :name, phone = NULL, email = NULL, tax_number = NULL,
@@ -1646,7 +1724,16 @@ class Database
                 is_deleted = 1, updated_at = :now
             WHERE id = :id
         ");
-        $stmt->execute([':name' => 'Törölt vásárló (GDPR) #' . $id, ':now' => date('c'), ':id' => $id]);
+        $stmt->execute([':name' => $anonName, ':now' => date('c'), ':id' => $id]);
+
+        // A customers.name törlése önmagában nem elég: minden korábbi
+        // eladás sale_items.buyer_name mezője a vásárló nevét a
+        // VÁSÁRLÁS pillanatában másolta be (lásd insertSale()), és azóta
+        // sosem frissül — enélkül a "végleges" GDPR-törlés után a név
+        // változatlanul olvasható maradna minden nyugtán, eladás-listán
+        // és exportban.
+        $this->pdo->prepare('UPDATE sales SET buyer_name = :name WHERE customer_id = :id')
+            ->execute([':name' => $anonName, ':id' => $id]);
     }
 
     public function bulkSetCustomersDeleted(array $ids, bool $deleted): void
@@ -1737,6 +1824,43 @@ class Database
         }
 
         return $newBalance;
+    }
+
+    /**
+     * Atomikus, feltételes pontlevonás a kasszai beváltáshoz — ugyanaz a
+     * race-védelem, mint redeemGiftCard()/incrementCouponUsage()-nál: a
+     * WHERE a jelenlegi egyenleget ellenőrzi UGYANABBAN a lépésben, amiben
+     * le is vonja, hogy két majdnem egyidejű eladás ne tudja mindkettő
+     * sikeresen beváltani ugyanazt a (már csak egyszer meglévő)
+     * pontmennyiséget. A hívó (sale.php) ezt MÉG az eladás rögzítése ELŐTT,
+     * ugyanabban a tranzakcióban hívja — ha ez itt sikertelen, az egész
+     * eladás visszagördül, ahelyett hogy a kedvezmény csendben "ingyen"
+     * érvényesülne. A könyvelési sor (loyalty_transactions) beírása
+     * szándékosan külön lépés — lásd recordLoyaltyPointsRedemption() —,
+     * mert az eladás-azonosító csak az insertSale() UTÁN ismert.
+     */
+    public function tryClaimLoyaltyPoints(int $customerId, int $points): bool
+    {
+        $stmt = $this->pdo->prepare('
+            UPDATE customers SET loyalty_points = loyalty_points - :points, updated_at = :now
+            WHERE id = :id AND loyalty_points >= :points2
+        ');
+        $stmt->execute([
+            ':points' => $points, ':now' => date('Y-m-d H:i:s'), ':id' => $customerId, ':points2' => $points,
+        ]);
+        return $stmt->rowCount() > 0;
+    }
+
+    /**
+     * A tryClaimLoyaltyPoints()-szal már lefoglalt pontbeváltáshoz tartozó
+     * könyvelési sor rögzítése, miután az eladás-azonosító ismertté vált.
+     */
+    public function recordLoyaltyPointsRedemption(int $customerId, int $points, int $saleId): void
+    {
+        $this->pdo->prepare('
+            INSERT INTO loyalty_transactions (customer_id, sale_id, points_delta, note, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        ')->execute([$customerId, $saleId, -$points, "Beváltva eladás #$saleId-nél", date('Y-m-d H:i:s')]);
     }
 
     public function getLoyaltyHistory(int $customerId, int $limit = 100): array
@@ -2008,6 +2132,42 @@ class Database
         return $newBalance;
     }
 
+    /**
+     * Atomikus, feltételes egyenleg-levonás a kasszai beváltás ELSŐ (foglalás)
+     * fázisához — ugyanaz a race-védelem, mint magában redeemGiftCard()-ban,
+     * de itt szándékosan NEM ír könyvelési sort, mert a hívó (sale.php) ezt
+     * MÉG az eladás rögzítése ELŐTT, ugyanabban a tranzakcióban hívja, amikor
+     * az eladás-azonosító még nem ismert — lásd recordGiftCardRedemption().
+     */
+    public function tryClaimGiftCardBalance(int $giftCardId, float $amount): bool
+    {
+        $amount = round($amount, 2);
+        $stmt = $this->pdo->prepare('
+            UPDATE gift_cards SET current_balance = ROUND(current_balance - :amount, 2)
+            WHERE id = :id AND current_balance >= :amount2
+        ');
+        $stmt->execute([':amount' => $amount, ':id' => $giftCardId, ':amount2' => $amount]);
+        return $stmt->rowCount() > 0;
+    }
+
+    /**
+     * A tryClaimGiftCardBalance()-szal már lefoglalt egyenleghez tartozó
+     * könyvelési sor rögzítése, miután az eladás-azonosító ismertté vált.
+     * Az új egyenleget adja vissza (a válaszban való megjelenítéshez).
+     */
+    public function recordGiftCardRedemption(int $giftCardId, float $amount, int $saleId): float
+    {
+        $amount = round($amount, 2);
+        $this->pdo->prepare('
+            INSERT INTO gift_card_transactions (gift_card_id, sale_id, amount_delta, note, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        ')->execute([$giftCardId, $saleId, -$amount, "Beváltva eladás #$saleId-nél", date('Y-m-d H:i:s')]);
+
+        $balanceStmt = $this->pdo->prepare('SELECT current_balance FROM gift_cards WHERE id = ?');
+        $balanceStmt->execute([$giftCardId]);
+        return (float) $balanceStmt->fetchColumn();
+    }
+
     public function getGiftCardHistory(int $giftCardId, int $limit = 50): array
     {
         $stmt = $this->pdo->prepare('SELECT * FROM gift_card_transactions WHERE gift_card_id = ? ORDER BY created_at DESC LIMIT ?');
@@ -2126,6 +2286,35 @@ class Database
     {
         $this->beginTransaction();
         try {
+            // Frissen, a TRANZAKCIÓN BELÜL ellenőrizzük, mennyi lett eddig
+            // ténylegesen visszavéve — a hívó (api/return-create.php) saját,
+            // tranzakción KÍVÜLI olvasása elavulttá válhat két majdnem
+            // egyidejű visszáru-kérés között (mindkettő ugyanazt a "még nem
+            // lett visszavéve" állapotot látná, és mindkettő átmenne az
+            // ellenőrzésen). Az SQLite soros végrehajtása miatt ez az
+            // olvasás itt már biztosan látja egy közben lefutott és
+            // commit-olt párhuzamos visszáru tételeit is, így a második
+            // kérés itt helyesen elutasítható — enélkül ugyanaz a mennyiség
+            // kétszer is visszavehető lenne, és emiatt (ha ez a visszáru a
+            // "teljesen visszavéve" küszöböt átlépi) a hűségpontok/kupon/
+            // ajándékutalvány is kétszer pörögne vissza lentebb.
+            $alreadyReturned = $this->getReturnedQuantitiesForSale($saleId);
+            $originalItemsById = [];
+            foreach ($sale['items'] ?? [] as $si) {
+                $originalItemsById[(int) $si['id']] = $si;
+            }
+            foreach ($items as $item) {
+                $saleItemId = (int) ($item['sale_item_id'] ?? 0);
+                $original = $originalItemsById[$saleItemId] ?? null;
+                if ($original === null) {
+                    continue; // nincs eredeti tétel-adat átadva (pl. régi hívó) — nem tudjuk itt ellenőrizni
+                }
+                $maxReturnable = (int) $original['qty'] - ($alreadyReturned[$saleItemId] ?? 0);
+                if ((int) $item['qty'] > $maxReturnable) {
+                    throw new RuntimeException("\"{$item['name']}\" tételből időközben már csak $maxReturnable db vihető vissza.");
+                }
+            }
+
             $stmt = $this->pdo->prepare('
                 INSERT INTO returns (sale_id, staff_id, total_refund, reason, created_at)
                 VALUES (?, ?, ?, ?, ?)
@@ -2362,6 +2551,21 @@ class Database
             $byDate[$row['day']] = ['total' => (float) $row['total'], 'count' => (int) $row['cnt']];
         }
 
+        // A visszárukat is le kell vonni napi bontásban, ugyanazért, amiért
+        // getDailySummary() is teszi — enélkül a trend minden olyan napon
+        // túlbecsülné a forgalmat, amikor visszáru történt.
+        $returnsStmt = $this->pdo->prepare("
+            SELECT $dateExpr AS day, SUM(total_refund) AS total
+            FROM returns
+            WHERE $dateExpr >= ?
+            GROUP BY $dateExpr
+        ");
+        $returnsStmt->execute([$since]);
+        foreach ($returnsStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $byDate[$row['day']]['total'] = ($byDate[$row['day']]['total'] ?? 0.0) - (float) $row['total'];
+            $byDate[$row['day']]['count'] = $byDate[$row['day']]['count'] ?? 0;
+        }
+
         $result = [];
         for ($i = $days - 1; $i >= 0; $i--) {
             $day = date('Y-m-d', strtotime("-$i days"));
@@ -2545,7 +2749,25 @@ class Database
         $this->beginTransaction();
         try {
             if ($fromLocationId) {
-                $this->adjustLocationStock($productId, $fromLocationId, -$qty);
+                // Szigorú, elutasítható csökkentés a forrás oldalon — enélkül
+                // két majdnem egyidejű mozgatás ugyanazt a (már csak egyszer
+                // meglévő) telephelyi készletet mindkettő sikeresen elvihetné,
+                // negatívba döntve a valós készletet (a hívó oldali, tranzakción
+                // KÍVÜLI előzetes ellenőrzés — api/stock-transfer.php — erre
+                // önmagában nem elég, mert két kérés között elavulttá válhat).
+                if (!$this->tryDecrementLocationStock($productId, $fromLocationId, $qty)) {
+                    throw new RuntimeException('A forrás telephelyen időközben már nincs elég készlet.');
+                }
+            } else {
+                // "Új készlet" (nincs forrás telephely) — ez egy TÉNYLEGES
+                // készletnövekedés (pl. utólag rögzített beszerzés), nem egy
+                // meglévő tétel áthelyezése egyik telephelyről a másikra.
+                // Enélkül a globális stock_qty (amit a WooCommerce-szinkron,
+                // az alacsony-készlet figyelmeztetés és a kassza eladáskori
+                // ellenőrzése is olvas) sose látná ezt a mennyiséget, csendben
+                // szétcsúszva a telephelyi bontástól.
+                $this->pdo->prepare('UPDATE products SET stock_qty = stock_qty + ? WHERE id = ?')
+                    ->execute([$qty, $productId]);
             }
             $this->adjustLocationStock($productId, $toLocationId, $qty);
 
@@ -2561,20 +2783,40 @@ class Database
         }
     }
 
+    /**
+     * Csak növelésre, illetve "korlátlan" (nullánál sose eshet lejjebb)
+     * csökkentésre szolgál — a kasszai eladás telephelyi könyvelése ezt
+     * használja: egy eladás sose bukjon el csak azért, mert a telephelyi
+     * bontás (ami csak könyvelési célú, a tényleges készlet-korlátozást
+     * szándékosan az összesített stock_qty adja — lásd api/sale.php) éppen
+     * nem elég pontos. Szigorú, elutasítható csökkentéshez lásd
+     * tryDecrementLocationStock().
+     */
     private function adjustLocationStock(int $productId, int $locationId, int $delta): void
     {
-        $stmt = $this->pdo->prepare('SELECT stock_qty FROM location_stock WHERE product_id = ? AND location_id = ?');
-        $stmt->execute([$productId, $locationId]);
-        $current = $stmt->fetchColumn();
+        $stmt = $this->pdo->prepare('
+            INSERT INTO location_stock (product_id, location_id, stock_qty)
+            VALUES (:pid, :lid, MAX(0, :delta1))
+            ON CONFLICT(product_id, location_id) DO UPDATE SET stock_qty = MAX(0, stock_qty + :delta2)
+        ');
+        $stmt->execute([':pid' => $productId, ':lid' => $locationId, ':delta1' => $delta, ':delta2' => $delta]);
+    }
 
-        if ($current === false) {
-            $this->pdo->prepare('INSERT INTO location_stock (product_id, location_id, stock_qty) VALUES (?, ?, ?)')
-                ->execute([$productId, $locationId, $delta]);
-            return;
-        }
-
-        $this->pdo->prepare('UPDATE location_stock SET stock_qty = ? WHERE product_id = ? AND location_id = ?')
-            ->execute([(int) $current + $delta, $productId, $locationId]);
+    /**
+     * Atomikus, feltételes csökkentés — ugyanaz a race-védelmi minta, mint
+     * redeemGiftCard()/incrementCouponUsage()-nál: a WHERE a jelenlegi
+     * telephelyi készletet ellenőrzi UGYANABBAN a lépésben, amiben csökkenti
+     * is. Hamis-at ad vissza (és nem nyúl semmihez), ha nincs elég készlet —
+     * ezt a hívó dönti el, hogy elutasítja-e emiatt a műveletet.
+     */
+    public function tryDecrementLocationStock(int $productId, int $locationId, int $qty): bool
+    {
+        $stmt = $this->pdo->prepare('
+            UPDATE location_stock SET stock_qty = stock_qty - :qty
+            WHERE product_id = :pid AND location_id = :lid AND stock_qty >= :qty2
+        ');
+        $stmt->execute([':qty' => $qty, ':pid' => $productId, ':lid' => $locationId, ':qty2' => $qty]);
+        return $stmt->rowCount() > 0;
     }
 
     public function decrementLocationStock(int $productId, int $locationId, int $qty): void

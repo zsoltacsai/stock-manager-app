@@ -9,6 +9,22 @@ if (!$customer) {
     send_json(['error' => 'A vásárló nem található.'], 404);
 }
 
+// Ez a végpont egy vásárló teljes PII-dossziéját adja ki (név, cím,
+// telefon, teljes vásárlási és hűségpont-történet) — ugyanaz a "vezetői
+// jogszint kell" szabály indokolt rá, mint a GDPR-törlésnél.
+$staffId = Auth::currentStaffId();
+if ($db->listStaff(true) && !$db->isStaffAdmin($staffId)) {
+    send_json(['error' => 'A GDPR-exporthoz vezetői jogszint szükséges.'], 403);
+}
+$db->logAudit(
+    $staffId,
+    'customer_gdpr_export',
+    'customer',
+    $id,
+    'Vásárló #' . $id,
+    (int) ($appSettings['audit_log_retention_days'] ?? 30)
+);
+
 $export = [
     'exported_at' => date('c'),
     'profil' => [

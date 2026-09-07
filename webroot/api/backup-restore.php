@@ -36,12 +36,29 @@ if (!empty($_FILES['file']['tmp_name']) && is_uploaded_file($_FILES['file']['tmp
 // dolgozó/vezető azonosítójára állíthatná) — friss PIN-t kell megadni,
 // amit itt valóban ellenőrzünk. Ha egyáltalán nincs beállítva dolgozói
 // PIN-rendszer, a viselkedés változatlan (senkit nem zár ki feleslegesen).
+$verifiedStaff = null;
 if ($db->listStaff(true)) {
+    // Ugyanazokkal a limitekkel védve, mint a dolgozói PIN-bejelentkezés
+    // (staff-login.php) — PIN-ek rövidsége miatt brute-force elleni védelem
+    // itt, a legdestruktívabb művelet előtt legalább annyira fontos.
+    require_once __DIR__ . '/../../src/GeoBlocker.php';
+    $maxAttempts = (int) ($appSettings['login_max_attempts'] ?? 5);
+    $lockoutMinutes = (int) ($appSettings['login_lockout_minutes'] ?? 15);
+    $rateLimitKey = 'backup-restore-pin-' . GeoBlocker::resolveClientIp();
+
+    $limit = Auth::checkRateLimit($rateLimitKey, $maxAttempts, $lockoutMinutes);
+    if ($limit['locked']) {
+        $minutes = (int) ceil($limit['remaining_seconds'] / 60);
+        send_json(['error' => "Túl sok sikertelen próbálkozás. Próbáld újra kb. $minutes perc múlva."], 429);
+    }
+
     $pin = trim((string) ($_POST['pin'] ?? ''));
     $verifiedStaff = $pin !== '' ? $db->verifyStaffPin($pin) : null;
     if (!$verifiedStaff || $verifiedStaff['role'] !== 'admin') {
+        Auth::recordFailedAttempt($rateLimitKey, $maxAttempts, $lockoutMinutes);
         send_json(['error' => 'Az adatbázis visszaállításához érvényes vezetői PIN megadása szükséges.'], 403);
     }
+    Auth::clearRateLimit($rateLimitKey);
 }
 
 try {
@@ -50,7 +67,16 @@ try {
     $summary = 'Visszaállítva innen: ' . basename($sourcePath) . '. Biztonsági mentés a visszaállítás előtti állapotról: ' . $result['safety_backup'];
     $settings->save(['last_backup_summary' => $summary]);
 
-    send_json(['success' => true, 'safety_backup' => $result['safety_backup']]);
+    $db->logAudit(
+        $verifiedStaff['id'] ?? null,
+        'backup_restore',
+        null,
+        null,
+        'Visszaállítva innen: ' . basename($sourcePath),
+        (int) ($appSettings['audit_log_retention_days'] ?? 30)
+    );
+
+    send_json(['success' => true, 'safety_backup' => $result['safety_backup'], 'settings_restored' => $result['settings_restored']]);
 } catch (Throwable $e) {
     send_json(['error' => 'A visszaállítás sikertelen: ' . $e->getMessage()], 500);
 }

@@ -24,7 +24,7 @@ if (!empty($input['pin']) && !preg_match('/^\d{4,8}$/', (string) $input['pin']))
 // dolgozó felvétele szabadon engedélyezett).
 $requestedRole = ($input['role'] ?? 'cashier') === 'admin' ? 'admin' : 'cashier';
 $privileged = $requestedRole === 'admin' || !empty($input['id']);
-if ($privileged && $db->listStaff(true) && !$db->isStaffAdmin(!empty($input['staff_id']) ? (int) $input['staff_id'] : null)) {
+if ($privileged && $db->listStaff(true) && !$db->isStaffAdmin(Auth::currentStaffId())) {
     send_json(['error' => 'Ehhez vezetői jogszint szükséges.'], 403);
 }
 

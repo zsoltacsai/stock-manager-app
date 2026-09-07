@@ -50,7 +50,32 @@ class BackupManager
         $pdo = new PDO('sqlite:' . $this->dbConfig['sqlite']['path']);
         $pdo->exec('VACUUM INTO ' . $pdo->quote($destination));
 
+        $this->backupSettingsSidecar($filename);
+
         return $filename;
+    }
+
+    /**
+     * A data/settings.json-ban van minden integrációs hitelesítő adat
+     * (WooCommerce, Számlázz.hu, NAV, Dropbox, Google) — enélkül egy
+     * visszaállítás után minden ilyen kapcsolat csendben megszakadna, amíg
+     * valaki manuálisan újra be nem írja őket. A DB-mentéssel megegyező
+     * alapnevű, .settings.json kiterjesztésű "testvér" fájlba mentjük, hogy
+     * a visszaállítás automatikusan megtalálja — lásd restoreFromFile().
+     * (A feltöltött termékképek/logók külön fájlok, ezeket a mentés
+     * szándékosan nem tartalmazza — lásd README.)
+     */
+    private function backupSettingsSidecar(string $dbFilename): void
+    {
+        $settingsPath = dirname($this->backupDir) . '/settings.json';
+        if (is_file($settingsPath)) {
+            @copy($settingsPath, $this->backupDir . '/' . $this->settingsSidecarName($dbFilename));
+        }
+    }
+
+    private function settingsSidecarName(string $dbFilename): string
+    {
+        return preg_replace('/\.(sqlite|sql)$/', '', $dbFilename) . '.settings.json';
     }
 
     private function createMysqlSnapshot(): string
@@ -71,11 +96,13 @@ class BackupManager
             );
             exec($cmd, $output, $exitCode);
             if ($exitCode === 0 && is_file($destination) && filesize($destination) > 0) {
+                $this->backupSettingsSidecar($filename);
                 return $filename;
             }
         }
 
         $this->dumpMysqlWithPhp($destination);
+        $this->backupSettingsSidecar($filename);
         return $filename;
     }
 
@@ -142,6 +169,7 @@ class BackupManager
 
         foreach (array_slice($files, max(0, $keep)) as $old) {
             @unlink($old);
+            @unlink($this->backupDir . '/' . $this->settingsSidecarName(basename($old)));
         }
     }
 
@@ -194,23 +222,70 @@ class BackupManager
             $this->restoreSqliteFromFile($sourcePath);
         }
 
-        return ['safety_backup' => $safetyBackup];
+        $settingsRestored = $this->restoreSettingsSidecarIfPresent($sourcePath);
+
+        return ['safety_backup' => $safetyBackup, 'settings_restored' => $settingsRestored];
     }
 
     private function restoreSqliteFromFile(string $sourcePath): void
     {
         try {
             $check = new PDO('sqlite:' . $sourcePath);
-            $check->query('SELECT COUNT(*) FROM sqlite_master')->fetchColumn();
+            $tables = $check->query("SELECT name FROM sqlite_master WHERE type = 'table'")->fetchAll(PDO::FETCH_COLUMN);
         } catch (Throwable $e) {
             throw new RuntimeException('A fájl nem egy érvényes SQLite adatbázis: ' . $e->getMessage());
         }
         unset($check);
 
+        // Ellenőrizzük, hogy ez ténylegesen egy Stock Manager mentés-e, ne
+        // csak "bármilyen SQLite fájl" — enélkül egy véletlenül rossz fájl
+        // kiválasztása (pl. a data/backups mappából egy nem idevaló .sqlite)
+        // "sikeres" visszaállítás látszatával cserélné le az éles adatbázist.
+        $requiredTables = ['products', 'sales', 'customers'];
+        $missing = array_diff($requiredTables, $tables);
+        if ($missing) {
+            throw new RuntimeException('A fájl nem tűnik Stock Manager adatbázis-mentésnek (hiányzó tábla: ' . implode(', ', $missing) . ').');
+        }
+
         $liveDbPath = $this->dbConfig['sqlite']['path'];
+
+        // Az élő adatbázis WAL-módban fut — a legfrissebb írások egy része a
+        // fő .sqlite fájl helyett még a -wal oldalfájlban lehet. Checkpoint
+        // nélkül a lenti nyers fájlmásolás után az itt maradt régi -wal/-shm
+        // a következő megnyitáskor részben visszakeverhetné a visszaállítás
+        // ELŐTTI tranzakciókat a most beírt mentés fölé — legjobb erőfeszítés
+        // jelleggel megpróbáljuk kiüríteni, mielőtt felülírnánk a fájlt.
+        try {
+            $live = new PDO('sqlite:' . $liveDbPath);
+            $live->exec('PRAGMA wal_checkpoint(TRUNCATE)');
+            unset($live);
+        } catch (Throwable $e) {
+            // Nem blokkoljuk emiatt a visszaállítást — a lenti unlink még
+            // mindig eltünteti a maradék -wal/-shm fájlokat.
+        }
+
         if (!copy($sourcePath, $liveDbPath)) {
             throw new RuntimeException('Nem sikerült a fájlt a helyére másolni. Ellenőrizd a jogosultságokat.');
         }
+
+        // A frissen visszaállított fájl legyen az egyetlen igazság forrása —
+        // egy a visszaállítás ELŐTTről itt maradt -wal/-shm sose keveredjen
+        // bele a következő megnyitásba.
+        @unlink($liveDbPath . '-wal');
+        @unlink($liveDbPath . '-shm');
+    }
+
+    private function restoreSettingsSidecarIfPresent(string $sourcePath): bool
+    {
+        $sidecar = dirname($sourcePath) . '/' . $this->settingsSidecarName(basename($sourcePath));
+        if (!is_file($sidecar)) {
+            return false;
+        }
+        $settingsPath = dirname($this->backupDir) . '/settings.json';
+        if (is_file($settingsPath)) {
+            @copy($settingsPath, $settingsPath . '.before-restore-' . date('Ymd_His'));
+        }
+        return @copy($sidecar, $settingsPath);
     }
 
     private function restoreMysqlFromFile(string $sourcePath): void

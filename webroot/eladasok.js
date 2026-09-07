@@ -198,7 +198,11 @@ fQuery.addEventListener('input', loadSales);
 const fDateTodayBtn = document.getElementById('f-date-today-btn');
 if (fDateTodayBtn) {
     fDateTodayBtn.addEventListener('click', () => {
-        fDate.value = new Date().toISOString().slice(0, 10);
+        // Helyi dátum, NEM new Date().toISOString() — az UTC-ben adja vissza
+        // a dátumot, ami Magyarországon (UTC+1/+2) éjfél és 1-2 óra között
+        // még a TEGNAPI napot mutatná "Ma" gombként.
+        const now = new Date();
+        fDate.value = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
         loadSales();
     });
 }

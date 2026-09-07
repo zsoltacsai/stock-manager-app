@@ -326,4 +326,145 @@ final class DatabaseTest extends TestCase
 
         $this->assertNull($db->verifyStaffPin('0000'));
     }
+
+    public function testTryClaimLoyaltyPointsCannotGoBelowZeroEvenIfCalledTwice(): void
+    {
+        $db = tests_new_database();
+        $customerId = $db->saveCustomer(['name' => 'Pontgyűjtő Pál']);
+        $db->applyLoyaltyPoints($customerId, 100, null, 'setup');
+
+        $this->assertTrue($db->tryClaimLoyaltyPoints($customerId, 70), 'Az első lefoglalásnak sikeresnek kell lennie.');
+        // Egy második, versenyhelyzetben induló kérés ugyanarra a (már
+        // majdnem elfogyott) egyenlegre nem mehet negatívba.
+        $this->assertFalse($db->tryClaimLoyaltyPoints($customerId, 70), 'A fedezet nélküli második lefoglalás ne sikerüljön.');
+
+        $customer = $db->findCustomerById($customerId);
+        $this->assertSame(30, (int) $customer['loyalty_points'], 'Az egyenleg csak az elsőnek induló foglalással csökkenjen.');
+    }
+
+    public function testClaimAndRecordGiftCardRedemptionMatchesBalanceAndWritesLedgerRow(): void
+    {
+        $db = tests_new_database();
+        $giftCardId = $db->issueGiftCard('SPLIT1', 1000.0, null, null);
+
+        // A sale.php-ban használt két lépéses minta: előbb a foglalás (még
+        // az eladás rögzítése előtt, sale_id nélkül), utána a könyvelési
+        // sor rögzítése, miután az eladás-azonosító már ismert.
+        $this->assertTrue($db->tryClaimGiftCardBalance($giftCardId, 400.0));
+        $saleId = $db->insertSale(600.0, 'Készpénz');
+        $newBalance = $db->recordGiftCardRedemption($giftCardId, 400.0, $saleId);
+
+        $this->assertSame(600.0, $newBalance);
+        $giftCard = $db->findGiftCardByCode('SPLIT1');
+        $this->assertSame(600.0, (float) $giftCard['current_balance']);
+
+        $history = $db->getGiftCardHistory($giftCardId);
+        $redemptionRow = current(array_filter($history, fn($row) => (int) ($row['sale_id'] ?? 0) === $saleId));
+        $this->assertNotFalse($redemptionRow, 'A beváltásnak saját, az eladáshoz kötött könyvelési sort kell írnia.');
+        $this->assertSame(-400.0, (float) $redemptionRow['amount_delta']);
+    }
+
+    public function testProcessReturnRejectsReturningMoreThanRemainsAfterAnEarlierReturn(): void
+    {
+        // Ez a védelem zárja ki, hogy két majdnem egyidejű visszáru-kérés
+        // (mindkettő a "még semmi nincs visszavéve" állapotot látva) együtt
+        // többet vigyen vissza, mint amennyi ténylegesen eladásra került —
+        // ami emellett a hűségpontok/kupon/utalvány kétszeri visszapörgetését
+        // is okozná egy teljesen lefedő visszárunál.
+        $db = tests_new_database();
+        $saleId = $db->insertSale(1000.0, 'Készpénz');
+        $db->insertSaleItem($saleId, ['product_id' => null, 'name' => 'Tétel', 'qty' => 1, 'unit_price' => 1000, 'vat_rate' => '27']);
+
+        $sale = $db->getSaleWithItems($saleId);
+        $saleItemId = (int) $sale['items'][0]['id'];
+        $returnItem = ['sale_item_id' => $saleItemId, 'product_id' => null, 'name' => 'Tétel', 'qty' => 1, 'unit_price' => 1000];
+
+        // Az első visszáru a teljes (1 db) mennyiséget visszaveszi.
+        $db->processReturn($saleId, [$returnItem], 'első visszáru', null, 1000.0, $sale);
+
+        // Egy második kérés, ami — mint egy versenyhelyzetben — még a
+        // "semmi nincs visszavéve" előzetes állapotra épül, és megint az
+        // egész (1 db) mennyiséget próbálná visszavenni: ezt a friss,
+        // tranzakción belüli ellenőrzésnek el kell utasítania.
+        $this->expectException(RuntimeException::class);
+        $db->processReturn($saleId, [$returnItem], 'második (versenyhelyzetes) visszáru', null, 1000.0, $sale);
+    }
+
+    public function testGetDailySummarySubtractsFullyReturnedSaleFromTotals(): void
+    {
+        $db = tests_new_database();
+        $today = date('Y-m-d');
+
+        $saleId = $db->insertSale(1270.0, 'Készpénz');
+        $db->insertSaleItem($saleId, ['product_id' => null, 'name' => 'Tétel', 'qty' => 1, 'unit_price' => 1270, 'vat_rate' => '27']);
+
+        $sale = $db->getSaleWithItems($saleId);
+        $saleItemId = (int) $sale['items'][0]['id'];
+        $db->processReturn(
+            $saleId,
+            [['sale_item_id' => $saleItemId, 'product_id' => null, 'name' => 'Tétel', 'qty' => 1, 'unit_price' => 1270]],
+            'teszt visszáru',
+            null,
+            1270.0,
+            $sale
+        );
+
+        $summary = $db->getDailySummary($today);
+
+        // Az eredeti eladás-rekord (sales.total) változatlanul megmarad —
+        // enélkül a napi zárás a visszáru után is a teljes eredeti összeget
+        // mutatná a valós (nettó nulla) forgalom helyett.
+        $this->assertSame(1270.0, $summary['total_returns']);
+        $this->assertSame(0.0, $summary['total_gross'], 'A visszáru után a bruttó forgalomnak nullára kell netóznia.');
+        $this->assertEqualsWithDelta(0.0, $summary['total_net'] + $summary['total_vat'], 0.02);
+    }
+
+    public function testTransferStockFromNewStockAlsoIncreasesGlobalStock(): void
+    {
+        $db = tests_new_database();
+        $productId = $db->saveProduct($this->sampleProduct());
+        $locationId = $db->saveLocation(['name' => 'Bolt', 'is_default' => true]);
+
+        // "Új készlet" — nincs forrás telephely (pl. utólag rögzített
+        // beszerzés). Enélkül a globális stock_qty (amit a WooCommerce-
+        // szinkron és a kassza is olvas) sose látná ezt a mennyiséget.
+        $db->transferStock($productId, null, $locationId, 20, null);
+
+        $product = $db->findProductById($productId);
+        $this->assertSame(20, (int) $product['stock_qty'], 'Az "Új készlet" mozgatásnak a globális készletet is növelnie kell.');
+
+        $locationStock = $db->getLocationStockForProduct($productId);
+        $row = current(array_filter($locationStock, fn($r) => (int) $r['location_id'] === $locationId));
+        $this->assertSame(20, (int) $row['stock_qty']);
+    }
+
+    public function testTransferStockRejectsWhenSourceLacksEnoughStock(): void
+    {
+        $db = tests_new_database();
+        $productId = $db->saveProduct($this->sampleProduct());
+        $locationA = $db->saveLocation(['name' => 'A telephely']);
+        $locationB = $db->saveLocation(['name' => 'B telephely']);
+
+        $db->transferStock($productId, null, $locationA, 5, null); // A-n 5 db "új készlet"-ként
+
+        // Egy második, majdnem egyidejű mozgatás ugyanarról a forrásról
+        // többet próbál elvinni, mint ami ott ténylegesen van — ezt a
+        // tranzakción belüli, atomikus ellenőrzésnek el kell utasítania,
+        // nem szabad negatívba engednie a forrás telephely készletét.
+        $this->expectException(RuntimeException::class);
+        $db->transferStock($productId, $locationA, $locationB, 10, null);
+    }
+
+    public function testAnonymizeCustomerAlsoScrubsSalesBuyerName(): void
+    {
+        $db = tests_new_database();
+        $customerId = $db->saveCustomer(['name' => 'Törlendő Tamás']);
+        $saleId = $db->insertSale(1000.0, 'Készpénz', 'Törlendő Tamás', $customerId);
+
+        $db->anonymizeCustomer($customerId);
+
+        $sale = $db->getSaleWithItems($saleId);
+        $this->assertStringNotContainsString('Törlendő Tamás', (string) $sale['buyer_name'], 'A GDPR-törlés után a korábbi eladásokon se maradhasson olvasható a név.');
+        $this->assertStringContainsString('GDPR', (string) $sale['buyer_name']);
+    }
 }

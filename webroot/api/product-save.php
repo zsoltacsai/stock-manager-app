@@ -46,7 +46,7 @@ if (!empty($p['id'])) {
     $wasDeleted = $existingProduct && !empty($existingProduct['is_deleted']);
 }
 $settingToDeleted = !empty($p['is_deleted']) && !$wasDeleted;
-if ($settingToDeleted && $db->listStaff(true) && !$db->isStaffAdmin(!empty($p['staff_id']) ? (int) $p['staff_id'] : null)) {
+if ($settingToDeleted && $db->listStaff(true) && !$db->isStaffAdmin(Auth::currentStaffId())) {
     send_json(['error' => 'Termék törléséhez vezetői jogszint szükséges.'], 403);
 }
 
@@ -80,7 +80,7 @@ $productId = $db->saveProduct([
 
 if ($settingToDeleted) {
     $db->logAudit(
-        !empty($p['staff_id']) ? (int) $p['staff_id'] : null,
+        Auth::currentStaffId(),
         'product_delete',
         'product',
         $productId,

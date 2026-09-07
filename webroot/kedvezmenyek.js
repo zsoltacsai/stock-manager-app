@@ -54,7 +54,7 @@ function renderCoupons() {
             <td>${c.times_used}${c.usage_limit ? ' / ' + c.usage_limit : ''}</td>
             <td>${c.expiry_date || '—'}</td>
             <td>${Number(c.is_active) ? '<span class="stock-badge ok">aktív</span>' : '<span class="stock-badge zero">inaktív</span>'}</td>
-            <td><button class="edit-btn" data-id="${c.id}">Módosítás</button></td>
+            <td><div class="row-actions"><button class="edit-btn" data-id="${c.id}">Módosítás</button></div></td>
         </tr>
     `).join('') : '<tr><td colspan="7" class="muted" style="text-align:center; padding:24px;">Még nincs kupon.</td></tr>';
 
@@ -154,7 +154,7 @@ function renderGiftCards() {
             <td>${fmt(g.current_balance)}</td>
             <td>${g.expiry_date || '—'}</td>
             <td>${Number(g.is_active) ? '<span class="stock-badge ok">aktív</span>' : '<span class="stock-badge zero">inaktív</span>'}</td>
-            <td><button class="edit-btn toggle-gc-btn" data-id="${g.id}" data-active="${Number(g.is_active)}">${Number(g.is_active) ? 'Inaktiválás' : 'Aktiválás'}</button></td>
+            <td><div class="row-actions"><button class="edit-btn toggle-gc-btn" data-id="${g.id}" data-active="${Number(g.is_active)}">${Number(g.is_active) ? 'Inaktiválás' : 'Aktiválás'}</button></div></td>
         </tr>
     `).join('') : '<tr><td colspan="6" class="muted" style="text-align:center; padding:24px;">Még nincs kiállított utalvány.</td></tr>';
 

@@ -8,8 +8,12 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 $input = json_input();
-$staffId = !empty($input['staff_id']) ? (int) $input['staff_id'] : null;
+$staffId = Auth::currentStaffId();
 $notes = trim((string) ($input['notes'] ?? ''));
 
-$id = $db->startStockTake($staffId, $notes);
+try {
+    $id = $db->startStockTake($staffId, $notes);
+} catch (Throwable $e) {
+    send_json(['error' => $e->getMessage()], 409);
+}
 send_json(['id' => $id]);

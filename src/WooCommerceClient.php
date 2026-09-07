@@ -149,8 +149,12 @@ class WooCommerceClient
         if (isset($fields['long_description'])) {
             $body['description'] = $fields['long_description'];
         }
-        if (!empty($fields['brand_id'])) {
-            $body['brands'] = [['id' => (int) $fields['brand_id']]];
+        // array_key_exists (nem !empty) kell, hogy a "márka törölve" eset
+        // (brand_id === null, lásd product-save.php) is ténylegesen kiküldje
+        // a brands: [] üres listát — különben egy helyben letörölt márka
+        // csendben ottmaradna a WooCommerce oldalán is.
+        if (array_key_exists('brand_id', $fields)) {
+            $body['brands'] = $fields['brand_id'] ? [['id' => (int) $fields['brand_id']]] : [];
         }
         if (!empty($fields['image_url'])) {
             $image = ['src' => $fields['image_url']];

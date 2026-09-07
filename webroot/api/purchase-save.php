@@ -34,12 +34,11 @@ foreach ($lines as $line) {
     if ($unitCostNet < 0) {
         send_json(['error' => "Érvénytelen beszerzési ár: {$product['name']}"], 400);
     }
-    $unitCostGross = isset($line['unit_cost_gross']) && $line['unit_cost_gross'] !== ''
-        ? (float) $line['unit_cost_gross']
-        : round($unitCostNet * (1 + $vatPct), 2);
-    if ($unitCostGross < 0) {
-        send_json(['error' => "Érvénytelen beszerzési ár: {$product['name']}"], 400);
-    }
+    // A bruttó egységárat mindig a nettóból (és az áfából) számítjuk ki
+    // szerver-oldalon, nem a kliens által esetlegesen külön beküldött
+    // értékből — enélkül egy kézzel összeállított kérés belsőleg
+    // inkonzisztens nettó/bruttó párt rögzíthetne.
+    $unitCostGross = round($unitCostNet * (1 + $vatPct), 2);
 
     $items[] = [
         'product_id'      => $product['id'],
@@ -81,12 +80,19 @@ try {
         if (empty($item['wc_product_id'])) {
             continue;
         }
-        $updated = $result['updated_products'][$item['product_id']] ?? null;
-        if (!$updated) {
+        // A tényleges, a tranzakció commit-ja UTÁN érvényes készletet
+        // olvassuk újra az adatbázisból soronként, nem a recordPurchase()
+        // elején (a teljes beszerzés feldolgozása előtt) készült egyszeri
+        // csoportos pillanatfelvételből — különben egy közben (a beszerzés
+        // több tételének kiküldése közben) lezajló másik eladás/beszerzés
+        // elavult, abszolút értékkel íródna felül itt. Ugyanaz a minta, mint
+        // api/sale.php-ban.
+        $current = $db->findProductById($item['product_id']);
+        if (!$current) {
             continue;
         }
         try {
-            $wc->updateStock((int) $item['wc_product_id'], (int) $updated['stock_qty']);
+            $wc->updateStock((int) $item['wc_product_id'], (int) $current['stock_qty']);
             $db->touchWcSyncedAt($item['product_id']);
             $db->logSync('push', $item['product_id'], 'Stock pushed after purchase #' . $result['purchase_id']);
         } catch (Throwable $e) {

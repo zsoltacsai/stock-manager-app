@@ -49,7 +49,12 @@ newStockTakeBtn.addEventListener('click', async () => {
         body: JSON.stringify({ staff_id: getCurrentStaffId(), notes }),
     });
     const data = await res.json();
-    if (data.id) openStockTake(data.id);
+    if (data.id) {
+        openStockTake(data.id);
+    } else if (data.error) {
+        alert(data.error);
+        loadStockTakes();
+    }
 });
 
 async function openStockTake(id) {

@@ -467,4 +467,107 @@ final class DatabaseTest extends TestCase
         $this->assertStringNotContainsString('Törlendő Tamás', (string) $sale['buyer_name'], 'A GDPR-törlés után a korábbi eladásokon se maradhasson olvasható a név.');
         $this->assertStringContainsString('GDPR', (string) $sale['buyer_name']);
     }
+
+    public function testCompleteStockTakeAppliesRelativeDeltaNotAbsoluteOverwrite(): void
+    {
+        $db = tests_new_database();
+        $productId = $db->saveProduct($this->sampleProduct());
+        $db->incrementStock($productId, 50);
+
+        $takeId = $db->startStockTake(null, 'teszt leltár');
+        // A leltár indításakor a rendszer 50-et lát (expected_qty=50). A
+        // fizikai számlálás 48-at talál (2 db hiány/eltérés).
+        $db->updateStockTakeCount($takeId, $productId, 48);
+
+        // KÖZBEN, a leltár lezárása ELŐTT, egy valódi eladás történik —
+        // ez a rendszeres, várt eset, amit egy abszolút felülírás
+        // csendben eltüntetne.
+        $db->decrementStock($productId, 3); // 50 -> 47
+
+        $db->completeStockTake($takeId, true);
+
+        $product = $db->findProductById($productId);
+        // Helyes: a JELENLEGI (47) készletre alkalmazva a leltár által
+        // felfedezett -2 eltérést kapjuk: 47 - 2 = 45. Egy abszolút
+        // felülírás (a hibás, korábbi viselkedés) 48-at adott volna,
+        // csendben eltüntetve a közben lezajlott eladás hatását.
+        $this->assertSame(45, (int) $product['stock_qty'], 'A leltári korrekciónak relatív eltérésként kell alkalmazódnia, nem abszolút felülírásként.');
+    }
+
+    public function testCompleteStockTakeRejectsSecondCompletion(): void
+    {
+        $db = tests_new_database();
+        $productId = $db->saveProduct($this->sampleProduct());
+        $db->incrementStock($productId, 10);
+
+        $takeId = $db->startStockTake(null, '');
+        $db->updateStockTakeCount($takeId, $productId, 8);
+        $db->completeStockTake($takeId, true);
+
+        // Egy második lezárási kísérlet (dupla kattintás, hálózati
+        // újrapróbálkozás) enélkül még egyszer alkalmazná a -2 korrekciót.
+        $this->expectException(RuntimeException::class);
+        $db->completeStockTake($takeId, true);
+    }
+
+    public function testStartStockTakeRejectsWhenAnotherIsOpen(): void
+    {
+        $db = tests_new_database();
+        $db->startStockTake(null, 'első leltár');
+
+        $this->expectException(RuntimeException::class);
+        $db->startStockTake(null, 'második, átfedő leltár');
+    }
+
+    public function testRecordPurchaseAppliesDiscountAndKeepsTotalsConsistentWithLineSum(): void
+    {
+        $db = tests_new_database();
+        $productId = $db->saveProduct($this->sampleProduct());
+
+        $items = [[
+            'product_id' => $productId, 'wc_product_id' => null, 'name' => 'Teszt termék',
+            'qty' => 3, 'vat_rate' => '27', 'unit_cost_net' => 1000.0, 'unit_cost_gross' => 1270.0,
+        ]];
+        $result = $db->recordPurchase(['discount_percent' => 10.0], $items);
+
+        // 3 * 1000 = 3000 nettó, 10% kedvezménnyel 2700.
+        $this->assertSame(2700.0, $result['total_net'], 'A kedvezménynek ténylegesen csökkentenie kell a végösszeget.');
+
+        $purchase = $db->getPurchaseWithItems($result['purchase_id']);
+        $lineSum = array_sum(array_map(static fn($i) => (float) $i['line_net'], $purchase['items']));
+        $this->assertEqualsWithDelta($result['total_net'], $lineSum, 0.001, 'A fejléc-összegnek pontosan meg kell egyeznie a tételek összegével.');
+    }
+
+    public function testUpsertProductFromWcPreservesLocalFieldsWhenWcSendsEmpty(): void
+    {
+        $db = tests_new_database();
+        $productId = $db->saveProduct($this->sampleProduct([
+            'barcode' => '1231231231231',
+            'short_description' => 'Helyben megírt rövid leírás',
+            'brand' => 'HelyiMárka',
+        ]));
+
+        // Első szinkron: a vonalkód alapján párosítja, és beköti a
+        // wc_product_id-t (nincs még hozzá bekötve helyi termék).
+        $db->upsertProductFromWc([
+            'wc_product_id' => 999, 'sku' => 'SKU1', 'barcode' => '1231231231231', 'name' => 'Teszt termék',
+            'price' => 1270.0, 'stock_qty' => 5, 'short_description' => 'Helyben megírt rövid leírás', 'long_description' => null, 'brand' => 'HelyiMárka',
+        ]);
+
+        // Második szinkron: most már wc_product_id alapján párosít — a WC
+        // oldalán nincs vonalkód-meta és nincs kitöltve leírás/márka. Ez
+        // NEM jelentheti azt, hogy a helyi, gondosan kitöltött mezőket
+        // törölni kellene.
+        $db->upsertProductFromWc([
+            'wc_product_id' => 999, 'sku' => 'SKU1', 'barcode' => '', 'name' => 'Teszt termék (WC-ről)',
+            'price' => 1280.0, 'stock_qty' => 4, 'short_description' => '', 'long_description' => null, 'brand' => '',
+        ]);
+
+        $product = $db->findProductById($productId);
+        $this->assertSame('1231231231231', $product['barcode'], 'A helyi vonalkód nem törölhető egy üres WC-értékkel.');
+        $this->assertSame('Helyben megírt rövid leírás', $product['short_description']);
+        $this->assertSame('HelyiMárka', $product['brand']);
+        $this->assertSame('Teszt termék (WC-ről)', $product['name'], 'A ténylegesen küldött (nem üres) mezőknek viszont érvényesülniük kell.');
+        $this->assertSame(1280.0, (float) $product['price']);
+    }
 }

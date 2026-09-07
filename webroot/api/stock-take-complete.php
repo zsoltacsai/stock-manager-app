@@ -15,6 +15,15 @@ if (!$id) {
     send_json(['error' => 'Hiányzó id.'], 400);
 }
 
+// A leltári korrekció ténylegesen alkalmazása a teljes készletet
+// felülírhatja — ugyanaz a "vezetői jogszint kell" szabály indokolt rá,
+// mint a termék-/vásárlótörlésnél, csak akkor kényszerítve, ha egyáltalán
+// van dolgozói PIN-rendszer használatban. A puszta lezárás (korrekció
+// nélkül) nem változtat készletet, ahhoz nem szükséges vezetői jogszint.
+if ($applyCorrections && $db->listStaff(true) && !$db->isStaffAdmin(Auth::currentStaffId())) {
+    send_json(['error' => 'A leltári korrekciók alkalmazásához vezetői jogszint szükséges.'], 403);
+}
+
 try {
     $updatedProducts = $db->completeStockTake($id, $applyCorrections);
 } catch (Throwable $e) {

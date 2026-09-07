@@ -365,12 +365,21 @@ async function toggleWebshop(id, nextValue) {
     const product = allProducts.find(p => p.id === id);
     if (!product) return;
 
-    await fetch('/api/product-save.php', {
+    const res = await fetch('/api/product-save.php', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildFullProductPayload(product, { show_webshop: nextValue })),
     });
 
+    // Ugyanaz a minta, mint toggleDeleted()-nél — teljes újratöltés, ne
+    // csak feltételezett sikerű, helyi állapotmódosítás. Enélkül egy
+    // sikertelen mentés (hálózati hiba, validációs hiba, 5xx) után a
+    // gomb/kártya továbbra is a (valójában el nem mentett) új állapotot
+    // mutatta volna a következő teljes újratöltésig.
+    if (!res.ok) {
+        loadProducts();
+        return;
+    }
     product.show_webshop = nextValue ? 1 : 0;
 }
 

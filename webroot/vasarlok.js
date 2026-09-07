@@ -298,7 +298,7 @@ async function openEdit(id) {
             const items = data.items || [];
             itemsBody.innerHTML = items.length ? items.map(item => `
                 <tr>
-                    <td>${item.created_at}</td>
+                    <td>${escapeHtml(item.created_at)}</td>
                     <td>${escapeHtml(item.name)}</td>
                     <td>${item.qty}</td>
                     <td>${fmt(item.unit_price)}</td>

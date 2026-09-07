@@ -1064,7 +1064,11 @@ checkoutBtn.addEventListener('click', async () => {
         if (data.invoice && data.invoice.success) {
             msg += ' Számla kiállítva' + (data.invoice.invoice_number ? `: ${data.invoice.invoice_number}` : '.') + '.';
         } else if (data.invoice) {
-            msg += ' Figyelem: a számla kiállítása nem sikerült (' + (data.invoice.error || '?') + ').';
+            // Az eladás MINDENKÉPP rögzült — csak a számla nem készült el.
+            // A nyers hibaüzenet (pl. egy angol nyelvű SSL/curl-hiba) csak
+            // a technikai részlet kedvéért marad ott zárójelben, ne az
+            // legyen a kasszásnak mondott első/fő mondat.
+            msg += ' Figyelem: az eladás rögzítve van, de a számla kiállítása nem sikerült — szólj a vezetőnek (' + (data.invoice.error || '?') + ').';
         }
         if (data.wc_push_errors && data.wc_push_errors.length) {
             msg += ' WooCommerce sync hiba: ' + data.wc_push_errors.join('; ');
@@ -1114,7 +1118,13 @@ checkoutBtn.addEventListener('click', async () => {
         checkoutFeedback.textContent = 'Hiba: ' + err.message;
         checkoutFeedback.className = 'feedback error';
     } finally {
-        checkoutBtn.disabled = cart.size === 0;
+        // Ugyanaz a feltétel, mint renderCart()-ban — enélkül egy csak
+        // kézi tételeket tartalmazó kosár (cart.size === 0, de
+        // manualItems nem üres) esetén egy sikertelen eladás után ez a
+        // blokk visszaírta volna letiltottra a gombot (felülírva a fenti
+        // !res.ok ág explicit checkoutBtn.disabled = false-ját is), a
+        // kasszás pedig nem tudta volna újra elküldeni ugyanazt a kosarat.
+        checkoutBtn.disabled = cart.size === 0 && manualItems.length === 0;
     }
 });
 

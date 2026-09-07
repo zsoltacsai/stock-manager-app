@@ -72,7 +72,12 @@ $productId = $db->saveProduct([
     'preferred_supplier_id' => $p['preferred_supplier_id'] ?? null,
     'short_description' => $p['short_description'] ?? null,
     'long_description' => $p['long_description'] ?? null,
-    'image_filename' => $p['image_filename'] ?? null,
+    // basename() véd egy esetleges elgépelt/kézzel összeállított kérés
+    // '../'-t tartalmazó image_filename értéke ellen — ez a mező később
+    // escape nélkül kerül bele a WooCommerce felé kiküldött kép-URL-be
+    // (lásd lentebb), és a normál feltöltési út (product-image-upload.php)
+    // amúgy is csak egy szerver-generált, biztonságos fájlnevet ad vissza.
+    'image_filename' => !empty($p['image_filename']) ? basename((string) $p['image_filename']) : null,
     'image_alt'      => $p['image_alt'] ?? null,
     'brand'          => $p['brand'] ?? null,
     'sync_to_woocommerce' => $p['sync_to_woocommerce'] ?? true,
@@ -121,12 +126,20 @@ if (!empty($savedProduct['sync_to_woocommerce']) && !empty($savedProduct['wc_pro
             // külön van védve — ha ez hibázik (pl. átmeneti API-hiba), a
             // név/ár/leírás kiküldése akkor se maradjon el emiatt, csak a
             // márka-mező marad el erről az egy alkalomról, jól látható
-            // naplóbejegyzéssel.
+            // naplóbejegyzéssel (és NEM töröljük a meglévő WC-márkát emiatt
+            // — lásd az else ág, ami csak akkor fut, ha a helyi mező tényleg
+            // üres, nem ha csak a feloldás hibázott).
             try {
                 $pushFields['brand_id'] = $wc->resolveBrandId($mappedBrand);
             } catch (Throwable $e) {
                 $db->logSync('push', $productId, 'Márka feloldása sikertelen, kihagyva: ' . $e->getMessage());
             }
+        } else {
+            // A helyi márka mező üresre lett állítva (pl. staff eltávolította)
+            // — ezt a WooCommerce oldalán is tükrözni kell explicit módon,
+            // különben a régi márka csendben ottmarad a webshopon, holott a
+            // termék adatlapján már nincs feltüntetve.
+            $pushFields['brand_id'] = null;
         }
         $imageChanged = ($existingProduct['image_filename'] ?? null) !== $savedProduct['image_filename']
             || ($existingProduct['image_alt'] ?? null) !== $savedProduct['image_alt'];

@@ -35,8 +35,19 @@ $rows = array_map(static fn(array $p): array => [
     !empty($p['show_webshop']) ? 'Igen' : 'Nem', !empty($p['is_deleted']) ? 'Igen' : 'Nem',
 ], $products);
 
+// A CSV-exportnál már régóta megvolt a képlet-injekció (CWE-1236) elleni
+// védelem — az XLS-exportnak (más íróra, SimpleXlsWriter-re épül) eddig
+// NEM volt, holott ugyanúgy nyitva marad ott: egy `=`/`+`/`-`/`@` karakterrel
+// kezdődő mező (pl. termék neve/márka/megjegyzés) Excelben/LibreOffice-ban
+// futtatható képletként nyílna meg. Mindkét formátumhoz UGYANAZT a
+// szűrt sortömböt használjuk, hogy ez ne csúszhasson szét egymástól.
+$safeRows = array_map(
+    static fn($row) => array_map(static fn($v) => is_string($v) ? csv_safe($v) : $v, $row),
+    $rows
+);
+
 if ($format === 'xls') {
-    SimpleXlsWriter::output('arucikkek.xls', $headers, $rows);
+    SimpleXlsWriter::output('arucikkek.xls', $headers, $safeRows);
     exit;
 }
 
@@ -45,7 +56,7 @@ header('Content-Disposition: attachment; filename="arucikkek.csv"');
 echo "\xEF\xBB\xBF";
 $out = fopen('php://output', 'w');
 fputcsv($out, $headers, ';');
-foreach ($rows as $row) {
-    fputcsv($out, array_map(static fn($v) => is_string($v) ? csv_safe($v) : $v, $row), ';');
+foreach ($safeRows as $row) {
+    fputcsv($out, $row, ';');
 }
 fclose($out);

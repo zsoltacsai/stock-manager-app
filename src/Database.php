@@ -145,15 +145,16 @@ class Database
 
     private function setSchemaVersion(int $version): void
     {
-        try {
-            $this->pdo->exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
-            $count = (int) $this->pdo->query('SELECT COUNT(*) FROM schema_version')->fetchColumn();
-            if ($count === 0) {
-                $this->pdo->prepare('INSERT INTO schema_version (version) VALUES (?)')->execute([$version]);
-            } else {
-                $this->pdo->prepare('UPDATE schema_version SET version = ?')->execute([$version]);
-            }
-        } catch (PDOException $e) {
+        // Ez az UTOLSÓ lépés a migrációban — ha ez maga hibázik, a DB
+        // ténylegesen migrálva lett, csak a verzió-jelző nem íródott ki
+        // helyesen, ami minden további kérésnél újra megpróbálná a (már
+        // idempotens) migrációt. Ezt szándékosan nem nyeljük el csendben.
+        $this->pdo->exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
+        $count = (int) $this->pdo->query('SELECT COUNT(*) FROM schema_version')->fetchColumn();
+        if ($count === 0) {
+            $this->pdo->prepare('INSERT INTO schema_version (version) VALUES (?)')->execute([$version]);
+        } else {
+            $this->pdo->prepare('UPDATE schema_version SET version = ?')->execute([$version]);
         }
     }
 
@@ -192,6 +193,42 @@ class Database
             );
         }
         $this->migrateColumns('products', $columns);
+        $this->backfillMigratedProductCosts();
+    }
+
+    /**
+     * Az imént (régi telepítés migrálásakor) létrehozott net_price/
+     * purchase_price_net oszlopok DEFAULT 0-val jönnek létre minden már
+     * meglévő terméknél — enélkül minden létező termék hamisan 0 Ft
+     * nettó/beszerzési árat mutatna, amíg valaki kézzel újra el nem menti.
+     * A nettó ár a meglévő bruttó árból/ÁFA-kulcsból pontosan
+     * visszaszámolható; a beszerzési ár a legutóbbi purchase_items sorból.
+     * Csak azokat a sorokat töltjük ki, ahol még ténylegesen 0 (egy már
+     * helyesen kitöltött terméket nem írunk felül) — ez a metódus csak a
+     * migráció alatt fut le (lásd ensureSchema()), utána sosem.
+     */
+    private function backfillMigratedProductCosts(): void
+    {
+        $rows = $this->pdo->query("SELECT id, price, vat_rate FROM products WHERE net_price = 0 AND price > 0")->fetchAll(PDO::FETCH_ASSOC);
+        if ($rows) {
+            $update = $this->pdo->prepare('UPDATE products SET net_price = ? WHERE id = ?');
+            foreach ($rows as $row) {
+                $vatPct = is_numeric($row['vat_rate']) ? ((float) $row['vat_rate']) / 100 : 0.0;
+                $update->execute([round((float) $row['price'] / (1 + $vatPct), 2), $row['id']]);
+            }
+        }
+
+        if ($this->hasTable('purchase_items')) {
+            $this->pdo->exec('
+                UPDATE products SET purchase_price_net = (
+                    SELECT pi.unit_cost_net FROM purchase_items pi
+                    WHERE pi.product_id = products.id ORDER BY pi.id DESC LIMIT 1
+                )
+                WHERE purchase_price_net = 0 AND EXISTS (
+                    SELECT 1 FROM purchase_items pi2 WHERE pi2.product_id = products.id
+                )
+            ');
+        }
     }
 
     private function migrateSalesColumns(): void
@@ -209,8 +246,31 @@ class Database
             try {
                 $this->pdo->exec("ALTER TABLE $table ADD COLUMN $name $definition");
             } catch (PDOException $e) {
+                if (!$this->isBenignSchemaError($e)) {
+                    throw $e;
+                }
             }
         }
+    }
+
+    /**
+     * A migrációs lépések nagy része "próbáld meg, és ha már létezik, nem
+     * gond" mintát követ (mert sem a régi SQLite, sem a MySQL nem támogatja
+     * mindenhol az IF NOT EXISTS-et — pl. ALTER TABLE ADD COLUMN esetén).
+     * Ez a szűrő különbözteti meg ezt a JÓINDULATÚ, várt hibát egy VALÓDI
+     * hibától (pl. lezárt fájl, lemez megtelt, hibás SQL) — enélkül minden
+     * PDOException-t elnyeltünk, a séma-verziót pedig ennek ellenére
+     * feljebb írtuk, ami egy valódi hibát csendben, láthatatlanul félig
+     * migrált állapotban hagyott volna örökre "késznek" jelölve.
+     */
+    private function isBenignSchemaError(PDOException $e): bool
+    {
+        $message = strtolower($e->getMessage());
+        return str_contains($message, 'duplicate column')
+            || str_contains($message, 'duplicate key name')
+            || str_contains($message, 'already exists')
+            || str_contains($message, '42s21') // MySQL: duplicate column name
+            || str_contains($message, '42s01'); // MySQL: table already exists
     }
 
     private function migrateV4SuppliersAndLoyalty(): void
@@ -229,7 +289,7 @@ class Database
                 phone VARCHAR(64), email VARCHAR(191), payment_terms VARCHAR(191), notes TEXT,
                 is_deleted INTEGER NOT NULL DEFAULT 0, created_at $ts, updated_at $tsNull
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         try {
             $this->pdo->exec("CREATE TABLE IF NOT EXISTS customers (
@@ -237,14 +297,14 @@ class Database
                 tax_number VARCHAR(64), notes TEXT, loyalty_points INTEGER NOT NULL DEFAULT 0,
                 is_deleted INTEGER NOT NULL DEFAULT 0, created_at $ts, updated_at $tsNull
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         try {
             $this->pdo->exec("CREATE TABLE IF NOT EXISTS loyalty_transactions (
                 id $pk, customer_id $intCol, sale_id $intCol, points_delta INTEGER NOT NULL,
                 note VARCHAR(255), created_at $ts
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         $this->migrateColumns('purchases', ['supplier_id' => $intCol]);
         $this->migrateColumns('sales', [
@@ -255,13 +315,13 @@ class Database
 
         try {
             $this->pdo->exec('CREATE INDEX idx_suppliers_name ON suppliers(name)');
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
         try {
             $this->pdo->exec('CREATE INDEX idx_customers_name ON customers(name)');
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
         try {
             $this->pdo->exec('CREATE INDEX idx_loyalty_customer_id ON loyalty_transactions(customer_id)');
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
     }
 
     /** Adds the billing/invoice fields to customers, so "vásárlói törzs" entries can also autofill the Kassza invoice form. */
@@ -279,10 +339,11 @@ class Database
     private function migrateV6ManualSaleItems(): void
     {
         if ($this->driver === 'mysql') {
-            try {
-                $this->pdo->exec('ALTER TABLE sale_items MODIFY COLUMN product_id INT UNSIGNED NULL');
-            } catch (PDOException $e) {
-            }
+            // MODIFY COLUMN nem "már létezik"-jellegű, idempotens hiba —
+            // ha másodszorra (már NULL-t engedő oszlopon) is lefut, a MySQL
+            // simán újra végrehajtja, nem hibázik. Egy itt elkapott hiba
+            // tehát mindig valódi probléma — nem nyeljük el.
+            $this->pdo->exec('ALTER TABLE sale_items MODIFY COLUMN product_id INT UNSIGNED NULL');
             return;
         }
 
@@ -329,6 +390,12 @@ class Database
             if (!$wasInTransaction && $this->pdo->inTransaction()) {
                 $this->pdo->rollBack();
             }
+            // Ez a legkockázatosabb migrációs lépés (teljes tábla-újraépítés)
+            // — egy itt elkapott hiba biztosan nem "már létezik"-jellegű
+            // jóindulatú eset, hanem valódi probléma (pl. a DROP/RENAME
+            // valamiért nem sikerült). Rollback után továbbdobjuk, hogy ne
+            // maradjon csendben, láthatatlanul félbehagyva.
+            throw $e;
         } finally {
             $this->pdo->exec('PRAGMA foreign_keys = ON');
         }
@@ -352,38 +419,38 @@ class Database
                 usage_limit INTEGER, times_used INTEGER NOT NULL DEFAULT 0,
                 min_purchase $moneyCol NOT NULL DEFAULT 0, notes TEXT, created_at $ts
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
         try {
             $this->pdo->exec($isMysql
                 ? 'ALTER TABLE coupons ADD UNIQUE KEY uq_coupons_code (code)'
                 : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_coupons_code ON coupons(code)');
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         try {
             $this->pdo->exec("CREATE TABLE IF NOT EXISTS gift_cards (
                 id $pk, code $codeCol, initial_balance $moneyCol NOT NULL, current_balance $moneyCol NOT NULL,
                 is_active INTEGER NOT NULL DEFAULT 1, expiry_date $dateCol, notes TEXT, created_at $ts
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
         try {
             $this->pdo->exec($isMysql
                 ? 'ALTER TABLE gift_cards ADD UNIQUE KEY uq_gift_cards_code (code)'
                 : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_gift_cards_code ON gift_cards(code)');
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         try {
             $this->pdo->exec("CREATE TABLE IF NOT EXISTS gift_card_transactions (
                 id $pk, gift_card_id $intCol, sale_id $intCol, amount_delta $moneyCol NOT NULL,
                 note VARCHAR(255), created_at $ts
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         try {
             $this->pdo->exec("CREATE TABLE IF NOT EXISTS price_history (
                 id $pk, product_id $intCol, old_net_price $moneyCol, old_price $moneyCol,
                 new_net_price $moneyCol, new_price $moneyCol, changed_at $ts
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         $this->migrateColumns('sales', [
             'coupon_id'          => $intCol,
@@ -397,7 +464,7 @@ class Database
         ] as $sql) {
             try {
                 $this->pdo->exec($sql);
-            } catch (PDOException $e) { /* already exists */ }
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
         }
     }
 
@@ -418,34 +485,34 @@ class Database
                 id $pk, name VARCHAR(191) NOT NULL, pin_hash VARCHAR(255) NOT NULL,
                 is_active INTEGER NOT NULL DEFAULT 1, created_at $ts
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         try {
             $this->pdo->exec("CREATE TABLE IF NOT EXISTS returns (
                 id $pk, sale_id $intColRequired, staff_id $intCol, total_refund $moneyCol NOT NULL,
                 reason VARCHAR(255), credit_invoice_number VARCHAR(64), created_at $ts
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         try {
             $this->pdo->exec("CREATE TABLE IF NOT EXISTS return_items (
                 id $pk, return_id $intColRequired, sale_item_id $intCol, product_id $intCol,
                 name VARCHAR(255) NOT NULL, qty INTEGER NOT NULL, unit_price $moneyCol NOT NULL, created_at $ts
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         try {
             $this->pdo->exec("CREATE TABLE IF NOT EXISTS stock_takes (
                 id $pk, staff_id $intCol, notes VARCHAR(255), started_at $ts, completed_at $tsNull
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         try {
             $this->pdo->exec("CREATE TABLE IF NOT EXISTS stock_take_items (
                 id $pk, stock_take_id $intColRequired, product_id $intColRequired,
                 expected_qty INTEGER NOT NULL, counted_qty INTEGER, created_at $ts
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         $this->migrateColumns('sales', ['staff_id' => $intCol]);
 
@@ -456,7 +523,7 @@ class Database
         ] as $sql) {
             try {
                 $this->pdo->exec($sql);
-            } catch (PDOException $e) { /* already exists */ }
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
         }
     }
 
@@ -477,11 +544,11 @@ class Database
                 id $pk, staff_id $intCol, action VARCHAR(64) NOT NULL, entity_type VARCHAR(64),
                 entity_id INTEGER, details TEXT, created_at $ts
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         try {
             $this->pdo->exec('CREATE INDEX idx_audit_log_created_at ON audit_log(created_at)');
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         try {
             $this->pdo->exec('
@@ -507,20 +574,20 @@ class Database
             $this->pdo->exec("CREATE TABLE IF NOT EXISTS locations (
                 id $pk, name VARCHAR(191) NOT NULL, address VARCHAR(255), is_default INTEGER NOT NULL DEFAULT 0, created_at $ts
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         try {
             $this->pdo->exec("CREATE TABLE IF NOT EXISTS location_stock (
                 id $pk, product_id $intColRequired, location_id $intColRequired, stock_qty INTEGER NOT NULL DEFAULT 0
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         try {
             $this->pdo->exec("CREATE TABLE IF NOT EXISTS stock_transfers (
                 id $pk, product_id $intColRequired, from_location_id $intCol, to_location_id $intColRequired,
                 qty INTEGER NOT NULL, staff_id $intCol, created_at $ts
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         foreach ([
             $isMysql
@@ -530,7 +597,7 @@ class Database
         ] as $sql) {
             try {
                 $this->pdo->exec($sql);
-            } catch (PDOException $e) { /* already exists */ }
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
         }
     }
 
@@ -550,7 +617,7 @@ class Database
         ] as $sql) {
             try {
                 $this->pdo->exec($sql);
-            } catch (PDOException $e) { /* already exists (e.g. MySQL, or a re-run) */ }
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
         }
     }
 
@@ -607,7 +674,7 @@ class Database
                 created_at $ts,
                 confirmed_at $tsNull
             )$engine");
-        } catch (PDOException $e) { /* already exists */ }
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
 
         foreach ([
             $isMysql
@@ -617,7 +684,7 @@ class Database
         ] as $sql) {
             try {
                 $this->pdo->exec($sql);
-            } catch (PDOException $e) { /* already exists */ }
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
         }
     }
 
@@ -877,13 +944,20 @@ class Database
             $stmt->execute([
                 ':wc_product_id' => $p['wc_product_id'],
                 ':sku'           => $p['sku'],
-                ':barcode'       => $p['barcode'],
+                // WC-oldali üres/hiányzó érték (pl. nincs _barcode meta)
+                // NEM törölheti a helyi vonalkódot — az a POS-os
+                // vonalkód-olvasás alapja, elvesztése csendben törné a
+                // kasszai keresést. Csak akkor írjuk felül, ha WC tényleg
+                // ad egy nem üres értéket — ugyanaz a "ne csendben nullázd
+                // ki a helyi mezőt" minta, mint importUpsertProduct()-nál
+                // a preferred_supplier_id-nál.
+                ':barcode'       => (($p['barcode'] ?? '') !== '') ? $p['barcode'] : $existing['barcode'],
                 ':name'          => $p['name'],
                 ':price'         => $p['price'],
                 ':stock_qty'     => $p['stock_qty'],
-                ':short_description' => $p['short_description'] ?? null,
-                ':long_description'  => $p['long_description'] ?? null,
-                ':brand'         => $p['brand'] ?? null,
+                ':short_description' => (($p['short_description'] ?? '') !== '') ? $p['short_description'] : ($existing['short_description'] ?? null),
+                ':long_description'  => (($p['long_description'] ?? '') !== '') ? $p['long_description'] : ($existing['long_description'] ?? null),
+                ':brand'         => (($p['brand'] ?? '') !== '') ? $p['brand'] : ($existing['brand'] ?? null),
                 ':now'           => $now,
                 ':id'            => $existing['id'],
             ]);
@@ -1359,11 +1433,25 @@ class Database
 
     public function recordPurchase(array $purchase, array $items): array
     {
+        // A kedvezmény (discount_percent) a beszerzés végösszegére vonatkozik
+        // — tétel-szinten, kerekítés ELŐTT alkalmazzuk, hogy a fejléc-összeg
+        // (purchases.total_net/total_gross) garantáltan megegyezzen a mentett
+        // tételek (purchase_items.line_net/line_gross) összegével, ne
+        // csúszhasson szét egy csak az egyik oldalon alkalmazott kerekítés
+        // miatt. A készletre/beszerzési árra (applyPurchaseLine) ez nem hat
+        // ki — az a ténylegesen beírt, kedvezmény előtti egységárat tükrözi.
+        $discountPercent = min(100, max(0, (float) ($purchase['discount_percent'] ?? 0)));
+        $discountRatio = 1 - $discountPercent / 100;
+
         $totalNet = 0.0;
         $totalGross = 0.0;
-        foreach ($items as $item) {
-            $totalNet += $item['unit_cost_net'] * $item['qty'];
-            $totalGross += $item['unit_cost_gross'] * $item['qty'];
+        $lineTotals = [];
+        foreach ($items as $i => $item) {
+            $lineNet = round($item['unit_cost_net'] * $item['qty'] * $discountRatio, 2);
+            $lineGross = round($item['unit_cost_gross'] * $item['qty'] * $discountRatio, 2);
+            $lineTotals[$i] = ['net' => $lineNet, 'gross' => $lineGross];
+            $totalNet += $lineNet;
+            $totalGross += $lineGross;
         }
 
         $now = date('Y-m-d H:i:s');
@@ -1411,9 +1499,9 @@ class Database
             ');
             $syncStmt = $this->pdo->prepare('INSERT INTO sync_log (direction, product_id, message, created_at) VALUES (?, ?, ?, ?)');
 
-            foreach ($items as $item) {
-                $lineNet = round($item['unit_cost_net'] * $item['qty'], 2);
-                $lineGross = round($item['unit_cost_gross'] * $item['qty'], 2);
+            foreach ($items as $i => $item) {
+                $lineNet = $lineTotals[$i]['net'];
+                $lineGross = $lineTotals[$i]['gross'];
 
                 $itemStmt->execute([
                     ':purchase_id'     => $purchaseId,
@@ -2447,6 +2535,17 @@ class Database
 
     public function startStockTake(?int $staffId, string $notes): int
     {
+        // Két egyidejűleg nyitva lévő leltár ugyanarra a készletre
+        // egymástól függetlenül, ugyanahhoz a kiindulási pillanatfelvételhez
+        // (expected_qty) képest számítana eltérést lezáráskor — ami könnyen
+        // duplán könyvelné el ugyanazt a hiányt/többletet. Amíg van nyitott
+        // (le nem zárt) leltár, nem indítható újabb — a "Folytatás" gombbal
+        // a meglévőt kell folytatni.
+        $openId = $this->pdo->query('SELECT id FROM stock_takes WHERE completed_at IS NULL LIMIT 1')->fetchColumn();
+        if ($openId !== false) {
+            throw new RuntimeException('Már van nyitott (le nem zárt) leltár — előbb azt zárd le, vagy folytasd.');
+        }
+
         $stmt = $this->pdo->prepare('INSERT INTO stock_takes (staff_id, notes, started_at) VALUES (?, ?, ?)');
         $stmt->execute([$staffId, $notes, date('Y-m-d H:i:s')]);
         $takeId = (int) $this->pdo->lastInsertId();
@@ -2505,13 +2604,45 @@ class Database
         $updated = [];
         $this->beginTransaction();
         try {
+            $takeStmt = $this->pdo->prepare('SELECT completed_at FROM stock_takes WHERE id = ?');
+            $takeStmt->execute([$id]);
+            $take = $takeStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$take) {
+                throw new RuntimeException('A leltár nem található.');
+            }
+            if ($take['completed_at'] !== null) {
+                // Idempotencia-védelem: egy már lezárt leltár ismételt
+                // lezárása (dupla kattintás, hálózati újrapróbálkozás, két
+                // nyitva hagyott böngészőfül) enélkül még egyszer
+                // alkalmazná a korrekciót — ugyanaz a hibaosztály, mint amit
+                // a visszáru-versenyhelyzetnél is javítottunk ebben a körben.
+                throw new RuntimeException('Ez a leltár már le van zárva.');
+            }
+
             if ($applyCorrections) {
-                $stmt = $this->pdo->prepare('SELECT product_id, counted_qty FROM stock_take_items WHERE stock_take_id = ? AND counted_qty IS NOT NULL');
+                // A leltár indításakor rögzített expected_qty a KIINDULÓ
+                // állapot pillanatfelvétele — a lezárásig (ami akár órákig
+                // vagy napokig tarthat, hiszen a leltár "Folytatás"-sal
+                // bármikor újranyitható) közben valódi eladások/beszerzések
+                // tovább módosíthatták a stock_qty-t. Ezért NEM a megszámolt
+                // értéket írjuk rá abszolút értékként — az elveszítené a
+                // közbeni valódi mozgásokat (pl. egy leltár közben lezajlott
+                // eladás készlet-csökkentését csendben visszaírná) —, hanem
+                // a leltár által felfedezett ELTÉRÉST (counted - expected)
+                // alkalmazzuk a JELENLEGI stock_qty-re relatív korrekcióként,
+                // pontosan úgy, ahogy egy hagyományos leltári
+                // eltérés-könyvelés is működik.
+                $stmt = $this->pdo->prepare('SELECT product_id, expected_qty, counted_qty FROM stock_take_items WHERE stock_take_id = ? AND counted_qty IS NOT NULL');
                 $stmt->execute([$id]);
-                $updateStmt = $this->pdo->prepare('UPDATE products SET stock_qty = ? WHERE id = ?');
+                $now = date('c');
+                $updateStmt = $this->pdo->prepare('UPDATE products SET stock_qty = stock_qty + :delta, updated_at = :now, wc_synced_at = :now WHERE id = :id');
                 $selectStmt = $this->pdo->prepare('SELECT id, stock_qty, wc_product_id, sync_to_woocommerce, name FROM products WHERE id = ?');
                 foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                    $updateStmt->execute([$row['counted_qty'], $row['product_id']]);
+                    $delta = (int) $row['counted_qty'] - (int) $row['expected_qty'];
+                    if ($delta === 0) {
+                        continue; // nincs eltérés — nincs mit korrigálni/kiküldeni
+                    }
+                    $updateStmt->execute([':delta' => $delta, ':now' => $now, ':id' => $row['product_id']]);
                     $selectStmt->execute([$row['product_id']]);
                     $product = $selectStmt->fetch(PDO::FETCH_ASSOC);
                     if ($product && $product['wc_product_id'] && !empty($product['sync_to_woocommerce'])) {

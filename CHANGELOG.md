@@ -4,6 +4,50 @@ Ez a fájl a Stock Manager verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## 1.0 RC3 (2026-09-07)
+
+Harmadik átvizsgálási kör: napi zárás/riportok, hűségpontok/kuponok/
+ajándékutalványok, biztonsági mentés/GDPR, többtelephelyes készlet, majd
+séma-migráció régi adatbázison, beszerzés, termékkatalógus/WooCommerce-
+szinkron, leltár, kassza/számlázás UX, és az Árucikkek/Vásárlók listák.
+
+### Javítva
+- Napi zárás/forgalmi trend mostantól levonja a visszárukat.
+- Kassza: kupon-/pont-/utalvány-beváltás foglalása az eladás rögzítése
+  ELŐTT, ugyanabban a tranzakcióban történik — versenyhelyzetben a teljes
+  eladás visszagördül, nem csak a könyvelés marad inkonzisztens.
+- Rendszerszintű jogosultság-megkerülés javítva: minden "csak vezetőnek"
+  végpont a szerver-oldali, PIN-nel ellenőrzött session-t olvassa, nem egy
+  kliens által beküldött staff_id-t.
+- GDPR-export/törlés vezetői jogszinthez kötve; a törlés a korábbi
+  eladásokon is eltünteti a vásárló nevét.
+- Adatbázis-visszaállítás: stale -wal/-shm tisztítás, séma-ellenőrzés, és a
+  data/settings.json (API-kulcsok) is bekerül a mentésbe.
+- **Leltárzárás mostantól relatív eltérésként (nem abszolút felülírásként)
+  korrigálja a készletet** — korábban egy leltár alatt lezajlott valódi
+  eladást csendben eltüntetett volna a zárás. Emellett: dupla lezárás és
+  átfedő (egyidejű) leltár is elutasítva, korrekció alkalmazása vezetői
+  jogszinthez kötve.
+- Séma-migráció: valódi hibák (nem csak "ez már létezik") eddig csendben
+  elnyelődtek, a séma-verzió mégis feljebb íródott — mostantól csak a
+  jóindulatú eseteket nyeli el. Régi telepítésen a nettó/beszerzési ár is
+  helyesen kitöltődik migráláskor (korábban csendben 0 lett).
+- Beszerzés: kedvezmény (discount_percent) mostantól ténylegesen
+  érvényesül az összegben; WooCommerce-készletpush versenyhelyzete javítva.
+- WooCommerce-termékszinkron (behúzás) többé nem törli csendben a helyi
+  vonalkódot/leírást/márkát, ha a webshop oldalán az üres; márka helyi
+  törlése a WooCommerce oldalán is törlődik.
+- CSV mellett az XLS-exportok (Árucikkek, Vásárlók) is védettek
+  képlet-injekció (CWE-1236) ellen; a Vásárlók-export mostantól az
+  ország/megjegyzés mezőket is tartalmazza.
+- Árucikkek lista 500 termékes korlátja miatt egy annál nagyobb katalógus
+  csendben csonkult (hibás számláló, hamis üres keresési találat) — a
+  korlát feloldva.
+- Kassza: csak kézi tételeket tartalmazó kosárnál egy sikertelen eladás
+  után a "Eladás rögzítése" gomb véglegesen letiltva ragadt.
+
+11 új PHPUnit teszt a fenti javításokra (40/40 zöld).
+
 ## 1.0 RC2 (2026-09-07)
 
 Teljes kódátvizsgálás második köre: WooCommerce-szinkron, biztonság,

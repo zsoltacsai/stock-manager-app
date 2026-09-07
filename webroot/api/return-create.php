@@ -78,7 +78,7 @@ $rawRefund = array_sum(array_map(static fn ($i) => $i['qty'] * $i['unit_price'],
 $totalRefund = round($rawRefund * $discountRatio, 2);
 
 try {
-    $returnId = $db->processReturn($saleId, $itemsToReturn, $reason, $staffId, $totalRefund);
+    $returnId = $db->processReturn($saleId, $itemsToReturn, $reason, $staffId, $totalRefund, $sale);
 } catch (Throwable $e) {
     send_json(['error' => 'A visszáru rögzítése sikertelen: ' . $e->getMessage()], 500);
 }

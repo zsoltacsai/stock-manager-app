@@ -30,9 +30,18 @@ if (!empty($_FILES['file']['tmp_name']) && is_uploaded_file($_FILES['file']['tmp
     send_json(['error' => 'Válassz egy meglévő mentést, vagy tölts fel egy fájlt.'], 400);
 }
 
-$staffId = !empty($_POST['staff_id']) ? (int) $_POST['staff_id'] : null;
-if ($db->listStaff(true) && !$db->isStaffAdmin($staffId)) {
-    send_json(['error' => 'Az adatbázis visszaállításához vezetői jogszint szükséges.'], 403);
+// Az adatbázis-visszaállítás visszavonhatatlanul felülírja az éles adatokat,
+// ezért ITT szándékosan NEM elég egy kliens által csak úgy beküldött
+// staff_id (azt bárki, aki be van jelentkezve az appba, akár egy másik
+// dolgozó/vezető azonosítójára állíthatná) — friss PIN-t kell megadni,
+// amit itt valóban ellenőrzünk. Ha egyáltalán nincs beállítva dolgozói
+// PIN-rendszer, a viselkedés változatlan (senkit nem zár ki feleslegesen).
+if ($db->listStaff(true)) {
+    $pin = trim((string) ($_POST['pin'] ?? ''));
+    $verifiedStaff = $pin !== '' ? $db->verifyStaffPin($pin) : null;
+    if (!$verifiedStaff || $verifiedStaff['role'] !== 'admin') {
+        send_json(['error' => 'Az adatbázis visszaállításához érvényes vezetői PIN megadása szükséges.'], 403);
+    }
 }
 
 try {

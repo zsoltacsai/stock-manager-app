@@ -125,20 +125,22 @@ final class Auth
 
     public static function checkRateLimit(string $key, int $maxAttempts, int $lockoutMinutes): array
     {
-        $file = self::rateLimitFile($key);
-        $data = is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
-        if (!is_array($data)) {
-            $data = ['attempts' => 0, 'first_attempt_at' => time(), 'locked_until' => 0];
-        }
+        // Lásd GeoBlocker::lookupCountry() — ugyanaz a flock()-védett
+        // olvasás-módosítás-írás minta kell ide is, különben sok
+        // párhuzamos kérés mindegyike ugyanazt a (még nem növelt)
+        // számlálót olvashatja ki, és a max. próbálkozás-korlát
+        // ténylegesen megkerülhető lenne egyidejű kérésekkel.
+        $data = self::withLockedRateLimitFile($key, function (array $data) {
+            // A lockout ablak lejárt — friss számlálást mutatunk, mielőtt
+            // bármi ténylegesen próbálkozna újra.
+            if ($data['locked_until'] > 0 && $data['locked_until'] <= time()) {
+                return ['attempts' => 0, 'first_attempt_at' => time(), 'locked_until' => 0];
+            }
+            return $data;
+        });
 
         if ($data['locked_until'] > time()) {
             return ['locked' => true, 'remaining_seconds' => $data['locked_until'] - time(), 'attempts_left' => 0];
-        }
-
-        // A lockout ablak lejárt — kezdjünk friss számlálást.
-        if ($data['locked_until'] > 0 && $data['locked_until'] <= time()) {
-            $data = ['attempts' => 0, 'first_attempt_at' => time(), 'locked_until' => 0];
-            file_put_contents($file, json_encode($data));
         }
 
         return ['locked' => false, 'remaining_seconds' => 0, 'attempts_left' => max(0, $maxAttempts - $data['attempts'])];
@@ -146,16 +148,61 @@ final class Auth
 
     public static function recordFailedAttempt(string $key, int $maxAttempts, int $lockoutMinutes): void
     {
+        self::withLockedRateLimitFile($key, function (array $data) use ($maxAttempts, $lockoutMinutes) {
+            // A lockout ablak lejárt — kezdjünk friss számlálást, mielőtt
+            // ezt a próbálkozást is hozzáadnánk.
+            if ($data['locked_until'] > 0 && $data['locked_until'] <= time()) {
+                $data = ['attempts' => 0, 'first_attempt_at' => time(), 'locked_until' => 0];
+            }
+            $data['attempts']++;
+            if ($data['attempts'] >= $maxAttempts) {
+                $data['locked_until'] = time() + $lockoutMinutes * 60;
+            }
+            return $data;
+        });
+    }
+
+    /**
+     * Kizárólagos zárolás mellett beolvassa a rate-limit fájlt, átadja a
+     * $mutator-nak (ami az esetleg módosított állapotot adja vissza),
+     * majd visszaírja — egyetlen atomikus lépésként, hogy két majdnem
+     * egyidejű bejelentkezési próbálkozás ne olvashassa ki ugyanazt az
+     * elavult számlálót a másik írása előtt.
+     */
+    private static function withLockedRateLimitFile(string $key, callable $mutator): array
+    {
         $file = self::rateLimitFile($key);
-        $data = is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
+        $handle = fopen($file, 'c+');
+        if ($handle === false) {
+            // Ha valamiért nem nyitható a fájl, essünk vissza a régi,
+            // zárolás nélküli viselkedésre, hogy a bejelentkezés
+            // legalább ne akadjon el emiatt.
+            $data = is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
+            if (!is_array($data)) {
+                $data = ['attempts' => 0, 'first_attempt_at' => time(), 'locked_until' => 0];
+            }
+            $result = $mutator($data);
+            file_put_contents($file, json_encode($result));
+            return $result;
+        }
+
+        flock($handle, LOCK_EX);
+        $raw = stream_get_contents($handle);
+        $data = ($raw !== false && $raw !== '') ? json_decode($raw, true) : null;
         if (!is_array($data)) {
             $data = ['attempts' => 0, 'first_attempt_at' => time(), 'locked_until' => 0];
         }
-        $data['attempts']++;
-        if ($data['attempts'] >= $maxAttempts) {
-            $data['locked_until'] = time() + $lockoutMinutes * 60;
-        }
-        file_put_contents($file, json_encode($data));
+
+        $result = $mutator($data);
+
+        rewind($handle);
+        ftruncate($handle, 0);
+        fwrite($handle, json_encode($result));
+        fflush($handle);
+        flock($handle, LOCK_UN);
+        fclose($handle);
+
+        return $result;
     }
 
     public static function clearRateLimit(string $key): void

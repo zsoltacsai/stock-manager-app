@@ -99,13 +99,13 @@ function render(data) {
     wcStatus.innerHTML = `
         <p>Konfigurálva: ${badge(data.wc_sync.configured, 'igen', 'nincs beállítva')}</p>
         <p>Automatikus szinkron: ${badge(data.wc_sync.auto_enabled, 'bekapcsolva', 'kikapcsolva')}</p>
-        <p class="muted">Utolsó futás: ${formatDate(data.wc_sync.last_run_at)}${data.wc_sync.last_summary ? ' — ' + data.wc_sync.last_summary : ''}</p>
+        <p class="muted">Utolsó futás: ${formatDate(data.wc_sync.last_run_at)}${data.wc_sync.last_summary ? ' — ' + escapeHtml(data.wc_sync.last_summary) : ''}</p>
     `;
 
     backupStatus.innerHTML = `
         <p>Automatikus mentés: ${badge(data.backup.auto_enabled, 'bekapcsolva', 'kikapcsolva')}</p>
         <p>Felhő szolgáltató: <strong>${data.backup.cloud_provider === 'none' ? 'nincs' : data.backup.cloud_provider}</strong></p>
-        <p class="muted">Utolsó mentés: ${formatDate(data.backup.last_run_at)}${data.backup.last_summary ? ' — ' + data.backup.last_summary : ''}</p>
+        <p class="muted">Utolsó mentés: ${formatDate(data.backup.last_run_at)}${data.backup.last_summary ? ' — ' + escapeHtml(data.backup.last_summary) : ''}</p>
     `;
 
     configStatus.innerHTML = `
@@ -120,9 +120,9 @@ function render(data) {
         ? data.recent_sync_log.map(row => `
             <tr>
                 <td>${row.created_at}</td>
-                <td>${row.direction}</td>
+                <td>${escapeHtml(row.direction)}</td>
                 <td>${row.product_id ?? '—'}</td>
-                <td style="${row.message && row.message.startsWith('FAILED') ? 'color:var(--danger);' : ''}">${row.message || ''}</td>
+                <td style="${row.message && row.message.startsWith('FAILED') ? 'color:var(--danger);' : ''}">${escapeHtml(row.message || '')}</td>
             </tr>
         `).join('')
         : '<tr><td colspan="4" class="muted" style="text-align:center; padding:16px;">Még nincs napló bejegyzés.</td></tr>';

@@ -18,11 +18,11 @@ if ($file['size'] > 2 * 1024 * 1024) {
     send_json(['error' => 'A fájl legfeljebb 2 MB lehet.'], 400);
 }
 
+// SVG szándékosan NINCS engedélyezve feltöltésre — lásd api/logo-upload.php.
 $allowed = [
-    'image/png'     => 'png',
-    'image/jpeg'    => 'jpg',
-    'image/svg+xml' => 'svg',
-    'image/webp'    => 'webp',
+    'image/png'  => 'png',
+    'image/jpeg' => 'jpg',
+    'image/webp' => 'webp',
 ];
 
 $finfo = finfo_open(FILEINFO_MIME_TYPE);
@@ -30,7 +30,7 @@ $mime = finfo_file($finfo, $file['tmp_name']);
 finfo_close($finfo);
 
 if (!isset($allowed[$mime])) {
-    send_json(['error' => 'Csak PNG, JPG, WEBP vagy SVG fájl tölthető fel.'], 400);
+    send_json(['error' => 'Csak PNG, JPG vagy WEBP fájl tölthető fel.'], 400);
 }
 
 $assetsDir = __DIR__ . '/../assets';

@@ -117,11 +117,13 @@ backBtn.addEventListener('click', () => {
 });
 
 completeBtn.addEventListener('click', async () => {
+    if (completeBtn.disabled) return;
     const uncounted = currentTake.items.filter(i => i.counted_qty === null).length;
     if (uncounted > 0) {
         const proceed = confirm(`${uncounted} termék még nincs megszámolva. Ezeknél a rendszer szerinti készlet marad érvényben. Folytatod a lezárást?`);
         if (!proceed) return;
     }
+    completeBtn.disabled = true;
     feedback.textContent = 'Lezárás...';
     feedback.className = 'modal-feedback';
     try {
@@ -132,12 +134,19 @@ completeBtn.addEventListener('click', async () => {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
-        feedback.textContent = 'A leltár lezárva.';
-        feedback.className = 'modal-feedback';
+        if (data.wc_push_errors && data.wc_push_errors.length) {
+            feedback.textContent = 'A leltár lezárva, de a WooCommerce-szinkron sikertelen: ' + data.wc_push_errors.join('; ');
+            feedback.className = 'modal-feedback error';
+        } else {
+            feedback.textContent = 'A leltár lezárva.';
+            feedback.className = 'modal-feedback';
+        }
         openStockTake(currentTake.id);
     } catch (err) {
         feedback.textContent = 'Hiba: ' + err.message;
         feedback.className = 'modal-feedback error';
+    } finally {
+        completeBtn.disabled = false;
     }
 });
 

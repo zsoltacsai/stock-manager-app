@@ -28,10 +28,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'low_stock_notify_webhook', 'low_stock_notify_email',
         'receipt_header_lines', 'receipt_footer_lines',
     ];
+    // Ezeknél a mezőknél a válasz (lásd lentebb) sose küldi ki a valódi
+    // értéket — a felület üresen, egy "(mentve)" jelzéssel mutatja őket.
+    // Emiatt itt egy üres beküldött érték NEM törlést jelent, hanem "nem
+    // változott" — különben a felület minden puszta megnyitás+mentésnél
+    // véletlenül kitörölné a korábban elmentett titkot.
+    $secretFields = [
+        'dropbox_access_token', 'google_client_secret', 'google_refresh_token',
+        'szamlazz_agent_key', 'wc_consumer_secret', 'wc_webhook_secret',
+        'nav_password', 'nav_signer_key', 'nav_exchange_key',
+    ];
     foreach ($stringFields as $field) {
-        if (isset($input[$field])) {
-            $update[$field] = trim((string) $input[$field]);
+        if (!isset($input[$field])) {
+            continue;
         }
+        $value = trim((string) $input[$field]);
+        if (in_array($field, $secretFields, true) && $value === '') {
+            continue;
+        }
+        $update[$field] = $value;
     }
 
     // Logikai (be/ki) mezők.
@@ -132,4 +147,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $data['logo_url'] = logo_url($data['logo_filename']);
 $data['print_logo_url'] = logo_url($data['print_logo_filename'] ?? null);
 unset($data['app_password_hash']); // a hash sose menjen ki a klienshez, semmilyen hívásnál
+
+// Hitelesítő-adat jellegű mezők (API-kulcsok, jelszavak, tokenek) sose
+// menjenek ki nyers szövegként — bárki, aki be van jelentkezve az appba
+// (akár egy egyszerű pénztáros is), egyébként egy sima GET /api/settings.php
+// hívással kiolvashatná a WooCommerce/Számlázz.hu/NAV/felhő hitelesítő
+// adatait. A UI helyette egy "<mező>_set" jelzőt kap, hogy tudja: van már
+// elmentett érték, csak nem mutatja — lásd a fenti $secretFields listát is.
+$secretResponseFields = [
+    'dropbox_access_token', 'google_client_secret', 'google_refresh_token',
+    'szamlazz_agent_key', 'wc_consumer_secret', 'wc_webhook_secret',
+    'nav_password', 'nav_signer_key', 'nav_exchange_key',
+];
+foreach ($secretResponseFields as $field) {
+    $data[$field . '_set'] = !empty($data[$field]);
+    $data[$field] = '';
+}
+
 send_json($data);

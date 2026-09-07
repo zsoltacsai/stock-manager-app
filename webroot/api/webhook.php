@@ -3,10 +3,20 @@
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 
+$webhookSecret = (string) $config['woocommerce']['webhook_secret'];
+
+// Ha a titkos kulcs üres vagy a config.php gyári placeholder értékén
+// maradt, a HMAC-ellenőrzés önmagában kitalálható/reprodukálható lenne
+// bárki számára — ilyenkor inkább egyértelműen elutasítjuk a webhookot,
+// minthogy hamis bejövő rendeléseket engedjünk be a piszkozat-sorba.
+if ($webhookSecret === '' || $webhookSecret === 'change-me-webhook-secret') {
+    send_json(['error' => 'Webhook secret not configured'], 401);
+}
+
 $rawBody = file_get_contents('php://input');
 $signature = $_SERVER['HTTP_X_WC_WEBHOOK_SIGNATURE'] ?? '';
 
-$expected = base64_encode(hash_hmac('sha256', $rawBody, $config['woocommerce']['webhook_secret'], true));
+$expected = base64_encode(hash_hmac('sha256', $rawBody, $webhookSecret, true));
 
 if (!$signature || !hash_equals($expected, $signature)) {
     send_json(['error' => 'Invalid webhook signature'], 401);

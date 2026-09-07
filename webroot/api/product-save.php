@@ -90,6 +90,17 @@ if ($settingToDeleted) {
 
 $savedProduct = $db->findProductById($productId);
 
+// A régi termékkép fájl törlése csak MOST, a mentés tényleges
+// megtörténte után történik (nem a feltöltéskor, api/product-image-upload.php-ban)
+// — különben ha a feltöltés után a felhasználó "Mégse"-t nyom (vagy a mentés
+// bármi miatt sikertelen), a régi kép már véglegesen törölve lenne, az új
+// pedig sosem kerülne semmilyen termékhez rendelve: a termék néma képvesztést
+// szenvedne.
+if (!empty($existingProduct['image_filename'])
+    && $existingProduct['image_filename'] !== ($savedProduct['image_filename'] ?? null)) {
+    @unlink(__DIR__ . '/../assets/products/' . basename($existingProduct['image_filename']));
+}
+
 $wcPushError = null;
 if (!empty($savedProduct['sync_to_woocommerce']) && !empty($savedProduct['wc_product_id'])) {
     try {
@@ -105,7 +116,16 @@ if (!empty($savedProduct['sync_to_woocommerce']) && !empty($savedProduct['wc_pro
             'long_description'  => $savedProduct['long_description'] ?? '',
         ];
         if ($mappedBrand !== '') {
-            $pushFields['brand_id'] = $wc->resolveBrandId($mappedBrand);
+            // A márka feloldása (keresés/létrehozás a WooCommerce oldalán)
+            // külön van védve — ha ez hibázik (pl. átmeneti API-hiba), a
+            // név/ár/leírás kiküldése akkor se maradjon el emiatt, csak a
+            // márka-mező marad el erről az egy alkalomról, jól látható
+            // naplóbejegyzéssel.
+            try {
+                $pushFields['brand_id'] = $wc->resolveBrandId($mappedBrand);
+            } catch (Throwable $e) {
+                $db->logSync('push', $productId, 'Márka feloldása sikertelen, kihagyva: ' . $e->getMessage());
+            }
         }
         $imageChanged = ($existingProduct['image_filename'] ?? null) !== $savedProduct['image_filename']
             || ($existingProduct['image_alt'] ?? null) !== $savedProduct['image_alt'];

@@ -87,6 +87,7 @@ try {
         }
         try {
             $wc->updateStock((int) $item['wc_product_id'], (int) $updated['stock_qty']);
+            $db->touchWcSyncedAt($item['product_id']);
             $db->logSync('push', $item['product_id'], 'Stock pushed after purchase #' . $result['purchase_id']);
         } catch (Throwable $e) {
             $pushErrors[] = $item['name'] . ': ' . $e->getMessage();

@@ -55,7 +55,7 @@ function populateGroupFilter() {
     const current = fGroup.value;
     const groups = Array.from(new Set(allProducts.map(p => p.group_name).filter(Boolean))).sort();
     fGroup.innerHTML = '<option value="">- Mind -</option>' +
-        groups.map(g => `<option value="${g}">${g}</option>`).join('');
+        groups.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('');
     fGroup.value = groups.includes(current) ? current : '';
 
     if (bulkGroupList) {

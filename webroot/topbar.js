@@ -282,6 +282,18 @@ if ('serviceWorker' in navigator) {
         }
     }
 
+    // Hitelesítő-adat jellegű mezőknél (API-kulcsok, jelszavak, tokenek) a
+    // szerver sose küldi ki a valódi értéket (lásd api/settings.php) — a
+    // mező üresen marad, csak egy "(mentve)" jelzést kap, ha van már
+    // elmentett érték. A mentéskor üresen hagyva a szerver nem törli a
+    // korábbi értéket, csak akkor íródik felül, ha ténylegesen beírsz
+    // valami újat.
+    function applySecretField(el, data, field, basePlaceholder) {
+        if (!el) return;
+        el.value = '';
+        el.placeholder = data[field + '_set'] ? '•••••••• (mentve — hagyd üresen, ha nem változik)' : basePlaceholder;
+    }
+
     function applySettings(data) {
         if (sidebarLogo) sidebarLogo.src = data.logo_url;
         if (logoPreview) logoPreview.src = data.logo_url;
@@ -313,11 +325,11 @@ if ('serviceWorker' in navigator) {
             backupProvider.value = data.backup_provider || 'none';
             toggleProviderFields(backupProvider.value);
         }
-        if (dropboxAccessToken) dropboxAccessToken.value = data.dropbox_access_token || '';
+        applySecretField(dropboxAccessToken, data, 'dropbox_access_token', '');
         if (dropboxFolder) dropboxFolder.value = data.dropbox_folder || '/StockManagerBackups';
         if (googleClientId) googleClientId.value = data.google_client_id || '';
-        if (googleClientSecret) googleClientSecret.value = data.google_client_secret || '';
-        if (googleRefreshToken) googleRefreshToken.value = data.google_refresh_token || '';
+        applySecretField(googleClientSecret, data, 'google_client_secret', '');
+        applySecretField(googleRefreshToken, data, 'google_refresh_token', '');
         if (googleFolderId) googleFolderId.value = data.google_folder_id || '';
         if (lastBackup) {
             lastBackup.textContent = data.last_backup_at
@@ -334,27 +346,27 @@ if ('serviceWorker' in navigator) {
             szamlazzDefaultPayment.innerHTML = currentPaymentMethods.map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.value)}</option>`).join('');
         }
 
-        if (szamlazzAgentKey) szamlazzAgentKey.value = data.szamlazz_agent_key || '';
+        applySecretField(szamlazzAgentKey, data, 'szamlazz_agent_key', '');
         if (szamlazzDefaultPayment) szamlazzDefaultPayment.value = data.szamlazz_default_payment || 'Készpénz';
         if (szamlazzDefaultVat) szamlazzDefaultVat.value = data.szamlazz_default_vat || '27';
         if (szamlazzSendEmail) szamlazzSendEmail.checked = !!data.szamlazz_send_email;
 
         if (navLogin) navLogin.value = data.nav_login || '';
-        if (navPassword) navPassword.value = data.nav_password || '';
-        if (navSignerKey) navSignerKey.value = data.nav_signer_key || '';
-        if (navExchangeKey) navExchangeKey.value = data.nav_exchange_key || '';
+        applySecretField(navPassword, data, 'nav_password', '');
+        applySecretField(navSignerKey, data, 'nav_signer_key', '');
+        applySecretField(navExchangeKey, data, 'nav_exchange_key', '');
         if (navTaxNumber) navTaxNumber.value = data.nav_tax_number || '';
         if (navTestMode) navTestMode.checked = !!data.nav_test_mode;
 
         if (wcStoreUrl) wcStoreUrl.value = data.wc_store_url || '';
         if (wcConsumerKey) wcConsumerKey.value = data.wc_consumer_key || '';
-        if (wcConsumerSecret) wcConsumerSecret.value = data.wc_consumer_secret || '';
+        applySecretField(wcConsumerSecret, data, 'wc_consumer_secret', 'cs_...');
         if (wcBarcodeSource) {
             wcBarcodeSource.value = data.wc_barcode_source || 'sku';
             if (wcBarcodeMetaWrap) wcBarcodeMetaWrap.classList.toggle('hidden', wcBarcodeSource.value !== 'meta');
         }
         if (wcBarcodeMetaKey) wcBarcodeMetaKey.value = data.wc_barcode_meta_key || '_barcode';
-        if (wcWebhookSecret) wcWebhookSecret.value = data.wc_webhook_secret || '';
+        applySecretField(wcWebhookSecret, data, 'wc_webhook_secret', '');
         if (wcPublicBaseUrl) wcPublicBaseUrl.value = data.wc_public_base_url || '';
         if (productImageSize) productImageSize.value = String(data.product_image_size ?? 1200);
         currentBrandMapping = (data.brand_mapping && typeof data.brand_mapping === 'object') ? data.brand_mapping : {};
@@ -459,6 +471,10 @@ if ('serviceWorker' in navigator) {
             `A jelenlegi adatok felülíródnak (bár erről is készül egy biztonsági mentés visszaállítás előtt).`
         );
         if (!confirmed) return;
+        // Visszavonhatatlan, teljes adatbázis-felülírás — ha van dolgozói
+        // PIN-rendszer használatban, a szerver friss vezetői PIN-t követel
+        // meg (nem elég egy tárolt staff_id), lásd api/backup-restore.php.
+        const pin = prompt('Vezetői PIN megerősítéshez (ha nincs beállítva dolgozói PIN-rendszer, hagyd üresen):') || '';
 
         const restoreFeedback = document.getElementById('restore-feedback');
         if (restoreFeedback) {
@@ -468,10 +484,7 @@ if ('serviceWorker' in navigator) {
         try {
             const formData = new FormData();
             formData.append('filename', filename);
-            try {
-                const staffRaw = localStorage.getItem('sm_current_staff');
-                if (staffRaw) formData.append('staff_id', JSON.parse(staffRaw).id);
-            } catch (e) { /* ignore corrupt storage */ }
+            formData.append('pin', pin);
             const res = await fetch('/api/backup-restore.php', { method: 'POST', body: formData });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
@@ -503,16 +516,14 @@ if ('serviceWorker' in navigator) {
                 'A jelenlegi adatok felülíródnak (bár erről is készül egy biztonsági mentés visszaállítás előtt).'
             );
             if (!confirmed) return;
+            const pin = prompt('Vezetői PIN megerősítéshez (ha nincs beállítva dolgozói PIN-rendszer, hagyd üresen):') || '';
 
             restoreFeedback.textContent = 'Feltöltés és visszaállítás folyamatban...';
             restoreFeedback.className = 'modal-feedback';
             try {
                 const formData = new FormData();
                 formData.append('file', restoreFileInput.files[0]);
-                try {
-                    const staffRaw = localStorage.getItem('sm_current_staff');
-                    if (staffRaw) formData.append('staff_id', JSON.parse(staffRaw).id);
-                } catch (e) { /* ignore corrupt storage */ }
+                formData.append('pin', pin);
                 const res = await fetch('/api/backup-restore.php', { method: 'POST', body: formData });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
@@ -537,7 +548,8 @@ if ('serviceWorker' in navigator) {
                 if (!res.ok) {
                     showToast('Hiba: ' + (data.error || 'ismeretlen hiba'), 'error');
                 } else {
-                    showToast(`Szinkronizálva: ${data.imported} termék frissítve, ${data.skipped} kihagyva.`, 'ok');
+                    const truncatedNote = data.truncated ? ' FIGYELEM: a webshop 5000-nél több terméket tartalmaz, nem lett mind feldolgozva!' : '';
+                    showToast(`Szinkronizálva: ${data.imported} termék frissítve, ${data.skipped} kihagyva.${truncatedNote}`, data.truncated ? 'error' : 'ok');
                     document.dispatchEvent(new CustomEvent('stockmanager:synced', { detail: data }));
                 }
             } catch (err) {

@@ -271,10 +271,19 @@ try {
         if (empty($item['wc_product_id'])) {
             continue;
         }
-        $newStock = $item['stock_before'] - $item['qty'];
+        // A tényleges, a tranzakció commit-ja UTÁN érvényes készletet
+        // olvassuk újra az adatbázisból (nem a kérés elején rögzített
+        // stock_before-ból számolunk) — különben két majdnem egyidejű
+        // eladás egymást írhatná felül egy elavult, abszolút értékkel.
+        // A helyi DB-t itt nem is kell újra frissíteni (setStock), mert
+        // a tranzakció már a helyes relatív decrementStock()-ot alkalmazta.
+        $current = $db->findProductById($item['product_id']);
+        if (!$current) {
+            continue;
+        }
         try {
-            $wc->updateStock((int) $item['wc_product_id'], $newStock);
-            $db->setStock($item['product_id'], $newStock);
+            $wc->updateStock((int) $item['wc_product_id'], (int) $current['stock_qty']);
+            $db->touchWcSyncedAt($item['product_id']);
             $db->logSync('push', $item['product_id'], 'Stock pushed after sale #' . $saleId);
         } catch (Throwable $e) {
             $pushErrors[] = $item['name'] . ': ' . $e->getMessage();

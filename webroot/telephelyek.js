@@ -32,7 +32,7 @@ function renderLocations() {
     locationsBody.innerHTML = allLocations.length ? allLocations.map(l => `
         <tr>
             <td>${escapeHtml(l.name)}</td>
-            <td>${l.address || '—'}</td>
+            <td>${escapeHtml(l.address || '—')}</td>
             <td>${Number(l.is_default) ? '★' : ''}</td>
             <td><button class="edit-btn" data-id="${l.id}">Módosítás</button></td>
         </tr>

@@ -21,7 +21,8 @@ if (time() < $dueAt) {
 
 try {
     $wc = new WooCommerceClient($config['woocommerce']);
-    $products = $wc->fetchAllProducts();
+    $result = $wc->fetchAllProducts();
+    $products = $result['products'];
 
     $imported = 0;
     $skipped = 0;
@@ -36,7 +37,7 @@ try {
     }
     $db->commit();
 
-    $summary = "$imported termék frissítve, $skipped kihagyva";
+    $summary = "$imported termék frissítve, $skipped kihagyva" . ($result['truncated'] ? ' — FIGYELEM: a katalógus nagyobb 5000 tételnél, nem lett mind feldolgozva' : '');
     $settings->save([
         'last_auto_sync_at'      => date('c'),
         'last_auto_sync_summary' => $summary,

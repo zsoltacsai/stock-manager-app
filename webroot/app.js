@@ -69,9 +69,9 @@ let renderPaymentMethodOptions = () => {};
 
     renderPaymentMethodOptions = function () {
         list.innerHTML = PAYMENT_METHODS.map(m => `
-            <button type="button" class="pm-select-option" data-value="${m.value}" role="option">
+            <button type="button" class="pm-select-option" data-value="${escapeHtml(m.value)}" role="option">
                 <span class="pm-select-icon">${pmSvg(m)}</span>
-                <span>${m.value}</span>
+                <span>${escapeHtml(m.value)}</span>
             </button>
         `).join('');
     };

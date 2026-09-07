@@ -101,7 +101,7 @@ function renderPreview(data) {
         warnings += `<p class="feedback warn">${s.duplicate_barcodes} vonalkód többször szerepel a fájlban — importáláskor a fájlban utoljára szereplő érték marad meg.</p>`;
     }
     if (data.unmatched_fields && data.unmatched_fields.length) {
-        warnings += `<p class="feedback warn">Nem található oszlop ehhez: ${data.unmatched_fields.join(', ')} — ezek a mezők üresen maradnak.</p>`;
+        warnings += `<p class="feedback warn">Nem található oszlop ehhez: ${escapeHtml(data.unmatched_fields.join(', '))} — ezek a mezők üresen maradnak.</p>`;
     }
     warningsBox.innerHTML = warnings;
 

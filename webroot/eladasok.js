@@ -91,7 +91,7 @@ async function openDetail(id) {
 
         const pastReturnsHtml = pastReturns.length ? `
             <p class="muted" style="margin-top:14px;">Korábbi visszáruk:</p>
-            ${pastReturns.map(r => `<div class="muted" style="font-size:12px;">${r.created_at} — ${fmt(r.total_refund)} visszatérítve${r.reason ? ' (' + r.reason + ')' : ''}${r.credit_invoice_number ? ', jóváíró számla: ' + r.credit_invoice_number : ''}</div>`).join('')}
+            ${pastReturns.map(r => `<div class="muted" style="font-size:12px;">${r.created_at} — ${fmt(r.total_refund)} visszatérítve${r.reason ? ' (' + escapeHtml(r.reason) + ')' : ''}${r.credit_invoice_number ? ', jóváíró számla: ' + escapeHtml(r.credit_invoice_number) : ''}</div>`).join('')}
         ` : '';
 
         detailContent.innerHTML = `
@@ -124,7 +124,10 @@ async function openDetail(id) {
             document.querySelectorAll('.return-qty-cell, .return-qty-header').forEach(el => el.classList.remove('hidden'));
         });
 
-        document.getElementById('return-submit-btn').addEventListener('click', async () => {
+        document.getElementById('return-submit-btn').addEventListener('click', async (e) => {
+            const submitBtn = e.currentTarget;
+            if (submitBtn.disabled) return;
+
             const items = Array.from(document.querySelectorAll('.return-qty-input'))
                 .map(input => ({ sale_item_id: Number(input.dataset.saleItemId), qty: parseInt(input.value, 10) || 0 }))
                 .filter(i => i.qty > 0);
@@ -135,6 +138,7 @@ async function openDetail(id) {
                 returnFeedback.className = 'modal-feedback error';
                 return;
             }
+            submitBtn.disabled = true;
             returnFeedback.textContent = 'Feldolgozás...';
             returnFeedback.className = 'modal-feedback';
             try {
@@ -163,6 +167,7 @@ async function openDetail(id) {
             } catch (err) {
                 returnFeedback.textContent = 'Hiba: ' + err.message;
                 returnFeedback.className = 'modal-feedback error';
+                submitBtn.disabled = false;
             }
         });
     } catch (err) {

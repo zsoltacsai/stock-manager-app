@@ -835,7 +835,18 @@ class Database
     {
         $existing = $this->findProductByWcId((int) $p['wc_product_id']);
         if (!$existing && !empty($p['barcode'])) {
-            $existing = $this->findProductByBarcode($p['barcode']);
+            $byBarcode = $this->findProductByBarcode($p['barcode']);
+            // A vonalkód-egyezés csak akkor számít biztonságos párosításnak,
+            // ha a helyi termék MÉG NINCS másik WooCommerce termékhez kötve —
+            // ha már van (pl. két különböző WC termék véletlenül azonos
+            // vonalkóddal), a szinkron ne írja át csendben a meglévő
+            // kapcsolatot egy másikra, mert az mindkét oldalon összekutyulhatja
+            // az adatokat. Ilyenkor inkább kihagyjuk, és naplózzuk a ütközést.
+            if ($byBarcode && !empty($byBarcode['wc_product_id']) && (int) $byBarcode['wc_product_id'] !== (int) $p['wc_product_id']) {
+                $this->logSync('pull', (int) $byBarcode['id'], "Vonalkód-ütközés: '{$p['name']}' (WC #{$p['wc_product_id']}) ugyanazt a vonalkódot használja, mint a már WC #{$byBarcode['wc_product_id']}-hoz kötött '{$byBarcode['name']}' — kihagyva.");
+                return;
+            }
+            $existing = $byBarcode;
         }
 
         // Ha egy meglévő terméknél ki van kapcsolva a WooCommerce-szinkron
@@ -911,6 +922,20 @@ class Database
             UPDATE products SET stock_qty = :qty, updated_at = :now, wc_synced_at = :now WHERE id = :id
         ');
         $stmt->execute([':qty' => $qty, ':now' => date('c'), ':id' => $productId]);
+    }
+
+    /**
+     * Csak a "mikor szinkronizáltunk utoljára a WooCommerce felé" jelzőt
+     * frissíti, a stock_qty-t nem — arra az esetre, amikor a helyi
+     * készlet már helyesen áll (relatív decrementStock/incrementStock
+     * történt), és csak a WC-push megtörténtét kell jelezni, anélkül
+     * hogy egy elavult, abszolút értékkel felülírnánk a közben
+     * megváltozott készletet.
+     */
+    public function touchWcSyncedAt(int $productId): void
+    {
+        $stmt = $this->pdo->prepare('UPDATE products SET wc_synced_at = :now WHERE id = :id');
+        $stmt->execute([':now' => date('c'), ':id' => $productId]);
     }
 
     public function insertSale(
@@ -1857,9 +1882,23 @@ class Database
         return ['ok' => true, 'coupon' => $coupon, 'discount' => $discount];
     }
 
-    public function incrementCouponUsage(int $couponId): void
+    /**
+     * Atomikus, feltételes növelés — ugyanaz a race-védelem, mint
+     * redeemGiftCard()-nál: a WHERE a jelenlegi times_used-ot a
+     * usage_limit-hez képest ellenőrzi UGYANABBAN a lépésben, amiben
+     * növeli is, hogy két majdnem egyidejű eladás ne tudja mindkettő
+     * sikeresen felhasználni egy már az utolsó alkalomnál tartó kupont.
+     * Igaz-t ad vissza, ha a növelés megtörtént.
+     */
+    public function incrementCouponUsage(int $couponId): bool
     {
-        $this->pdo->prepare('UPDATE coupons SET times_used = times_used + 1 WHERE id = ?')->execute([$couponId]);
+        $stmt = $this->pdo->prepare('
+            UPDATE coupons
+            SET times_used = times_used + 1
+            WHERE id = :id AND (usage_limit IS NULL OR times_used < usage_limit)
+        ');
+        $stmt->execute([':id' => $couponId]);
+        return $stmt->rowCount() > 0;
     }
 
     // ---------------------------------------------------------------
@@ -1920,17 +1959,36 @@ class Database
         return ['ok' => true, 'gift_card' => $card, 'redeemable' => $redeemable];
     }
 
+    /**
+     * Atomikus, feltételes egyenleg-levonás — az UPDATE WHERE-je a
+     * jelenlegi (nem egy korábban lekérdezett, esetleg elavult) egyenleget
+     * ellenőrzi ugyanabban a lépésben, amiben le is vonja. Enélkül két
+     * majdnem egyidejű eladás ugyanazon utalvánnyal mindkettő ugyanazt a
+     * (még csökkentetlen) egyenleget olvashatná ki érvényesítéskor, és az
+     * egyik levonás felülírná/eltüntetné a másikét (lost update) — pontosan
+     * ugyanaz a hibaosztály, mint amit a WooCommerce-készletszinkronnál már
+     * javítottunk. Ha időközben más már elköltötte a szükséges összeget,
+     * ez itt 0 érintett sorral tér vissza, és NEM von le semmit.
+     */
     public function redeemGiftCard(int $giftCardId, float $amount, ?int $saleId): float
     {
-        $card = $this->pdo->prepare('SELECT current_balance FROM gift_cards WHERE id = ?');
-        $card->execute([$giftCardId]);
-        $current = (float) $card->fetchColumn();
-        $newBalance = max(0, round($current - $amount, 2));
-        $actualDelta = $newBalance - $current;
+        $amount = round($amount, 2);
+        $stmt = $this->pdo->prepare('
+            UPDATE gift_cards
+            SET current_balance = ROUND(current_balance - :amount, 2)
+            WHERE id = :id AND current_balance >= :amount2
+        ');
+        $stmt->execute([':amount' => $amount, ':id' => $giftCardId, ':amount2' => $amount]);
+        $applied = $stmt->rowCount() > 0;
 
-        $this->pdo->prepare('UPDATE gift_cards SET current_balance = ? WHERE id = ?')->execute([$newBalance, $giftCardId]);
-        $this->pdo->prepare('INSERT INTO gift_card_transactions (gift_card_id, sale_id, amount_delta, note, created_at) VALUES (?, ?, ?, ?, ?)')
-            ->execute([$giftCardId, $saleId, $actualDelta, 'Beváltva' . ($saleId ? " eladás #$saleId-nél" : ''), date('Y-m-d H:i:s')]);
+        $balanceStmt = $this->pdo->prepare('SELECT current_balance FROM gift_cards WHERE id = ?');
+        $balanceStmt->execute([$giftCardId]);
+        $newBalance = (float) $balanceStmt->fetchColumn();
+
+        if ($applied) {
+            $this->pdo->prepare('INSERT INTO gift_card_transactions (gift_card_id, sale_id, amount_delta, note, created_at) VALUES (?, ?, ?, ?, ?)')
+                ->execute([$giftCardId, $saleId, -$amount, 'Beváltva' . ($saleId ? " eladás #$saleId-nél" : ''), date('Y-m-d H:i:s')]);
+        }
 
         return $newBalance;
     }
@@ -2033,7 +2091,23 @@ class Database
     // Részleges visszáru / sztornó (returns)
     // ---------------------------------------------------------------
 
-    public function processReturn(int $saleId, array $items, string $reason, ?int $staffId, float $totalRefund): int
+    /**
+     * @param array $sale a teljes, eredeti eladás-rekord (getSaleWithItems),
+     *        hogy a kupon/hűségpont/ajándékutalvány visszapörgetéséhez ne
+     *        kelljen újra lekérdezni
+     *
+     * FONTOS, SZÁNDÉKOS KORLÁT: a kupon-felhasználás, a hűségpontok és az
+     * ajándékutalvány-egyenleg VISSZAPÖRGETÉSE csak akkor történik meg, ha
+     * ez a visszáru az eladás ÖSSZES tételét lefedi (azaz a teljes rendelés
+     * visszavételre kerül, ezzel is számolva). Részleges (csak néhány
+     * tételre kiterjedő) visszárunál ez szándékosan kimarad — egy kupon
+     * vagy hűségpont-kedvezmény arányos szétosztása tételek között
+     * félrevezető lenne, és könnyen saját maga hibaforrásává válna. Ez azt
+     * jelenti, hogy egy részleges visszáru után a kupon "elhasználtnak"
+     * marad, és a hűségpontok nem módosulnak — ez dokumentált,
+     * megfontolt korlát, nem hiba.
+     */
+    public function processReturn(int $saleId, array $items, string $reason, ?int $staffId, float $totalRefund, array $sale = []): int
     {
         $this->beginTransaction();
         try {
@@ -2058,11 +2132,71 @@ class Database
                 }
             }
 
+            if ($sale && $this->isSaleNowFullyReturned($saleId, $sale)) {
+                $this->reverseSaleBenefits($saleId, $sale);
+            }
+
             $this->commit();
             return $returnId;
         } catch (Throwable $e) {
             $this->rollBack();
             throw $e;
+        }
+    }
+
+    private function isSaleNowFullyReturned(int $saleId, array $sale): bool
+    {
+        $returned = $this->getReturnedQuantitiesForSale($saleId);
+        foreach ($sale['items'] as $si) {
+            if (($returned[(int) $si['id']] ?? 0) < (int) $si['qty']) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * A teljesen visszavett eladáshoz tartozó kedvezmények/jóváírások
+     * visszapörgetése — hívja: processReturn(), csak teljes visszárunál.
+     */
+    private function reverseSaleBenefits(int $saleId, array $sale): void
+    {
+        if (!empty($sale['customer_id'])) {
+            $customerId = (int) $sale['customer_id'];
+            if ((int) $sale['loyalty_points_earned'] > 0) {
+                $this->applyLoyaltyPoints($customerId, -(int) $sale['loyalty_points_earned'], $saleId, "Visszavonva teljes visszáru miatt (eladás #$saleId)");
+            }
+            if ((int) $sale['loyalty_points_redeemed'] > 0) {
+                $this->applyLoyaltyPoints($customerId, (int) $sale['loyalty_points_redeemed'], $saleId, "Visszaadva teljes visszáru miatt (eladás #$saleId)");
+            }
+            // A total_spent alapja az eladáskor a kedvezmények UTÁN, de az
+            // ajándékutalvány-beváltás ELŐTTI összeg volt (lásd sale.php
+            // loyaltyBasisTotal) — ezt rekonstruáljuk vissza a tárolt
+            // total + gift_card_redeemed összegéből.
+            $loyaltyBasisTotal = (float) $sale['total'] + (float) $sale['gift_card_redeemed'];
+            $this->addCustomerSpend($customerId, -round($loyaltyBasisTotal, 2));
+        }
+
+        if (!empty($sale['coupon_id'])) {
+            $this->pdo->prepare('UPDATE coupons SET times_used = MAX(0, times_used - 1) WHERE id = ?')
+                ->execute([(int) $sale['coupon_id']]);
+        }
+
+        if ((float) ($sale['gift_card_redeemed'] ?? 0) > 0) {
+            $cardStmt = $this->pdo->prepare('
+                SELECT gift_card_id FROM gift_card_transactions
+                WHERE sale_id = ? AND amount_delta < 0
+                ORDER BY id DESC LIMIT 1
+            ');
+            $cardStmt->execute([$saleId]);
+            $giftCardId = $cardStmt->fetchColumn();
+            if ($giftCardId) {
+                $amount = round((float) $sale['gift_card_redeemed'], 2);
+                $this->pdo->prepare('UPDATE gift_cards SET current_balance = ROUND(current_balance + ?, 2) WHERE id = ?')
+                    ->execute([$amount, (int) $giftCardId]);
+                $this->pdo->prepare('INSERT INTO gift_card_transactions (gift_card_id, sale_id, amount_delta, note, created_at) VALUES (?, ?, ?, ?, ?)')
+                    ->execute([(int) $giftCardId, $saleId, $amount, "Visszatérítve teljes visszáru miatt (eladás #$saleId)", date('Y-m-d H:i:s')]);
+            }
         }
     }
 
@@ -2156,16 +2290,35 @@ class Database
             ->execute([$countedQty, $stockTakeId, $productId]);
     }
 
-    public function completeStockTake(int $id, bool $applyCorrections): void
+    /**
+     * @return array<int, array{id:int, stock_qty:int, wc_product_id:?int, sync_to_woocommerce:int, name:string}>
+     *         a leltár által ténylegesen módosított (WC-szinkronra jogosult) termékek —
+     *         a hívó (api/stock-take-complete.php) ez alapján küldi ki a WooCommerce-push-t,
+     *         mert a leltári korrekció önmagában NEM szinkronizál automatikusan.
+     */
+    public function completeStockTake(int $id, bool $applyCorrections): array
     {
+        $updated = [];
         $this->beginTransaction();
         try {
             if ($applyCorrections) {
                 $stmt = $this->pdo->prepare('SELECT product_id, counted_qty FROM stock_take_items WHERE stock_take_id = ? AND counted_qty IS NOT NULL');
                 $stmt->execute([$id]);
                 $updateStmt = $this->pdo->prepare('UPDATE products SET stock_qty = ? WHERE id = ?');
+                $selectStmt = $this->pdo->prepare('SELECT id, stock_qty, wc_product_id, sync_to_woocommerce, name FROM products WHERE id = ?');
                 foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
                     $updateStmt->execute([$row['counted_qty'], $row['product_id']]);
+                    $selectStmt->execute([$row['product_id']]);
+                    $product = $selectStmt->fetch(PDO::FETCH_ASSOC);
+                    if ($product && $product['wc_product_id'] && !empty($product['sync_to_woocommerce'])) {
+                        $updated[] = [
+                            'id' => (int) $product['id'],
+                            'stock_qty' => (int) $product['stock_qty'],
+                            'wc_product_id' => (int) $product['wc_product_id'],
+                            'sync_to_woocommerce' => (int) $product['sync_to_woocommerce'],
+                            'name' => $product['name'],
+                        ];
+                    }
                 }
             }
             $this->pdo->prepare('UPDATE stock_takes SET completed_at = ? WHERE id = ?')->execute([date('Y-m-d H:i:s'), $id]);
@@ -2174,6 +2327,7 @@ class Database
             $this->rollBack();
             throw $e;
         }
+        return $updated;
     }
 
     public function getDailyRevenueTrend(int $days = 30): array

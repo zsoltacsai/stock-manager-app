@@ -55,7 +55,7 @@ function renderReceipt(data) {
     `).join('');
 
     const logoHtml = receipt.show_logo && receipt.logo_url
-        ? `<img src="${receipt.logo_url}" alt="Logó" style="max-width:80px; max-height:80px; display:block; margin:0 auto 10px;">`
+        ? `<img src="${escapeHtml(receipt.logo_url)}" alt="Logó" style="max-width:80px; max-height:80px; display:block; margin:0 auto 10px;">`
         : '';
 
     const headerHtml = receipt.header_lines.length

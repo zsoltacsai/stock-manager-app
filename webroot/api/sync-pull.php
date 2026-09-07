@@ -5,7 +5,8 @@ require __DIR__ . '/_bootstrap.php';
 
 try {
     $wc = new WooCommerceClient($config['woocommerce']);
-    $products = $wc->fetchAllProducts();
+    $result = $wc->fetchAllProducts();
+    $products = $result['products'];
 
     $imported = 0;
     $skipped  = 0;
@@ -22,7 +23,14 @@ try {
     }
     $db->commit();
 
-    send_json(['imported' => $imported, 'skipped' => $skipped, 'total_from_wc' => count($products)]);
+    if ($result['truncated']) {
+        $db->logSync('pull', null, 'FIGYELEM: a WooCommerce termékkatalógus nagyobb, mint 5000 tétel — a szinkron nem dolgozta fel a teljeset.');
+    }
+
+    send_json([
+        'imported' => $imported, 'skipped' => $skipped, 'total_from_wc' => count($products),
+        'truncated' => $result['truncated'],
+    ]);
 } catch (Throwable $e) {
     $db->rollBack();
     send_json(['error' => $e->getMessage()], 500);

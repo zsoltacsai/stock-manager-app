@@ -207,12 +207,14 @@ giftCardModalClose.addEventListener('click', () => giftCardModal.classList.remov
 giftCardHistoryClose.addEventListener('click', () => giftCardHistoryModal.classList.remove('open'));
 
 giftCardModalSave.addEventListener('click', async () => {
+    if (giftCardModalSave.disabled) return;
     const balance = parseFloat(gcBalance.value.replace(',', '.'));
     if (!gcCode.value.trim() || isNaN(balance) || balance <= 0) {
         giftCardModalFeedback.textContent = 'A kód és egy 0-nál nagyobb egyenleg megadása kötelező.';
         giftCardModalFeedback.className = 'modal-feedback error';
         return;
     }
+    giftCardModalSave.disabled = true;
     giftCardModalFeedback.textContent = 'Kiállítás...';
     giftCardModalFeedback.className = 'modal-feedback';
     try {
@@ -233,6 +235,8 @@ giftCardModalSave.addEventListener('click', async () => {
     } catch (err) {
         giftCardModalFeedback.textContent = 'Hiba: ' + err.message;
         giftCardModalFeedback.className = 'modal-feedback error';
+    } finally {
+        giftCardModalSave.disabled = false;
     }
 });
 

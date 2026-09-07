@@ -29,10 +29,18 @@ class WooCommerceClient
         $this->request('GET', '/products', ['per_page' => 1]);
     }
 
+    /**
+     * @return array{products: array, truncated: bool} — a `truncated` igaz,
+     *         ha a WooCommerce oldali termékkatalógus nagyobb, mint amit a
+     *         lapozási korlát (50 oldal × 100 tétel = 5000 termék) lefed;
+     *         ilyenkor a hívónak jeleznie kell a felhasználó felé, hogy a
+     *         szinkron nem a teljes katalógust dolgozta fel.
+     */
     public function fetchAllProducts(): array
     {
         $all = [];
         $page = 1;
+        $truncated = false;
 
         do {
             $batch = $this->request('GET', '/products', [
@@ -44,10 +52,14 @@ class WooCommerceClient
                 $all[] = $this->normaliseProduct($p);
             }
 
+            $fullPage = count($batch) === 100;
             $page++;
-        } while (count($batch) === 100 && $page <= 50);
+            if ($fullPage && $page > 50) {
+                $truncated = true;
+            }
+        } while ($fullPage && $page <= 50);
 
-        return $all;
+        return ['products' => $all, 'truncated' => $truncated];
     }
 
     public function getProduct(int $wcProductId): ?array
@@ -76,13 +88,15 @@ class WooCommerceClient
     {
         $all = [];
         $page = 1;
+        $fullPage = false;
         do {
             $batch = $this->request('GET', '/products/brands', ['per_page' => 100, 'page' => $page]);
             foreach ($batch as $b) {
                 $all[] = ['id' => (int) $b['id'], 'name' => $b['name'] ?? ''];
             }
+            $fullPage = count($batch) === 100;
             $page++;
-        } while (count($batch) === 100 && $page <= 20);
+        } while ($fullPage && $page <= 20);
 
         return $all;
     }

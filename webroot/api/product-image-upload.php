@@ -65,13 +65,9 @@ if (!imagewebp($target, $destination, 85)) {
 }
 imagedestroy($target);
 
-// A korábbi kép törlése, ha meg van adva a termék azonosítója.
-$productId = !empty($_POST['product_id']) ? (int) $_POST['product_id'] : null;
-if ($productId) {
-    $existingProduct = $db->findProductById($productId);
-    if ($existingProduct && !empty($existingProduct['image_filename'])) {
-        @unlink($productsDir . '/' . basename($existingProduct['image_filename']));
-    }
-}
-
+// A korábbi kép fájlját itt SZÁNDÉKOSAN nem töröljük — csak akkor
+// szabadna törölni, ha a termék mentése ténylegesen megtörtént és az új
+// képre lett állítva (lásd api/product-save.php), különben egy "Mégse"
+// vagy sikertelen mentés esetén a régi kép véglegesen elveszne, mielőtt
+// bármi ténylegesen lecserélte volna.
 send_json(['image_filename' => $filename, 'image_url' => 'assets/products/' . $filename . '?v=' . time()]);

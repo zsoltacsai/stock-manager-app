@@ -2,6 +2,14 @@
 
 class CsvImporter
 {
+    // Egy valós termékkatalógus ennél jóval kisebb szokott lenni — ez a
+    // korlát a feldolgozási idő/memória felső határát adja meg egy
+    // (a fájlméret-korlátot amúgy betartó, de rendkívül sok rövid sorból
+    // álló) szélsőséges bemenetre, mielőtt a sor-soronkénti normalizálás
+    // (ProductRowNormalizer, majd az import-preview.php-beli összesítés)
+    // egyáltalán elindulna.
+    private const MAX_ROWS = 50000;
+
     public static function ensureCsv(string $path): string
     {
         $handle = fopen($path, 'rb');
@@ -136,6 +144,10 @@ class CsvImporter
         while (($cols = fgetcsv($stream, 0, $delimiter)) !== false) {
             if (count($cols) === 1 && trim((string) $cols[0]) === '') {
                 continue;
+            }
+            if (count($rows) >= self::MAX_ROWS) {
+                fclose($stream);
+                throw new RuntimeException('A fájl túl sok sort tartalmaz (max. ' . number_format(self::MAX_ROWS, 0, '', ' ') . ' sor importálható egyszerre).');
             }
             $row = [];
             foreach ($indexToField as $idx => $internal) {

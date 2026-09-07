@@ -9,6 +9,17 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     send_json(['error' => 'POST only'], 405);
 }
 
+// Ugyanaz a "vezetői jogszint kell" szabály, mint a mentés-készítésnél/
+// listázásnál (backup-now.php, backup-list.php) — korábban ez a végpont
+// KIMARADT ebből, és kizárólag az alább következő, dolgozói PIN-rendszer
+// meglétéhez KÖTÖTT friss-PIN ellenőrzésre támaszkodott. Egy megosztott
+// jelszavas (dolgozói PIN nélküli) telepítésen ez azt jelentette, hogy
+// BÁRKI, aki be van jelentkezve az appba, jogosultság-ellenőrzés nélkül
+// visszavonhatatlanul felülírhatta az éles adatbázist. A require_admin()
+// itt AZONOS módon viselkedik (no-op, ha egyáltalán nincs dolgozói PIN-
+// rendszer beállítva) — a lenti friss-PIN ellenőrzés ilyenkor is megmarad.
+require_admin($db);
+
 $backupDir = __DIR__ . '/../../data/backups';
 $manager = new BackupManager($config['db'], $backupDir);
 $settings = new Settings(__DIR__ . '/../../data/settings.json');

@@ -25,6 +25,18 @@ if (empty($_FILES['file']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK) {
     send_json(['error' => 'Nem érkezett feltöltött fájl.'], 400);
 }
 
+// A CSV/XLS beolvasás a teljes fájlt memóriába tölti (lásd
+// CsvImporter::readRows() file_get_contents()-e) — enélkül a korlát nélkül
+// egy szokatlanul nagy feltöltött fájl felesleges memória-/lemezterhelést
+// okozhatna. Egy valós termékkatalógus-export ennél jóval kisebb szokott
+// lenni; az .xlsx-eknek emellett saját, tömörítés utáni méretkorlátjuk is
+// van (lásd XlsxReader::MAX_ENTRY_UNCOMPRESSED_BYTES).
+const IMPORT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+if ($_FILES['file']['size'] > IMPORT_MAX_UPLOAD_BYTES) {
+    @unlink($_FILES['file']['tmp_name']);
+    send_json(['error' => 'A feltöltött fájl túl nagy (max. 25 MB).'], 400);
+}
+
 $importDir = __DIR__ . '/../../data/imports';
 @mkdir($importDir, 0775, true);
 

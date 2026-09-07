@@ -15,6 +15,29 @@ $paymentMethod = $input['payment_method'] ?? 'Készpénz';
 $customerId = !empty($input['customer_id']) ? (int) $input['customer_id'] : null;
 $redeemPoints = max(0, (int) ($input['redeem_points'] ?? 0));
 $locationId = !empty($input['location_id']) ? (int) $input['location_id'] : null;
+// Kliens által generált, a kosár egy adott "leadási kísérletéhez" tartozó
+// kulcs — dupla kattintás, hálózati újrapróbálkozás, vagy egy elveszett
+// válasz utáni manuális újraküldés esetén ez zárja ki, hogy ugyanaz a
+// logikai eladás kétszer kerüljön rögzítésre (duplán csökkentett
+// készlet, duplán jóváírt hűségpont, duplán kiállított számla stb.).
+// A tényleges atomikus védelmet a sales.idempotency_key UNIQUE indexe
+// adja (lásd Database::insertSale()), nem ez az előzetes ellenőrzés
+// önmagában — ez csak a GYORS útvonal egy már ismert kulcshoz.
+$idempotencyKey = trim((string) ($input['idempotency_key'] ?? ''));
+// Az idempotencia-kulcs önmagában csak azt zárja ki, hogy UGYANAZ a kulcs
+// kétszer hozzon létre eladást — azt nem, hogy valaki (hibás kliens, vagy
+// egy közvetlen API-hívást indító szkript) ugyanazt a kulcsot egy MÁSIK,
+// ténylegesen eltérő kéréssel küldje be. Az ujjlenyomat ezt a második
+// esetet zárja ki — lásd build_sale_fingerprint() és
+// Database::migrateV18SaleIdempotencyFingerprint() docblockja.
+$idempotencyFingerprint = $idempotencyKey !== '' ? build_sale_fingerprint($input) : null;
+
+if ($idempotencyKey !== '') {
+    $existingSale = $db->findSaleByIdempotencyKey($idempotencyKey);
+    if ($existingSale) {
+        match_or_reject_idempotent_replay($existingSale, $idempotencyFingerprint); // sose tér vissza — vagy 200 visszajátszás, vagy 409
+    }
+}
 
 if (empty($cart)) {
     send_json(['error' => 'Cart is empty'], 400);
@@ -188,6 +211,7 @@ if ($giftCardCode !== '') {
 }
 
 $giftCardNewBalance = null;
+$newPointsBalance = null;
 $claimError = null;
 
 $db->beginTransaction();
@@ -220,7 +244,9 @@ try {
             $coupon['id'] ?? null,
             $couponDiscount,
             $giftCardRedeemed,
-            Auth::currentStaffId()
+            Auth::currentStaffId(),
+            $idempotencyKey,
+            $idempotencyFingerprint
         );
         foreach ($lineItems as $item) {
             $db->insertSaleItem($saleId, $item);
@@ -239,10 +265,56 @@ try {
             $giftCardNewBalance = $db->recordGiftCardRedemption((int) $giftCard['id'], $giftCardRedeemed, $saleId);
         }
 
+        // A hűségpont-JÓVÁÍRÁS és az élettartam-elköltés frissítése
+        // SZÁNDÉKOSAN ugyanabban a tranzakcióban történik, mint maga az
+        // eladás rögzítése/készletcsökkentés/beváltás — korábban ez a két
+        // hívás a tranzakción KÍVÜL, külön auto-commit lépésként futott,
+        // ami azt jelentette, hogy egy a commit() UTÁN, de e két hívás
+        // ELŐTT bekövetkező folyamat-összeomlás (fatal error, memória-
+        // kifogyás, kényszerített leállás) az eladást sikeresként
+        // rögzítve hagyta, miközben a vásárló ténylegesen sose kapta meg
+        // a jóváírt pontjait/elköltés-növekményét — és mivel az
+        // idempotencia-visszajátszás a MÁR PERZISZTÁLT sales-sorból épül
+        // fel, egy újrapróbálkozás sem pótolta volna ezt utólag. Az
+        // applyLoyaltyPoints() (lásd ott) már önmagában is atomikus
+        // relatív UPDATE, tehát a tranzakción belüli, egyéb sorokkal
+        // (stock, kupon, ajándékutalvány) egy blokkban való véglegesítés
+        // itt NEM versenyhelyzet-védelmi, hanem TARTÓSSÁGI (durability)
+        // célt szolgál: vagy MINDEN hatás rögzül, vagy egy sem.
+        if ($customer) {
+            if ($pointsEarned > 0) {
+                $newPointsBalance = $db->applyLoyaltyPoints($customerId, $pointsEarned, $saleId, "Jóváírva eladás #$saleId-nél");
+            } else {
+                // Friss olvasás kell (nem a tranzakció ELŐTTI $customer
+                // pillanatkép) — ha ebben az eladásban pontbeváltás is
+                // történt (tryClaimLoyaltyPoints fentebb, ugyanebben a
+                // tranzakcióban), a $customer változó még a beváltás
+                // ELŐTTI, elavult egyenleget tartalmazná.
+                $newPointsBalance = (int) ($db->findCustomerById($customerId)['loyalty_points'] ?? 0);
+            }
+            $db->addCustomerSpend($customerId, round($loyaltyBasisTotal, 2));
+        }
+
         $db->commit();
     }
 } catch (Throwable $e) {
     $db->rollBack();
+    // Ha ez éppen az idempotencia-kulcs UNIQUE-ütközése, az azt jelenti,
+    // hogy egy VERSENYHELYZETBEN futó másik kérés (nem egy korábbi,
+    // időben eltolt újrapróbálkozás, hanem egy szinte pontosan
+    // egyidejű másik kérés ugyanazzal a kulccsal) már megnyerte a
+    // beszúrást — ezt itt, ATOMIKUSAN garantálja maga az adatbázis
+    // (UNIQUE INDEX), nem egy "ellenőrizd, majd írd be" mintázat. A fenti,
+    // kérés eleji findSaleByIdempotencyKey() ezt csak a GYAKORI, nem
+    // versenyhelyzetes esetben (időben eltolt újrapróbálkozás) kapja el —
+    // itt a valóban egyidejű esetet. A győztes eredményét adjuk vissza,
+    // nem hibát.
+    if ($idempotencyKey !== '' && str_contains($e->getMessage(), 'idempotency_key')) {
+        $winner = $db->findSaleByIdempotencyKey($idempotencyKey);
+        if ($winner) {
+            match_or_reject_idempotent_replay($winner, $idempotencyFingerprint); // sose tér vissza
+        }
+    }
     send_json(['error' => 'Az eladás rögzítése sikertelen: ' . $e->getMessage()], 500);
 }
 
@@ -250,50 +322,54 @@ if ($claimError !== null) {
     send_json(['error' => $claimError], 409);
 }
 
-$newPointsBalance = null;
-if ($customer) {
-    if ($pointsEarned > 0) {
-        $newPointsBalance = $db->applyLoyaltyPoints($customerId, $pointsEarned, $saleId, "Jóváírva eladás #$saleId-nél");
-    } else {
-        $newPointsBalance = $db->findCustomerById($customerId)['loyalty_points'] ?? null;
-    }
-    $db->addCustomerSpend($customerId, round($loyaltyBasisTotal, 2));
-}
-
 $invoiceResult = null;
 
 if ($buyer !== null) {
-    $szamlazz = new SzamlazzClient($config['szamlazz']);
+    // Atomikus foglalás a Számlázz.hu hívás ELŐTT — lásd
+    // Database::tryClaimInvoiceIssuance() docblockja. Ezen a ponton ez
+    // csak elméleti védelem (ez a sale most, ebben a kérésben jött
+    // létre, tehát MÉG SENKI más nem tudhat róla) — a gyakorlati esete
+    // ennek a webshop-order-invoice.php-nál van (egy MÁR LÉTEZŐ eladás
+    // utólagos, esetleg duplán elindított számlázásakor). Itt a
+    // konzisztencia kedvéért ugyanazt az utat használjuk.
+    if (!$db->tryClaimInvoiceIssuance($saleId)) {
+        $invoiceResult = ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => 'A számla kiállítása már folyamatban van.'];
+    } else {
+        $szamlazz = new SzamlazzClient($config['szamlazz']);
 
-    // A lineItems[]['unit_price'] a kedvezmény ELŐTTI (kosár-összeállításkori)
-    // egységárat tartalmazza — enélkül az arányosítás nélkül a Számlázz.hu
-    // felé mindig a teljes, kedvezmény nélküli összeg menne ki, akkor is, ha
-    // kupon/hűségpont/hűségszint/ajándékutalvány miatt a vevő ténylegesen
-    // kevesebbet fizetett (lásd sales.total). Ugyanaz az arányosítási minta,
-    // mint getDailySummary()-ban és api/return-create.php-ban.
-    $invoiceDiscountRatio = $subtotal > 0 ? min(1, $total / $subtotal) : 1.0;
+        // A lineItems[]['unit_price'] a kedvezmény ELŐTTI (kosár-összeállításkori)
+        // egységárat tartalmazza — enélkül az arányosítás nélkül a Számlázz.hu
+        // felé mindig a teljes, kedvezmény nélküli összeg menne ki, akkor is, ha
+        // kupon/hűségpont/hűségszint/ajándékutalvány miatt a vevő ténylegesen
+        // kevesebbet fizetett (lásd sales.total). Ugyanaz az arányosítási minta,
+        // mint getDailySummary()-ban és api/return-create.php-ban.
+        $invoiceDiscountRatio = $subtotal > 0 ? min(1, $total / $subtotal) : 1.0;
 
-    $invoiceItems = array_map(fn($i) => [
-        'name'             => $i['name'],
-        'qty'              => $i['qty'],
-        'unit_price_gross' => round($i['unit_price'] * $invoiceDiscountRatio, 2),
-        'vat_rate'         => $i['vat_rate'],
-    ], $lineItems);
+        $invoiceItems = array_map(fn($i) => [
+            'name'             => $i['name'],
+            'qty'              => $i['qty'],
+            'unit_price_gross' => round($i['unit_price'] * $invoiceDiscountRatio, 2),
+            'vat_rate'         => $i['vat_rate'],
+        ], $lineItems);
 
-    $languageOverride = $input['invoice_language'] ?? null;
+        $languageOverride = $input['invoice_language'] ?? null;
 
-    try {
-        $invoiceResult = $szamlazz->createInvoice($buyer, $invoiceItems, (string) $saleId, $languageOverride, $paymentMethod);
-    } catch (Throwable $e) {
-        $invoiceResult = ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => $e->getMessage()];
+        try {
+            $invoiceResult = $szamlazz->createInvoice($buyer, $invoiceItems, (string) $saleId, $languageOverride, $paymentMethod);
+        } catch (Throwable $e) {
+            $invoiceResult = ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => $e->getMessage()];
+        }
+
+        // attachInvoiceToSale() sikertelenség esetén is felszabadítja a
+        // fenti foglalást (invoice_claim_at = NULL), engedve egy azonnali
+        // manuális újrapróbálkozást a felületről.
+        $db->attachInvoiceToSale(
+            $saleId,
+            $invoiceResult['invoice_number'] ?? null,
+            $invoiceResult['pdf_path'] ?? null,
+            $invoiceResult['success'] ? 'completed' : 'invoice_failed'
+        );
     }
-
-    $db->attachInvoiceToSale(
-        $saleId,
-        $invoiceResult['invoice_number'] ?? null,
-        $invoiceResult['pdf_path'] ?? null,
-        $invoiceResult['success'] ? 'completed' : 'invoice_failed'
-    );
 }
 
 $pushErrors = [];
@@ -376,3 +452,134 @@ send_json([
         'new_balance' => $giftCardNewBalance,
     ] : null,
 ]);
+
+/**
+ * Egy korábban (ugyanezzel az idempotencia-kulccsal) már sikeresen
+ * feldolgozott eladáshoz tartozó válasz újraépítése, KIZÁRÓLAG a
+ * sales sor saját, már perzisztált mezőiből — nincs külön "válasz-
+ * pillanatkép" oszlop/tábla, mert minden szükséges adat már úgyis ott
+ * van a sales/sale_items rekordokban. Ha az eredeti kérés még a számla-
+ * kiállítás/WooCommerce-push "farok" feldolgozásánál tart (a sale már
+ * commit-olva van, de invoice/wc_push_errors még nem), ez akkor is egy
+ * KORREKT, csak kevésbé részletes választ ad — a legfontosabb garancia
+ * (az eladás rögzítve van, itt a sale_id/receipt_token) mindig igaz.
+ */
+function build_idempotent_replay_response(array $sale): array
+{
+    return [
+        'sale_id'        => (int) $sale['id'],
+        'receipt_token'  => $sale['receipt_token'],
+        'total'          => round((float) $sale['total'], 2),
+        'subtotal'       => null,
+        'replayed'       => true,
+        'invoice'        => !empty($sale['szamlazz_invoice_number'])
+            ? ['success' => true, 'invoice_number' => $sale['szamlazz_invoice_number'], 'pdf_path' => $sale['szamlazz_pdf_path'] ?? null, 'error' => null]
+            : (($sale['status'] ?? '') === 'invoice_failed'
+                ? ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => 'A számla kiállítása korábban sikertelen volt — nézd meg az eladást a listában, és próbáld újra onnan.']
+                : null),
+        'wc_push_errors' => [],
+        'oversold_items' => [],
+        'loyalty' => !empty($sale['customer_id']) ? [
+            'customer_id'     => (int) $sale['customer_id'],
+            'points_earned'   => (int) ($sale['loyalty_points_earned'] ?? 0),
+            'points_redeemed' => (int) ($sale['loyalty_points_redeemed'] ?? 0),
+            'new_balance'     => null,
+            'redeem_discount' => null,
+            'tier'            => null,
+            'tier_discount'   => null,
+        ] : null,
+        'coupon' => !empty($sale['coupon_id']) ? [
+            'code'     => null,
+            'discount' => (float) ($sale['coupon_discount'] ?? 0),
+        ] : null,
+        'gift_card' => (float) ($sale['gift_card_redeemed'] ?? 0) > 0 ? [
+            'code'        => null,
+            'redeemed'    => (float) $sale['gift_card_redeemed'],
+            'new_balance' => null,
+        ] : null,
+    ];
+}
+
+/**
+ * Determinisztikus "ujjlenyomat" a kérés üzletileg releváns mezőiről —
+ * NEM a nyers JSON-ból (a mezők sorrendje/esetleges extra mezők a
+ * kliensben módosulhatnak anélkül, hogy a KÉRÉS LOGIKAI TARTALMA
+ * változna), hanem egy kanonikus, rendezett tömbből képzett hash. Csak
+ * azok a mezők szerepelnek benne, amik ténylegesen befolyásolják, mi
+ * történik a szerveren (tételek/mennyiségek, kézi tételek ára/ÁFÁ-ja,
+ * vevő/számlázási adatok, fizetési mód, hűségpont-beváltás, kupon,
+ * ajándékutalvány, telephely) — a katalógustermékek ára/ÁFÁ-ja
+ * SZÁNDÉKOSAN nem szerepel itt: azt a szerver a product_id alapján, a
+ * saját adatbázisából olvassa ki, sose a kliens állításából, tehát egy
+ * eltérő kliens-oldali (figyelmen kívül hagyott) árérték nem tesz két
+ * egyébként azonos kérést "eltérő logikai kéréssé".
+ */
+function build_sale_fingerprint(array $input): string
+{
+    $cart = is_array($input['items'] ?? null) ? array_values($input['items']) : [];
+    $normalizedItems = array_map(static function ($line) {
+        $line = is_array($line) ? $line : [];
+        $isManual = !empty($line['manual']);
+        return [
+            'product_id' => isset($line['product_id']) ? (int) $line['product_id'] : null,
+            'qty'        => isset($line['qty']) ? (int) $line['qty'] : null,
+            'manual'     => $isManual,
+            // Katalógustermékeknél a NÉV/ÁR/ÁFA a szerver saját adatbázisából
+            // származik (product_id alapján) — csak a kézi tételeknél
+            // kliens-meghatározott ezek, ott viszont ténylegesen számítanak.
+            'name'       => $isManual ? (string) ($line['name'] ?? '') : null,
+            'unit_price' => $isManual && isset($line['unit_price']) ? round((float) $line['unit_price'], 2) : null,
+            'vat_rate'   => $isManual ? (string) ($line['vat_rate'] ?? '') : null,
+        ];
+    }, $cart);
+    // Stabil rendezés, hogy két, ténylegesen azonos kosár eltérő sorrenddel
+    // (pl. egy kliens-oldali újrarendezés) ne számítson eltérő kérésnek.
+    usort($normalizedItems, static fn(array $a, array $b): int =>
+        [(string) $a['product_id'], $a['name'], $a['qty']] <=> [(string) $b['product_id'], $b['name'], $b['qty']]);
+
+    $buyer = is_array($input['buyer'] ?? null) ? $input['buyer'] : null;
+    if ($buyer !== null) {
+        $buyer = array_map('strval', $buyer);
+        ksort($buyer);
+    }
+
+    $fingerprintData = [
+        'items'          => $normalizedItems,
+        'buyer'          => $buyer,
+        'payment_method' => (string) ($input['payment_method'] ?? 'Készpénz'),
+        'customer_id'    => !empty($input['customer_id']) ? (int) $input['customer_id'] : null,
+        'redeem_points'  => max(0, (int) ($input['redeem_points'] ?? 0)),
+        'coupon_code'    => trim((string) ($input['coupon_code'] ?? '')),
+        'gift_card_code' => trim((string) ($input['gift_card_code'] ?? '')),
+        'location_id'    => !empty($input['location_id']) ? (int) $input['location_id'] : null,
+    ];
+
+    return hash('sha256', json_encode($fingerprintData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+}
+
+/**
+ * Egy meglévő (ugyanazzal az idempotencia-kulccsal már rögzített) eladás
+ * visszajátszása — DE csak akkor, ha a mostani kérés ujjlenyomata egyezik
+ * az eredetivel. Ha nem egyezik, a kulcsot valaki egy MÁSIK, ténylegesen
+ * eltérő kéréshez próbálja újrafelhasználni — ezt 409 Conflict-tal
+ * utasítjuk el, a második kérés fel sem dolgozódik, az eredeti eladás
+ * változatlan marad.
+ *
+ * A bevezetés ELŐTT (V17 alatt) létrejött sale-eknél az
+ * idempotency_fingerprint NULL — ezeknél nincs mivel összehasonlítani,
+ * ezért továbbra is visszajátszhatónak tekintjük őket (nem utasítjuk el
+ * utólag egy sose létezett ujjlenyomat hiánya miatt).
+ *
+ * SOSE tér vissza — vagy egy 200-as visszajátszást, vagy egy 409-es
+ * hibát küld (send_json() mindkét esetben exit-tel zár).
+ */
+function match_or_reject_idempotent_replay(array $existingSale, ?string $requestFingerprint): void
+{
+    $storedFingerprint = $existingSale['idempotency_fingerprint'] ?? null;
+    if ($storedFingerprint !== null && $storedFingerprint !== '' && $storedFingerprint !== $requestFingerprint) {
+        send_json([
+            'error' => 'Ugyanaz az idempotencia-kulcs egy korábbitól eltérő tartalmú kéréssel érkezett — ez a kérés nem dolgozható fel. Töltsd újra az oldalt, és próbáld újra a vásárlást.',
+        ], 409);
+    }
+    send_json(build_idempotent_replay_response($existingSale));
+}

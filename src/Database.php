@@ -2,7 +2,7 @@
 
 class Database
 {
-    private const SCHEMA_VERSION = 16;
+    private const SCHEMA_VERSION = 18;
 
     private PDO $pdo;
     private string $driver;
@@ -116,6 +116,12 @@ class Database
             }
             if ($version < 16) {
                 $this->migrateV16WebshopOrders();
+            }
+            if ($version < 17) {
+                $this->migrateV17SaleIdempotency();
+            }
+            if ($version < 18) {
+                $this->migrateV18SaleIdempotencyFingerprint();
             }
         }
 
@@ -688,6 +694,59 @@ class Database
         }
     }
 
+    /**
+     * Idempotencia-kulcs (duplikált eladás elleni védelem — kettőzött
+     * kattintás, hálózati újrapróbálkozás, elveszett válasz) és az
+     * atomikus, versenyhelyzet-mentes számla-kiállítási "foglalás"
+     * (invoice_claim_at) mezői a sales táblán. Lásd insertSale()/
+     * findSaleByIdempotencyKey()/tryClaimInvoiceIssuance().
+     */
+    private function migrateV17SaleIdempotency(): void
+    {
+        $this->migrateColumns('sales', [
+            'idempotency_key' => $this->driver === 'mysql' ? 'VARCHAR(64) NULL' : 'TEXT',
+            'invoice_claim_at' => $this->driver === 'mysql' ? 'DATETIME NULL' : 'TEXT',
+        ]);
+
+        try {
+            $this->pdo->exec($this->driver === 'mysql'
+                ? 'ALTER TABLE sales ADD UNIQUE KEY uq_sales_idempotency_key (idempotency_key)'
+                : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_idempotency_key ON sales(idempotency_key)');
+        } catch (PDOException $e) {
+            if (!$this->isBenignSchemaError($e)) {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * Az idempotencia-kulcs önmagában csak azt garantálja, hogy UGYANAZ a
+     * kulcs ne hozzon létre két sale-t. Nem védett viszont az az eset, ha
+     * valaki (egy hibás kliens, vagy egy közvetlen API-hívást indító,
+     * szkriptelő felhasználó) UGYANAZT a kulcsot egy MÁSIK, ténylegesen
+     * eltérő kosárral/vevővel küldi be — enélkül a szerver csendben a
+     * KORÁBBI eladás eredményét adná vissza, miközben az új kérés
+     * tartalma sose kerülne ténylegesen feldolgozásra (se terheléshez,
+     * se készletmozgáshoz). Az idempotency_fingerprint egy sha256-hash a
+     * kérés üzletileg releváns mezőiről (tételek, vevő, fizetési mód,
+     * kupon/pont/utalvány-felhasználás) — lásd sale.php
+     * build_sale_fingerprint(). Ha egy MEGLÉVŐ kulcshoz tartozó ujjlenyomat
+     * NEM egyezik az új kéréssel, a válasz 409 Conflict, a második kérés
+     * fel sem dolgozódik.
+     *
+     * NULL marad minden, a bevezetés ELŐTT (V17 alatt) létrejött sale-nél
+     * — ezeknél SZÁNDÉKOSAN nincs mit összehasonlítani, ezért a hívó
+     * (sale.php) az ilyen régi rekordokat továbbra is visszajátszhatónak
+     * kezeli, nem utasítja el őket utólag egy sose létezett ujjlenyomat
+     * hiánya miatt.
+     */
+    private function migrateV18SaleIdempotencyFingerprint(): void
+    {
+        $this->migrateColumns('sales', [
+            'idempotency_fingerprint' => $this->driver === 'mysql' ? 'VARCHAR(64) NULL' : 'TEXT',
+        ]);
+    }
+
     public function findProductByBarcode(string $barcode): ?array
     {
         $stmt = $this->pdo->prepare('SELECT * FROM products WHERE barcode = ?');
@@ -927,6 +986,16 @@ class Database
         $now = date('c');
 
         if ($existing) {
+            // SZÁNDÉKOSAN nem írjuk felül a stock_qty-t egy már ismert,
+            // helyi termék pull-szinkronjakor. Ez az app mindenhol máshol
+            // (eladás, beszerzés, leltár) a HELYI adatbázist kezeli a
+            // készlet egyetlen hiteles forrásának, és minden változást
+            // onnan PUSH-ol ki a WooCommerce felé (lásd sale.php,
+            // purchase-save.php, stock-take-complete.php) — soha nem
+            // fordítva. Egy behúzott, a lekérdezés pillanatában már
+            // elavulttá válható WC-érték csendben felülírhatná/eltüntetné
+            // egy közben (a WC-lekérdezés és e tranzakció írása közötti
+            // időben) lezajlott helyi eladás/beszerzés készlethatását.
             $stmt = $this->pdo->prepare('
                 UPDATE products
                 SET wc_product_id = :wc_product_id,
@@ -934,7 +1003,6 @@ class Database
                     barcode = :barcode,
                     name = :name,
                     price = :price,
-                    stock_qty = :stock_qty,
                     short_description = :short_description,
                     long_description = :long_description,
                     brand = :brand,
@@ -954,7 +1022,6 @@ class Database
                 ':barcode'       => (($p['barcode'] ?? '') !== '') ? $p['barcode'] : $existing['barcode'],
                 ':name'          => $p['name'],
                 ':price'         => $p['price'],
-                ':stock_qty'     => $p['stock_qty'],
                 ':short_description' => (($p['short_description'] ?? '') !== '') ? $p['short_description'] : ($existing['short_description'] ?? null),
                 ':long_description'  => (($p['long_description'] ?? '') !== '') ? $p['long_description'] : ($existing['long_description'] ?? null),
                 ':brand'         => (($p['brand'] ?? '') !== '') ? $p['brand'] : ($existing['brand'] ?? null),
@@ -1013,6 +1080,19 @@ class Database
         $stmt->execute([':now' => date('c'), ':id' => $productId]);
     }
 
+    /**
+     * @throws PDOException UNIQUE constraint hibával, ha $idempotencyKey
+     *         nem üres és már létezik egy sale ugyanezzel a kulccsal — ez a
+     *         tényleges atomikus védelem két majdnem egyidejű, ugyanazt az
+     *         idempotencia-kulcsot használó kérés ellen: a UNIQUE INDEX
+     *         miatt az adatbázis maga garantálja, hogy csak EGYIKÜK
+     *         sikerülhet, még ha mindkettő ugyanabban a pillanatban is
+     *         próbálkozik (nem "ellenőrizd, majd írd be" versenyhelyzet).
+     *         A hívónak (api/sale.php) ezt a konkrét hibát el kell
+     *         kapnia, és findSaleByIdempotencyKey()-jel visszaadnia az
+     *         (időközben a MÁSIK kérés által létrehozott) eredeti eladást
+     *         újrafuttatás helyett.
+     */
     public function insertSale(
         float $total,
         string $paymentMethod = 'Készpénz',
@@ -1023,7 +1103,9 @@ class Database
         ?int $couponId = null,
         float $couponDiscount = 0.0,
         float $giftCardRedeemed = 0.0,
-        ?int $staffId = null
+        ?int $staffId = null,
+        ?string $idempotencyKey = null,
+        ?string $idempotencyFingerprint = null
     ): int {
         // A token a nyugta bejelentkezés nélküli (QR-kódos) megtekintéséhez
         // kell — kitalálhatatlan, ellentétben magával a sorszámozott
@@ -1031,14 +1113,28 @@ class Database
         $receiptToken = bin2hex(random_bytes(24));
 
         $stmt = $this->pdo->prepare('
-            INSERT INTO sales (total, payment_method, buyer_name, customer_id, loyalty_points_earned, loyalty_points_redeemed, coupon_id, coupon_discount, gift_card_redeemed, staff_id, status, receipt_token, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sales (total, payment_method, buyer_name, customer_id, loyalty_points_earned, loyalty_points_redeemed, coupon_id, coupon_discount, gift_card_redeemed, staff_id, status, receipt_token, idempotency_key, idempotency_fingerprint, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ');
         $stmt->execute([
             $total, $paymentMethod, $buyerName, $customerId, $loyaltyPointsEarned, $loyaltyPointsRedeemed,
-            $couponId, $couponDiscount, $giftCardRedeemed, $staffId, 'completed', $receiptToken, date('Y-m-d H:i:s'),
+            $couponId, $couponDiscount, $giftCardRedeemed, $staffId, 'completed', $receiptToken,
+            ($idempotencyKey !== null && $idempotencyKey !== '') ? $idempotencyKey : null,
+            ($idempotencyFingerprint !== null && $idempotencyFingerprint !== '') ? $idempotencyFingerprint : null,
+            date('Y-m-d H:i:s'),
         ]);
         return (int) $this->pdo->lastInsertId();
+    }
+
+    public function findSaleByIdempotencyKey(string $key): ?array
+    {
+        if ($key === '') {
+            return null;
+        }
+        $stmt = $this->pdo->prepare('SELECT * FROM sales WHERE idempotency_key = ?');
+        $stmt->execute([$key]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
     }
 
     public function insertSaleItem(int $saleId, array $item): void
@@ -1057,10 +1153,61 @@ class Database
         ]);
     }
 
+    /**
+     * Atomikusan "lefoglalja" a számla-kiállítás jogát egy eladáshoz —
+     * csak akkor sikeres, ha a sale-nek MÉG NINCS számlaszáma, ÉS nincs
+     * (vagy elévült) egy folyamatban lévő korábbi foglalása. Az UPDATE
+     * WHERE-je ugyanazt a mintát követi, mint redeemGiftCard()/
+     * incrementCouponUsage(): a feltétel-ellenőrzés és a foglalás egyetlen
+     * atomikus lépés, hogy két majdnem egyidejű kérés (pl. a webshop-
+     * rendelés számlázása duplán elküldve) közül csak EGYIK hívhassa
+     * ténylegesen a Számlázz.hu-t.
+     *
+     * Az "elévült" ág (invoice_claim_at régebbi, mint $staleAfterSeconds)
+     * önjavító helyreállítás: ha egy korábbi kérés a Számlázz.hu-hívás
+     * KÖZBEN megszakadt (PHP-folyamat leállt, időtúllépés a válaszban),
+     * a foglalás enélkül örökre "beragadva" maradna, és a számlázás
+     * SOSE lenne újra próbálható erre az eladásra. $staleAfterSeconds a
+     * SzamlazzClient HTTP időkorlátjánál (30s) bőven nagyobb legyen, hogy
+     * egy ténylegesen még folyamatban lévő, csak lassú hívást ne
+     * előzhessen meg egy türelmetlen újrapróbálkozás.
+     *
+     * FONTOS, DOKUMENTÁLT KORLÁT: ez a foglalás csak azt garantálja, hogy
+     * a HELYI adatbázisban csak egy kérés kezdhet bele a Számlázz.hu
+     * hívásba. Ha a hívás ténylegesen elindul, de a VÁLASZ vész el
+     * (hálózati hiba a kérés UTÁN), a Számlázz.hu oldalán a számla
+     * elkészülhetett, miközben a helyi állapot "sikertelen"-t vagy
+     * "elévült foglalás"-t mutat, és egy újrapróbálkozás ismét kiállítana
+     * egy MÁSODIK számlát — ez a helyi-DB ↔ külső-szolgáltatás határ
+     * elkerülhetetlen rése, amit a Számlázz.hu Számla Agent API nem kínál
+     * idempotencia-kulcsot a kiküszöbölésére (csak a szamlaKulsoAzon
+     * mezőt, ami NEM garantált egyedi-kiállítási védelem a dokumentáció
+     * szerint). "Legalább egyszer" garantált, "pontosan egyszer" nem.
+     */
+    public function tryClaimInvoiceIssuance(int $saleId, int $staleAfterSeconds = 90): bool
+    {
+        $staleBefore = date('Y-m-d H:i:s', time() - $staleAfterSeconds);
+        $stmt = $this->pdo->prepare('
+            UPDATE sales
+            SET invoice_claim_at = :now
+            WHERE id = :id
+              AND szamlazz_invoice_number IS NULL
+              AND (invoice_claim_at IS NULL OR invoice_claim_at < :staleBefore)
+        ');
+        $stmt->execute([':now' => date('Y-m-d H:i:s'), ':id' => $saleId, ':staleBefore' => $staleBefore]);
+        return $stmt->rowCount() > 0;
+    }
+
     public function attachInvoiceToSale(int $saleId, ?string $invoiceNumber, ?string $pdfPath, string $status): void
     {
+        // invoice_claim_at nullázása mindig együtt jár — akár sikerült a
+        // számla (a szamlazz_invoice_number már úgyis örökre letiltja az
+        // újra-foglalást), akár nem (invoice_failed esetén ez engedi meg,
+        // hogy egy retry ÚJRA lefoglalhassa, ne kelljen kivárni a
+        // staleAfterSeconds ablakot egy már ismerten véglegesen lezárult
+        // kísérlet után).
         $stmt = $this->pdo->prepare('
-            UPDATE sales SET szamlazz_invoice_number = ?, szamlazz_pdf_path = ?, status = ? WHERE id = ?
+            UPDATE sales SET szamlazz_invoice_number = ?, szamlazz_pdf_path = ?, status = ?, invoice_claim_at = NULL WHERE id = ?
         ');
         $stmt->execute([$invoiceNumber, $pdfPath, $status, $saleId]);
     }
@@ -1892,23 +2039,57 @@ class Database
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    /**
+     * Pontok jóváírása/visszavonása — ATOMIKUS, relatív UPDATE, nem
+     * "olvasd ki, majd írd vissza az abszolút új értéket" minta. A korábbi
+     * (olvasás → PHP-oldali számítás → abszolút érték visszaírása) minta
+     * versenyhelyzetben ELVESZTETT jóváírásokhoz vezetett: ha két majdnem
+     * egyidejű eladás ugyanannak a vásárlónak írt jóvá pontot, mindkettő
+     * ugyanazt a kiinduló egyenleget olvashatta ki, és amelyik később írt,
+     * egyszerűen felülírta (nem összeadta) a másikét. A SET loyalty_points
+     * = MAX(0, loyalty_points + :delta) forma — ugyanaz a minta, mint
+     * decrementStock()/addCustomerSpend()-nél — kizárja ezt: az adatbázis
+     * maga, egyetlen lépésben végzi el az összeadást és a 0-ra
+     * korlátozást, konkurrens hívások alatt is helyesen.
+     *
+     * MEGJEGYZÉS a könyvelési sorról (loyalty_transactions): a rögzített
+     * points_delta a KÉRT $delta, nem egy utólag (egy második, elméletileg
+     * versenyhelyzetben elavulható olvasással) visszaszámolt "ténylegesen
+     * alkalmazott, 0-ra vágott" érték — egy ilyen visszaszámolás maga is
+     * új versenyhelyzetet vezetne be a KÖNYVELÉSI SORBA (bár a tényleges,
+     * tárolt egyenlegbe sosem, mert az UPDATE fentebb már önmagában
+     * atomikus). A gyakorlatban ez csak abban a ritka esetben térhet el a
+     * ténylegesen alkalmazott változástól, ha a 0-s alsó korlát ténylegesen
+     * közbelép (pl. egy teljes visszáru pontvisszavonása egy már részben
+     * elköltött egyenlegnél) — a vásárló egyenlege ilyenkor is mindig
+     * helyesen, sosem negatívba záródik, csak a könyvelési sor leíró
+     * értéke közelítő ebben a szélsőséges esetben.
+     */
     public function applyLoyaltyPoints(int $customerId, int $delta, ?int $saleId, string $note): int
     {
-        $customer = $this->findCustomerById($customerId);
-        if (!$customer) {
+        // A kétparaméteres MAX(a, b) SQLite-ban skalár "nagyobbik érték"
+        // függvényként működik, de MySQL-ben a MAX() KIZÁRÓLAG aggregált
+        // (egyparaméteres) függvény — ott a GREATEST() az azonos jelentésű
+        // skalár megfelelő. Driver-függő SQL-t igényel, mint a séma-
+        // migrációk többi driver-specifikus ága ebben az osztályban.
+        $clampFn = $this->driver === 'mysql' ? 'GREATEST' : 'MAX';
+        $stmt = $this->pdo->prepare("
+            UPDATE customers SET loyalty_points = $clampFn(0, loyalty_points + :delta), updated_at = :now WHERE id = :id
+        ");
+        $stmt->execute([':delta' => $delta, ':now' => date('Y-m-d H:i:s'), ':id' => $customerId]);
+        if ($stmt->rowCount() === 0) {
             return 0;
         }
-        $newBalance = max(0, (int) $customer['loyalty_points'] + $delta);
-        $actualDelta = $newBalance - (int) $customer['loyalty_points'];
 
-        $this->pdo->prepare('UPDATE customers SET loyalty_points = ?, updated_at = ? WHERE id = ?')
-            ->execute([$newBalance, date('Y-m-d H:i:s'), $customerId]);
+        $balanceStmt = $this->pdo->prepare('SELECT loyalty_points FROM customers WHERE id = ?');
+        $balanceStmt->execute([$customerId]);
+        $newBalance = (int) $balanceStmt->fetchColumn();
 
-        if ($actualDelta !== 0) {
+        if ($delta !== 0) {
             $this->pdo->prepare('
                 INSERT INTO loyalty_transactions (customer_id, sale_id, points_delta, note, created_at)
                 VALUES (?, ?, ?, ?, ?)
-            ')->execute([$customerId, $saleId, $actualDelta, $note, date('Y-m-d H:i:s')]);
+            ')->execute([$customerId, $saleId, $delta, $note, date('Y-m-d H:i:s')]);
         }
 
         return $newBalance;

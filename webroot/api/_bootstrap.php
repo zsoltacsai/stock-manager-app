@@ -22,7 +22,22 @@ $config = require __DIR__ . '/../../config/config.php';
 // felülírják a config.php statikus értékeit, ha be vannak állítva, így
 // minden végpont, ami SzamlazzClient/WooCommerceClient-et épít, automatikusan
 // ezeket kapja meg.
-$appSettings = (new Settings(__DIR__ . '/../../data/settings.json'))->read();
+//
+// "Fail closed": Settings::read() SZÁNDÉKOSAN kivételt dob, ha a
+// settings.json LÉTEZIK, de nem olvasható/sérült — sose eshet vissza
+// csendben az alapértelmezésekre, mert azok között van app_password_enabled
+// => false is, ami egy már jelszóval védett telepítésen egy átmeneti
+// olvasási hiba idejére mindenkit "bejelentkezettnek" mutatna. Itt,
+// a VALÓDI védelmi rétegben (lásd lejjebb) ezt elkapva egyértelműen
+// elutasítjuk a kérést, nem folytatjuk tovább.
+try {
+    $appSettings = (new Settings(__DIR__ . '/../../data/settings.json'))->read();
+} catch (Throwable $e) {
+    error_log('[stock-manager] Settings::read() failed: ' . $e->getMessage());
+    http_response_code(500);
+    echo json_encode(['error' => 'A rendszer beállításai jelenleg nem olvashatók. Próbáld újra, vagy értesítsd az üzemeltetőt.'], JSON_UNESCAPED_UNICODE);
+    exit;
+}
 
 // IP-cím / ország alapú korlátozás — még a bejelentkezés-ellenőrzés előtt fut,
 // hogy egy nem engedélyezett országból/IP-ről semmilyen API-végpont (a
@@ -41,29 +56,61 @@ if (!$geoCheck['allowed']) {
 // Ez a VALÓDI védelmi réteg: mivel minden adat és minden művelet
 // kizárólag ezen az API-n keresztül érhető el, a statikus HTML-oldalak
 // megtekintése önmagában nem tesz elérhetővé semmilyen valós adatot.
+// Bejelentkezés előtt is elérhető végpontok. logout.php SZÁNDÉKOSAN itt
+// marad (egy már lejárt/érvénytelen session-en is engedje a kijelentkezést,
+// ami gyakorlatilag no-op), DE — a lenti CSRF-ellenőrzésnél — logout.php
+// már NEM kap kivételt, lásd $csrfWhitelist.
 $authWhitelist = ['login.php', 'logout.php', 'auth-status.php', 'install-status.php', 'receipt-detail.php', 'webhook.php'];
+$csrfWhitelist = ['login.php', 'auth-status.php', 'install-status.php', 'receipt-detail.php', 'webhook.php'];
 $currentScript = basename($_SERVER['SCRIPT_NAME'] ?? '');
 
 // Az automatikus mentés/szinkron (auto-backup-run.php, auto-sync-run.php)
 // dokumentáltan egy rendszer cron bejegyzésről indul (lásd README/telepítési
 // útmutatók), tehát session-sütire épülő bejelentkezés-ellenőrzéssel sose
-// tudna lefutni — cron nem tud böngészőben bejelentkezni. Enélkül a fenti
-// blanket session-ellenőrzés miatt ezek a végpontok minden cron-hívásnál
-// csendben 401-et adnának, és az automatikus mentés/szinkron sose futna le,
-// észrevétlenül. Ehelyett egy külön, megosztott titkot fogadnak el — csak
-// akkor, ha a Beállítások alatt be van állítva —, ami a cron-parancssorba
-// kerül, sose a böngésző session-jébe.
+// tudna lefutni — cron nem tud böngészőben bejelentkezni. Ezek a végpontok
+// KIZÁRÓLAG egy dedikált, megosztott titkot fogadnak el — SOSE a normál
+// böngésző-session-t (még akkor sem, ha épp be van jelentkezve valaki) —,
+// hogy egy ellopott böngésző-session ne tudja ezt az (admin-jogszint
+// nélküli, teljes katalógus-felülírásra/mentésre képes) utat is
+// felhasználni, és fordítva. A token KIZÁRÓLAG az X-Cron-Token fejlécben
+// fogadott el — SOSE query-stringben —, mert egy URL-be írt titok
+// szerver-/proxy-naplókba, böngésző-előzményekbe kerülhet.
 $cronScripts = ['auto-backup-run.php', 'auto-sync-run.php'];
-$cronAuthorized = false;
-if (in_array($currentScript, $cronScripts, true) && !empty($appSettings['cron_secret'])) {
-    $suppliedToken = (string) ($_GET['token'] ?? $_SERVER['HTTP_X_CRON_TOKEN'] ?? '');
-    $cronAuthorized = $suppliedToken !== '' && hash_equals((string) $appSettings['cron_secret'], $suppliedToken);
-}
+$isCronScript = in_array($currentScript, $cronScripts, true);
 
-if (!in_array($currentScript, $authWhitelist, true) && !$cronAuthorized && !Auth::isLoggedIn($appSettings)) {
+if ($isCronScript) {
+    $suppliedToken = (string) ($_SERVER['HTTP_X_CRON_TOKEN'] ?? '');
+    $cronAuthorized = !empty($appSettings['cron_secret'])
+        && $suppliedToken !== ''
+        && hash_equals((string) $appSettings['cron_secret'], $suppliedToken);
+    if (!$cronAuthorized) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Érvénytelen vagy hiányzó cron-token (X-Cron-Token fejléc).'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+} elseif (!in_array($currentScript, $authWhitelist, true) && !Auth::isLoggedIn($appSettings)) {
     http_response_code(401);
     echo json_encode(['error' => 'Bejelentkezés szükséges.', 'auth_required' => true], JSON_UNESCAPED_UNICODE);
     exit;
+}
+
+// CSRF-védelem — a session-cookie SameSite=Strict már önmagában is erős
+// védelem (lásd Auth::ensureSession()), de a szerver eddig sose ellenőrizte
+// ténylegesen a már meglévő, minden bejelentkezéskor kiadott csrf_token-t
+// (a kliens oldal — topbar.js window.smCsrfToken — le is kérte, csak sose
+// küldte vissza egyetlen híváshoz sem). Ez itt a második, ténylegesen
+// kikényszerített védelmi réteg minden állapotváltoztató (POST) hívásra —
+// a $csrfWhitelist-en (bejelentkezés előtti/webhook végpontok) és a
+// cron-tokennel hitelesített kéréseken kívül MINDENRE, logout.php-t is
+// beleértve — ezeknél nincs (vagy nem böngésző-session-alapú) a védendő
+// állapot.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !in_array($currentScript, $csrfWhitelist, true) && !$isCronScript) {
+    $csrfHeader = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    if (!Auth::verifyCsrf($csrfHeader)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Érvénytelen vagy hiányzó CSRF-token — töltsd újra az oldalt.', 'csrf_required' => true], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
 }
 
 if (!empty($appSettings['szamlazz_agent_key'])) {
@@ -110,6 +157,22 @@ function send_json($data, int $status = 200): void
     http_response_code($status);
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
+}
+
+/**
+ * Központi vezetői jogosultság-kapu az infrastruktúra-szintű/érzékeny
+ * végpontokhoz (Beállítások, biztonsági beállítások, mentés, WooCommerce-
+ * szinkron/teszt) — ugyanazt a "csak akkor kényszerítve, ha egyáltalán van
+ * dolgozói PIN-rendszer használatban" mintát követi, mint a már meglévő,
+ * egyedi végpontonkénti admin-kapuk (termék-/vásárlótörlés stb.), csak
+ * egy helyen, hogy ne kelljen minden érzékeny végpontban külön-külön
+ * megismételni.
+ */
+function require_admin(Database $db): void
+{
+    if ($db->listStaff(true) && !$db->isStaffAdmin(Auth::currentStaffId())) {
+        send_json(['error' => 'Ehhez vezetői jogszint szükséges.'], 403);
+    }
 }
 
 /**

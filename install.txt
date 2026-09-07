@@ -227,10 +227,17 @@ a Windows Feladatütemezőben (Task Scheduler) hozz létre két ismétlődő
 feladatot, amik ezt futtatják:
 
   Szinkron (percenként elég):
-    curl -s http://localhost:8000/api/auto-sync-run.php
+    curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "http://localhost:8000/api/auto-sync-run.php"
 
   Biztonsági mentés (15 percenként elég):
-    curl -s http://localhost:8000/api/auto-backup-run.php
+    curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "http://localhost:8000/api/auto-backup-run.php"
+
+A token a Beállítások → Mentés alatt beállítható cron titkos
+tokennel egyezzen — enélkül ez a két végpont bejelentkezés nélkül
+sose futna le (a Feladatütemező nem tud böngészőben bejelentkezni).
+A token KIZÁRÓLAG az X-Cron-Token fejlécben megy, sose URL-ben/
+query-stringben (egy URL-be írt titok könnyen bekerülhetne
+naplókba/előzményekbe) — a végpont query-string tokent el sem fogad.
 
 Mindkettő ártalmatlan, ha gyakrabban hívod, mint kell — az endpoint
 saját maga dönti el, hogy tényleg esedékes-e a futás, és "skipped"-del

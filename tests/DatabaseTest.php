@@ -546,9 +546,11 @@ final class DatabaseTest extends TestCase
             'short_description' => 'Helyben megírt rövid leírás',
             'brand' => 'HelyiMárka',
         ]));
+        $db->incrementStock($productId, 10); // ismert, helyi készlet a szinkron előtt
 
         // Első szinkron: a vonalkód alapján párosítja, és beköti a
-        // wc_product_id-t (nincs még hozzá bekötve helyi termék).
+        // wc_product_id-t (a helyi termék MÁR LÉTEZIK, csak eddig nem volt
+        // hozzá kötve WC-termék).
         $db->upsertProductFromWc([
             'wc_product_id' => 999, 'sku' => 'SKU1', 'barcode' => '1231231231231', 'name' => 'Teszt termék',
             'price' => 1270.0, 'stock_qty' => 5, 'short_description' => 'Helyben megírt rövid leírás', 'long_description' => null, 'brand' => 'HelyiMárka',
@@ -569,5 +571,239 @@ final class DatabaseTest extends TestCase
         $this->assertSame('HelyiMárka', $product['brand']);
         $this->assertSame('Teszt termék (WC-ről)', $product['name'], 'A ténylegesen küldött (nem üres) mezőknek viszont érvényesülniük kell.');
         $this->assertSame(1280.0, (float) $product['price']);
+        // A készlet nem WC-forrású mező ebben az appban — minden más helyen
+        // (eladás, beszerzés, leltár) a HELYI adatbázis a hiteles forrás, és
+        // ez PUSH-olódik ki a WooCommerce felé, sosem fordítva. Ha a
+        // pull-szinkron felülírná stock_qty-t egy már ismert (akár csak
+        // vonalkód alapján párosított) termékén, egy közben (a WC-lekérdezés
+        // és e szinkron írása közötti időben) lezajlott helyi eladás/
+        // beszerzés készlethatását törölné el csendben — sem az első
+        // (barcode-alapú), sem a második (wc_product_id-alapú) szinkronnak
+        // nem szabad módosítania a 10-es kezdőértéket.
+        $this->assertSame(10, (int) $product['stock_qty'], 'A pull-szinkron egy már ismert terméknél nem írhatja felül a helyi készletet.');
+    }
+
+    public function testUpsertProductFromWcSeedsStockQtyOnlyForBrandNewProduct(): void
+    {
+        // Ellenpróba az előző teszthez: egy WC-n ismert, de helyben MÉG
+        // NEM létező termék első behúzásakor a WC-féle stock_qty-nek
+        // továbbra is érvényesülnie kell kezdőértékként — a fenti fix csak
+        // a már létező helyi termékek védelmére vonatkozik, nem general
+        // tiltás.
+        $db = tests_new_database();
+        $db->upsertProductFromWc([
+            'wc_product_id' => 555, 'sku' => 'NEWSKU', 'barcode' => '5551112223334', 'name' => 'Vadonatúj WC termék',
+            'price' => 990.0, 'stock_qty' => 42, 'short_description' => '', 'long_description' => null, 'brand' => '',
+        ]);
+
+        $product = $db->findProductByWcId(555);
+        $this->assertNotNull($product);
+        $this->assertSame(42, (int) $product['stock_qty'], 'Egy új (helyben eddig ismeretlen) terméknél a WC-féle kezdő készletnek érvényesülnie kell.');
+    }
+
+    public function testInsertSaleEnforcesUniqueIdempotencyKey(): void
+    {
+        $db = tests_new_database();
+        $firstId = $db->insertSale(1000.0, 'Készpénz', null, null, 0, 0, null, 0, 0, null, 'idem-key-1');
+        $this->assertGreaterThan(0, $firstId);
+
+        // Egy második insertSale ugyanazzal a kulccsal az adatbázis szintjén
+        // (UNIQUE INDEX), nem csak alkalmazás-szinten kell hogy elbukjon —
+        // ez a tényleges, versenyhelyzet-mentes védelem (lásd
+        // insertSale()/api/sale.php docblockjei).
+        $this->expectException(PDOException::class);
+        $db->insertSale(1000.0, 'Készpénz', null, null, 0, 0, null, 0, 0, null, 'idem-key-1');
+    }
+
+    public function testInsertSaleAllowsMultipleNullIdempotencyKeys(): void
+    {
+        // A régi hívók (vagy egy kulcs nélküli kérés) NULL-t küldenek —
+        // ennek több sorra is engedélyezettnek kell maradnia, különben
+        // minden kulcs nélküli eladás a második után elbukna.
+        $db = tests_new_database();
+        $id1 = $db->insertSale(1000.0, 'Készpénz', null, null, 0, 0, null, 0, 0, null, null);
+        $id2 = $db->insertSale(2000.0, 'Készpénz', null, null, 0, 0, null, 0, 0, null, null);
+        $this->assertNotSame($id1, $id2);
+    }
+
+    public function testFindSaleByIdempotencyKeyReturnsTheOriginalSale(): void
+    {
+        $db = tests_new_database();
+        $saleId = $db->insertSale(1270.0, 'Készpénz', null, null, 0, 0, null, 0, 0, null, 'idem-key-2');
+
+        $found = $db->findSaleByIdempotencyKey('idem-key-2');
+        $this->assertNotNull($found);
+        $this->assertSame($saleId, (int) $found['id']);
+
+        $this->assertNull($db->findSaleByIdempotencyKey('does-not-exist'));
+        $this->assertNull($db->findSaleByIdempotencyKey(''));
+    }
+
+    public function testInsertSalePersistsIdempotencyFingerprintAlongsideKey(): void
+    {
+        // DB-szintű bizonyíték a C7 javításhoz: az insertSale() új,
+        // trailing paraméterként kapott ujjlenyomat ténylegesen elmentődik
+        // és visszaolvasható — a sale.php-beli tényleges egyezés/eltérés-
+        // ellenőrzést (build_sale_fingerprint()/match_or_reject_idempotent_replay())
+        // a tests/HttpSecurityTest.php fedi le HTTP-szinten (valódi sale.php
+        // hívásokkal), mert az a kérés-fingerprint-számítás logikája (mi
+        // számít bele) sale.php-ban, nem a Database osztályban él.
+        $db = tests_new_database();
+        $saleId = $db->insertSale(1270.0, 'Készpénz', null, null, 0, 0, null, 0, 0, null, 'idem-key-fp', 'fp-hash-abc123');
+
+        $found = $db->findSaleByIdempotencyKey('idem-key-fp');
+        $this->assertNotNull($found);
+        $this->assertSame($saleId, (int) $found['id']);
+        $this->assertSame('fp-hash-abc123', $found['idempotency_fingerprint']);
+    }
+
+    public function testInsertSaleAllowsNullFingerprintForBackwardCompatibility(): void
+    {
+        // Egy régi hívó (vagy egy hiányzó ujjlenyomat) NULL-t hagy a
+        // mezőben — ennek nem szabad hibát okoznia, és a sale.php-beli
+        // match_or_reject_idempotent_replay() logikájának ezt "nincs mit
+        // összehasonlítani, engedjük a visszajátszást" esetként kell
+        // kezelnie (lásd Database::migrateV18SaleIdempotencyFingerprint()
+        // docblockja).
+        $db = tests_new_database();
+        $saleId = $db->insertSale(500.0, 'Készpénz', null, null, 0, 0, null, 0, 0, null, 'idem-key-no-fp');
+
+        $found = $db->findSaleByIdempotencyKey('idem-key-no-fp');
+        $this->assertNotNull($found);
+        $this->assertSame($saleId, (int) $found['id']);
+        $this->assertNull($found['idempotency_fingerprint']);
+    }
+
+    public function testTryClaimInvoiceIssuanceIsExclusiveUntilReleased(): void
+    {
+        $db = tests_new_database();
+        $saleId = $db->insertSale(1000.0, 'Készpénz');
+
+        $this->assertTrue($db->tryClaimInvoiceIssuance($saleId), 'Az első foglalásnak sikeresnek kell lennie.');
+        // Egy második, még a "folyamatban" ablakon belüli próbálkozás
+        // (pl. egy majdnem egyidejű másik kérés) nem szerezheti meg a
+        // foglalást — ez zárja ki, hogy két kérés egyszerre hívja a
+        // Számlázz.hu-t ugyanarra az eladásra.
+        $this->assertFalse($db->tryClaimInvoiceIssuance($saleId), 'A már folyamatban lévő foglalás ne legyen újra megszerezhető.');
+
+        // attachInvoiceToSale() (akár sikeres, akár sikertelen kimenettel)
+        // felszabadítja a foglalást — utána azonnal újra megszerezhető.
+        $db->attachInvoiceToSale($saleId, null, null, 'invoice_failed');
+        $this->assertTrue($db->tryClaimInvoiceIssuance($saleId), 'Egy sikertelen kísérlet utáni felszabadítás után azonnal újra foglalhatónak kell lennie.');
+    }
+
+    public function testTryClaimInvoiceIssuanceRejectedOnceInvoiceNumberIsSet(): void
+    {
+        $db = tests_new_database();
+        $saleId = $db->insertSale(1000.0, 'Készpénz');
+
+        $this->assertTrue($db->tryClaimInvoiceIssuance($saleId));
+        $db->attachInvoiceToSale($saleId, 'SZ-2026-001', null, 'completed');
+
+        // Miután egyszer sikeresen kiállított számla van rögzítve, TÖBBÉ
+        // sose szerezhető meg újra a foglalás erre az eladásra — ez zárja
+        // ki, hogy egy késve érkező, ugyanerre az eladásra vonatkozó
+        // ismételt kérés második számlát is kiállítson.
+        $this->assertFalse($db->tryClaimInvoiceIssuance($saleId), 'Már kiállított számlájú eladásra ne legyen újra foglalható a kiállítás joga.');
+    }
+
+    public function testApplyLoyaltyPointsAddsRelativelyNotAbsolutely(): void
+    {
+        // DB-szintű bizonyíték, hogy a jóváírás relatív (loyalty_points +
+        // delta), nem egy korábban kiolvasott érték felülírása — két
+        // egymást követő hívás összeadódik, nem "utoljára nyer" módon
+        // felülíródik.
+        $db = tests_new_database();
+        $customerId = $db->saveCustomer(['name' => 'Atomikus Teszt Vevő']);
+
+        $afterFirst = $db->applyLoyaltyPoints($customerId, 10, null, 'első jóváírás');
+        $this->assertSame(10, $afterFirst);
+
+        $afterSecond = $db->applyLoyaltyPoints($customerId, 5, null, 'második jóváírás');
+        $this->assertSame(15, $afterSecond, 'A második jóváírásnak az ELSŐ eredményéhez kell hozzáadódnia, nem felülírnia azt.');
+    }
+
+    public function testApplyLoyaltyPointsClampsAtZeroWithoutGoingNegative(): void
+    {
+        $db = tests_new_database();
+        $customerId = $db->saveCustomer(['name' => 'Korlátozás Teszt Vevő']);
+        $db->applyLoyaltyPoints($customerId, 5, null, 'kezdő egyenleg');
+
+        $newBalance = $db->applyLoyaltyPoints($customerId, -20, null, 'visszavonás nagyobb, mint az egyenleg');
+        $this->assertSame(0, $newBalance, 'Az egyenleg sose menjen negatívba, még akkor sem, ha a visszavonás nagyobb az aktuális egyenlegnél.');
+
+        $customer = $db->findCustomerById($customerId);
+        $this->assertSame(0, (int) $customer['loyalty_points']);
+    }
+
+    /**
+     * VALÓDI, több különálló PHP-folyamat közötti konkurrencia-teszt (nem
+     * csak ugyanazon a PHP-objektumon belüli, szekvenciális hívás) — ez
+     * pontosan azt a forgatókönyvet reprodukálja, amit a piros csapat
+     * auditja aggályosnak talált: két egyidejű, KÜLÖNÁLLÓ PHP-FPM worker
+     * (itt: külön OS-folyamat) próbál egyszerre jóváírni ugyanannak a
+     * vásárlónak. A korábbi (olvasd ki → PHP-ben számolj → írd vissza az
+     * abszolút értéket) mintázat ezt elveszthette volna; a mostani,
+     * atomikus relatív UPDATE nem.
+     *
+     * Ha a proc_open() nem elérhető ezen a rendszeren, a teszt kihagyásra
+     * kerül a "DB-szintű atomicitás bizonyítva, de valódi többfolyamatos
+     * integrációs teszt nem futott le" eset explicit jelzésével — ez a
+     * korlát ITT, a teszt saját szkip-üzenetében van dokumentálva.
+     */
+    public function testApplyLoyaltyPointsIsAtomicAcrossRealConcurrentProcesses(): void
+    {
+        if (!function_exists('proc_open')) {
+            $this->markTestSkipped('proc_open nem elérhető — a DB-szintű atomicitás (lásd testApplyLoyaltyPointsAddsRelativelyNotAbsolutely) bizonyított, de VALÓDI többfolyamatos konkurrencia-teszt itt nem futott le.');
+        }
+
+        $dbPath = sys_get_temp_dir() . '/sm_concurrency_test_' . bin2hex(random_bytes(8)) . '.sqlite';
+        register_shutdown_function(static function () use ($dbPath) {
+            @unlink($dbPath);
+            @unlink($dbPath . '-shm');
+            @unlink($dbPath . '-wal');
+        });
+
+        $projectRoot = dirname(__DIR__);
+        $setupDb = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $dbPath]], $projectRoot);
+        $customerId = $setupDb->saveCustomer(['name' => 'Konkurrencia Teszt Vevő']);
+        unset($setupDb); // a PDO-kapcsolat elengedése, mielőtt külön folyamatok nyitnák meg ugyanazt a fájlt
+
+        $childScriptPath = sys_get_temp_dir() . '/sm_concurrency_child_' . bin2hex(random_bytes(6)) . '.php';
+        file_put_contents($childScriptPath, <<<'PHP'
+            <?php
+            require $argv[1] . '/src/Database.php';
+            $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $argv[2]]], $argv[1]);
+            $db->applyLoyaltyPoints((int) $argv[3], 1, null, 'concurrent-test');
+            PHP);
+        register_shutdown_function(static function () use ($childScriptPath) {
+            @unlink($childScriptPath);
+        });
+
+        $processCount = 12;
+        $handles = [];
+        $devNull = sys_get_temp_dir() . '/sm_concurrency_out_' . bin2hex(random_bytes(4)) . '.log';
+        for ($i = 0; $i < $processCount; $i++) {
+            $handles[] = proc_open(
+                [PHP_BINARY, $childScriptPath, $projectRoot, $dbPath, (string) $customerId],
+                [1 => ['file', $devNull, 'a'], 2 => ['file', $devNull, 'a']],
+                $pipes
+            );
+        }
+
+        foreach ($handles as $handle) {
+            if (is_resource($handle)) {
+                proc_close($handle);
+            }
+        }
+        @unlink($devNull);
+
+        $verifyDb = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $dbPath]], $projectRoot);
+        $customer = $verifyDb->findCustomerById($customerId);
+        $this->assertSame(
+            $processCount,
+            (int) $customer['loyalty_points'],
+            "Mind a $processCount, KÜLÖNÁLLÓ folyamatból induló +1 jóváírásnak meg kell jelennie az egyenlegben — egy elveszett jóváírás azt jelentené, hogy a lost-update versenyhelyzet visszatért."
+        );
     }
 }

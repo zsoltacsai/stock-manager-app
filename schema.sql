@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS sales (
     szamlazz_pdf_path        TEXT,
     status                   TEXT NOT NULL DEFAULT 'completed', -- completed | invoice_failed
     receipt_token            TEXT,                  -- kitalálhatatlan token a nyugta bejelentkezés nélküli megtekintéséhez (QR-kód)
+    idempotency_key          TEXT,                  -- kliens-generált kulcs, duplikált eladás (dupla kattintás/újrapróbálkozás) elleni védelemhez — lásd Database::insertSale()
+    idempotency_fingerprint  TEXT,                  -- a kérés üzletileg releváns mezőinek sha256-hash-e — ugyanaz a kulcs, de eltérő ujjlenyomat esetén 409 Conflict, lásd sale.php build_sale_fingerprint()
+    invoice_claim_at         TEXT,                  -- atomikus "számla kiállítása folyamatban" foglalás időbélyege — lásd Database::tryClaimInvoiceIssuance()
     created_at               TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -65,6 +68,7 @@ CREATE TABLE IF NOT EXISTS sales (
 CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
 CREATE INDEX IF NOT EXISTS idx_sales_customer_id ON sales(customer_id);
 CREATE INDEX IF NOT EXISTS idx_sales_staff_id ON sales(staff_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_idempotency_key ON sales(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_sales_coupon_id ON sales(coupon_id);
 
 -- One row per day a "napi zárás" (daily closing) was run. Re-closing the

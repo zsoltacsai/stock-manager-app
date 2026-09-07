@@ -4,6 +4,53 @@ Ez a fájl a Stock Manager verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## 1.0 RC4 (2026-09-07)
+
+Külső production/security audit alapján, a megerősített találatok javítva
+(a teljes jelentés és az egyenkénti indoklás a git történetben).
+
+### Javítva
+- **CSRF-védelem ténylegesen kikényszerítve.** A token-infrastruktúra már
+  megvolt (Auth::csrfToken()/verifyCsrf(), a kliens le is kérte), csak
+  sose lett ellenőrizve/elküldve — mostantól minden állapotváltoztató
+  (POST) kérés megköveteli az X-CSRF-Token fejlécet, központilag,
+  automatikusan hozzáfűzve minden oldalon.
+- Vezetői jogszinthez kötve: Beállítások mentése, biztonsági beállítások,
+  mentés indítása/listázása, WooCommerce-szinkron indítása, WooCommerce
+  kapcsolat-teszt.
+- WooCommerce kapcsolat-teszt SSRF-védelem: belső/loopback/metadata címek
+  (127.0.0.1, 192.168.x.x, 169.254.169.254 stb.) elutasítva.
+- Beérkező webshop-rendelés számlázása mostantól elutasítja, ha az
+  eladáshoz már tartozik számla (dupla számlázás dupla kattintásnál).
+- WooCommerce-behúzás (pull-szinkron) többé nem írja felül egy már ismert
+  helyi termék készletét — a helyi adatbázis marad a készlet egyetlen
+  hiteles forrása, mint mindenhol máshol az appban.
+- Telepítő (install.php) mostantól egyszer-generált tokent kér, amíg a
+  telepítés nincs lezárva; MySQL adatbázisnév-mező validálva SQL-befecs-
+  kendezés ellen.
+- Cron-parancsok dokumentációja javítva (hiányzó ?token= paraméter).
+- Kijelentkezés-végpontok (logout, dolgozó-kijelentkezés) csak POST-ot
+  fogadnak el.
+- Visszáru/telephelyi mozgatás mostantól a szerver-oldali, PIN-nel
+  ellenőrzött dolgozói session-t használja, nem a kliens által beküldött
+  staff_id-t.
+- Import feltöltés méretkorlátja (25 MB).
+- NAV cégadat-lekérdezés hibaüzenete nem ad ki technikai részleteket egy
+  sima pénztárosnak.
+- Tevékenységnapló (audit-log.js) néhány mezője nem volt escape-elve.
+- Settings::save() zárolt olvasás-módosítás-írás (verseny-védelem két
+  majdnem egyidejű mentés között).
+
+### Szándékosan nem változott
+Alapértelmezett jelszó nélküli működés (dokumentált, szándékos, egyetlen
+boltos/helyi telepítésre); teljes eladás-idempotencia (a dupla-számla
+eset javítva, a dupla-eladás kockázata alacsony és egy heurisztikus
+javítás rosszabb lenne — legitim, gyors egymás utáni azonos eladásokat
+blokkolna); CSP/HSTS (törésveszélyes, külön tesztelés nélkül nem
+vezetjük be); mentés-titkosítás (ez már funkció, nem patch).
+
+2 új PHPUnit teszt (41/41 zöld).
+
 ## 1.0 RC3 (2026-09-07)
 
 Harmadik átvizsgálási kör: napi zárás/riportok, hűségpontok/kuponok/

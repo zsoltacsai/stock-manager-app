@@ -1,6 +1,6 @@
 # Stock Manager — localhost vonalkód-kassza
 
-**Verzió: 1.0 RC3** (release candidate — a fejlesztés innentől kizárólag
+**Verzió: 1.0 RC4** (release candidate — a fejlesztés innentől kizárólag
 hibakeresésre és bugfixekre koncentrál, új funkció tervezetten nem kerül
 bele az 1.0 véglegesig)
 
@@ -355,6 +355,18 @@ attól, melyik drivert használod:
   után az ennél régebbi mentések törlődnek, mind helyben
   (`data/backups/`), mind a felhőben, ha be van állítva egy
   szolgáltató. Ugyanezen a fülön állítható.
+- **Titkosítás nyugalmi állapotban**: minden mentés-fájl (a DB-pillanatkép
+  ÉS a mellé csomagolt `settings.json` — benne minden WooCommerce/
+  Számlázz.hu/NAV/felhő hitelesítő adattal) AES-256-GCM-mel titkosítva
+  kerül lemezre/felhőbe, `.enc` kiterjesztéssel. A titkosító kulcs a
+  `data/.backup-encryption-key` fájlban él (automatikusan generálódik
+  első használatkor, `chmod 600`), a mentésektől külön. **Ezt a kulcsot
+  a data/ mappa többi tartalmával együtt kell biztonságban tartani/külön
+  is menteni** — ha elvész, minden korábban készült titkosított mentés
+  véglegesen visszaállíthatatlanná válik (nincs "elfelejtett kulcs"
+  helyreállítás). Ez nem helyettesít egy valódi kulcskezelő szolgáltatást
+  (KMS/HSM) — egy ellopott/rosszul konfigurált felhő-tárhelyre feltöltött
+  mentési fájl ellen véd, nem egy teljes szerver-kompromisszum ellen.
 
 ### Felhő szinkron
 
@@ -802,7 +814,16 @@ a valódi fizetési mód legyen kiválasztható, ne csak a kasszás alapértelme
 A Beállítások → Mentés mostantól egy **Visszaállítás** gombot kínál
 minden listázott helyi mentés mellett, plusz egy fájlfeltöltést egy
 máshonnan (másik gépről, felhő-letöltésből) származó mentés
-visszaállításához. Bármelyik úton:
+visszaállításához. Ez a legroncsolóbb művelet az egész alkalmazásban
+(visszavonhatatlanul felülírja az éles adatbázist), ezért a
+hozzáférés-ellenőrzése többrétegű: **vezetői (admin) szerepkör
+szükséges** hozzá (ugyanaz a szabály, mint a mentés készítésénél/
+listázásánál), ÉS — ha egyáltalán van beüzemelve dolgozói PIN-rendszer
+— egy **friss vezetői PIN megadása is kötelező ugyanazzal a kéréssel**,
+nem elég a már bejelentkezett munkamenet szerepköre önmagában. Ha
+egyáltalán nincs dolgozói PIN-rendszer használatban, lásd a "Dolgozói
+jogszintek" szakaszt: ilyenkor bármelyik, az alkalmazás-jelszóval
+bejelentkezett munkamenet elérheti ezt is. Bármelyik úton:
 
 - Egy friss biztonsági mentés a **jelenlegi** élő adatokról
   automatikusan elkészül, mielőtt bármihez is hozzányúlna — így a
@@ -913,12 +934,25 @@ A dolgozóknak mostantól van egy szerepköre (Eladó vagy Vezető), a
 `staff.html`-en beállítva. Ez továbbra is elszámoltatási eszköz marad,
 nem valódi hozzáférés-vezérlő rendszer — ahogy korábban is
 dokumentálva, bárki megnyithatja a PIN-kérő ablakot, és választhat
-másik nevet. Ami valódi: a **termék-törlés szerver-oldalon van
-kikényszerítve** a `product-save.php`-ban — ha egy dolgozó be van
+másik nevet. Ami valódi: minden érzékeny/roncsoló művelet (termék-,
+vásárló- és beszállító-törlés, GDPR-export/törlés, ajándékutalvány/
+kupon kiállítás, biztonsági mentés készítése/listázása/**visszaállítása**,
+WooCommerce-szinkron és kapcsolat-teszt, biztonsági beállítások mentése)
+**szerver-oldalon van kikényszerítve** — ha egy dolgozó be van
 jelentkezve, és nem admin, a kérés elutasításra kerül (403),
-függetlenül attól, mit mutat a felület. Ha egyáltalán nincs
-bejelentkezett dolgozó (a PIN funkció nincs használva), ez megengedő
-marad.
+függetlenül attól, mit mutat a felület.
+
+**FONTOS a megosztott jelszavas, dolgozói PIN nélküli telepítéseknek**:
+ha a boltban egyáltalán nincs beüzemelve a dolgozói PIN-rendszer (senki
+sincs felvéve a `staff.html`-en), a fenti admin-kapuk mind **engedékenyek
+maradnak** — bárki, aki a megosztott alkalmazás-jelszóval be tud
+jelentkezni, ténylegesen admin-jogosultsággal fér hozzá minden fenti
+művelethez, a biztonsági mentés visszaállítását is beleértve. Ez
+szándékos, dokumentált tervezési döntés (egy egyszemélyes/kisboltos
+telepítésnek nincs szüksége külön dolgozói szerepkörökre), NEM hiba —
+de fontos tudatában lenni: ha valódi jogosultsági elkülönítést
+szeretnél a dolgozók között, állíts be legalább egy admin szerepkörű
+dolgozói PIN-t.
 
 ## Tevékenységnapló (audit log)
 
@@ -1108,7 +1142,32 @@ Erre a réteg tetejére épül két további védelem:
 Ez a rétegzés azt jelenti: még ha valamelyik réteg valamiért kimaradna
 vagy hibásan működne, a másik kettő önmagában is elegendő védelmet ad.
 
-### Bejelentkezés (opcionális, kikapcsolható)
+### Üzemmód: Helyi vs. Nyilvános
+
+Beállítások → Biztonság fülön kell **kifejezetten** megadni, hogy a
+telepítés "Helyi" (`deployment_mode: local`, az alapértelmezés — csak ez
+a gép/helyi hálózat éri el, jelszó nélkül is elérhető marad, a korábbi
+viselkedésnek megfelelően) vagy "Nyilvános" (`deployment_mode: network`
+— internetről/külső hálózatról is elérhető). Az alkalmazás szándékosan
+**nem próbálja magától kitalálni** ezt (pl. "csak localhost-ról jön-e a
+kérés") — egy reverse proxy vagy port-forwarding mögött ez a szerver
+oldaláról nem állapítható meg megbízhatóan, egy rossz találgatás pedig
+vagy feleslegesen zárná ki a helyi használatot, vagy (rosszabb esetben)
+tévesen biztonságosnak hinné egy ténylegesen nyilvánosan elérhető
+telepítést.
+
+**"Nyilvános" üzemmódban a jelszavas védelem nem kapcsolható ki** — sem
+úgy, hogy valaki megpróbálja kikapcsolni a már bekapcsolt jelszót, sem
+úgy, hogy "Nyilvános"-ra váltana anélkül, hogy előbb beállítana egy
+jelszót. Ezt a `security-settings-save.php` szerver-oldalon kényszeríti
+ki (a felület csak segít elkerülni a hibát, de a valódi kapu a
+szerveren van), és az `Auth::isEnabled()` is — ha a `settings.json`
+valamiért sérült vagy kézzel szerkesztett állapotban `deployment_mode:
+network`-öt tartalmazna `app_password_enabled: false` mellett, az
+alkalmazás akkor is bejelentkezést követel meg (fail closed), nem esik
+vissza csendben jelszó nélküli módra.
+
+### Bejelentkezés (opcionális, kikapcsolható "Helyi" üzemmódban)
 
 Beállítások → Biztonság fülön kapcsolható be egy alkalmazás-szintű jelszó
 (alapból ki van kapcsolva — bekapcsolása után minden oldal bejelentkezést
@@ -1117,10 +1176,24 @@ dolgozott a Kasszánál), ez itt a teljes programhoz való hozzáférést zárja
 
 - Jelszó `password_hash()`-sel tárolva, sosem kerül vissza a kliensnek
   (a `settings.php` és minden más végpont explicit módon kiszűri).
-- Session-cookie `HttpOnly` + `SameSite=Strict` — ez jelentősen csökkenti
-  a CSRF-kockázatot anélkül, hogy minden POST-kérésbe tokent kellene
-  fűzni. (Egy `Auth::csrfToken()`/`verifyCsrf()` pár is elérhető jövőbeli,
-  token-alapú védelemhez, ha valaha szükség lenne rá.)
+- Session-cookie `HttpOnly` + `SameSite=Strict`, és — közvetlen HTTPS
+  vagy egy megbízható, ugyanazon a gépen futó reverse proxy (lásd lent)
+  esetén — `Secure` is. Emellé egy ténylegesen kikényszerített,
+  token-alapú CSRF-védelem: minden nem-fehérlistás POST-kérésnek
+  érvényes `X-CSRF-Token` fejlécet kell küldenie (`Auth::csrfToken()`
+  ad ki egy tokent bejelentkezés nélkül is, `verifyCsrf()` ellenőrzi
+  minden POST-on a `_bootstrap.php`-ban) — ez a `SameSite=Strict`
+  fölötti, második, ténylegesen ellenőrzött védelmi réteg, nem csak egy
+  jövőbeli lehetőség.
+- A `Secure` sütijelző `$_SERVER['HTTPS']`-re támaszkodik, VAGY — ha az
+  közvetlen TCP-kapcsolat (`REMOTE_ADDR`) maga is loopback (127.0.0.1 /
+  ::1) — az `X-Forwarded-Proto: https` fejlécre, ugyanazzal a szűk
+  bizalmi határral, mint amit a GeoBlocker az X-Forwarded-For-nál
+  használ. Egy TÁVOLI (más gépen/konténerben futó) reverse proxy mögötti
+  telepítésen ez a fejléc NEM lesz megbízható — ilyenkor a webszervert
+  kell úgy beállítani, hogy a valódi HTTPS-állapotot a PHP felé is
+  közvetítse (pl. nginx+PHP-FPM esetén `fastcgi_param HTTPS on;` a
+  443-as szerver-blokkban — lásd `telepites-tavoli-szerver.txt`).
 - Automatikus kijelentkezés beállítható inaktivitás után (alapból 4 óra).
 - **Rate limiting** mind az alkalmazás-jelszóra, mind a dolgozói PIN-re —
   túl sok sikertelen próbálkozás után ideiglenes zárolás (fájl-alapú
@@ -1225,14 +1298,27 @@ kitalálható lenne), hanem ezen a titkos tokenen keresztül azonosítja
 magát. Bejelentkezett dolgozó továbbra is token nélkül, közvetlenül a
 munkamenetén keresztül férhet hozzá bármelyik nyugtához.
 
-### Ami nem ebben a körben lett megoldva
+### Ismert, tudatosan vállalt maradék korlátok
 
-Egy teljes, token-alapú CSRF-védelem (minden POST-kérésbe fűzött egyedi
-token) nem került bevezetésre — ehelyett a `SameSite=Strict`
-session-cookie adja a gyakorlati védelmet, mivel több tucat meglévő
-API-hívás módosítása jelentős kockázattal járt volna egy ilyen nagy
-kódbázisban. Az `Auth` osztály tartalmazza a szükséges építőelemeket
-(`csrfToken()`, `verifyCsrf()`), ha valaha szükség lenne rá.
+- **Számlázz.hu-számlázás nem garantáltan "pontosan egyszer"**: a
+  helyi adatbázis egy atomikus foglalással (`invoice_claim_at`,
+  90 másodperces elévülési ablak) kizárja, hogy két egyidejű kérés
+  mindkettő ténylegesen kiállítson egy számlát ugyanarra az eladásra —
+  de ha a Számlázz.hu-hívás sikerrel lezajlik, ám a válasz a helyi
+  szerverhez sose ér vissza (hálózati hiba, folyamat-összeomlás), a
+  foglalás előbb-utóbb elévül, és egy manuális újrapróbálkozás
+  EKKOR elméletileg egy második számlát is kiállíthat. A Számlázz.hu
+  Számla Agent API nem kínál idempotencia-kulcsot ennek kiküszöbölésére
+  — ez egy a helyi rendszer és a külső szolgáltatás határán fennálló,
+  csak a szolgáltató oldali dedup-lehetőség hiánya miatt megoldhatatlan
+  rés, amit a kód szándékosan "legalább egyszer", nem "pontosan
+  egyszer" garanciaként dokumentál (lásd `Database::tryClaimInvoiceIssuance()`).
+- **A mentés-titkosítási kulcs nem valódi KMS/HSM** — lásd "Automatikus
+  mentések" szakasz.
+- Lásd még: "Üzemmód: Helyi vs. Nyilvános" (a reverse proxy mögötti
+  HTTPS-felismerés korlátja) és "Dolgozói jogszintek" (a megosztott
+  jelszavas, dolgozói PIN nélküli telepítések admin-jogosultsági
+  következménye).
 
 ## Automatizált tesztek
 
@@ -1263,6 +1349,59 @@ teszt egy egyszer használatos, ideiglenes SQLite fájllal dolgozik
   (külső hálózati hívás az ip-api.com felé) szándékosan nincs lefedve,
   hogy a tesztek gyorsak és hálózatfüggetlenek maradjanak,
 - az XLS-export XML-kimenetének érvényessége és HTML-escapelése.
+
+A `tests/UrlSafetyTest.php` az SSRF-védelmet (`UrlSafety`) teszteli
+közvetlenül, hálózat-független IP-literálokkal (loopback, RFC1918,
+link-local/felhő-metaadat cím, IPv6 loopback/private, nem-http(s) séma,
+beágyazott hitelesítő adat).
+
+A `tests/HttpSecurityTest.php` a fentiektől eltérően **valódi HTTP-kéréseket**
+küld egy, a teszt által automatikusan felállított és a végén eltakarított,
+teljesen önálló (ideiglenes mappában futó, saját üres SQLite-tal induló) PHP
+beépített-szerver példány ellen — ez fedi le a `_bootstrap.php`-n keresztül
+ténylegesen érvényesülő viselkedést: bejelentkezés-kényszer és fail-closed
+sérült `settings.json` esetén, CSRF-ellenőrzés (hiányzó/érvénytelen/érvényes
+token, `logout.php` is), cron-hitelesítés (`X-Cron-Token`, böngésző-session
+nem helyettesítheti), a telepítő token-ellenőrzése és a "Helyi"/"Nyilvános"
+üzemmód-kényszerítés. Éles `data/` mappát sose érint.
+
+## Külső függőségek / Composer-mentesség
+
+A projekt szándékosan nem használ Composer-t vagy más csomagkezelőt —
+minden PHP-kód saját, a repóban lévő forrás. A frontendhez viszont van
+két **kézzel bemásolt, a repóba commitolt** (vendored) JS-könyvtár a
+`webroot/vendor/` alatt:
+
+- **TinyMCE 8.9.0** (2026-08-27-i kiadás) — `webroot/vendor/tinymce/` —
+  a termékleírás gazdag-szöveg szerkesztőjéhez (lásd "Termékleírás, kép,
+  márka és WooCommerce-szinkron kapcsoló" szakasz).
+- **qrcode-generator** — `webroot/vendor/qrcode-generator/` — a nyugtán
+  megjelenő QR-kód kliens-oldali generálásához.
+
+**Ez azt jelenti, hogy ezeknek a könyvtáraknak a biztonsági frissítése
+KÉZI folyamat**: nincs `npm audit`, `composer audit` vagy Dependabot-féle
+automatikus riasztás, ami jelezné, ha a TinyMCE-nek (vagy a
+qrcode-generatornak) új verziója/biztonsági javítása jelenik meg. Egy
+jövőbeli biztonsági résre a jelenlegi felállásban csak úgy derülne fény,
+ha valaki kézzel ellenőrzi a felsőbb verziót és összeveti a
+`webroot/vendor/tinymce/tinymce.min.js` fájl elején lévő verziószámmal
+(`/* TinyMCE version X.Y.Z (dátum) */`).
+
+Ez a beállítás **szándékosan marad így ebben a körben** — egy teljes
+Composer/npm-alapú build-lánc bevezetése ennél a projektméretnél
+aránytalanul nagy architekturális változás lenne, és az RC
+feature-freeze alatt nem indokolt (lásd ROADMAP.md). A gyakorlati
+kompromisszum: a `webroot/vendor/` alatti fájlokat időnként (pl.
+félévente, vagy ha egy konkrét TinyMCE CVE napvilágra kerül) kézzel
+érdemes újra letölteni a hivatalos forrásból és lecserélni — ezt a
+README-t frissítve az új verziószámmal.
+
+A TinyMCE maga **csak a bejelentkezést/érvényes munkamenetet igénylő
+oldalakon** töltődik be (`termekek.php` és `beszerzes.php` — lásd "Valódi
+oldal-szintű védelem" szakasz), nem egy nyilvánosan, hitelesítés nélkül
+elérhető felületen — ez csökkenti (de nem szünteti meg) egy esetleges
+TinyMCE-sebezhetőség kihasználhatóságát, mert egy támadónak előbb
+érvényes munkamenetre lenne szüksége.
 
 Ez a kezdeti kör nem törekszik teljes lefedettségre (nincsenek HTTP-szintű
 végpont-tesztek, pl. `webroot/api/*.php` közvetlen hívásai) — a cél az

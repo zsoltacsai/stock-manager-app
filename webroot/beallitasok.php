@@ -72,10 +72,9 @@ if (!Auth::isLoggedIn($appSettings)) {
             <p class="muted">
                 Az automatikus futtatáshoz egy rendszer cron bejegyzés szükséges, ami percenként
                 meghívja ezt a végpontot (a végpont maga dönti el, hogy esedékes-e a szinkron a
-                fenti gyakoriság alapján, tehát a percenkénti hívás ártalmatlan):
-            </p>
-            <p class="muted" style="font-family: monospace; background: var(--panel-light); padding: 8px 10px; border-radius: 6px;">
-                * * * * * curl -s http://localhost:8000/api/auto-sync-run.php &gt; /dev/null
+                fenti gyakoriság alapján, tehát a percenkénti hívás ártalmatlan). A titkos cron
+                tokent a Mentés fülön állíthatod be — lásd ott a pontos parancsot, fejlécben
+                küldött tokennel (sose URL-ben).
             </p>
             <button id="settings-save-sync-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Mentés</button>
             <p id="settings-sync-feedback" class="modal-feedback"></p>
@@ -173,11 +172,13 @@ if (!Auth::isLoggedIn($appSettings)) {
                 művelet — ezek a végpontok viszont bejelentkezés nélkül futnak (cron nem
                 tud böngészőben bejelentkezni), ezért ide egy titkos tokent kell megadni,
                 amit a cron-parancs is ismer. Token nélkül ezek a végpontok továbbra is
-                bejelentkezést kérnek, és a cron nem tudja lefuttatni őket.
+                bejelentkezést kérnek, és a cron nem tudja lefuttatni őket. A token
+                KIZÁRÓLAG az <code>X-Cron-Token</code> fejlécben megy — sose URL-ben/
+                query-stringben, mert az szerver-/proxy-naplókba kerülhetne.
             </p>
             <p class="muted" style="font-family: monospace; background: var(--panel-light); padding: 8px 10px; border-radius: 6px;">
-                */15 * * * * curl -s "http://localhost:8000/api/auto-backup-run.php?token=IDE_A_TOKEN" &gt; /dev/null<br>
-                */15 * * * * curl -s "http://localhost:8000/api/auto-sync-run.php?token=IDE_A_TOKEN" &gt; /dev/null
+                */15 * * * * curl -s -H "X-Cron-Token: IDE_A_TOKEN" "http://localhost:8000/api/auto-backup-run.php" &gt; /dev/null<br>
+                */15 * * * * curl -s -H "X-Cron-Token: IDE_A_TOKEN" "http://localhost:8000/api/auto-sync-run.php" &gt; /dev/null
             </p>
 
             <label for="backup-provider">Felhő szinkronizálás</label>
@@ -588,6 +589,22 @@ if (!Auth::isLoggedIn($appSettings)) {
                     réteg — de akkor is, ha valaki megkerülné (pl. közvetlenül megnyitná egy oldal
                     HTML-jét), a szerver minden egyes API-hívást elutasít bejelentkezés nélkül, így
                     tényleges adathoz vagy funkcióhoz nem fér hozzá.
+                </p>
+            </div>
+
+            <div style="border-bottom:1px solid var(--border); margin-bottom:16px; padding-bottom:16px;">
+                <label for="security-deployment-mode">Üzemmód</label>
+                <select id="security-deployment-mode">
+                    <option value="local">Helyi — csak ez a gép/helyi hálózat éri el, jelszó nélkül is</option>
+                    <option value="network">Nyilvános — internetről/külső hálózatról is elérhető</option>
+                </select>
+                <p class="muted" style="margin-top:6px;">
+                    Az alkalmazás nem tudja magától kitalálni, hogy egy adott telepítés
+                    csak helyben fut-e, vagy internetről is elérhető — ezt itt kell
+                    kifejezetten megadni. <strong>"Nyilvános" üzemmódban a jelszavas
+                    védelem nem kapcsolható ki</strong>, és bekapcsolásához előbb be kell
+                    állítani egy jelszót lentebb. "Helyi" üzemmódban a jelszó továbbra is
+                    opcionális marad, a korábbi viselkedésnek megfelelően.
                 </p>
             </div>
 

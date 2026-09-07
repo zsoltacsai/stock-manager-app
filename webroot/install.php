@@ -12,6 +12,29 @@ if (is_file($markerPath)) {
     exit;
 }
 
+// A telepítő eddig a legelső látogatóé volt: mielőtt a valódi üzemeltető
+// befejezné a telepítést, bárki, aki elsőként eléri a publikus címet,
+// kitöltheti/lezárhatja azt (attacker-controlled boltnév/MySQL-kapcsolat),
+// kizárva ezzel a tényleges üzemeltetőt. Egy első használatkor generált,
+// helyi fájlban tárolt tokent kérünk — ugyanaz a minta, mint a
+// data/.installed jelzőfájl vagy a cron_secret: aki hozzáfér a szerver
+// fájlrendszeréhez (SSH-val, ahogy egy telepítést amúgy is végez), ki
+// tudja olvasni, egy véletlen internetes látogató nem.
+@mkdir($dataDir, 0775, true);
+$installTokenPath = $dataDir . '/.install-token';
+if (!is_file($installTokenPath)) {
+    file_put_contents($installTokenPath, bin2hex(random_bytes(16)));
+    @chmod($installTokenPath, 0600);
+}
+$installToken = trim((string) file_get_contents($installTokenPath));
+$suppliedToken = (string) ($_GET['token'] ?? $_POST['token'] ?? '');
+if ($installToken === '' || !hash_equals($installToken, $suppliedToken)) {
+    http_response_code(403);
+    echo 'Telepítéshez token szükséges. A szerveren futtasd: cat data/.install-token'
+        . ' — majd nyisd meg ezt az oldalt install.php?token=A_KIÍRT_ÉRTÉK címen.';
+    exit;
+}
+
 $errors = [];
 $values = [
     'shop_name'    => 'Fountainbridge Bolt',
@@ -50,6 +73,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $port = (int) $values['mysql_port'];
         if ($values['mysql_database'] === '' || $values['mysql_username'] === '') {
             $errors[] = 'Az adatbázis neve és a felhasználónév megadása kötelező MySQL esetén.';
+        } elseif (!preg_match('/^[A-Za-z0-9_]{1,64}$/', $values['mysql_database'])) {
+            // Az adatbázis neve közvetlenül, azonosítóként (nem paraméterként
+            // kötve — a MySQL-driverek ezt nem is teszik lehetővé) kerül bele
+            // az alábbi CREATE DATABASE utasításba. Enélkül az ellenőrzés
+            // nélkül egy backtick-et vagy más SQL-vezérlő karaktert
+            // tartalmazó név tetszőleges SQL-t csempészhetne be.
+            $errors[] = 'Az adatbázis neve csak betűket, számokat és aláhúzást tartalmazhat.';
         }
         if (empty($errors)) {
             try {
@@ -156,7 +186,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <p class="feedback error"><?= htmlspecialchars($error) ?></p>
     <?php endforeach; ?>
 
-    <form method="post">
+    <form method="post" action="install.php?token=<?= urlencode($installToken) ?>">
         <label for="shop_name">Bolt neve</label>
         <input type="text" id="shop_name" name="shop_name" value="<?= htmlspecialchars($values['shop_name']) ?>">
 

@@ -87,6 +87,18 @@ Hozz létre egy fájlt: /etc/nginx/sites-available/stock-manager
 
         location ~ /\.(?!well-known) { deny all; }   # rejtett fájlok tiltása
 
+        # Ugyanazok a biztonsági fejlécek, mint amit az API-válaszok már
+        # eddig is kaptak (lásd webroot/api/_bootstrap.php) — itt a statikus
+        # HTML-oldalakra is kiterjesztve. Szigorúbb Content-Security-Policy
+        # és HSTS SZÁNDÉKOSAN nincs itt beállítva — mindkettő könnyen
+        # eltörhet valamit (pl. a TinyMCE-t vagy egy oldal beágyazott
+        # <script> blokkját, illetve a HSTS-t visszavonhatatlanul, ha
+        # elsietve kerül be) — csak alapos, külön tesztelés után érdemes
+        # bevezetni.
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options DENY always;
+        add_header Referrer-Policy same-origin always;
+
         location / {
             try_files $uri $uri/ =404;
         }
@@ -144,8 +156,31 @@ mindenképp állíts be HTTPS-t:
     sudo certbot --nginx -d kassza.pelda.hu
 
 Ez automatikusan beállítja a tanúsítványt ÉS a 80 -> 443 átirányítást
-is. Az app session-kezelése már felkészült erre — HTTPS alatt
-automatikusan bekapcsolja a "Secure" sütijelzőt.
+is. Az app session-kezelése fel van készítve erre — HTTPS alatt
+bekapcsolja a "Secure" sütijelzőt —, DE ehhez a PHP-nek ténylegesen
+LÁTNIA kell, hogy a kérés HTTPS-en jött. Mivel az Nginx itt közvetlenül,
+FastCGI-n (socketen) keresztül adja át a kérést a PHP-FPM-nek (nem egy
+külön HTTP-proxy fejléccel), ehhez a certbot által létrehozott 443-as
+szerver-blokkban (nem a 80-asban!) explicit be kell állítani:
+
+    fastcgi_param HTTPS on;
+
+a "location ~ \.php$ { ... }" blokkon belül, a "fastcgi_pass" sor
+mellé. A certbot ezt NEM teszi be automatikusan. Enélkül a PHP sose
+látja HTTPS-nek a kérést, tehát a session-süti "Secure" jelzője
+csendben false marad akkor is, ha a böngésző ténylegesen HTTPS-t
+használ. Ellenőrzés mentés után:
+
+    sudo nginx -t && sudo systemctl reload nginx
+
+(Ha egy TÁVOLI, más gépen/konténerben futó reverse proxy vagy CDN áll
+ez elé az Nginx elé — pl. Cloudflare —, az alkalmazás a "X-Forwarded-
+Proto" fejlécet KIZÁRÓLAG akkor fogadja el megbízhatónak, ha a
+közvetlen TCP-kapcsolat (ami ebben a felállásban maga a helyi Nginx)
+loopback címről jön — ez itt, ugyanazon a gépen, automatikusan
+teljesül. Ha viszont MAGA ez az Nginx is csak egy távolabbi proxy
+mögött áll, a lánc minden tagjának a valódi HTTPS-állapotot kell
+tovább közvetítenie.)
 
 
 ---------------------------------------------------------------
@@ -220,12 +255,18 @@ porton, hanem a rendes 80/443-on):
 
     sudo crontab -e -u www-data
 
-    * * * * *     curl -s https://kassza.pelda.hu/api/auto-sync-run.php > /dev/null
-    */15 * * * *  curl -s https://kassza.pelda.hu/api/auto-backup-run.php > /dev/null
+    * * * * *     curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "https://kassza.pelda.hu/api/auto-sync-run.php" > /dev/null
+    */15 * * * *  curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "https://kassza.pelda.hu/api/auto-backup-run.php" > /dev/null
 
-(A Beállítások oldal a "localhost:8000"-es változatot mutatja
+(A token a Beállítások → Mentés alatt beállítható cron titkos
+tokennel egyezzen — enélkül ezek a végpontok bejelentkezés nélkül
+sose futnának le, cron ugyanis nem tud böngészőben bejelentkezni. A
+token KIZÁRÓLAG az X-Cron-Token fejlécben megy, sose URL-ben/
+query-stringben — egy URL-be írt titok webszerver-/proxy-naplókba
+kerülhetne; a végpont query-string tokent el sem fogad. A
+Beállítások oldal a "localhost:8000"-es változatot mutatja
 példaként, mert az a helyi/fejlesztői telepítésre utal — élesben a
-fenti, a saját domained szerinti sort használd.)
+fenti, a saját domained szerinti sort használd, a saját tokeneddel.)
 
 
 ---------------------------------------------------------------

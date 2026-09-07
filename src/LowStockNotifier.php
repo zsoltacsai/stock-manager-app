@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/UrlSafety.php';
+
 class LowStockNotifier
 {
     public static function notify(array $settings, array $products): void
@@ -18,6 +20,16 @@ class LowStockNotifier
 
     private static function sendWebhook(string $url, array $products): void
     {
+        // Védelmi mélység — lásd WooCommerceClient::request() azonos
+        // kommentjét: a settings.php mentéskor már ellenőrzi ezt az URL-t,
+        // ez itt a tényleges kapcsolódáskor véd (pl. egy közvetlenül
+        // szerkesztett settings.json esetére), DNS-rebinding elleni
+        // IP-pinneléssel és átirányítás-tiltással együtt.
+        [$urlOk, , $resolvedIp] = UrlSafety::check($url);
+        if (!$urlOk) {
+            return;
+        }
+
         $payload = json_encode(['event' => 'low_stock', 'products' => $products, 'timestamp' => date('c')], JSON_UNESCAPED_UNICODE);
 
         $ch = curl_init($url);
@@ -27,7 +39,7 @@ class LowStockNotifier
             CURLOPT_POSTFIELDS     => $payload,
             CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
             CURLOPT_TIMEOUT        => 8,
-        ]);
+        ] + UrlSafety::pinnedCurlOptions($url, (string) $resolvedIp));
         @curl_exec($ch);
         curl_close($ch);
     }

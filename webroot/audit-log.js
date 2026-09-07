@@ -14,10 +14,10 @@ async function loadAuditLog() {
 
         body.innerHTML = entries.length ? entries.map(e => `
             <tr>
-                <td>${e.created_at}</td>
+                <td>${escapeHtml(e.created_at)}</td>
                 <td>${escapeHtml(e.staff_name || '—')}</td>
-                <td>${ACTION_LABELS[e.action] || e.action}</td>
-                <td>${e.entity_type ? e.entity_type + (e.entity_id ? ' #' + e.entity_id : '') : '—'}</td>
+                <td>${escapeHtml(ACTION_LABELS[e.action] || e.action)}</td>
+                <td>${escapeHtml(e.entity_type ? e.entity_type + (e.entity_id ? ' #' + e.entity_id : '') : '—')}</td>
                 <td class="muted">${escapeHtml(e.details || '')}</td>
             </tr>
         `).join('') : '<tr><td colspan="5" class="muted" style="text-align:center; padding:24px;">Még nincs naplóbejegyzés.</td></tr>';

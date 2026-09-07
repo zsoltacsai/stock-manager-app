@@ -9,6 +9,11 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     send_json(['error' => 'POST only'], 405);
 }
 
+// Egy teljes adatbázis-mentés (a data/settings.json API-kulcsokkal együtt)
+// futtatása és felhőbe feltöltése — ugyanaz a "vezetői jogszint kell"
+// szabály indokolt rá, mint a visszaállításnál (backup-restore.php).
+require_admin($db);
+
 $settings = new Settings(__DIR__ . '/../../data/settings.json');
 $s = $settings->read();
 

@@ -8,6 +8,9 @@ require_once __DIR__ . '/../src/Database.php';
 require_once __DIR__ . '/../src/Settings.php';
 require_once __DIR__ . '/../src/GeoBlocker.php';
 require_once __DIR__ . '/../src/SimpleXlsWriter.php';
+require_once __DIR__ . '/../src/UrlSafety.php';
+require_once __DIR__ . '/../src/Auth.php';
+require_once __DIR__ . '/../src/BackupManager.php';
 
 /**
  * Minden tesztfüggvény saját, egyszer használatos SQLite fájllal dolgozik

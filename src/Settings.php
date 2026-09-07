@@ -30,6 +30,22 @@ class Settings
         'audit_log_retention_days' => 30,
 
         // Biztonság
+        // 'local'   — a telepítő/üzemeltető KIFEJEZETTEN úgy nyilatkozott,
+        //             hogy ez a telepítés csak a helyi gépről/hálózatról
+        //             érhető el, jelszó nélkül is (ez az alapértelmezés,
+        //             visszafelé kompatibilis a korábbi viselkedéssel).
+        // 'network' — a telepítő/üzemeltető KIFEJEZETTEN úgy nyilatkozott,
+        //             hogy ez internetről/nyilvános hálózatról is elérhető
+        //             lesz — ebben a módban a jelszavas védelem NEM
+        //             kapcsolható ki (lásd Auth::isLoggedIn() és
+        //             security-settings-save.php).
+        // Ez a mező SOSE automatikusan, "kitalálva" áll be — sem az
+        // alkalmazás nem tudja megbízhatóan eldönteni magától, hogy egy
+        // adott kérés "csak helyi"-e (proxy/NAT mögött ez nem
+        // megállapítható a szerver oldaláról), sem induláskor nincs
+        // biztonságos alapértelmezés, ami mindkét esetre jó lenne —
+        // ehelyett a telepítő kifejezetten megkérdezi.
+        'deployment_mode'         => 'local',
         'app_password_hash'      => null,  // ha be van állítva, minden oldal/API bejelentkezést kér
         'app_password_enabled'   => false,
         'session_timeout_minutes' => 240,  // 4 óra inaktivitás után automatikus kijelentkezés
@@ -114,6 +130,10 @@ class Settings
         'geo_block_enabled'   => false,
         'geo_block_countries' => '',
         'geo_block_allow_ips' => '',
+
+        // Cron-hitelesítés (auto-backup-run.php / auto-sync-run.php) — lásd
+        // _bootstrap.php. Sose kerül URL-be, csak az X-Cron-Token fejlécbe.
+        'cron_secret' => '',
     ];
 
     public function __construct(string $path)
@@ -121,21 +141,113 @@ class Settings
         $this->path = $path;
     }
 
+    /**
+     * @throws RuntimeException ha a settings.json fájl LÉTEZIK, de nem
+     *         olvasható vagy nem érvényes JSON. Ez SZÁNDÉKOSAN nem esik
+     *         vissza csendben self::DEFAULTS-ra: a DEFAULTS tartalmazza az
+     *         'app_password_enabled' => false értéket, ami egy már
+     *         konfigurált (jelszóval védett) telepítésen egy átmeneti
+     *         olvasási hiba (lemez, jogosultság, egyidejű írás, sérülés)
+     *         idejére KIKAPCSOLNÁ a bejelentkezés-kényszert minden
+     *         kérésre — ez egy hitelesítés-megkerülés lenne. A hívónak
+     *         (elsősorban _bootstrap.php) ezt a kivételt "fail closed"
+     *         módon kell kezelnie: a kérést el kell utasítani, NEM
+     *         folytatni úgy, mintha nem lenne jelszó beállítva.
+     *         Ha a fájl egyáltalán nem létezik (valódi első-futtatás,
+     *         még sose lett semmi elmentve), a DEFAULTS visszaadása
+     *         helyes és biztonságos.
+     */
     public function read(): array
     {
         if (!is_file($this->path)) {
             return self::DEFAULTS;
         }
-        $data = json_decode((string) file_get_contents($this->path), true);
-        return is_array($data) ? array_merge(self::DEFAULTS, $data) : self::DEFAULTS;
+        $raw = @file_get_contents($this->path);
+        if ($raw === false || trim($raw) === '') {
+            throw new RuntimeException('A beállítások fájlja nem olvasható vagy üres: ' . $this->path);
+        }
+        $data = json_decode($raw, true);
+        if (!is_array($data)) {
+            throw new RuntimeException('A beállítások fájlja sérült (érvénytelen JSON): ' . $this->path);
+        }
+        return array_merge(self::DEFAULTS, $data);
     }
 
+    /**
+     * Atomikus mentés: az új teljes tartalom egy ideiglenes fájlba íródik,
+     * majd egyetlen rename()-nel kerül a végleges hely fölé. A rename()
+     * ugyanazon a fájlrendszeren atomikus (a régi tartalom egyszerre,
+     * egyben cserélődik az újra) — egy egyidejű OLVASÓ (read(), ami
+     * szándékosan NEM szerez zárolást, hogy ne lassítsa a normál
+     * kéréseket) emiatt SOSE láthat üres vagy félig-írt fájlt, csak a
+     * teljes régi, vagy a teljes új tartalmat. Ez zárja ki azt a
+     * versenyhelyzetet, amit a korábbi (zárolt, de a fájlt helyben
+     * truncate-elő) megvalósítás nem: a truncate() és a tényleges write()
+     * közötti pillanatban egy másik kérés üres fájlt olvashatott volna, és
+     * a self::DEFAULTS-ra esett volna vissza — lásd read() docblockja.
+     *
+     * A konkurens ÍRÓK egy külön zárolási fájlon (.lock) keresztül
+     * sorosítva vannak, hogy két majdnem egyidejű mentés ne veszítse el
+     * egymás változásait (olvasás-módosítás-írás versenyhelyzet).
+     *
+     * @throws RuntimeException ha a meglévő fájl sérült, vagy az írás
+     *         bármely lépése sikertelen — ilyenkor a MEGLÉVŐ (korábbi,
+     *         érvényes) settings.json fájlhoz NEM nyúlunk, változatlanul
+     *         megmarad.
+     */
     public function save(array $partial): array
     {
-        $current = $this->read();
-        $merged = array_merge($current, $partial);
         @mkdir(dirname($this->path), 0775, true);
-        file_put_contents($this->path, json_encode($merged, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
-        return $merged;
+
+        $lockHandle = fopen($this->path . '.lock', 'c');
+        if ($lockHandle === false) {
+            throw new RuntimeException('A beállítások mentéséhez szükséges zárolási fájl nem hozható létre.');
+        }
+
+        flock($lockHandle, LOCK_EX);
+        try {
+            $currentData = [];
+            if (is_file($this->path)) {
+                $current = @file_get_contents($this->path);
+                if ($current === false) {
+                    throw new RuntimeException('A meglévő beállítások fájlja nem olvasható — a mentés megszakítva.');
+                }
+                if (trim($current) !== '') {
+                    $decoded = json_decode($current, true);
+                    if (!is_array($decoded)) {
+                        // A meglévő fájl LÉTEZIK, de nem érvényes JSON — sose
+                        // írjuk felül csendben egy "DEFAULTS + új mező"
+                        // tartalommal, mert az pl. egy korábban bekapcsolt
+                        // jelszót észrevétlenül visszaállíthatna kikapcsoltra.
+                        throw new RuntimeException('A meglévő beállítások fájlja sérült (érvénytelen JSON) — a mentés megszakítva, kézi ellenőrzés szükséges.');
+                    }
+                    $currentData = $decoded;
+                }
+            }
+
+            $merged = array_merge(self::DEFAULTS, $currentData, $partial);
+
+            $json = json_encode($merged, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+            if ($json === false) {
+                throw new RuntimeException('Az új beállítások nem alakíthatók JSON-ná.');
+            }
+
+            $tmpPath = $this->path . '.tmp-' . bin2hex(random_bytes(8));
+            if (file_put_contents($tmpPath, $json) === false) {
+                @unlink($tmpPath);
+                throw new RuntimeException('Nem sikerült az új beállításokat ideiglenes fájlba írni.');
+            }
+            @chmod($tmpPath, 0640);
+
+            if (!rename($tmpPath, $this->path)) {
+                @unlink($tmpPath);
+                throw new RuntimeException('Nem sikerült a beállítások fájlját atomikusan cserélni.');
+            }
+
+            return $merged;
+        } finally {
+            flock($lockHandle, LOCK_UN);
+            fclose($lockHandle);
+        }
     }
 }

@@ -11,7 +11,10 @@ $input = json_input();
 $saleId = (int) ($input['sale_id'] ?? 0);
 $requestedItems = $input['items'] ?? [];
 $reason = trim((string) ($input['reason'] ?? ''));
-$staffId = !empty($input['staff_id']) ? (int) $input['staff_id'] : null;
+// A szerver-oldali, PIN-nel ellenőrzött session-ből, nem a kliens által
+// beküldött staff_id-ból — különben bárki más dolgozó nevére írhatná a
+// visszárut, torzítva az elszámoltathatóságot.
+$staffId = Auth::currentStaffId();
 
 if (!$saleId || empty($requestedItems)) {
     send_json(['error' => 'Válassz ki legalább egy visszaveendő tételt.'], 400);

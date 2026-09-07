@@ -34,6 +34,6 @@ send_json([
     'loyalty_enabled'     => !empty($appSettings['loyalty_enabled']),
 
     'php_version' => PHP_VERSION,
-    'app_version' => '1.0 RC3',
+    'app_version' => '1.0 RC4',
     'recent_sync_log' => $db->getRecentSyncLog(20),
 ]);

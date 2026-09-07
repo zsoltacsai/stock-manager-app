@@ -3,6 +3,16 @@
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    send_json(['error' => 'POST only'], 405);
+}
+
+// Egy teljes WooCommerce-katalógus behúzása minden helyi, szinkronra
+// kapcsolt terméket felülír — ugyanaz a "vezetői jogszint kell" szabály
+// indokolt rá, mint a beállítások/mentés egyéb infrastruktúra-szintű
+// műveleteinél.
+require_admin($db);
+
 try {
     $wc = new WooCommerceClient($config['woocommerce']);
     $result = $wc->fetchAllProducts();

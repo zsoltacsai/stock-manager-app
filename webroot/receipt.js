@@ -8,6 +8,18 @@ const printNetworkBtn = document.getElementById('print-network-btn');
 
 const fmt = (n) => new Intl.NumberFormat('hu-HU').format(Math.round(Number(n) || 0)) + ' Ft';
 
+// Ez az oldal szándékosan nem tölti be a topbar.js-t (lásd lentebb a
+// receiptContent kommentjét), ezért a hálózati nyomtatás POST-hívásához
+// (ami _bootstrap.php CSRF-ellenőrzésen megy át, mint minden más POST)
+// saját, minimális tokenlekérést kap — nem a teljes topbar.js-t, mert az
+// bejelentkezés nélkül is elérhető QR-kódos nyugtanézetet átirányítaná a
+// login oldalra. Ha a látogató nincs bejelentkezve, a token null marad, és
+// a print-receipt.php amúgy is elutasítja — pontosan ugyanúgy, mint eddig.
+let receiptCsrfToken = null;
+fetch('/api/auth-status.php').then(r => r.json()).then(data => {
+    receiptCsrfToken = data.csrf_token || null;
+}).catch(() => { /* marad null — a print gomb amúgy is 401/403-at kapna bejelentkezés nélkül */ });
+
 // Ez az oldal nem tölti be a topbar.js-t (önálló, minimál nyugta-nézet),
 // ezért itt egy saját, kicsi másolata van ugyanannak az escape-védelemnek.
 function escapeHtml(str) {
@@ -113,7 +125,10 @@ printNetworkBtn.addEventListener('click', async () => {
     try {
         const res = await fetch('/api/print-receipt.php', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: Object.assign(
+                { 'Content-Type': 'application/json' },
+                receiptCsrfToken ? { 'X-CSRF-Token': receiptCsrfToken } : {}
+            ),
             body: JSON.stringify({ sale_id: saleId }),
         });
         const data = await res.json();

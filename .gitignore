@@ -6,6 +6,8 @@
 /data/*.sqlite-shm
 /data/*.sqlite-wal
 /data/.installed
+/data/.install-token
+/data/.backup-encryption-key
 /data/settings.json
 /data/geoip-cache.json
 /data/imports/*

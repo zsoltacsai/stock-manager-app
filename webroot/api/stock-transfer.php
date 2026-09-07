@@ -12,7 +12,10 @@ $productId = (int) ($input['product_id'] ?? 0);
 $fromLocationId = !empty($input['from_location_id']) ? (int) $input['from_location_id'] : null;
 $toLocationId = (int) ($input['to_location_id'] ?? 0);
 $qty = (int) ($input['qty'] ?? 0);
-$staffId = !empty($input['staff_id']) ? (int) $input['staff_id'] : null;
+// A szerver-oldali, PIN-nel ellenőrzött session-ből, nem a kliens által
+// beküldött staff_id-ból — különben bárki más dolgozó nevére írhatná a
+// mozgatást, torzítva az elszámoltathatóságot.
+$staffId = Auth::currentStaffId();
 
 if (!$productId || !$toLocationId || $qty <= 0) {
     send_json(['error' => 'Hiányzó vagy érvénytelen adatok.'], 400);

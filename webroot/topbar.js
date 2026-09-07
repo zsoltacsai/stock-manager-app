@@ -14,15 +14,28 @@ window.escapeHtml = function (str) {
         .replace(/'/g, '&#039;');
 };
 
-// Globális fetch-becsomagolás: ha munkamenet közben lejár a bejelentkezés
-// (vagy valaki egy másik fülön kijelentkezik), bármelyik API-hívás 401-et
-// ad vissza auth_required jelzéssel — ilyenkor ahelyett, hogy minden egyes
-// oldal saját hibaüzenetet mutatna, egységesen a login oldalra irányítunk.
-// Ez csak kényelmi réteg — a tényleges elutasítást a szerver már megtette.
+// Globális fetch-becsomagolás. Két dolgot csinál:
+//  1) ha munkamenet közben lejár a bejelentkezés (vagy valaki egy másik
+//     fülön kijelentkezik), bármelyik API-hívás 401-et ad vissza
+//     auth_required jelzéssel — ilyenkor ahelyett, hogy minden egyes oldal
+//     saját hibaüzenetet mutatna, egységesen a login oldalra irányítunk.
+//     Ez csak kényelmi réteg — a tényleges elutasítást a szerver már
+//     megtette.
+//  2) minden állapotváltoztató (POST) híváshoz automatikusan hozzáfűzi az
+//     X-CSRF-Token fejlécet (lásd lent, window.smCsrfToken/smAuthReady) —
+//     enélkül a szerver oldali _bootstrap.php CSRF-ellenőrzése minden
+//     POST-ot elutasítana. Központilag, itt egy helyen történik, hogy ne
+//     kelljen minden egyes oldal minden egyes fetch()-hívását külön
+//     módosítani.
+window.smCsrfToken = null;
+let smResolveAuthReady;
+window.smAuthReady = new Promise((resolve) => { smResolveAuthReady = resolve; });
+
 (function () {
     const originalFetch = window.fetch;
-    window.fetch = function (...args) {
-        return originalFetch.apply(this, args).then(async (response) => {
+
+    function handleResponse(response) {
+        return (async () => {
             if (response.status === 401 && !location.pathname.endsWith('/login.html')) {
                 try {
                     const clone = response.clone();
@@ -34,6 +47,26 @@ window.escapeHtml = function (str) {
                 } catch (e) { /* not JSON, or already navigating away — ignore */ }
             }
             return response;
+        })();
+    }
+
+    window.fetch = function (resource, init) {
+        const method = ((init && init.method) || 'GET').toUpperCase();
+        if (method === 'GET' || method === 'HEAD') {
+            return originalFetch.call(this, resource, init).then(handleResponse);
+        }
+        // Megvárjuk, amíg az (oldalbetöltéskor amúgy is elinduló) auth-status
+        // hívás megérkezik és beállítja a tokent — enélkül az oldalbetöltés
+        // utáni legelső POST még token nélkül futna neki, feleslegesen
+        // elutasítva a szerver által.
+        return window.smAuthReady.then(() => {
+            const opts = Object.assign({}, init);
+            const headers = new Headers(opts.headers || {});
+            if (window.smCsrfToken) {
+                headers.set('X-CSRF-Token', window.smCsrfToken);
+            }
+            opts.headers = headers;
+            return originalFetch.call(this, resource, opts).then(handleResponse);
         });
     };
 })();
@@ -62,7 +95,6 @@ fetch('/api/install-status.php')
 // szóval ha ez a kliens-oldali ellenőrzés bármi miatt nem futna le, attól
 // még semmilyen adat vagy funkció nem válik elérhetővé — legfeljebb a
 // statikus oldal-váz látszik, tartalom és működés nélkül.
-window.smCsrfToken = null;
 
 // A headermenu.php-ben lévő kijelentkezés gomb — csak akkor látszik, ha a
 // jelszavas védelem be van kapcsolva (lásd lent, az auth-status válaszban).
@@ -87,7 +119,10 @@ if (!location.pathname.endsWith('/login.html') && !location.pathname.endsWith('/
             }
             if (headerLogoutBtn) headerLogoutBtn.classList.toggle('hidden', !data.enabled);
         })
-        .catch(() => { /* ha ez sem elérhető, az API-hívások úgyis 401-et adnak vissza */ });
+        .catch(() => { /* ha ez sem elérhető, az API-hívások úgyis 401-et adnak vissza */ })
+        .finally(() => smResolveAuthReady());
+} else {
+    smResolveAuthReady();
 }
 
 if ('serviceWorker' in navigator) {
@@ -218,6 +253,7 @@ if ('serviceWorker' in navigator) {
     const settingsSaveAuditBtn = document.getElementById('settings-save-audit-btn');
     const settingsAuditFeedback = document.getElementById('settings-audit-feedback');
 
+    const securityDeploymentMode = document.getElementById('security-deployment-mode');
     const securityPasswordEnabled = document.getElementById('security-password-enabled');
     const securityNewPassword = document.getElementById('security-new-password');
     const securityNewPasswordConfirm = document.getElementById('security-new-password-confirm');
@@ -361,7 +397,7 @@ if ('serviceWorker' in navigator) {
         if (navTestMode) navTestMode.checked = !!data.nav_test_mode;
 
         if (wcStoreUrl) wcStoreUrl.value = data.wc_store_url || '';
-        if (wcConsumerKey) wcConsumerKey.value = data.wc_consumer_key || '';
+        applySecretField(wcConsumerKey, data, 'wc_consumer_key', 'ck_...');
         applySecretField(wcConsumerSecret, data, 'wc_consumer_secret', 'cs_...');
         if (wcBarcodeSource) {
             wcBarcodeSource.value = data.wc_barcode_source || 'sku';
@@ -374,7 +410,7 @@ if ('serviceWorker' in navigator) {
         currentBrandMapping = (data.brand_mapping && typeof data.brand_mapping === 'object') ? data.brand_mapping : {};
 
         if (lowStockDefault) lowStockDefault.value = String(data.low_stock_default_threshold ?? 5);
-        if (lowStockWebhook) lowStockWebhook.value = data.low_stock_notify_webhook || '';
+        applySecretField(lowStockWebhook, data, 'low_stock_notify_webhook', 'https://hooks.slack.com/...');
         if (lowStockEmail) lowStockEmail.value = data.low_stock_notify_email || '';
 
         if (receiptHeaderLines) receiptHeaderLines.value = data.receipt_header_lines || '';
@@ -389,6 +425,7 @@ if ('serviceWorker' in navigator) {
         if (tierGoldThreshold) tierGoldThreshold.value = String(data.loyalty_tier_gold_threshold ?? 150000);
         if (tierGoldDiscount) tierGoldDiscount.value = String(data.loyalty_tier_gold_discount ?? 10);
         if (auditRetentionDays) auditRetentionDays.value = String(data.audit_log_retention_days ?? 30);
+        if (securityDeploymentMode) securityDeploymentMode.value = data.deployment_mode === 'network' ? 'network' : 'local';
         if (securityPasswordEnabled) securityPasswordEnabled.classList.toggle('on', !!data.app_password_enabled);
         if (securitySessionTimeout) securitySessionTimeout.value = String(data.session_timeout_minutes ?? 240);
         if (securityMaxAttempts) securityMaxAttempts.value = String(data.login_max_attempts ?? 5);
@@ -545,7 +582,7 @@ if ('serviceWorker' in navigator) {
             if (syncBtn.classList.contains('syncing')) return;
             syncBtn.classList.add('syncing');
             try {
-                const res = await fetch('/api/sync-pull.php');
+                const res = await fetch('/api/sync-pull.php', { method: 'POST' });
                 const data = await res.json();
                 if (!res.ok) {
                     showToast('Hiba: ' + (data.error || 'ismeretlen hiba'), 'error');
@@ -1044,6 +1081,7 @@ if ('serviceWorker' in navigator) {
             settingsSecurityFeedback.className = 'modal-feedback';
             try {
                 const payload = {
+                    deployment_mode: securityDeploymentMode ? securityDeploymentMode.value : 'local',
                     app_password_enabled: securityPasswordEnabled.classList.contains('on'),
                     session_timeout_minutes: parseInt(securitySessionTimeout.value, 10) || 240,
                     login_max_attempts: parseInt(securityMaxAttempts.value, 10) || 5,

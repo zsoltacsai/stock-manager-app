@@ -27,6 +27,20 @@ $sale = $db->getSaleWithItems((int) $order['sale_id']);
 if (!$sale) {
     send_json(['error' => 'A rendeléshez tartozó eladás nem található.'], 404);
 }
+// Ha az eladáshoz már tartozik sikeresen kiállított számla, ne állítsunk ki
+// egy másodikat. Ez a sima SELECT-ellenőrzés önmagában versenyhelyzetes
+// (két majdnem egyidejű kérés mindkettő "nincs még számla"-t olvashatna,
+// mielőtt bármelyik írna) — a TÉNYLEGES, atomikus védelmet az alábbi
+// tryClaimInvoiceIssuance() adja (UPDATE ... WHERE feltétellel, lásd
+// Database.php docblockja), ami garantálja, hogy két egyidejű kérés közül
+// csak EGYIK hívhatja ténylegesen a Számlázz.hu-t. Egy korábban SIKERTELEN
+// (invoice_failed) kísérlet után szándékosan engedjük az újrapróbálkozást.
+if (!empty($sale['szamlazz_invoice_number'])) {
+    send_json(['error' => 'Ehhez az eladáshoz már tartozik számla (' . $sale['szamlazz_invoice_number'] . ').'], 409);
+}
+if (!$db->tryClaimInvoiceIssuance((int) $sale['id'])) {
+    send_json(['error' => 'A számla kiállítása már folyamatban van (egy másik kérés éppen most dolgozza fel).'], 409);
+}
 
 $invoiceItems = array_map(fn($i) => [
     'name'             => $i['name'],
@@ -42,6 +56,8 @@ try {
     $invoiceResult = ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => $e->getMessage()];
 }
 
+// attachInvoiceToSale() sikertelenség esetén is felszabadítja a fenti
+// foglalást, engedve egy azonnali manuális újrapróbálkozást.
 $db->attachInvoiceToSale(
     (int) $sale['id'],
     $invoiceResult['invoice_number'] ?? null,

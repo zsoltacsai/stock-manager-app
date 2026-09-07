@@ -8,16 +8,19 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     send_json(['error' => 'POST only'], 405);
 }
 
+// Ez a végpont állítja be/kapcsolja ki magát az app-jelszót és a
+// geo-blokkolást — a legérzékenyebb egyetlen beállítás-csoport az
+// alkalmazásban, egy sima pénztáros semmiképp ne érhesse el.
+require_admin($db);
+
 $input = json_input();
 $settings = new Settings(__DIR__ . '/../../data/settings.json');
 $update = [];
 
-if (isset($input['app_password_enabled'])) {
-    $enabled = !empty($input['app_password_enabled']);
-    if ($enabled && empty($appSettings['app_password_hash']) && empty($input['new_password'])) {
-        send_json(['error' => 'A bekapcsoláshoz előbb állíts be egy jelszót.'], 400);
-    }
-    $update['app_password_enabled'] = $enabled;
+$currentMode = (string) ($appSettings['deployment_mode'] ?? 'local');
+$targetMode = isset($input['deployment_mode']) ? (string) $input['deployment_mode'] : $currentMode;
+if (!in_array($targetMode, ['local', 'network'], true)) {
+    send_json(['error' => 'Érvénytelen üzemmód.'], 400);
 }
 
 if (!empty($input['new_password'])) {
@@ -29,6 +32,35 @@ if (!empty($input['new_password'])) {
         send_json(['error' => 'A két jelszó nem egyezik.'], 400);
     }
     $update['app_password_hash'] = password_hash($newPassword, PASSWORD_DEFAULT);
+}
+
+// Lesz-e jelszó a mentés UTÁN? (vagy már volt, vagy ebben a kérésben állítjuk be)
+$willHavePassword = !empty($update['app_password_hash']) || !empty($appSettings['app_password_hash']);
+
+if (isset($input['app_password_enabled'])) {
+    $enabled = !empty($input['app_password_enabled']);
+    if ($enabled && !$willHavePassword) {
+        send_json(['error' => 'A bekapcsoláshoz előbb állíts be egy jelszót.'], 400);
+    }
+    $update['app_password_enabled'] = $enabled;
+}
+$willBeEnabled = $update['app_password_enabled'] ?? !empty($appSettings['app_password_enabled']);
+
+// 'network' üzemmód (nyilvánosan/internetről is elérhető telepítés)
+// SOSE léphet érvénybe jelszavas védelem nélkül — se úgy, hogy most
+// váltunk 'network'-re jelszó nélkül, se úgy, hogy már 'network'-ben
+// vagyunk és valaki megpróbálná kikapcsolni a jelszót. Lásd
+// Auth::isEnabled() — ez a szerver-oldali kényszer a döntő, a
+// kliens-oldali felület csak segít elkerülni a hibát.
+if ($targetMode === 'network' && !$willHavePassword) {
+    send_json(['error' => 'Nyilvános ("network") üzemmódhoz előbb állíts be egy jelszót.'], 400);
+}
+if ($targetMode === 'network' && !$willBeEnabled) {
+    send_json(['error' => 'Nyilvános ("network") üzemmódban a jelszavas védelem nem kapcsolható ki.'], 400);
+}
+
+if (isset($input['deployment_mode'])) {
+    $update['deployment_mode'] = $targetMode;
 }
 
 if (isset($input['session_timeout_minutes'])) {

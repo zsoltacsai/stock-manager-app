@@ -89,32 +89,6 @@ function applyPurchasePrefill() {
     } catch (e) { /* malformed prefill — just skip it */ }
 }
 
-// A beszerzési javaslat oldalról érkező, előre kiválasztott tételek
-// betöltése — sessionStorage-on keresztül adja át, mert ez csak az adott
-// böngésző-fülre/munkamenetre vonatkozó, egyszeri átadás.
-function applyPurchasePrefill() {
-    const raw = sessionStorage.getItem('sm_purchase_prefill');
-    if (!raw) return;
-    sessionStorage.removeItem('sm_purchase_prefill');
-    try {
-        const prefill = JSON.parse(raw);
-        (prefill.items || []).forEach(item => {
-            const product = allProducts.find(p => p.id === item.product_id);
-            if (!product) return;
-            addToPurchaseCart(product);
-            const line = purchaseCart.get(product.id);
-            if (line) line.qty = item.qty;
-        });
-        renderCart();
-        if (prefill.supplier_id) {
-            supplierToggle.checked = true;
-            supplierFields.classList.remove('hidden');
-            supplierPicker.value = String(prefill.supplier_id);
-            supplierPicker.dispatchEvent(new Event('change'));
-        }
-    } catch (e) { /* malformed prefill — just skip it */ }
-}
-
 function vatPercentOf(vatRate) {
     const n = parseFloat(vatRate);
     return isNaN(n) ? 0 : n / 100;

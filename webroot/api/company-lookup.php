@@ -22,5 +22,10 @@ try {
     $result = $lookup->lookup($taxNumber);
     send_json($result);
 } catch (Throwable $e) {
-    send_json(['found' => false, 'error' => $e->getMessage()], 500);
+    // Ezt a végpontot bármelyik bejelentkezett dolgozó eléri (nem csak
+    // vezető) — a NAV API nyers hibaüzenete (kapcsolati/technikai
+    // részletek) helyett egy stabil, felhasználóbarát üzenetet adunk
+    // vissza, a részleteket csak a szerver oldali naplóban hagyva.
+    error_log('NAV company-lookup failed: ' . $e->getMessage());
+    send_json(['found' => false, 'error' => 'A cégadat-lekérdezés jelenleg nem elérhető.'], 500);
 }

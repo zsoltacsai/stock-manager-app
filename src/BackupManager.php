@@ -22,9 +22,109 @@ class BackupManager
         return $this->driver === 'mysql' ? 'sql' : 'sqlite';
     }
 
+    // ------------------------------------------------------------------
+    // Titkosítás nyugalmi állapotban (encryption at rest). A mentés
+    // TARTALMAZZA a data/settings.json-t (lásd backupSettingsSidecar()),
+    // ami minden integrációs hitelesítő adatot (WooCommerce, Számlázz.hu,
+    // NAV, Dropbox, Google) tartalmaz — egy ellopott/elveszett mentési
+    // fájl enélkül azonnal olvasható lenne. A tényleges DB-mentés/
+    // visszaállítás meglévő, tesztelt logikáját (createSqliteSnapshot(),
+    // restoreSqliteFromFile() stb.) SZÁNDÉKOSAN változatlanul hagytuk —
+    // azok továbbra is egy ideiglenes, sima (titkosítatlan) fájlt
+    // hoznak létre/olvasnak, amit ez a réteg utólag titkosít, illetve
+    // visszaállítás előtt előbb visszafejt egy ideiglenes fájlba.
+    //
+    // FONTOS, DOKUMENTÁLT KORLÁT: a titkosító kulcs (data/.backup-
+    // encryption-key) UGYANAZON a szerveren van tárolva, mint maga a
+    // mentés — ez a nyugalmi állapotú titkosítás megvéd egy ELKÜLÖNÍTVE
+    // ellopott/elveszett/rosszul konfigurált felhő-tárhelyre feltöltött
+    // mentési fájl ellen, de NEM helyettesít egy valódi kulcskezelő
+    // szolgáltatást (KMS/HSM): aki teljes hozzáférést szerez magához a
+    // szerverhez, a kulcsfájlt is megszerzi. Éles, nagyobb kockázatú
+    // telepítésen érdemes a kulcsot egy külön kulcskezelő szolgáltatásban
+    // tartani, és csak ideiglenesen, memóriában betölteni.
+    // ------------------------------------------------------------------
+
+    private function encryptionKeyPath(): string
+    {
+        return dirname($this->backupDir) . '/.backup-encryption-key';
+    }
+
+    private function encryptionKey(): string
+    {
+        $path = $this->encryptionKeyPath();
+        if (!is_file($path)) {
+            $key = random_bytes(32);
+            @mkdir(dirname($path), 0775, true);
+            file_put_contents($path, base64_encode($key));
+            @chmod($path, 0600);
+            return $key;
+        }
+        $key = base64_decode(trim((string) file_get_contents($path)), true);
+        if ($key === false || strlen($key) !== 32) {
+            throw new RuntimeException('A mentés-titkosítási kulcs (data/.backup-encryption-key) sérült vagy érvénytelen.');
+        }
+        return $key;
+    }
+
+    /** Titkosítja $plainPath tartalmát $encPath-ba (AES-256-GCM, hitelesített titkosítás), majd törli az eredeti sima fájlt. */
+    private function encryptFileInPlace(string $plainPath, string $encPath): void
+    {
+        $plaintext = file_get_contents($plainPath);
+        if ($plaintext === false) {
+            throw new RuntimeException('A titkosítandó fájl nem olvasható: ' . $plainPath);
+        }
+        $key = $this->encryptionKey();
+        $iv = random_bytes(12);
+        $tag = '';
+        $ciphertext = openssl_encrypt($plaintext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+        if ($ciphertext === false || $tag === '') {
+            throw new RuntimeException('A mentés titkosítása sikertelen.');
+        }
+        if (file_put_contents($encPath, $iv . $tag . $ciphertext) === false) {
+            throw new RuntimeException('A titkosított mentés írása sikertelen: ' . $encPath);
+        }
+        @chmod($encPath, 0600);
+        @unlink($plainPath);
+    }
+
+    /** Visszafejti $encPath-ot egy ideiglenes fájlba, és visszaadja annak elérési útját — a hívó felelőssége törölni, ha végzett vele. */
+    private function decryptToTempFile(string $encPath, string $suffix): string
+    {
+        $raw = file_get_contents($encPath);
+        if ($raw === false || strlen($raw) < 12 + 16) {
+            throw new RuntimeException('A titkosított mentés fájlja sérült vagy nem olvasható: ' . $encPath);
+        }
+        $iv = substr($raw, 0, 12);
+        $tag = substr($raw, 12, 16);
+        $ciphertext = substr($raw, 28);
+        $plaintext = openssl_decrypt($ciphertext, 'aes-256-gcm', $this->encryptionKey(), OPENSSL_RAW_DATA, $iv, $tag);
+        if ($plaintext === false) {
+            throw new RuntimeException('A titkosított mentés visszafejtése sikertelen (hibás kulcs, vagy a fájl sérült/módosított).');
+        }
+        $tmpPath = sys_get_temp_dir() . '/stockmanager_decrypt_' . bin2hex(random_bytes(8)) . $suffix;
+        if (file_put_contents($tmpPath, $plaintext) === false) {
+            throw new RuntimeException('Az ideiglenes visszafejtett fájl írása sikertelen.');
+        }
+        // A visszafejtett tartalom a teljes adatbázist (és a settings.json
+        // sidecar esetén minden integrációs hitelesítő adatot) tartalmazza
+        // — ugyanaz a jogosultság-szűkítés kell ide, mint a titkosított
+        // fájl írásakor (lásd encryptFileInPlace()), nehogy egy osztott/
+        // több-felhasználós szerveren más helyi felhasználó elolvashassa a
+        // visszaállítás rövid időablakában. A chmod() sikertelensége (pl.
+        // olyan fájlrendszer, ami nem támogatja a Unix-jogosultságokat)
+        // szándékosan NEM hiúsítja meg a visszaállítást — a hívó a
+        // finally blokkban ugyanígy törli a fájlt, akár sikerült a chmod,
+        // akár nem.
+        @chmod($tmpPath, 0600);
+        return $tmpPath;
+    }
+
     public function run(array $settings): array
     {
-        $filename = $this->driver === 'mysql' ? $this->createMysqlSnapshot() : $this->createSqliteSnapshot();
+        $plainFilename = $this->driver === 'mysql' ? $this->createMysqlSnapshot() : $this->createSqliteSnapshot();
+        $filename = $this->encryptSnapshotFiles($plainFilename);
+
         $this->pruneLocal((int) $settings['backup_retention_count']);
 
         $cloudResult = null;
@@ -42,6 +142,21 @@ class BackupManager
         ];
     }
 
+    /** A frissen létrehozott (sima) DB-mentést és a beállítás-sidecart titkosítja; a titkosított fájlnevet adja vissza. */
+    private function encryptSnapshotFiles(string $plainFilename): string
+    {
+        $plainPath = $this->backupDir . '/' . $plainFilename;
+        $encFilename = $plainFilename . '.enc';
+        $this->encryptFileInPlace($plainPath, $this->backupDir . '/' . $encFilename);
+
+        $sidecarPlain = $this->backupDir . '/' . $this->settingsSidecarName($plainFilename);
+        if (is_file($sidecarPlain)) {
+            $this->encryptFileInPlace($sidecarPlain, $sidecarPlain . '.enc');
+        }
+
+        return $encFilename;
+    }
+
     private function createSqliteSnapshot(): string
     {
         $filename = 'stockmanager_backup_' . date('Ymd_His') . '.sqlite';
@@ -49,6 +164,10 @@ class BackupManager
 
         $pdo = new PDO('sqlite:' . $this->dbConfig['sqlite']['path']);
         $pdo->exec('VACUUM INTO ' . $pdo->quote($destination));
+        // Rövid ideig (az encryptSnapshotFiles() lefutásáig) ez a fájl
+        // sima szöveges adatbázis-mentés — ugyanaz a jogosultság-szűkítés
+        // indokolt, mint a titkosított végeredménynél.
+        @chmod($destination, 0600);
 
         $this->backupSettingsSidecar($filename);
 
@@ -69,13 +188,17 @@ class BackupManager
     {
         $settingsPath = dirname($this->backupDir) . '/settings.json';
         if (is_file($settingsPath)) {
-            @copy($settingsPath, $this->backupDir . '/' . $this->settingsSidecarName($dbFilename));
+            $sidecarPath = $this->backupDir . '/' . $this->settingsSidecarName($dbFilename);
+            @copy($settingsPath, $sidecarPath);
+            @chmod($sidecarPath, 0600); // lásd createSqliteSnapshot() azonos megjegyzése
         }
     }
 
     private function settingsSidecarName(string $dbFilename): string
     {
-        return preg_replace('/\.(sqlite|sql)$/', '', $dbFilename) . '.settings.json';
+        $base = preg_replace('/\.enc$/', '', $dbFilename);
+        $base = preg_replace('/\.(sqlite|sql)$/', '', (string) $base);
+        return $base . '.settings.json';
     }
 
     private function createMysqlSnapshot(): string
@@ -96,12 +219,14 @@ class BackupManager
             );
             exec($cmd, $output, $exitCode);
             if ($exitCode === 0 && is_file($destination) && filesize($destination) > 0) {
+                @chmod($destination, 0600); // lásd createSqliteSnapshot() azonos megjegyzése
                 $this->backupSettingsSidecar($filename);
                 return $filename;
             }
         }
 
         $this->dumpMysqlWithPhp($destination);
+        @chmod($destination, 0600);
         $this->backupSettingsSidecar($filename);
         return $filename;
     }
@@ -125,6 +250,7 @@ class BackupManager
         if (!$out) {
             throw new RuntimeException("Nem sikerült írni a mentési fájlt: $destination");
         }
+        @chmod($destination, 0600); // rögtön a létrehozás után, még az írás megkezdése előtt
 
         fwrite($out, "-- Stock Manager PHP-based MySQL dump (mysqldump not available)\n");
         fwrite($out, "-- Generated: " . date('c') . "\n\nSET FOREIGN_KEY_CHECKS=0;\n\n");
@@ -150,9 +276,18 @@ class BackupManager
         fclose($out);
     }
 
+    /**
+     * Csak a titkosított (.enc) mentéseket listázza — minden ÚJ mentés
+     * ilyen (lásd run()/encryptSnapshotFiles()). Egy erről a változtatásról
+     * ("Priority 9") korábbi, még titkosítatlan mentés a lemezen marad
+     * (nem törlődik), de innentől nem jelenik meg a listában/nem kerül
+     * automatikusan törlésre a megőrzési szabály által — kézi
+     * visszaállításra (feltöltéssel) restoreFromFile() továbbra is
+     * elfogadja titkosítatlanul is, lásd ott.
+     */
     public function listLocal(): array
     {
-        $files = glob($this->backupDir . '/stockmanager_backup_*.' . $this->extension()) ?: [];
+        $files = glob($this->backupDir . '/stockmanager_backup_*.' . $this->extension() . '.enc') ?: [];
         rsort($files);
 
         return array_map(fn($f) => [
@@ -164,12 +299,12 @@ class BackupManager
 
     private function pruneLocal(int $keep): void
     {
-        $files = glob($this->backupDir . '/stockmanager_backup_*.' . $this->extension()) ?: [];
+        $files = glob($this->backupDir . '/stockmanager_backup_*.' . $this->extension() . '.enc') ?: [];
         rsort($files);
 
         foreach (array_slice($files, max(0, $keep)) as $old) {
             @unlink($old);
-            @unlink($this->backupDir . '/' . $this->settingsSidecarName(basename($old)));
+            @unlink($this->backupDir . '/' . $this->settingsSidecarName(basename($old)) . '.enc');
         }
     }
 
@@ -214,17 +349,54 @@ class BackupManager
             throw new RuntimeException('A visszaállítandó fájl nem található.');
         }
 
-        $safetyBackup = $this->driver === 'mysql' ? $this->createMysqlSnapshot() : $this->createSqliteSnapshot();
+        $safetyBackupPlain = $this->driver === 'mysql' ? $this->createMysqlSnapshot() : $this->createSqliteSnapshot();
+        $safetyBackup = $this->encryptSnapshotFiles($safetyBackupPlain);
 
-        if ($this->driver === 'mysql') {
-            $this->restoreMysqlFromFile($sourcePath);
-        } else {
-            $this->restoreSqliteFromFile($sourcePath);
+        // Visszafelé kompatibilis: a data/backups mappából kiválasztott
+        // fájl mindig .enc (lásd listLocal()), de egy KÉZZEL feltöltött
+        // fájl lehet egy még ebből a funkcióból ("Priority 9") származó
+        // titkosítás előtti, sima mentés is — ilyenkor a visszafejtést
+        // egyszerűen kihagyjuk, a fájlt már eleve sima adatbázisként
+        // kezeljük, ahogy eddig is.
+        $isEncrypted = str_ends_with(strtolower($sourcePath), '.enc');
+        $decryptedDbPath = null;
+        $decryptedSidecarPath = null;
+        try {
+            $effectiveSourcePath = $sourcePath;
+            if ($isEncrypted) {
+                $decryptedDbPath = $this->decryptToTempFile($sourcePath, '.' . $this->extension());
+                $effectiveSourcePath = $decryptedDbPath;
+            }
+
+            if ($this->driver === 'mysql') {
+                $this->restoreMysqlFromFile($effectiveSourcePath);
+            } else {
+                $this->restoreSqliteFromFile($effectiveSourcePath);
+            }
+
+            $settingsRestored = false;
+            if ($isEncrypted) {
+                $encSidecar = dirname($sourcePath) . '/' . $this->settingsSidecarName(basename($sourcePath)) . '.enc';
+                if (is_file($encSidecar)) {
+                    $decryptedSidecarPath = $this->decryptToTempFile($encSidecar, '.settings.json');
+                    $settingsRestored = $this->restoreSettingsSidecarIfPresent($decryptedSidecarPath);
+                }
+            } else {
+                // Visszafelé kompatibilis eset: az eredeti (nem titkosított)
+                // mentés melletti sima sidecar-fájl.
+                $plainSidecar = dirname($sourcePath) . '/' . $this->settingsSidecarName(basename($sourcePath));
+                $settingsRestored = $this->restoreSettingsSidecarIfPresent($plainSidecar);
+            }
+
+            return ['safety_backup' => $safetyBackup, 'settings_restored' => $settingsRestored];
+        } finally {
+            if ($decryptedDbPath !== null) {
+                @unlink($decryptedDbPath);
+            }
+            if ($decryptedSidecarPath !== null) {
+                @unlink($decryptedSidecarPath);
+            }
         }
-
-        $settingsRestored = $this->restoreSettingsSidecarIfPresent($sourcePath);
-
-        return ['safety_backup' => $safetyBackup, 'settings_restored' => $settingsRestored];
     }
 
     private function restoreSqliteFromFile(string $sourcePath): void
@@ -273,19 +445,34 @@ class BackupManager
         // bele a következő megnyitásba.
         @unlink($liveDbPath . '-wal');
         @unlink($liveDbPath . '-shm');
+
+        // Visszaállítás UTÁNI egészség-ellenőrzés: a bemásolt fájl a fenti
+        // ellenőrzésen (várt táblák megléte) már átment, de csak a FORRÁS
+        // fájlon — ez itt magán a immár ÉLESSÉ vált fájlon fut le, hogy egy
+        // esetleges másolási hiba (lemez megtelt félúton, jogosultsági
+        // probléma egy lapon) azonnal, még a válaszban kiderüljön, ne csak
+        // az első valódi lekérdezésnél, észrevétlenül.
+        try {
+            $verify = new PDO('sqlite:' . $liveDbPath);
+            $verify->query('SELECT COUNT(*) FROM products')->fetchColumn();
+            $verify->query('SELECT COUNT(*) FROM sales')->fetchColumn();
+            $verify->query('SELECT COUNT(*) FROM customers')->fetchColumn();
+        } catch (Throwable $e) {
+            throw new RuntimeException('A visszaállítás után az adatbázis nem tűnik épnek (egészség-ellenőrzés sikertelen): ' . $e->getMessage());
+        }
     }
 
-    private function restoreSettingsSidecarIfPresent(string $sourcePath): bool
+    /** @param string $sidecarPath a ténylegesen olvasandó (már visszafejtett, ha titkosított volt) sidecar-fájl elérési útja. */
+    private function restoreSettingsSidecarIfPresent(string $sidecarPath): bool
     {
-        $sidecar = dirname($sourcePath) . '/' . $this->settingsSidecarName(basename($sourcePath));
-        if (!is_file($sidecar)) {
+        if (!is_file($sidecarPath)) {
             return false;
         }
         $settingsPath = dirname($this->backupDir) . '/settings.json';
         if (is_file($settingsPath)) {
             @copy($settingsPath, $settingsPath . '.before-restore-' . date('Ymd_His'));
         }
-        return @copy($sidecar, $settingsPath);
+        return @copy($sidecarPath, $settingsPath);
     }
 
     private function restoreMysqlFromFile(string $sourcePath): void

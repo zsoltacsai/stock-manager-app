@@ -28,7 +28,7 @@ final class Auth
             session_set_cookie_params([
                 'lifetime' => 0,
                 'path'     => '/',
-                'secure'   => !empty($_SERVER['HTTPS']),
+                'secure'   => self::isRequestHttps(),
                 'httponly' => true,
                 // Strict jelentősen csökkenti a CSRF-kockázatot anélkül, hogy
                 // minden POST-hívásba tokent kellene fűzni — a session-cookie
@@ -40,8 +40,66 @@ final class Auth
         self::$sessionStarted = true;
     }
 
+    /**
+     * Igaz, ha a kérés ténylegesen HTTPS-en érkezett — akár közvetlenül
+     * (a webszerver maga terminálja a TLS-t), akár egy megbízható,
+     * UGYANAZON a gépen futó reverse proxin keresztül, ami az
+     * X-Forwarded-Proto fejlécet állítja be. Ettől függ a session-süti
+     * Secure jelzője: ha ez tévesen false maradna egy ténylegesen HTTPS-en
+     * (proxy mögött) futó "network" telepítésen, a böngésző a sütit egy
+     * esetleges nem-titkosított útvonalon is elküldené.
+     *
+     * Az X-Forwarded-Proto fejlécet KIZÁRÓLAG akkor fogadjuk el, ha a
+     * közvetlen TCP-kapcsolat (REMOTE_ADDR) maga is loopback (127.0.0.1 /
+     * ::1) — UGYANAZ a bizalmi határ, mint a
+     * GeoBlocker::resolveClientIp()-ben az X-Forwarded-For/X-Real-IP
+     * fejléceknél: ez a dokumentált telepítési forma (nginx/Apache
+     * ugyanazon a hoszton fut, mint a PHP-FPM/PHP maga). Egy távoli,
+     * nyilvános internetről közvetlenül csatlakozó kliens NEM tudja
+     * meghamisítani ezt a fejlécet ebben az esetben, mert a REMOTE_ADDR-t
+     * (a tényleges TCP-partnert) nem tudja meghamisítani — a szándékosan
+     * SZŰK, csak-loopback bizalmi kör miatt egy TÁVOLI reverse proxy
+     * (más gépen/konténerben futó terheléselosztó, Cloudflare Tunnel stb.)
+     * mögötti telepítésen ez a fejléc NEM lesz megbízható; ilyen esetben a
+     * webszervert kell úgy beállítani, hogy a PHP felé is a valódi HTTPS
+     * állapotot közvetítse (pl. Apache mod_proxy "SetEnvIf" / nginx
+     * "fastcgi_param HTTPS on"), vagy a proxy és a PHP között is TLS-t
+     * kell használni.
+     */
+    private static function isRequestHttps(): bool
+    {
+        $https = strtolower(trim((string) ($_SERVER['HTTPS'] ?? '')));
+        if ($https !== '' && $https !== 'off') {
+            return true;
+        }
+
+        $remote = $_SERVER['REMOTE_ADDR'] ?? '';
+        if (in_array($remote, ['127.0.0.1', '::1'], true)) {
+            $forwardedProto = strtolower(trim((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')));
+            if ($forwardedProto === 'https') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * 'network' üzemmódban a jelszavas védelem SOSE tekinthető
+     * kikapcsoltnak, még akkor sem, ha 'app_password_enabled' valamiért
+     * false (pl. sérült/kézzel szerkesztett settings.json, vagy egy
+     * korábbi 'local' módból megmaradt érték) — lásd deployment_mode
+     * dokumentációját a Settings::DEFAULTS-ban. Ha eközben nincs is
+     * beállítva jelszó (app_password_hash üres), az isLoggedIn() ettől
+     * MÉG NEM enged be senkit: a login() jelszó nélkül sose sikerül, így
+     * ez zárt állapot marad (fail closed), nem egy hallgatólagos
+     * jelszó-mentesítés.
+     */
     public static function isEnabled(array $settings): bool
     {
+        if (($settings['deployment_mode'] ?? 'local') === 'network') {
+            return true;
+        }
         return !empty($settings['app_password_enabled']) && !empty($settings['app_password_hash']);
     }
 

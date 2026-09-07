@@ -3,8 +3,18 @@
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 require_once __DIR__ . '/../../src/Settings.php';
+require_once __DIR__ . '/../../src/UrlSafety.php';
 
 $settings = new Settings(__DIR__ . '/../../data/settings.json');
+
+// A Beállítások tartalmazza az összes integrációs hitelesítő adatot
+// (WooCommerce, Számlázz.hu, NAV, felhő-mentés) és a cron/webhook titkos
+// tokeneket — egy sima pénztáros nem módosíthatja ezeket csak azért, mert
+// be van jelentkezve a megosztott app-jelszóval. Az olvasás (GET) marad
+// szabad, csak a tényleges mentés (POST) van jogszinthez kötve.
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    require_admin($db);
+}
 
 function logo_url(?string $filename): string
 {
@@ -36,9 +46,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // véletlenül kitörölné a korábban elmentett titkot.
     $secretFields = [
         'dropbox_access_token', 'google_client_secret', 'google_refresh_token',
-        'szamlazz_agent_key', 'wc_consumer_secret', 'wc_webhook_secret',
+        'szamlazz_agent_key', 'wc_consumer_key', 'wc_consumer_secret', 'wc_webhook_secret',
         'nav_password', 'nav_signer_key', 'nav_exchange_key', 'cron_secret',
+        // A legtöbb Slack/Discord/Teams-féle bejövő webhook URL a saját
+        // elérési útjában hordozza a teljes hitelesítést — aki ismeri az
+        // URL-t, üzenetet tud küldeni vele, tehát ugyanúgy titokként kell
+        // kezelni, mint egy API-kulcsot (lásd $secretResponseFields is).
+        'low_stock_notify_webhook',
     ];
+    // Ezeket a mezőket a szerver ténylegesen FEL IS HÍVJA — itt kell
+    // elutasítani egy belső/nem-publikus URL elmentését, mielőtt egyáltalán
+    // eljutna odáig, hogy a WooCommerceClient/LowStockNotifier valaha
+    // felhasználja (azok is ellenőrzik, védelmi mélységként, de a hiba itt,
+    // mentéskor egyértelműbb visszajelzés a felhasználónak).
+    $outboundUrlFields = ['wc_store_url', 'low_stock_notify_webhook'];
+
     foreach ($stringFields as $field) {
         if (!isset($input[$field])) {
             continue;
@@ -46,6 +68,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $value = trim((string) $input[$field]);
         if (in_array($field, $secretFields, true) && $value === '') {
             continue;
+        }
+        if (in_array($field, $outboundUrlFields, true) && $value !== '') {
+            [$urlOk, $urlError] = UrlSafety::check($value);
+            if (!$urlOk) {
+                send_json(['error' => "Érvénytelen $field: $urlError"], 400);
+            }
         }
         $update[$field] = $value;
     }
@@ -157,8 +185,9 @@ unset($data['app_password_hash']); // a hash sose menjen ki a klienshez, semmily
 // elmentett érték, csak nem mutatja — lásd a fenti $secretFields listát is.
 $secretResponseFields = [
     'dropbox_access_token', 'google_client_secret', 'google_refresh_token',
-    'szamlazz_agent_key', 'wc_consumer_secret', 'wc_webhook_secret',
+    'szamlazz_agent_key', 'wc_consumer_key', 'wc_consumer_secret', 'wc_webhook_secret',
     'nav_password', 'nav_signer_key', 'nav_exchange_key', 'cron_secret',
+    'low_stock_notify_webhook',
 ];
 foreach ($secretResponseFields as $field) {
     $data[$field . '_set'] = !empty($data[$field]);

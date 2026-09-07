@@ -3,6 +3,29 @@ let allProducts = [];
 let manualItemIdCounter = 1;
 const manualItems = [];
 
+// Idempotencia-kulcs a kassza jelenlegi "leadási kísérletéhez" — a szerver
+// (api/sale.php) ezt használja duplikált eladás elleni védelemre (dupla
+// kattintás, hálózati újrapróbálkozás, elveszett válasz utáni manuális
+// újraküldés). SZÁNDÉKOSAN a KOSÁR ÁLLAPOTÁHOZ van kötve, nem minden egyes
+// gombnyomáshoz: amíg a kosár tartalma nem változik, egy ismételt
+// "Eladás rögzítése" kattintás (retry) UGYANAZT a kulcsot küldi újra, hogy
+// a szerver felismerhesse duplikátumként — de amint a kosár ténylegesen
+// megváltozik (tétel hozzáadva/törölve/mennyiség módosítva), ÚJ kulcsot
+// kap, nehogy egy régi kulcs újrafelhasználása egy VALÓBAN más eladást
+// tévesen az előzővel azonosnak láttasson.
+let checkoutIdempotencyKey = null;
+function currentCheckoutIdempotencyKey() {
+    if (!checkoutIdempotencyKey) {
+        checkoutIdempotencyKey = (window.crypto && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+    }
+    return checkoutIdempotencyKey;
+}
+function resetCheckoutIdempotencyKey() {
+    checkoutIdempotencyKey = null;
+}
+
 const barcodeInput   = document.getElementById('barcode-input');
 const scanFeedback   = document.getElementById('scan-feedback');
 const searchInput    = document.getElementById('search-input');
@@ -764,6 +787,14 @@ function flashCartRow(productId) {
 }
 
 function renderCart() {
+    // A kosár tartalma megváltozott (ez a függvény minden tétel-hozzáadás/
+    // -törlés/mennyiség-módosítás UTÁN fut le) — egy korábbi, a RÉGI
+    // tartalomhoz generált idempotencia-kulcs újrafelhasználása itt
+    // hibás lenne: a szerver ekkor a MOSTANI (más) kosarat az előző
+    // kéréssel azonosnak látná, és visszautasítaná/megismételné az előzőt
+    // ahelyett, hogy ezt az újat rögzítené.
+    resetCheckoutIdempotencyKey();
+
     cartBody.innerHTML = '';
 
     for (const { product, qty } of cart.values()) {
@@ -1029,7 +1060,7 @@ checkoutBtn.addEventListener('click', async () => {
         ...manualItems.map(({ name, qty, unit_price, vat_rate }) => ({ manual: true, name, qty, unit_price, vat_rate })),
     ];
 
-    const payload = { items, payment_method: paymentMethodSelect.value };
+    const payload = { items, payment_method: paymentMethodSelect.value, idempotency_key: currentCheckoutIdempotencyKey() };
     if (appliedCoupon) payload.coupon_code = appliedCoupon.code;
     if (currentStaff) payload.staff_id = currentStaff.id;
     if (!locationSelector.classList.contains('hidden') && locationSelector.value) {

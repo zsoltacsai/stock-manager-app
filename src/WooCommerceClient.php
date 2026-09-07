@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/UrlSafety.php';
+
 class WooCommerceClient
 {
     private string $baseUrl;
@@ -220,6 +222,21 @@ class WooCommerceClient
             $url .= '?' . http_build_query($query);
         }
 
+        // Védelmi mélység: a Beállítások mentésekor (settings.php) és a
+        // kapcsolat-tesztnél (wc-test-connection.php) már ellenőriztük,
+        // hogy ez a store_url nyilvános cím — ez itt arra az esetre védi
+        // az ELÉRHETŐSÉGET, ha a settings.json valaha közvetlenül (a
+        // mentési validáció megkerülésével) módosulna, vagy egy még nem
+        // validált korábbi mentésből származna az érték. A CURLOPT_RESOLVE
+        // a validáláskor feloldott IP-re "pinneli" a kapcsolatot, hogy a
+        // validálás és a tényleges kapcsolódás közötti DNS-újrafeloldás
+        // (DNS rebinding) se irányíthasson belső célra; az átirányítás-
+        // követés pedig explicit ki van kapcsolva.
+        [$urlOk, $urlError, $resolvedIp] = UrlSafety::check($url);
+        if (!$urlOk) {
+            throw new RuntimeException("WooCommerce URL elutasítva: $urlError");
+        }
+
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
@@ -227,7 +244,7 @@ class WooCommerceClient
             CURLOPT_USERPWD        => $this->consumerKey . ':' . $this->consumerSecret,
             CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
             CURLOPT_TIMEOUT        => $timeout,
-        ]);
+        ] + UrlSafety::pinnedCurlOptions($url, (string) $resolvedIp));
 
         if ($body !== null) {
             curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body));

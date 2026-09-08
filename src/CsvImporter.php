@@ -96,7 +96,7 @@ class CsvImporter
         return !empty(trim((string) $which));
     }
 
-    public static function readRows(string $path, array $fieldMap): array
+    public static function readRows(string $path, array $fieldMap, int $skipLines = 0): array
     {
         $content = file_get_contents($path);
         if ($content === false) {
@@ -119,6 +119,17 @@ class CsvImporter
         $stream = fopen('php://temp', 'r+');
         fwrite($stream, $content);
         rewind($stream);
+
+        // Néhány forrás program (pl. Jutasoft raktárkészlet-riportja) a
+        // tényleges oszlopfejléc ELŐTT több sornyi riport-metaadatot ad ki
+        // (riport címe, szűrési feltételek, nyomtatás dátuma stb.) — ezeket
+        // a profil `skip_lines` beállítása jelzi előre, hány sort kell
+        // figyelmen kívül hagyni, mielőtt a tényleges fejléc-sor jönne.
+        for ($i = 0; $i < $skipLines; $i++) {
+            if (fgetcsv($stream, 0, $delimiter) === false) {
+                break;
+            }
+        }
 
         $header = fgetcsv($stream, 0, $delimiter);
         if (!$header) {

@@ -65,7 +65,7 @@ if ($uploadedPath !== $storedPath) {
 }
 
 try {
-    $parsed = CsvImporter::readRows($storedPath, $profile['field_map']);
+    $parsed = CsvImporter::readRows($storedPath, $profile['field_map'], $profile['skip_lines'] ?? 0);
 } catch (Throwable $e) {
     @unlink($storedPath);
     send_json(['error' => $e->getMessage()], 500);
@@ -85,6 +85,7 @@ foreach ($parsed['rows'] as $row) {
 
 $total = count($normalized);
 $missingName = 0;
+$skippedNoIdentifier = 0;
 $zeroPrice = 0;
 $blankBarcode = 0;
 $willUpdate = 0;
@@ -94,6 +95,17 @@ $barcodeCounts = [];
 foreach ($normalized as $n) {
     if ($n['name'] === '') {
         $missingName++;
+    }
+    // A skip() ugyanazt a szabályt alkalmazza, mint amit az
+    // import-commit.php ténylegesen alkalmazni fog importáláskor — a
+    // "beszúrandó/frissítendő" statisztikának pontosan azt kell mutatnia,
+    // ami ténylegesen importálásra kerülne, a Jutasoft-riport végi
+    // összesítő sorok (van "nevük", de nincs azonosítójuk) nélkül.
+    if (ProductRowNormalizer::shouldSkip($n, $profile)) {
+        if ($n['name'] !== '') {
+            $skippedNoIdentifier++;
+        }
+        continue;
     }
     if ($n['price'] <= 0) {
         $zeroPrice++;
@@ -117,13 +129,14 @@ send_json([
     'token'   => $token,
     'profile' => $profileKey,
     'stats' => [
-        'total_rows'         => $total,
-        'missing_name'       => $missingName,
-        'zero_price'         => $zeroPrice,
-        'blank_barcode'      => $blankBarcode,
-        'duplicate_barcodes' => $duplicatesInFile,
-        'will_insert'        => $willInsert,
-        'will_update'        => $willUpdate,
+        'total_rows'            => $total,
+        'missing_name'          => $missingName,
+        'skipped_no_identifier' => $skippedNoIdentifier,
+        'zero_price'            => $zeroPrice,
+        'blank_barcode'         => $blankBarcode,
+        'duplicate_barcodes'    => $duplicatesInFile,
+        'will_insert'           => $willInsert,
+        'will_update'           => $willUpdate,
     ],
     'matched_fields'   => $parsed['matched_fields'],
     'unmatched_fields' => $parsed['unmatched_fields'],

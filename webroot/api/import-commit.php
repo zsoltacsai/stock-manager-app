@@ -39,7 +39,7 @@ if (!is_file($storedPath)) {
 }
 
 try {
-    $parsed = CsvImporter::readRows($storedPath, $profile['field_map']);
+    $parsed = CsvImporter::readRows($storedPath, $profile['field_map'], $profile['skip_lines'] ?? 0);
 } catch (Throwable $e) {
     send_json(['error' => $e->getMessage()], 500);
 } finally {
@@ -55,7 +55,7 @@ try {
     foreach ($parsed['rows'] as $row) {
         $normalized = ProductRowNormalizer::normalize($row, $profile);
 
-        if ($normalized['name'] === '') {
+        if (ProductRowNormalizer::shouldSkip($normalized, $profile)) {
             $skipped++;
             continue;
         }

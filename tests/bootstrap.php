@@ -11,6 +11,8 @@ require_once __DIR__ . '/../src/SimpleXlsWriter.php';
 require_once __DIR__ . '/../src/UrlSafety.php';
 require_once __DIR__ . '/../src/Auth.php';
 require_once __DIR__ . '/../src/BackupManager.php';
+require_once __DIR__ . '/../src/CsvImporter.php';
+require_once __DIR__ . '/../src/ProductRowNormalizer.php';
 
 /**
  * Minden tesztfüggvény saját, egyszer használatos SQLite fájllal dolgozik

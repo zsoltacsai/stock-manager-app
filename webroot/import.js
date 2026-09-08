@@ -91,11 +91,15 @@ function renderPreview(data) {
         <div class="stat-box ${s.blank_barcode > 0 ? 'warn' : ''}"><div class="value">${s.blank_barcode}</div><div class="label">Vonalkód nélkül</div></div>
         <div class="stat-box ${s.duplicate_barcodes > 0 ? 'warn' : ''}"><div class="value">${s.duplicate_barcodes}</div><div class="label">Duplikált vonalkód a fájlban</div></div>
         <div class="stat-box ${s.missing_name > 0 ? 'danger' : ''}"><div class="value">${s.missing_name}</div><div class="label">Hiányzó megnevezés</div></div>
+        ${s.skipped_no_identifier ? `<div class="stat-box warn"><div class="value">${s.skipped_no_identifier}</div><div class="label">Azonosító nélküli (pl. összesítő sor)</div></div>` : ''}
     `;
 
     let warnings = '';
     if (s.missing_name > 0) {
         warnings += `<p class="feedback warn">${s.missing_name} sornak nincs megnevezése — ezek importáláskor kimaradnak.</p>`;
+    }
+    if (s.skipped_no_identifier > 0) {
+        warnings += `<p class="feedback warn">${s.skipped_no_identifier} sornak van neve, de nincs vonalkódja/kódja (pl. a riport végi összesítő sorok) — ezek is kimaradnak az importból.</p>`;
     }
     if (s.duplicate_barcodes > 0) {
         warnings += `<p class="feedback warn">${s.duplicate_barcodes} vonalkód többször szerepel a fájlban — importáláskor a fájlban utoljára szereplő érték marad meg.</p>`;

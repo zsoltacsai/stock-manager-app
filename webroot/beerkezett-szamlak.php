@@ -44,13 +44,13 @@ if (!Auth::isLoggedIn($appSettings)) {
         <div class="products-toolbar">
             <span id="sync-status-text" class="muted">Sync állapot betöltése...</span>
             <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                <select id="sync-period">
+                <select id="sync-period" style="width:auto; margin-bottom:0;">
                     <option value="7d">Utolsó 7 nap</option>
                     <option value="30d">Utolsó 30 nap</option>
                     <option value="custom">Egyedi dátumtól</option>
                 </select>
-                <input type="date" id="sync-custom-from" style="display:none;">
-                <button id="sync-now-btn" class="btn btn-primary toolbar-btn">Számlák frissítése</button>
+                <input type="date" id="sync-custom-from" style="display:none; width:auto; margin-bottom:0;">
+                <button id="sync-now-btn" class="btn btn-primary toolbar-btn" style="width:auto; flex:0 0 auto;">Számlák frissítése</button>
             </div>
         </div>
         <p id="sync-feedback" class="modal-feedback"></p>

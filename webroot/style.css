@@ -39,7 +39,16 @@ html[data-theme="light"] select {
     background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'></polyline></svg>") !important;
 }
 html[data-theme="light"] ::selection { background: var(--accent); color: #fff; }
-html[data-theme="light"] .btn-primary { color: #ffffff; }
+/* A #052e12 (sötétzöld, majdnem fekete) szöveg a SÖTÉT témában választott
+   fényesebb --accent (#22c55e) háttéren jó kontrasztú — de a világos
+   témában a --accent maga is sötétebb (#16a34a), emiatt ugyanez a szöveg-
+   szín ott alig olvasható, feketésnek tűnik. Minden accent-hátterű, aktív/
+   kijelölt elem itt kap egy egységes, fehér szöveg felülírást — ugyanaz az
+   elv, mint amit a .btn-primary már korábban is kapott. */
+html[data-theme="light"] .btn-primary,
+html[data-theme="light"] .wo-tab-btn.active,
+html[data-theme="light"] .pm-select-option.selected { color: #ffffff; }
+html[data-theme="light"] .pm-select-option.selected .pm-select-icon svg { stroke: #ffffff !important; }
 
 .theme-picker { display: flex; gap: 14px; margin-bottom: 14px; }
 .theme-option {

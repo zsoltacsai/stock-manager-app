@@ -1,6 +1,6 @@
 # Stock Manager — localhost vonalkód-kassza
 
-**Verzió: 1.0 RC4** (release candidate — a fejlesztés innentől kizárólag
+**Verzió: 1.0 RC5** (release candidate — a fejlesztés innentől kizárólag
 hibakeresésre és bugfixekre koncentrál, új funkció tervezetten nem kerül
 bele az 1.0 véglegesig)
 

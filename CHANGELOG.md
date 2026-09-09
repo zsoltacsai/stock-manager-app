@@ -4,6 +4,38 @@ Ez a fájl a Stock Manager verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## 1.0 RC5 (2026-09-09)
+
+### Hozzáadva
+- **Beérkezett számlák** (NAV Online Számla bejövő szinkron) — más
+  adózók által kiállított, a NAV-nál regisztrált számlák helyi
+  szinkronizálása, listázása, részletnézete (kizárólag olvasás, nincs
+  NAV-beküldés). Külön `incoming_invoices`/`incoming_invoice_items`/
+  `incoming_invoice_sync` adatmodell (indoklás: README), 35 napos NAV
+  ablak-darabolás, race-safe deduplikáció, módosítás/sztornó-kapcsolat,
+  lazy tétel-lekérdezés, manuális + automatikus (cron) sync.
+- **Nyomtató kódlap-választás** (Beállítások → Nyomtató) — a magyar
+  ékezetes karakterek helyesen jelennek meg hálózati ESC/POS
+  nyomtatón (korábban ASCII-re transzliterálódtak, torzítva); valódi
+  Epson TM-T20III hardveren igazolva.
+- **QR-kód nyomtatása** a nyugtára (a digitális nyugta linkjével),
+  Epson hivatalos ESC/POS specifikációja alapján, valódi hardveren
+  igazolva.
+- **Automatikus hálózati nyomtatás** minden kasszaeladás után
+  (opcionális) — a nyomtatási hiba sose vonja vissza az eladást.
+- **SMTP e-mail küldés** (Beállítások → Email) a korábbi, csak helyi
+  levelezés-továbbítóval működő `mail()` mellett/helyett.
+- Beállítások oldal szélesebb elrendezése, új "Email" fül.
+
+### Javítva
+- **Migráció-megbízhatóság**: egy élesben reprodukált hiba, ahol a
+  séma-verzió előrébb léphetett, mint ahogy a hozzá tartozó táblák
+  ténylegesen létrejöttek volna (SQLite-on mostantól teljes
+  tranzakciós atomicitás, minden motoron idempotens, biztonságosan
+  újrafuttatható migráció).
+- Kimenő számlák szűrő-rács UI-hibák (elcsúszott gombsor, levágott
+  legördülő szöveg).
+
 ## 1.0 RC4 (2026-09-07)
 
 Külső production/security audit alapján, a megerősített találatok javítva

@@ -152,13 +152,128 @@ kellenek, és hozzáadható optimista zárolás / ütközés-riasztás.
 
 ## Számlázás
 
+A számlázást a Beállítások → Számlázás fülön kiválasztott szolgáltató
+végzi (`invoice_provider`: `szamlazz` — alapértelmezett — vagy `nav`),
+`src/InvoiceService.php`-n keresztül. `sale.php` (és a webshop-rendelés-
+végpontok) sose ismerik a konkrét szolgáltató (Számlázz.hu vagy NAV)
+API-részleteit — csak az `InvoiceService::processInvoice()`-ot hívják,
+ami mindig egy egységes `{success, invoice_number, pdf_path, error,
+pending}` alakú eredményt ad.
+
+### Számlázz.hu (alapértelmezett)
+
 Minden kassza-eladás meghívja a Számlázz.hu Számla Agent XML API-ját
 (`src/SzamlazzClient.php`), hogy valódi számlát állítson ki, és letölti
-a PDF-et az `invoices/` mappába. Ha a számla létrehozása sikertelen
+a PDF-et az `invoices/` mappába. Ez **szinkron**: a válasz még az
+eladási kérésen belül megérkezik. Ha a számla létrehozása sikertelen
 (pl. hibás agent kulcs, hálózati akadozás), az eladás helyben ekkor is
 rögzítésre kerül `invoice_failed` státusszal, hogy ne vesszen el a
 tranzakció — a számla utólag manuálisan újra kiállítható a Számlázz.hu
 felületén, az adatbázisban lévő eladási adatok alapján.
+
+### NAV Online Számla
+
+**Fontos: a NAV-beküldés ASZINKRON.** A kassza SOSE vár a NAV-ra — egy
+`invoice_provider=nav` melletti eladás így zajlik:
+
+```
+eladás → helyi tranzakció (commit) → invoices queue-bejegyzés (status=queued) → eladás sikeres
+```
+
+A kasszás azonnal "Eladás sikeres — a számla NAV beküldése folyamatban"
+visszajelzést lát, a tényleges NAV-kommunikációt egy külön háttér-
+worker végzi (lásd lent). Ha a NAV éppen nem elérhető, az eladás AKKOR
+IS sikeres marad — csak a számla queue-bejegyzése vár tovább.
+
+**Beállítás** (Beállítások → Számlázás):
+1. NAV Online Számla technikai felhasználó regisztrálása (ingyenes) a
+   [onlineszamla.nav.gov.hu](https://onlineszamla.nav.gov.hu) portálon
+   — login, jelszó, aláíró kulcs (signer key), csere kulcs (exchange
+   key), majd a saját (céges) adószám első 8 számjegye.
+2. Kiállító (eladó) adatai — a NAV, a Számlázz.hu-val ellentétben, nem
+   tárol "cégprofilt", minden egyes számlán szükséges a kiállító
+   neve/címe.
+3. Teszt rendszer (`api-test.onlineszamla.nav.gov.hu`) használata
+   BEKAPCSOLVA marad, amíg élesben ki nem próbáltad — a teszt API-n
+   beküldött számlák sose kerülnek a NAV valós nyilvántartásába.
+4. "NAV számla queue háttér-feldolgozás" bekapcsolása, ÉS a cron
+   feladat beállítása (lásd lent) — enélkül a queue-bejegyzések
+   `queued` állapotban maradnak, sose kerülnek ténylegesen beküldésre.
+
+**A NAV számla queue** (`invoices` tábla, `provider='nav'`) állapotgépe:
+
+```
+queued ──► processing ──► submitted ──► done   (véglegesen elfogadva)
+   ▲            │              │
+   │            │              └────────► failed  (NAV véglegesen elutasította)
+   │            ▼
+   │        (átmeneti hiba: hálózat/timeout/HTTP 5xx)
+   └──────  queued, backoff-bal újraütemezve
+                │
+                ▼ (9 backoff-kör kimerült)
+            dead_letter  (admin kézi újrapróbálkozása szükséges)
+
+processing (manageInvoice hívás közben timeout — NEM tudni, a NAV
+            megkapta-e a kérést) ──► uncertain
+                │
+                ▼ (queryTransactionList-alapú egyeztetés, max 3x)
+     submitted (találat) VAGY uncertain marad (admin beavatkozás)
+```
+
+**Sose küld vak duplikált számlát**: ha a `manageInvoice` hívás
+timeout/hálózati hiba miatt válasz nélkül marad, a rendszer NEM
+próbálja újra automatikusan — nem tudható, hogy a NAV megkapta-e a
+kérést. A sor helyette `uncertain` állapotba kerül, és a NAV saját,
+erre a célra ajánlott `queryTransactionList` műveletével egyezteti,
+hogy a kérés ténylegesen megérkezett-e (a talált tranzakciók eredeti
+tartalmát a saját, ismert számlaszámunkkal veti össze). Ha ez sem tud
+egyértelmű választ adni néhány próbálkozás után, admin kézi beavatkozás
+szükséges (`webroot/api/nav-invoice-retry.php`, vezetői jogszinttel).
+
+**Cron beállítás — pontos üzemeltetési útmutató.**
+
+| Kérdés | Válasz |
+|---|---|
+| Melyik endpoint? | `webroot/api/nav-queue-run.php` |
+| Milyen gyakran? | **Percenként** (`* * * * *`) — biztonságos, a végpont saját maga dönti el, van-e esedékes teendő |
+| Milyen header? | `X-Cron-Token: <cron_secret>` — ugyanaz a meglévő mechanizmus, mint `auto-sync-run.php`/`auto-backup-run.php`-nál, **nincs külön NAV-specifikus secret** |
+| Milyen jogosultság? | Nincs böngésző-bejelentkezés — a cron-token teljesen helyettesíti (lásd `_bootstrap.php` `$cronScripts`) |
+| Melyik köröket futtatja egy hívás? | Mindhármat, minden egyes hívásnál, sorban: (1) `queued` → `manageInvoice` beküldés, (2) `submitted` → `queryTransactionStatus` ellenőrzés, (3) `uncertain` → `queryTransactionList`-egyeztetés — mindegyik kör legfeljebb 10 sort dolgoz fel hívásonként |
+
+```
+* * * * * curl -s -H "X-Cron-Token: <a beállított cron_secret>" http://localhost:8000/api/nav-queue-run.php > /dev/null
+```
+
+**Mi történik, ha a cron kimarad** (leáll a szerver, törlődik a
+crontab-bejegyzés, stb.)? **Semmi vészes.** Az eladás maga már réges-
+régen, a queue-tól teljesen függetlenül sikeres volt — csak a
+`queued`/`submitted`/`uncertain` sorok halmozódnak, `next_attempt_at`-
+juk egyre inkább a múltba csúszik. Amint a cron újraindul, a worker a
+KÖVETKEZŐ percben egyszerűen felveszi a fonalat onnan, ahol abbamaradt
+— nincs "elveszett" munka, nincs időkorlát, ameddig a cron
+visszatérhet. (A kivétel a `dead_letter` állapot: az onnan való
+kilábaláshoz admin kézi retry szükséges, `webroot/api/nav-invoice-retry.php`
+— ez szándékos, nem a cron-kimaradás következménye.)
+
+**Elavult ("stale") zár helyreállítása**: ha egy worker-futás menet
+közben megszakad (pl. a PHP-folyamat összeomlik egy `manageInvoice`
+hívás KÖZBEN), a claim-elt sor `processing`/`processing_status_check`/
+`processing_uncertain_recovery` állapotban, zárolva marad. Ez NEM
+ragad be örökre: minden claim-lekérdezés figyelmen kívül hagyja a 10
+percnél régebbi zárakat (`NavInvoiceQueueWorker::STALE_LOCK_SECONDS`),
+tehát a KÖVETKEZŐ cron-futás (legfeljebb 10 perc múlva) automatikusan
+újra felveheti a sort — nincs szükség manuális beavatkozásra egy
+egyszerű folyamat-összeomlás után.
+
+**Ismert korlátok**: a NAV-számlaszám (`SM-NAV-{év}-{id}`) az `invoices`
+tábla saját, Számlázz.hu-val OSZTOTT auto-increment id-jára épül —
+**ez egy KIFEJEZETTEN production előtt eldöntendő, még nyitott pont**
+(a NAV felé beküldött `invoiceNumber` a ténylegesen kiállított számla
+jogi sorszáma, nem egy belső azonosító) — lásd `ROADMAP.md` "NAV Online
+Számla — production előtti nyitott döntési pont" szakaszát a részletes
+indoklásért. A `MODIFY`/`STORNO` (helyesbítés/sztornó) műveletek,
+valamint a "Beérkezett számlák"/"Kimenő számlák" listanézet egy
+következő fejlesztési kör feladata.
 
 ## Adatbázis: SQLite vs MySQL
 

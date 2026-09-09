@@ -35,6 +35,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'szamlazz_agent_key', 'szamlazz_default_payment', 'szamlazz_default_vat',
         'wc_store_url', 'wc_consumer_key', 'wc_consumer_secret', 'wc_barcode_source', 'wc_barcode_meta_key', 'wc_webhook_secret', 'wc_public_base_url',
         'nav_login', 'nav_password', 'nav_signer_key', 'nav_exchange_key', 'nav_tax_number',
+        'nav_supplier_name', 'nav_supplier_zip', 'nav_supplier_city', 'nav_supplier_address', 'nav_supplier_bank_account',
         'low_stock_notify_webhook', 'low_stock_notify_email',
         'receipt_header_lines', 'receipt_footer_lines',
         'cron_secret',
@@ -79,7 +80,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // Logikai (be/ki) mezők.
-    $boolFields = ['auto_sync_enabled', 'printer_enabled', 'backup_enabled', 'szamlazz_send_email', 'nav_test_mode', 'receipt_show_logo', 'loyalty_enabled'];
+    $boolFields = ['auto_sync_enabled', 'printer_enabled', 'backup_enabled', 'szamlazz_send_email', 'nav_test_mode', 'nav_queue_enabled', 'receipt_show_logo', 'loyalty_enabled'];
     foreach ($boolFields as $field) {
         if (isset($input[$field])) {
             $update[$field] = (bool) $input[$field];

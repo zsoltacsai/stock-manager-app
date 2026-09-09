@@ -1387,6 +1387,332 @@ class Database
         return $row ?: null;
     }
 
+    public function getInvoiceById(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM invoices WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    /**
+     * A "Kimenő számlák" nézet felhasználóbarát állapot-csoportosítása —
+     * a NAV teljes állapotgépe (queued/processing/.../uncertain/
+     * dead_letter) technikai részlet, amit a kasszásnak nem kell
+     * ismernie. Számlázz.hu sorok gyakorlatban csak 'done'/'failed'-et
+     * érnek el (szinkron, azonnali), így ott csak ez a két bucket
+     * releváns. Ugyanezt a leképezést használja listInvoices() (szűrés)
+     * ÉS a frontend (megjelenítés) is — itt, egy helyen.
+     */
+    public const INVOICE_STATUS_BUCKETS = [
+        'done' => ['done'],
+        'pending' => ['queued', 'processing', 'processing_status_check', 'processing_uncertain_recovery', 'submitted'],
+        'failed' => ['failed', 'dead_letter', 'uncertain'],
+    ];
+
+    /**
+     * A "Kimenő számlák" nézet szűrt listája — `listSales()` mintájára
+     * (lásd ott), de `sales` JOIN-nal a vevőnévhez, mert az `invoices`
+     * sor önmagában nem tartalmaz vevő-adatot.
+     *
+     * @param array $filters opcionális: date (ÉÉÉÉ-HH-NN, invoices.created_at-ra),
+     *   id (int — invoices.id VAGY a kapcsolódó sale_id egyezik),
+     *   provider ('szamlazz'|'nav'), status (bucket-név: 'done'|'pending'|'failed',
+     *   lásd INVOICE_STATUS_BUCKETS), query (sales.buyer_name VAGY invoices.invoice_number-re illeszkedik)
+     */
+    public function listInvoices(array $filters = [], int $limit = 300): array
+    {
+        $where = [];
+        $params = [];
+
+        if (!empty($filters['date'])) {
+            $where[] = ($this->driver === 'mysql' ? 'DATE(invoices.created_at)' : "substr(invoices.created_at, 1, 10)") . ' = ?';
+            $params[] = $filters['date'];
+        }
+        if (!empty($filters['id'])) {
+            $where[] = '(invoices.id = ? OR invoices.sale_id = ?)';
+            $params[] = (int) $filters['id'];
+            $params[] = (int) $filters['id'];
+        }
+        if (!empty($filters['provider']) && in_array($filters['provider'], ['szamlazz', 'nav'], true)) {
+            $where[] = 'invoices.provider = ?';
+            $params[] = $filters['provider'];
+        }
+        if (!empty($filters['status']) && isset(self::INVOICE_STATUS_BUCKETS[$filters['status']])) {
+            $statuses = self::INVOICE_STATUS_BUCKETS[$filters['status']];
+            $where[] = 'invoices.status IN (' . implode(',', array_fill(0, count($statuses), '?')) . ')';
+            array_push($params, ...$statuses);
+        }
+        if (!empty($filters['query'])) {
+            $where[] = '(sales.buyer_name LIKE ? OR invoices.invoice_number LIKE ?)';
+            $params[] = '%' . $filters['query'] . '%';
+            $params[] = '%' . $filters['query'] . '%';
+        }
+
+        $sql = 'SELECT invoices.*, sales.buyer_name AS sale_buyer_name FROM invoices JOIN sales ON sales.id = invoices.sale_id';
+        if ($where) {
+            $sql .= ' WHERE ' . implode(' AND ', $where);
+        }
+        $sql .= ' ORDER BY invoices.created_at DESC LIMIT ' . (int) $limit;
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Aszinkron szolgáltató (jelenleg: NAV) számára hozza létre a tartós
+     * queue-bejegyzést — magát az `invoices` sort, `status='queued'`-del,
+     * még a tényleges NAV-hívás ELŐTT. Race-safe: az `INSERT OR IGNORE` /
+     * `INSERT IGNORE` a `UNIQUE(sale_id, provider)` indexre támaszkodik,
+     * ugyanúgy, mint upsertInvoiceMirror() — két egyidejű kérés közül csak
+     * az egyik ténylegesen szúr be új sort, a másik `rowCount()===0`-t lát
+     * és `null`-lal tér vissza, ahelyett hogy egy második, duplikált
+     * számlázási feladatot hozna létre ugyanahhoz az eladáshoz.
+     *
+     * A `invoice_number`-t SZÁNDÉKOSAN két lépésben állítja elő (előbb
+     * beszúrás invoice_number NÉLKÜL, utána egy UPDATE a friss auto-
+     * increment id-ból képzett értékkel) — a NAV-nak stabil, a beküldés
+     * előtt ismert sorszám kell, de ez csak a sikeres INSERT UTÁN, a
+     * tényleges id ismeretében képezhető.
+     *
+     * KORLÁT (dokumentált, nem production-kész számozási séma): a
+     * "SM-NAV-{év}-{id}" séma az `invoices` tábla saját, PROVIDERTŐL
+     * FÜGGETLEN auto-increment id-jára épül, ami a Számlázz.hu-s sorokkal
+     * osztott — emiatt a NAV-számlák sorszáma nem feltétlenül folytonos,
+     * ha közben Számlázz.hu-s sor is beszúrásra kerül. Éles, jogilag
+     * folytonos NAV-only sorszámtartomány egy külön, jövőbeli döntés.
+     */
+    public function insertQueuedInvoice(
+        int $saleId,
+        string $provider,
+        float $netTotal,
+        float $vatTotal,
+        float $grossTotal,
+        string $currency,
+        array $payload
+    ): ?array {
+        $now = date('Y-m-d H:i:s');
+        $sql = $this->driver === 'mysql'
+            ? "INSERT IGNORE INTO invoices (sale_id, provider, status, net_total, vat_total, gross_total, currency, payload_json, attempts, created_at, updated_at)
+               VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, 0, ?, ?)"
+            : "INSERT OR IGNORE INTO invoices (sale_id, provider, status, net_total, vat_total, gross_total, currency, payload_json, attempts, created_at, updated_at)
+               VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, 0, ?, ?)";
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute([$saleId, $provider, $netTotal, $vatTotal, $grossTotal, $currency, json_encode($payload, JSON_UNESCAPED_UNICODE), $now, $now]);
+
+        if ($stmt->rowCount() === 0) {
+            // A UNIQUE(sale_id, provider) ütközés miatt nem szúrt be új
+            // sort — vagy egy konkurens hívás nyerte a versenyt, vagy már
+            // korábban létrejött ehhez a sale_id+provider-hez tartozó
+            // queue-bejegyzés. Mindkét esetben idempotens no-op.
+            return null;
+        }
+
+        $id = (int) $this->pdo->lastInsertId();
+        $invoiceNumber = sprintf('SM-NAV-%s-%06d', date('Y'), $id);
+        $this->pdo->prepare('UPDATE invoices SET invoice_number = ? WHERE id = ?')->execute([$invoiceNumber, $id]);
+
+        return $this->getInvoiceById($id);
+    }
+
+    /**
+     * Atomikusan lefoglal (claim-el) egy, a megadott állapotok
+     * valamelyikében lévő, esedékes ($next_attempt_at elmúlt vagy NULL)
+     * sort a megadott providerhez, `status='processing'`-re állítva.
+     *
+     * A race-safety NEM a fenti SELECT-ből ered (az csupán jelölteket
+     * gyűjt), hanem abból, hogy minden jelöltre egy KÜLÖN, feltételes
+     * UPDATE-et próbál (WHERE status even IS still eligible ÉS a zár
+     * elavult-e) — két egyidejű worker közül csak az egyik UPDATE-je érint
+     * ténylegesen sort (rowCount()>0), a másik a listában a KÖVETKEZŐ
+     * jelöltre lép. Ugyanaz az "olvasás nem garancia, csak a feltételes
+     * UPDATE rowCount()-ja számít" minta, mint amit
+     * tryClaimInvoiceIssuance() már bevezetett — csak itt a jelöltet is
+     * meg kell először KERESNI, mert a worker előre nem ismeri a sor id-ját.
+     */
+    /**
+     * $lockingStatus a claim SIKERE esetén beállított, ÁTMENETI állapot —
+     * SZÁNDÉKOSAN KÜLÖN érték minden claim-típushoz (submission:
+     * 'processing', státusz-ellenőrzés: 'processing_status_check',
+     * bizonytalan-egyeztetés: 'processing_uncertain_recovery'), NEM egy
+     * közös "processing" — enélkül egy elavult zár helyreállításakor NEM
+     * lehetne megkülönböztetni, hogy az összeomlott worker éppen egy
+     * SUBMISSION-t vagy egy STÁTUSZ-ELLENŐRZÉST végzett-e, és egy
+     * 'submitted' sor (aminek MÁR VAN valódi NAV transactionId-je) téves
+     * újra-claim-elése a submission-körben egy MÁSODIK, duplikált
+     * manageInvoice CREATE-et eredményezne ugyanarra a számlára.
+     */
+    private function claimInvoiceRow(array $eligibleStatuses, string $lockingStatus, string $provider, int $staleAfterSeconds): ?array
+    {
+        $now = date('Y-m-d H:i:s');
+        $staleBefore = date('Y-m-d H:i:s', time() - $staleAfterSeconds);
+        $allMatchStatuses = array_merge($eligibleStatuses, [$lockingStatus]);
+        $placeholders = implode(',', array_fill(0, count($allMatchStatuses), '?'));
+
+        $candidateStmt = $this->pdo->prepare("
+            SELECT id FROM invoices
+            WHERE provider = ?
+              AND status IN ($placeholders)
+              AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+              AND (locked_at IS NULL OR locked_at < ?)
+            ORDER BY next_attempt_at IS NULL DESC, next_attempt_at ASC, id ASC
+            LIMIT 20
+        ");
+        $candidateStmt->execute(array_merge([$provider], $allMatchStatuses, [$now, $staleBefore]));
+        $candidateIds = $candidateStmt->fetchAll(PDO::FETCH_COLUMN);
+
+        foreach ($candidateIds as $id) {
+            $claimStmt = $this->pdo->prepare("
+                UPDATE invoices SET status = ?, locked_at = ?, updated_at = ?
+                WHERE id = ? AND status IN ($placeholders) AND (locked_at IS NULL OR locked_at < ?)
+            ");
+            $claimStmt->execute(array_merge([$lockingStatus, $now, $now, $id], $allMatchStatuses, [$staleBefore]));
+            if ($claimStmt->rowCount() > 0) {
+                return $this->getInvoiceById((int) $id);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Egy még be nem küldött (vagy backoff után újra esedékes) 'queued'
+     * sort claim-el, ténylegesen a NAV manageInvoice-hoz küldésre.
+     */
+    public function claimQueuedInvoiceForSubmission(string $provider, int $staleAfterSeconds = 600): ?array
+    {
+        return $this->claimInvoiceRow(['queued'], 'processing', $provider, $staleAfterSeconds);
+    }
+
+    /**
+     * Egy már beküldött, transactionId-val rendelkező 'submitted' sort
+     * claim-el, queryTransactionStatus-szal való státusz-ellenőrzésre.
+     */
+    public function claimSubmittedInvoiceForStatusCheck(string $provider, int $staleAfterSeconds = 600): ?array
+    {
+        return $this->claimInvoiceRow(['submitted'], 'processing_status_check', $provider, $staleAfterSeconds);
+    }
+
+    /**
+     * 'uncertain' állapotú (bizonytalan kimenetelű manageInvoice-timeout
+     * utáni) sort claim-el, a queryTransactionList-alapú egyeztetési
+     * kísérletre (lásd NavInvoiceProvider::recoverUncertainInvoice()).
+     */
+    public function claimUncertainInvoiceForRecovery(string $provider, int $staleAfterSeconds = 600): ?array
+    {
+        return $this->claimInvoiceRow(['uncertain'], 'processing_uncertain_recovery', $provider, $staleAfterSeconds);
+    }
+
+    /**
+     * Sikeres manageInvoice CREATE után: a sor 'submitted'-re vált, a
+     * kapott transactionId eltárolódik, és a $nextCheckAt időpontban esedékes
+     * lesz egy queryTransactionStatus-ellenőrzésre. Az attempts SZÁNDÉKOSAN
+     * VÁLTOZATLAN marad — ez nem egy sikertelen próbálkozás utáni retry,
+     * hanem egy sikeres beküldés, aminek csak az eredménye még nem ismert.
+     */
+    public function markInvoiceSubmitted(int $id, string $transactionId, string $nextCheckAt): void
+    {
+        $this->pdo->prepare("
+            UPDATE invoices
+            SET status = 'submitted', provider_ref = ?, next_attempt_at = ?, locked_at = NULL, last_error = NULL, updated_at = ?
+            WHERE id = ?
+        ")->execute([$transactionId, $nextCheckAt, date('Y-m-d H:i:s'), $id]);
+    }
+
+    /**
+     * A NAV végleg elfogadta a számlát (queryTransactionStatus → DONE) —
+     * terminális, sikeres állapot.
+     */
+    public function markInvoiceDone(int $id, string $issuedAt): void
+    {
+        $this->pdo->prepare("
+            UPDATE invoices
+            SET status = 'done', issued_at = ?, next_attempt_at = NULL, locked_at = NULL, last_error = NULL, updated_at = ?
+            WHERE id = ?
+        ")->execute([$issuedAt, date('Y-m-d H:i:s'), $id]);
+    }
+
+    /**
+     * Végleges, NEM újrapróbálandó hiba (üzleti validációs hiba, hibás
+     * hitelesítő adat, NAV ABORTED-eredmény, stb.) — terminális állapot,
+     * csak admin-kezdeményezett kézi újrapróbálkozással indítható újra
+     * (lásd resetInvoiceForManualRetry()).
+     */
+    public function markInvoiceFailed(int $id, string $error): void
+    {
+        $this->pdo->prepare("
+            UPDATE invoices
+            SET status = 'failed', last_error = ?, next_attempt_at = NULL, locked_at = NULL, updated_at = ?
+            WHERE id = ?
+        ")->execute([$error, date('Y-m-d H:i:s'), $id]);
+    }
+
+    /**
+     * Átmeneti (hálózati/timeout/NAV 5xx) hiba után visszaállítja a sort
+     * 'queued'-ra, a megadott $nextAttemptAt időpontig várakozásra —
+     * ugyanaz a sor kerül újra claim-elésre, amint esedékessé válik.
+     */
+    public function scheduleInvoiceRetry(int $id, string $error, string $nextAttemptAt, int $attempts): void
+    {
+        $this->pdo->prepare("
+            UPDATE invoices
+            SET status = 'queued', last_error = ?, next_attempt_at = ?, locked_at = NULL, attempts = ?, updated_at = ?
+            WHERE id = ?
+        ")->execute([$error, $nextAttemptAt, $attempts, date('Y-m-d H:i:s'), $id]);
+    }
+
+    /**
+     * A backoff-ütemezés kimerült (lásd NavInvoiceQueueWorker::BACKOFF_SECONDS)
+     * — terminális, de admin-kezdeményezett kézi újrapróbálkozással
+     * indítható állapot, megkülönböztetve markInvoiceFailed()-től (ami
+     * VÉGLEGES, nem-újrapróbálandó hiba miatt áll be).
+     */
+    public function markInvoiceDeadLetter(int $id, string $error): void
+    {
+        $this->pdo->prepare("
+            UPDATE invoices
+            SET status = 'dead_letter', last_error = ?, next_attempt_at = NULL, locked_at = NULL, updated_at = ?
+            WHERE id = ?
+        ")->execute([$error, date('Y-m-d H:i:s'), $id]);
+    }
+
+    /**
+     * A manageInvoice hívás közben timeout/hálózati hiba történt, ÉS nincs
+     * ismert transactionId — tehát nem tudható, hogy a NAV ténylegesen
+     * megkapta-e a kérést. Ez SOHA nem eredményez automatikus vak
+     * újraküldést (lásd NavInvoiceProvider::submit() docblockja) — helyette
+     * egy bizonytalan állapotba kerül, amit a queryTransactionList-alapú
+     * egyeztetés próbál (bounded számú alkalommal) feloldani.
+     */
+    public function markInvoiceUncertain(int $id, string $error, ?string $nextRecoveryAttemptAt, int $attempts): void
+    {
+        $this->pdo->prepare("
+            UPDATE invoices
+            SET status = 'uncertain', last_error = ?, next_attempt_at = ?, locked_at = NULL, attempts = ?, updated_at = ?
+            WHERE id = ?
+        ")->execute([$error, $nextRecoveryAttemptAt, $attempts, date('Y-m-d H:i:s'), $id]);
+    }
+
+    /**
+     * Admin-kezdeményezett kézi újrapróbálkozás — csak terminális
+     * (failed/dead_letter/uncertain) állapotból engedélyezett, atomikusan
+     * (a feltételes UPDATE WHERE-je zárja ki, hogy egy épp folyamatban
+     * lévő — 'processing'/'submitted'/'queued'/'done' — sort megzavarjon).
+     * Nullázza az attempts-et — az operátor szándéka egy TELJESEN friss
+     * próbálkozás, nem a kimerült backoff folytatása.
+     */
+    public function resetInvoiceForManualRetry(int $id): bool
+    {
+        $stmt = $this->pdo->prepare("
+            UPDATE invoices
+            SET status = 'queued', attempts = 0, next_attempt_at = NULL, locked_at = NULL, last_error = NULL, updated_at = ?
+            WHERE id = ? AND status IN ('failed', 'dead_letter', 'uncertain')
+        ");
+        $stmt->execute([date('Y-m-d H:i:s'), $id]);
+        return $stmt->rowCount() > 0;
+    }
+
     public function getSaleReceiptToken(int $saleId): ?string
     {
         $stmt = $this->pdo->prepare('SELECT receipt_token FROM sales WHERE id = ?');

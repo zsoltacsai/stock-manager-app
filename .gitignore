@@ -10,6 +10,7 @@
 /data/.backup-encryption-key
 /data/settings.json
 /data/geoip-cache.json
+/data/nav-token-cache.json
 /data/imports/*
 !/data/imports/.gitkeep
 /data/backups/*

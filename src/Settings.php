@@ -121,13 +121,34 @@ class Settings
         'product_image_size'  => 1200,
 
         // NAV Online Számla technikai felhasználó — for company-lookup.php's
-        // adószám-alapú cégadat kitöltés. See README for how to obtain these.
+        // adószám-alapú cégadat kitöltés, ÉS (Phase 5B óta) a tényleges
+        // NAV számlaküldés hitelesítéséhez is. See README for how to obtain these.
         'nav_login'        => '',
         'nav_password'     => '',
         'nav_signer_key'   => '',
         'nav_exchange_key' => '',
         'nav_tax_number'   => '',
         'nav_test_mode'    => false,
+
+        // A NAV invoiceData minden egyes számlán megköveteli a kiállító
+        // (eladó) teljes nevét/címét — a Számlázz.hu-val ellentétben
+        // (ahol ez a Számlázz.hu-fiók oldalán van eltárolva) a NAV API-nak
+        // NINCS "cégprofil"-fogalma, ezért ezt itt, explicit módon kell
+        // tárolni. Csak akkor kötelező, ha invoice_provider='nav'.
+        'nav_supplier_name'         => '',
+        'nav_supplier_zip'          => '',
+        'nav_supplier_city'         => '',
+        'nav_supplier_address'      => '',
+        'nav_supplier_bank_account' => '',
+
+        // A NAV invoice queue háttér-workere (webroot/api/nav-queue-run.php)
+        // — ugyanaz az "enabled-flag + cron hívja" minta, mint
+        // auto_sync_enabled/backup_enabled. Alapértelmezetten KIKAPCSOLVA,
+        // hogy egy meglévő telepítésen a cron beállítása nélkül sose
+        // fusson le váratlanul.
+        'nav_queue_enabled'          => false,
+        'last_nav_queue_run_at'      => '',
+        'last_nav_queue_run_summary' => '',
 
         'low_stock_default_threshold' => 5,
         'low_stock_notify_webhook'    => '',

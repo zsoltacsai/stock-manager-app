@@ -205,6 +205,12 @@ if ('serviceWorker' in navigator) {
     const navExchangeKey = document.getElementById('nav-exchange-key');
     const navTaxNumber = document.getElementById('nav-tax-number');
     const navTestMode = document.getElementById('nav-test-mode');
+    const navSupplierName = document.getElementById('nav-supplier-name');
+    const navSupplierZip = document.getElementById('nav-supplier-zip');
+    const navSupplierCity = document.getElementById('nav-supplier-city');
+    const navSupplierAddress = document.getElementById('nav-supplier-address');
+    const navSupplierBankAccount = document.getElementById('nav-supplier-bank-account');
+    const navQueueEnabled = document.getElementById('nav-queue-enabled');
     const settingsSaveNavBtn = document.getElementById('settings-save-nav-btn');
     const settingsNavFeedback = document.getElementById('settings-nav-feedback');
 
@@ -401,6 +407,12 @@ if ('serviceWorker' in navigator) {
         applySecretField(navExchangeKey, data, 'nav_exchange_key', '');
         if (navTaxNumber) navTaxNumber.value = data.nav_tax_number || '';
         if (navTestMode) navTestMode.checked = !!data.nav_test_mode;
+        if (navSupplierName) navSupplierName.value = data.nav_supplier_name || '';
+        if (navSupplierZip) navSupplierZip.value = data.nav_supplier_zip || '';
+        if (navSupplierCity) navSupplierCity.value = data.nav_supplier_city || '';
+        if (navSupplierAddress) navSupplierAddress.value = data.nav_supplier_address || '';
+        if (navSupplierBankAccount) navSupplierBankAccount.value = data.nav_supplier_bank_account || '';
+        if (navQueueEnabled) navQueueEnabled.checked = !!data.nav_queue_enabled;
 
         if (wcStoreUrl) wcStoreUrl.value = data.wc_store_url || '';
         applySecretField(wcConsumerKey, data, 'wc_consumer_key', 'ck_...');
@@ -917,6 +929,12 @@ if ('serviceWorker' in navigator) {
                         nav_exchange_key: navExchangeKey.value.trim(),
                         nav_tax_number: navTaxNumber.value.trim(),
                         nav_test_mode: navTestMode.checked,
+                        nav_supplier_name: navSupplierName.value.trim(),
+                        nav_supplier_zip: navSupplierZip.value.trim(),
+                        nav_supplier_city: navSupplierCity.value.trim(),
+                        nav_supplier_address: navSupplierAddress.value.trim(),
+                        nav_supplier_bank_account: navSupplierBankAccount.value.trim(),
+                        nav_queue_enabled: navQueueEnabled.checked,
                     }),
                 });
                 const data = await res.json();

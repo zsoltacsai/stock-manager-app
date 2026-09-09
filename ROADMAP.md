@@ -6,21 +6,73 @@ vagy mert a projekt jelenlegi mérete/célközönsége mellett a
 komplexitás/haszon arány rossz. Egy jövőbeli 1.1-es (vagy későbbi) körben
 érdemes újra megnézni őket, ha a körülmények változnak.
 
-## NAV valós idejű számla-adatszolgáltatás
+## NAV Online Számla — production előtti nyitott döntési pont: számlaszám-generálás
 
-Magyarországon minden számlát valós időben jelenteni kell a NAV Online
-Számla rendszerébe. **Ezt jelenleg a Számlázz.hu már elvégzi automatikusan**
-minden általa kiállított számlánál — a Stock Manager csak a Számlázz.hu
-Számla Agent API-ját hívja, a NAV-jelentés a Számlázz.hu oldalán történik.
+**Ez a szakasz frissítve, mert a korábbi feltételezés ("csak akkor
+kellene, ha a Számlázz.hu integráció megszűnne") azóta elavult**: a
+közvetlen NAV Online Számla kiállítás Phase 5A/5B-ben ténylegesen
+elkészült (`src/NavClient.php`, `src/NavInvoiceProvider.php`,
+`src/NavInvoiceQueueWorker.php`) — valódi NAV sandbox környezetben,
+teljes tokenExchange → manageInvoice → queryTransactionStatus
+lánccal, tartós, race-safe, retry-képes queue-val bizonyítva.
+`invoice_provider='nav'` a Beállításokban ma is bekapcsolható és
+ténylegesen működik.
 
-Ha valaha a Számlázz.hu integráció helyett (vagy mellett) közvetlen NAV
-Online Számla kiállítás kellene (pl. saját számlázó motorral, Számlázz.hu
-nélkül), akkor kellene idehozni a NAV Online Számla API v3 XML-alapú
-`manageInvoice` végpontját — ez jelentős munka (XML aláírás, batch
-feldolgozás, hibakezelés a NAV oldali validációs hibákra).
-**Trigger, ami miatt érdemes lenne**: ha a Számlázz.hu integráció
-megszűnne, vagy egy ügyfél kifejezetten a Számlázz.hu-tól független
-számlázást kérne.
+**Egyetlen, KIFEJEZETTEN production előtt eldöntendő, még NYITOTT
+pont maradt**: a NAV felé beküldött `invoiceNumber` (a ténylegesen
+kiállított számla jogi sorszáma, NEM egy belső/technikai azonosító —
+lásd `src/NavInvoiceXmlBuilder.php` és a NAV invoiceData.xsd
+`invoiceNumber` mezője) jelenleg a
+`Database::insertQueuedInvoice()`-ban `SM-NAV-{év}-{id}` formában
+képződik, ahol `{id}` az `invoices` tábla saját, AUTO_INCREMENT
+oszlopa — ez az id-szekvencia a Számlázz.hu-s sorokkal (provider=
+`szamlazz`) OSZTOTT, tehát a NAV-számlák sorszáma nem garantáltan
+folytonos/gapless, ha közben Számlázz.hu-s sor is beszúrásra kerül.
+
+**Pontos kódnyomvonal** (ellenőrizhető, file:line hivatkozásokkal):
+
+1. **Hol képződik**: `Database::insertQueuedInvoice()`
+   (`src/Database.php:1513`) — `$invoiceNumber = sprintf('SM-NAV-%s-%06d',
+   date('Y'), $id);` — KÖZVETLENÜL az `invoices` sor sikeres `INSERT`-je
+   UTÁN, a friss auto-increment `$id`-ból, MÉG A NAV-HÍVÁS ELŐTT (a queue
+   worker csak ezután, később küldi be a `manageInvoice`-ot).
+2. **Milyen mezőbe kerül**: ugyanott egy közvetlen `UPDATE invoices SET
+   invoice_number = ? WHERE id = ?` írja a saját `invoices.invoice_number`
+   oszlopba (`src/Database.php:1514` körül).
+3. **Hol kerül bele a NAV requestbe**: `NavInvoiceXmlBuilder::build()`
+   (`src/NavInvoiceXmlBuilder.php:68`) — `$xw->writeElement('invoiceNumber',
+   (string) $params['invoice_number']);` — ez az `invoices.invoice_number`
+   értéke kerül szó szerint a `manageInvoice` kéréshez csatolt
+   `invoiceData` XML `<invoiceNumber>` elemébe (`NavInvoiceProvider::submit()`
+   adja át `$invoiceRow['invoice_number']`-ként).
+4. **Milyen adatbázis ID-ból származik**: az `invoices` tábla SAJÁT,
+   provider-független `id` oszlopából (NEM a `sales.id`-ból, NEM egy
+   NAV-only sorszámlálóból) — ez a lényegi, még eldöntendő pont.
+5. **Hogyan különül el a `provider_ref`/transactionId-tól**: teljesen
+   külön oszlop, külön életciklus. `invoice_number` **egyszer**, a
+   queue-ba kerüléskor (`insertQueuedInvoice()`-ban) képződik, MÉG A NAV
+   MEGKERESÉSE ELŐTT. `provider_ref` ezzel szemben **csak sikeres
+   `manageInvoice` UTÁN**, a NAV válaszából származó `transactionId`-val
+   töltődik ki, `Database::markInvoiceSubmitted()`-ben
+   (`src/Database.php:1618`, `SET ... provider_ref = ?`) — ez a NAV
+   beküldés technikai nyomon-követő azonosítója, SOSE számlaszám. A
+   "Kimenő számlák" UI részletnézete (`webroot/kimeno-szamlak.js`)
+   emiatt explicit külön címkével jeleníti meg: `invoice_number` mint
+   "Számlaszám", `provider_ref` mint **"NAV tranzakcióazonosító (NEM
+   számlaszám...)"**.
+
+Magyar ÁFA-törvényi elvárás a számlaszámozás folytonossága egy adott
+számlázási "tartományon" belül — emiatt **production bevezetés előtt
+külön meg kell vizsgálni és véglegesíteni** a NAV-only számlaszám-
+tartomány kérdését (pl. egy saját, csak NAV-provider sorokra vonatkozó
+sequence/counter bevezetése, vagy a könyvelővel egyeztetett más
+numbering-konvenció). Ezt a döntést a projekt tulajdonosa és/vagy a
+könyvelője hozza meg — technikai implementáció csak azután, hogy a
+konkrét séma eldőlt.
+
+**Trigger, ami miatt ezt production előtt véglegesen el KELL dönteni**:
+mielőtt `invoice_provider='nav'` valódi, éles (nem teszt-rendszerű)
+NAV-fiókkal, valódi vevőknek kiállított számlákra bekapcsolásra kerül.
 
 ## Többdevizás támogatás
 

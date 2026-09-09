@@ -296,11 +296,10 @@ if (!Auth::isLoggedIn($appSettings)) {
             <p id="settings-szamlazz-feedback" class="modal-feedback"></p>
 
             <p class="muted" style="margin-top:20px; border-top:1px solid var(--border); padding-top:14px;">
-                <strong>NAV technikai felhasználó</strong> — jelenleg a cégadat
+                <strong>NAV technikai felhasználó</strong> — a cégadat
                 lekérdezéshez (adószám alapján automatikus kitöltés a "Vevő
-                számlát kér" résznél) használt, ugyanez a hitelesítő adat fogja
-                a jövőben a fenti "NAV Online Számla" számlázási szolgáltatót is
-                kiszolgálni, amint az ténylegesen bekötésre kerül.
+                számlát kér" résznél) ÉS a fenti "NAV Online Számla"
+                számlázási szolgáltatóhoz is ugyanez a hitelesítő adat kell.
             </p>
             <label for="nav-login">NAV technikai felhasználó — login</label>
             <input type="text" id="nav-login">
@@ -319,9 +318,36 @@ if (!Auth::isLoggedIn($appSettings)) {
             <p class="muted">
                 Ehhez egy ingyenes "technikai felhasználó" regisztráció szükséges a NAV Online
                 Számla portálján (onlineszamla.nav.gov.hu). Lásd a README-t a pontos lépésekért.
-                Ez a funkció NAV élesben nem lett tesztelve — érdemes előbb a teszt rendszerrel
-                ellenőrizni.
             </p>
+
+            <p class="muted" style="margin-top:14px;">
+                <strong>Kiállító (eladó) adatai</strong> — a NAV minden
+                egyes számlán megköveteli a kiállító nevét/címét (a
+                Számlázz.hu-val ellentétben ez nincs egy fiók oldalán
+                eltárolva). Csak akkor kötelező, ha a fenti szolgáltató NAV.
+            </p>
+            <label for="nav-supplier-name">Cégnév</label>
+            <input type="text" id="nav-supplier-name">
+            <div class="field-row">
+                <div>
+                    <label for="nav-supplier-zip">Irányítószám</label>
+                    <input type="text" id="nav-supplier-zip">
+                </div>
+                <div>
+                    <label for="nav-supplier-city">Település</label>
+                    <input type="text" id="nav-supplier-city">
+                </div>
+            </div>
+            <label for="nav-supplier-address">Cím (utca, házszám)</label>
+            <input type="text" id="nav-supplier-address" placeholder="Kossuth Lajos utca 1.">
+            <label for="nav-supplier-bank-account">Bankszámlaszám (opcionális)</label>
+            <input type="text" id="nav-supplier-bank-account">
+
+            <label class="checkbox-line" style="margin-top:14px;">
+                <input type="checkbox" id="nav-queue-enabled">
+                NAV számla queue háttér-feldolgozás bekapcsolva (cron szükséges hozzá — lásd README)
+            </label>
+
             <button id="settings-save-nav-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Mentés</button>
             <p id="settings-nav-feedback" class="modal-feedback"></p>
         </div>

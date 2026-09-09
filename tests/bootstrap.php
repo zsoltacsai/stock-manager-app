@@ -14,6 +14,11 @@ require_once __DIR__ . '/../src/BackupManager.php';
 require_once __DIR__ . '/../src/CsvImporter.php';
 require_once __DIR__ . '/../src/ProductRowNormalizer.php';
 require_once __DIR__ . '/../src/InvoiceService.php';
+require_once __DIR__ . '/../src/NavClient.php';
+require_once __DIR__ . '/../src/NavInvoiceXmlBuilder.php';
+require_once __DIR__ . '/../src/NavInvoiceProvider.php';
+require_once __DIR__ . '/../src/NavInvoiceQueueWorker.php';
+require_once __DIR__ . '/../src/NavTokenCache.php';
 
 /**
  * Minden tesztfüggvény saját, egyszer használatos SQLite fájllal dolgozik

@@ -806,4 +806,112 @@ final class DatabaseTest extends TestCase
             "Mind a $processCount, KÜLÖNÁLLÓ folyamatból induló +1 jóváírásnak meg kell jelennie az egyenlegben — egy elveszett jóváírás azt jelentené, hogy a lost-update versenyhelyzet visszatért."
         );
     }
+
+    /**
+     * A NAV invoice queue Phase 5B-beli VALÓDI, több-folyamatos
+     * konkurrencia-bizonyítéka — ugyanaz a proc_open-alapú minta, mint
+     * testApplyLoyaltyPointsIsAtomicAcrossRealConcurrentProcesses()
+     * (lásd feljebb), de a Database::claimQueuedInvoiceForSubmission()
+     * atomikus claim-jére alkalmazva: 16 KÜLÖNÁLLÓ folyamat próbál
+     * egyszerre 16 db 'queued' sort claim-elni. Bizonyítandó: minden sort
+     * PONTOSAN EGY folyamat claim-el (nincs két folyamat, ami ugyanazt a
+     * sort kapja — ami duplikált manageInvoice CREATE-et jelentene élesben),
+     * ÉS egyetlen sor se marad claim-elés nélkül.
+     */
+    public function testNavInvoiceQueueClaimIsAtomicAcrossRealConcurrentProcesses(): void
+    {
+        if (!function_exists('proc_open')) {
+            $this->markTestSkipped('proc_open nem elérhető — VALÓDI többfolyamatos konkurrencia-teszt itt nem futott le.');
+        }
+
+        $dbPath = sys_get_temp_dir() . '/sm_nav_concurrency_test_' . bin2hex(random_bytes(8)) . '.sqlite';
+        register_shutdown_function(static function () use ($dbPath) {
+            @unlink($dbPath);
+            @unlink($dbPath . '-shm');
+            @unlink($dbPath . '-wal');
+        });
+
+        $projectRoot = dirname(__DIR__);
+        $processCount = 16;
+
+        $setupDb = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $dbPath]], $projectRoot);
+        $queuedIds = [];
+        for ($i = 0; $i < $processCount; $i++) {
+            $saleId = $setupDb->insertSale(1000.0, 'Készpénz');
+            $row = $setupDb->insertQueuedInvoice($saleId, 'nav', 787.4, 212.6, 1000.0, 'HUF', ['buyer' => ['nev' => 'x'], 'items' => [], 'payment_method' => 'Készpénz', 'supplier' => []]);
+            $queuedIds[] = (int) $row['id'];
+        }
+        // Egy MÁR lezárt ('done') sor is — bizonyítandó, hogy ezt egyetlen
+        // folyamat se claim-eli újra.
+        $doneSaleId = $setupDb->insertSale(500.0, 'Készpénz');
+        $doneRow = $setupDb->insertQueuedInvoice($doneSaleId, 'nav', 393.7, 106.3, 500.0, 'HUF', ['buyer' => ['nev' => 'x'], 'items' => [], 'payment_method' => 'Készpénz', 'supplier' => []]);
+        $setupDb->markInvoiceDone((int) $doneRow['id'], date('Y-m-d H:i:s'));
+        unset($setupDb);
+
+        $resultFile = sys_get_temp_dir() . '/sm_nav_concurrency_result_' . bin2hex(random_bytes(6)) . '.txt';
+        register_shutdown_function(static function () use ($resultFile) {
+            @unlink($resultFile);
+        });
+
+        $childScriptPath = sys_get_temp_dir() . '/sm_nav_concurrency_child_' . bin2hex(random_bytes(6)) . '.php';
+        file_put_contents($childScriptPath, <<<'PHP'
+            <?php
+            require $argv[1] . '/src/Database.php';
+            $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $argv[2]]], $argv[1]);
+            $row = $db->claimQueuedInvoiceForSubmission('nav', 600);
+            if ($row !== null) {
+                $db->markInvoiceDone((int) $row['id'], date('Y-m-d H:i:s'));
+                file_put_contents($argv[3], $row['id'] . "\n", FILE_APPEND | LOCK_EX);
+            }
+            PHP);
+        register_shutdown_function(static function () use ($childScriptPath) {
+            @unlink($childScriptPath);
+        });
+
+        $handles = [];
+        $devNull = sys_get_temp_dir() . '/sm_nav_concurrency_out_' . bin2hex(random_bytes(4)) . '.log';
+        // Több folyamat (processCount) indul, mint ahány TÉNYLEGESEN
+        // claim-elhető 'queued' sor van (processCount is) — ez
+        // SZÁNDÉKOS: a queue mérete pontosan lefedi a versenyhelyzetet
+        // (minden sorért ténylegesen verseng valaki), miközben a "done"
+        // sor is jelen van a táblában a fenti kontroll-eset miatt.
+        for ($i = 0; $i < $processCount; $i++) {
+            $handles[] = proc_open(
+                [PHP_BINARY, $childScriptPath, $projectRoot, $dbPath, $resultFile],
+                [1 => ['file', $devNull, 'a'], 2 => ['file', $devNull, 'a']],
+                $pipes
+            );
+        }
+        foreach ($handles as $handle) {
+            if (is_resource($handle)) {
+                proc_close($handle);
+            }
+        }
+        @unlink($devNull);
+
+        $claimedIds = array_filter(array_map('intval', explode("\n", trim((string) @file_get_contents($resultFile)))));
+
+        $this->assertCount(
+            $processCount,
+            $claimedIds,
+            "Mind a $processCount 'queued' sort pontosan egy folyamatnak kellett volna claim-elnie — egy eltérő szám azt jelentené, hogy vagy ütközés (duplikált claim), vagy egy sor kimaradt."
+        );
+        $this->assertCount(
+            $processCount,
+            array_unique($claimedIds),
+            'Két KÜLÖNÁLLÓ folyamat NEM claim-elhette ugyanazt a sort — ez élesben duplikált manageInvoice CREATE-et (duplikált NAV-számlát) jelentene.'
+        );
+        sort($queuedIds);
+        $sortedClaimed = $claimedIds;
+        sort($sortedClaimed);
+        $this->assertSame($queuedIds, $sortedClaimed, 'A claim-elt id-knak pontosan az eredetileg queue-ba helyezett sorokkal kell megegyezniük.');
+
+        $verifyDb = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $dbPath]], $projectRoot);
+        foreach ($queuedIds as $id) {
+            $row = $verifyDb->getInvoiceById($id);
+            $this->assertSame('done', $row['status']);
+        }
+        $doneRowAfter = $verifyDb->getInvoiceById((int) $doneRow['id']);
+        $this->assertSame('done', $doneRowAfter['status'], 'A már korábban lezárt sor státusza nem változhatott — nem lehetett újra claim-elve.');
+    }
 }

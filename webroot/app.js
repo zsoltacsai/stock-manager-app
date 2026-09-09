@@ -1094,6 +1094,11 @@ checkoutBtn.addEventListener('click', async () => {
         let msg = `Eladás rögzítve (#${data.sale_id}), összesen ${fmt(data.total)}.`;
         if (data.invoice && data.invoice.success) {
             msg += ' Számla kiállítva' + (data.invoice.invoice_number ? `: ${data.invoice.invoice_number}` : '.') + '.';
+        } else if (data.invoice && data.invoice.pending) {
+            // Aszinkron szolgáltató (NAV) — a queue-bejegyzés létrejött, a
+            // tényleges beküldés a háttérben, egy külön cron-workerrel
+            // történik. Ez NEM hiba, a kasszásnak nem kell tennie semmit.
+            msg += ' A számla NAV beküldése folyamatban.';
         } else if (data.invoice) {
             // Az eladás MINDENKÉPP rögzült — csak a számla nem készült el.
             // A nyers hibaüzenet (pl. egy angol nyelvű SSL/curl-hiba) csak

@@ -8,12 +8,21 @@
  * ingyenes lépésben lehet beállítani a NAV Online Számla portálon (lásd a
  * README "NAV cégadat-lekérdezés" szakaszát).
  *
- * FONTOS: ez az integráció nincs élő NAV-fiókon letesztelve (nem állt
- * rendelkezésre teszt hitelesítő adat a fejlesztéskor) — a kérés-aláírási
- * lépések a NAV nyilvános specifikációját követik, de érdemes leellenőrizni
- * a NAV teszt-rendszerén (api-test.onlineszamla.nav.gov.hu), mielőtt élesben
- * hagyatkoznál rá, és szükség esetén itt módosítani, ha a NAV tényleges
- * válasza máshogy néz ki, mint amit lentebb feldolgoz.
+ * FONTOS: ez az integráció még nincs élő NAV-fiókon letesztelve ehhez a
+ * konkrét (queryTaxpayer) művelethez. A NAV hivatalos v3 specifikációjával
+ * (invoiceApi.xsd, a NAV publikus minta-XML-jei) való Phase 5A-beli
+ * összevetés során egy konkrét hibát talált és javított: a <software>
+ * blokk a NAV API névterében van, NEM a common névtérben — korábban ez a
+ * fájl tévesen <common:software>-ot generált, ami minden itt épített
+ * kérést sémasértővé tett volna. Egy MÁSODIK, élő NAV sandbox hívással
+ * ténylegesen igazolt hiba: a softwareId mezőnek PONTOSAN 18 karakter
+ * hosszúnak kell lennie ([0-9A-Z\-]{18} minta) — a korábbi 19 karakteres
+ * "STOCKMANAGER0000001" érték SCHEMA_VIOLATION hibát okozott.
+ *
+ * A kérés-aláírási képlet (SHA3-512, requestId+timestamp+signerKey) a
+ * NAV specifikáció "1.5.2" (nem-manageInvoice) esetének felel meg — ezt
+ * egy külön kliens (src/NavClient.php) a specifikáció saját
+ * számpéldájával leellenőrizve is használja.
  */
 class NavTaxpayerLookup
 {
@@ -80,14 +89,14 @@ class NavTaxpayerLookup
         <common:taxNumber>{$this->ownTaxNumber}</common:taxNumber>
         <common:requestSignature cryptoType="SHA3-512">{$signature}</common:requestSignature>
     </common:user>
-    <common:software>
-        <common:softwareId>STOCKMANAGER0000001</common:softwareId>
-        <common:softwareName>StockManager</common:softwareName>
-        <common:softwareOperation>LOCAL_SOFTWARE</common:softwareOperation>
-        <common:softwareMainVersion>1.0</common:softwareMainVersion>
-        <common:softwareDevName>Fountainbridge</common:softwareDevName>
-        <common:softwareDevContact>info@example.com</common:softwareDevContact>
-    </common:software>
+    <software>
+        <softwareId>STOCKMANAGER000001</softwareId>
+        <softwareName>StockManager</softwareName>
+        <softwareOperation>LOCAL_SOFTWARE</softwareOperation>
+        <softwareMainVersion>1.0</softwareMainVersion>
+        <softwareDevName>Fountainbridge</softwareDevName>
+        <softwareDevContact>info@example.com</softwareDevContact>
+    </software>
     <taxNumber>{$taxNumber}</taxNumber>
 </QueryTaxpayerRequest>
 XML;

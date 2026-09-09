@@ -15,9 +15,22 @@ $input = json_input();
 $ip = trim((string) ($input['printer_ip'] ?? ''));
 $port = (int) ($input['printer_port'] ?? 9100);
 $paperWidth = (int) ($input['printer_paper_width'] ?? 42);
+$encoding = (string) ($input['printer_encoding'] ?? 'cp852');
+$includeQrSample = !empty($input['include_qr_sample']);
 
 if ($ip === '') {
     send_json(['error' => 'Add meg a nyomtató IP címét.'], 400);
+}
+$isValidIp = filter_var($ip, FILTER_VALIDATE_IP) !== false;
+$isValidHostname = preg_match('/^(?=.{1,253}$)([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/', $ip) === 1;
+if (!$isValidIp && !$isValidHostname) {
+    send_json(['error' => 'Érvénytelen nyomtató IP-cím vagy hostname.'], 400);
+}
+if ($port < 1 || $port > 65535) {
+    send_json(['error' => 'Érvénytelen port (1-65535).'], 400);
+}
+if (!array_key_exists($encoding, EscPosPrinter::CODEPAGES)) {
+    $encoding = 'cp852';
 }
 
 // Tetszőleges IP:port pár felé indít kapcsolatot, és a válaszból (sikeres/
@@ -25,7 +38,10 @@ if ($ip === '') {
 // porton — ez elméletileg belső hálózat feltérképezésére is használható
 // lenne. Ugyanaz a "csak vezetői jogszinttel" szabály vonatkozik rá, mint
 // a többi, hasonlóan érzékeny Beállítások-műveletre, csak akkor
-// kényszerítve, ha egyáltalán van dolgozói PIN-rendszer használatban.
+// kényszerítve, ha egyáltalán van dolgozói PIN-rendszer használatban —
+// ez a NORMÁL, admin-konfigurált nyomtató-cél teszteléséhez szükséges
+// egyetlen szerveroldali kapu, egy nem-admin session ide sose juthat el
+// (require_admin()-jellegű ellenőrzés, lásd _bootstrap.php).
 if ($db->listStaff(true) && !$db->isStaffAdmin(Auth::currentStaffId())) {
     send_json(['error' => 'A nyomtató tesztjéhez vezetői jogszint szükséges.'], 403);
 }
@@ -39,8 +55,8 @@ if (!empty($appSettings['receipt_show_logo']) && !empty($appSettings['logo_filen
 }
 
 try {
-    $printer = new EscPosPrinter($ip, $port, $paperWidth);
-    $printer->printTestPage($config['shop'], $logoPath);
+    $printer = new EscPosPrinter($ip, $port, $paperWidth, $encoding);
+    $printer->printTestPage($config['shop'], $logoPath, $includeQrSample);
     send_json(['success' => true]);
 } catch (Throwable $e) {
     send_json(['error' => $e->getMessage()], 500);

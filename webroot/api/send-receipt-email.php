@@ -3,6 +3,7 @@
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 require_once __DIR__ . '/../../src/Settings.php';
+require_once __DIR__ . '/../../src/MailerService.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     send_json(['error' => 'POST only'], 405);
@@ -56,7 +57,30 @@ $html = '<div style="font-family:Arial,sans-serif; max-width:480px; margin:0 aut
     . $footerHtml
     . '</div>';
 
-$subject = '=?UTF-8?B?' . base64_encode('Nyugta #' . $sale['id'] . ' — ' . $shop['name']) . '?=';
+$subjectText = 'Nyugta #' . $sale['id'] . ' — ' . $shop['name'];
+
+// SMTP-t használ, ha be van állítva (lásd Beállítások → Email,
+// src/MailerService.php) — enélkül a korábbi, PHP mail()-alapú útra esik
+// vissza (ami helyi konfigurált MTA-t igényel, sok fejlesztői/felhő-
+// környezetben alapból nincs beállítva).
+if (!empty($settings['smtp_host'])) {
+    $smtpConfig = [
+        'host' => $settings['smtp_host'],
+        'port' => (int) $settings['smtp_port'],
+        'username' => $settings['smtp_username'],
+        'password' => $settings['smtp_password'],
+        'encryption' => $settings['smtp_encryption'],
+        'from_email' => $settings['smtp_from_email'] ?: ('no-reply@' . ($_SERVER['SERVER_NAME'] ?? 'localhost')),
+        'from_name' => $settings['smtp_from_name'] ?: $shop['name'],
+    ];
+    $result = MailerService::send($smtpConfig, $email, $subjectText, $html);
+    if (!$result['success']) {
+        send_json(['error' => 'A levél küldése sikertelen (SMTP): ' . $result['error']], 500);
+    }
+    send_json(['success' => true]);
+}
+
+$subject = '=?UTF-8?B?' . base64_encode($subjectText) . '?=';
 $fromName = '=?UTF-8?B?' . base64_encode($shop['name']) . '?=';
 $headers = "MIME-Version: 1.0\r\n"
     . "Content-Type: text/html; charset=UTF-8\r\n"
@@ -68,7 +92,7 @@ if (!$sent) {
     send_json([
         'error' => 'A levél küldése sikertelen. Ez a szerver PHP mail() funkcióját használja, aminek működéséhez '
             . 'egy konfigurált levelezőszerverre (pl. sendmail/postfix) van szükség — sok helyi/fejlesztői '
-            . 'környezetben ez alapból nincs beállítva.',
+            . 'környezetben ez alapból nincs beállítva. Állíts be SMTP-t a Beállítások → Email fülön.',
     ], 500);
 }
 

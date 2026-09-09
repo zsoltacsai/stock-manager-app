@@ -19,6 +19,11 @@ require_once __DIR__ . '/../src/NavInvoiceXmlBuilder.php';
 require_once __DIR__ . '/../src/NavInvoiceProvider.php';
 require_once __DIR__ . '/../src/NavInvoiceQueueWorker.php';
 require_once __DIR__ . '/../src/NavTokenCache.php';
+require_once __DIR__ . '/../src/NavIncomingInvoiceSync.php';
+require_once __DIR__ . '/../src/NavIncomingInvoiceSyncWorker.php';
+require_once __DIR__ . '/../src/EscPosPrinter.php';
+require_once __DIR__ . '/../src/ReceiptPrinter.php';
+require_once __DIR__ . '/../src/MailerService.php';
 
 /**
  * Minden tesztfüggvény saját, egyszer használatos SQLite fájllal dolgozik

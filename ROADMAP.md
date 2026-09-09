@@ -74,6 +74,39 @@ konkrét séma eldőlt.
 mielőtt `invoice_provider='nav'` valódi, éles (nem teszt-rendszerű)
 NAV-fiókkal, valódi vevőknek kiállított számlákra bekapcsolásra kerül.
 
+## NAV Online Számla — Beérkezett számlák: ismert korlátok / jövőbeli bővítés
+
+A bejövő (más adózók által kiállított) számlák NAV-szinkronja
+(`src/NavIncomingInvoiceSync.php`, `src/NavIncomingInvoiceSyncWorker.php`,
+"Beérkezett számlák" nézet) elkészült — lásd README "NAV Online Számla
+— Beérkezett számlák" szakaszát. Két, SZÁNDÉKOSAN e körön kívül hagyott
+pont maradt jövőbeli bővítésre:
+
+1. **Többszintű módosítási lánc**: a jelenlegi implementáció a digest-
+   szintű `originalInvoiceNumber`/`modificationIndex` mezőkből épít
+   egy-egy közvetlen (egy-szintű) hivatkozást az eredeti számlára — ha
+   egy számlát TÖBBSZÖR módosítanak (A → módosítja B → módosítja C), a
+   UI-ban mindegyik a SAJÁT `originalInvoiceNumber`-ére mutat, de nincs
+   összesített "teljes lánc" nézet. A NAV `queryInvoiceChainDigest`
+   operációja pontosan erre való (a teljes módosítási lánc egy
+   hívással lekérdezhető) — bevezetése egy jövőbeli körben indokolt, ha
+   a gyakorlatban gyakoriak a 2+ szintű módosítási láncok.
+2. **Production PHP környezet TLS/CA-bundle ellenőrzése**: a Phase 6
+   valódi NAV sandbox tesztje során kiderült, hogy ennek a
+   fejlesztői gépnek a különálló PHP 8.3 telepítése (`C:\tools\php83`)
+   NEM rendelkezik alapértelmezett `curl.cainfo`/`openssl.cafile`
+   beállítással, emiatt MINDEN kimenő HTTPS-hívás (NAV, WooCommerce,
+   Dropbox/Google Drive stb.) `self-signed certificate in certificate
+   chain` hibával elbukik, amíg valaki explicit CA-bundle-t nem állít
+   be. Ez a projekt kódját NEM érinti (a `NavClient`/`WooCommerceClient`
+   a rendszer alapértelmezett CA-tárolójára támaszkodik, ahogy minden
+   PHP curl-alapú kliensnek kellene) — de **production telepítés előtt
+   ellenőrizni kell, hogy a célszerver PHP-jának van-e működő CA-tára**
+   (a legtöbb csomagolt PHP-disztribúció — pl. XAMPP, Docker hivatalos
+   image-ek — alapból rendelkezik ilyennel, ez a hiányosság ennek az
+   egy fejlesztői gépnek egy speciális, standalone telepítéséhez
+   kötődött).
+
 ## Többdevizás támogatás
 
 Az egész adatmodell (termékek, eladások, beszerzések) `currency` mezőt

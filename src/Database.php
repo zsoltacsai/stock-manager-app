@@ -2,7 +2,7 @@
 
 class Database
 {
-    private const SCHEMA_VERSION = 19;
+    private const SCHEMA_VERSION = 20;
 
     private PDO $pdo;
     private string $driver;
@@ -125,6 +125,9 @@ class Database
             }
             if ($version < 19) {
                 $this->migrateV19Invoices();
+            }
+            if ($version < 20) {
+                $this->migrateV20IncomingInvoices();
             }
         }
 
@@ -837,6 +840,504 @@ class Database
                 $this->pdo->exec($sql);
             } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
         }
+    }
+
+    /**
+     * A NAV Online Számla BEÉRKEZŐ (más adózók által kiállított) számláinak
+     * saját, az `invoices` (kimenő) tábláktól SZÁNDÉKOSAN KÜLÖN
+     * adatmodellje — lásd a Phase 6 terv 2. pontját az indoklásért: az
+     * `invoices` állapotgépe (queued/processing/submitted/...) a MI
+     * beküldésünk életciklusát írja le, aminek egy bejövő számlánál nincs
+     * értelme (egy bejövő számla nem "queued", egyszerűen VAN).
+     *
+     * `incoming_invoices` — egy sor a NAV `queryInvoiceDigest`
+     * válaszának EGY digest-bejegyzése (egy eredeti számla VAGY egy
+     * konkrét módosító/sztornó dokumentum) — UNIQUE(supplier_tax_number,
+     * invoice_number, batch_index), mert a NAV-adatmodell szerint minden
+     * dokumentum (eredeti ÉS minden módosítás) saját, egyedi sorszámot
+     * kap az adott szállítónál (ÁFA tv. 169-170. §) — ez a természetes,
+     * hamisítatlan dedup-kulcs, `INSERT OR IGNORE`/`INSERT IGNORE`-ra
+     * építve (lásd Database::insertIncomingInvoiceDigestEntry()).
+     *
+     * `incoming_invoice_items` — a tételsorok, LAZY módon, csak akkor
+     * töltve, amikor a felhasználó ténylegesen megnyitja egy számla
+     * részletnézetét (`queryInvoiceData`), NEM minden sync-nél minden
+     * számlához (az irreális NAV-terhelés elkerülése miatt).
+     *
+     * `incoming_invoice_sync` — a sync állapotgépe (idle/running/
+     * success/retry/failed), KÜLÖN TÁBLA (nem Settings-kulcs, mint a
+     * kimenő oldal `last_auto_sync_at`-ja), mert itt ATOMIKUS,
+     * race-safe claim kell (lásd Database::claimIncomingInvoiceSync()) —
+     * egy JSON-fájlírás (Settings::save()) erre nem alkalmas.
+     */
+    /**
+     * ATOMICITÁS: ez a metódus a `migrateV6ManualSaleItems()`-ben már
+     * bevált `$wasInTransaction`-mintát követi — SAJÁT tranzakcióba
+     * csomagolja az összes DDL/DML lépését, DE csak akkor nyit ÚJAT, ha
+     * még nincs aktív (kompozíció-barát: ha valaha egy külső hívó már
+     * tranzakcióban van, nem nyit egymásba ágyazott tranzakciót).
+     *
+     * Miért kellett ez: élesben előfordult, hogy a `schema_version` 20-ra
+     * ugrott, miközben ez a 3 tábla ténylegesen NEM jött létre (a régi,
+     * tranzakció NÉLKÜLI verzióban minden `exec()` azonnal, önállóan
+     * commit-olt — egy a metóduson KÍVÜLI okból megszakadt kérés emiatt
+     * FÉLBEN hagyhatta a migrációt úgy, hogy a már lefutott lépések
+     * hatása megmaradt, de az `ensureSchema()` sose jutott el a
+     * `setSchemaVersion()`-ig). SQLite-on a `CREATE TABLE`/`CREATE INDEX`
+     * is TELJES ÉRTÉKŰEN tranzakcionális — egy `rollBack()` ezeket is
+     * visszavonja, tehát itt VALÓDI, teljes atomicitás érhető el: vagy
+     * MINDHÁROM tábla + index + seed-sor létrejön, vagy semmi.
+     *
+     * MySQL-en ez a garancia GYENGÉBB egy alapvető motor-korlát miatt: a
+     * MySQL/InnoDB DDL-utasításai (CREATE TABLE/INDEX, ALTER TABLE)
+     * IMPLICIT COMMIT-ot végeznek, tehát tranzakción belül sem
+     * visszavonhatók — ez NEM ennek a projektnek a hibája, hanem a MySQL
+     * dokumentált, általános viselkedése (ugyanez igaz PL. a Rails/
+     * Laravel/Doctrine migrációs rendszereire is). Emiatt a VALÓDI,
+     * motor-független garancia itt NEM a tranzakciós rollback, hanem az,
+     * hogy MINDEN egyes lépés (CREATE TABLE IF NOT EXISTS, CREATE INDEX
+     * IF NOT EXISTS / benign-hiba-elnyelés, INSERT OR IGNORE/IGNORE a
+     * seed-sornál) idempotens — egy megszakadt migráció a KÖVETKEZŐ
+     * kérésnél, a hiányzó résztől folytatva, HIBA NÉLKÜL fejeződik be
+     * (nincs "poison" állapot, ami minden további kérést elhasaltana).
+     */
+    private function migrateV20IncomingInvoices(): void
+    {
+        $isMysql = $this->driver === 'mysql';
+        $pk = $isMysql ? 'INT UNSIGNED AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
+        $intCol = $isMysql ? 'INT UNSIGNED NOT NULL' : 'INTEGER NOT NULL';
+        $moneyCol = $isMysql ? 'DECIMAL(14,4)' : 'REAL';
+        $textCol = 'TEXT';
+        $ts = $isMysql ? 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' : "TEXT NOT NULL DEFAULT (datetime('now'))";
+        $tsNull = $isMysql ? 'DATETIME NULL' : 'TEXT';
+        $engine = $isMysql ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : '';
+
+        $wasInTransaction = $this->pdo->inTransaction();
+        if (!$wasInTransaction) {
+            $this->pdo->beginTransaction();
+        }
+        try {
+            $this->migrateV20IncomingInvoicesBody($isMysql, $pk, $intCol, $moneyCol, $textCol, $ts, $tsNull, $engine);
+            if (!$wasInTransaction) {
+                $this->pdo->commit();
+            }
+        } catch (Throwable $e) {
+            if (!$wasInTransaction && $this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    private function migrateV20IncomingInvoicesBody(bool $isMysql, string $pk, string $intCol, string $moneyCol, string $textCol, string $ts, string $tsNull, string $engine): void
+    {
+        try {
+            $this->pdo->exec("CREATE TABLE IF NOT EXISTS incoming_invoices (
+                id $pk,
+                nav_transaction_id VARCHAR(64),
+                invoice_number VARCHAR(64) NOT NULL,
+                batch_index INT UNSIGNED NOT NULL DEFAULT 0,
+                supplier_tax_number VARCHAR(16) NOT NULL,
+                supplier_group_member_tax_number VARCHAR(16),
+                supplier_name VARCHAR(512) NOT NULL,
+                supplier_country VARCHAR(8),
+                customer_tax_number VARCHAR(16),
+                customer_name VARCHAR(512),
+                invoice_operation VARCHAR(16) NOT NULL,
+                invoice_category VARCHAR(16),
+                original_invoice_number VARCHAR(64),
+                modification_index VARCHAR(32),
+                invoice_issue_date VARCHAR(16),
+                invoice_delivery_date VARCHAR(16),
+                payment_date VARCHAR(16),
+                payment_method VARCHAR(16),
+                currency VARCHAR(8) NOT NULL DEFAULT 'HUF',
+                net_total $moneyCol,
+                vat_total $moneyCol,
+                gross_total $moneyCol,
+                nav_ins_date VARCHAR(32) NOT NULL,
+                detail_fetched_at $tsNull,
+                first_seen_at $ts,
+                last_synced_at $ts,
+                created_at $ts,
+                updated_at $ts
+            )$engine");
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        try {
+            $this->pdo->exec("CREATE TABLE IF NOT EXISTS incoming_invoice_items (
+                id $pk,
+                incoming_invoice_id $intCol,
+                line_number INT UNSIGNED NOT NULL,
+                description $textCol,
+                quantity $moneyCol,
+                unit_of_measure VARCHAR(32),
+                unit_net_price $moneyCol,
+                vat_rate VARCHAR(8),
+                net_amount $moneyCol,
+                vat_amount $moneyCol,
+                gross_amount $moneyCol,
+                created_at $ts
+            )$engine");
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        try {
+            $this->pdo->exec("CREATE TABLE IF NOT EXISTS incoming_invoice_sync (
+                id $pk,
+                provider VARCHAR(16) NOT NULL DEFAULT 'nav',
+                status VARCHAR(16) NOT NULL DEFAULT 'idle',
+                sync_cursor_ins_date VARCHAR(32),
+                last_requested_interval VARCHAR(64),
+                last_success_at $tsNull,
+                last_attempt_at $tsNull,
+                attempts INT UNSIGNED NOT NULL DEFAULT 0,
+                next_attempt_at $tsNull,
+                locked_at $tsNull,
+                last_error $textCol,
+                created_at $ts,
+                updated_at $ts
+            )$engine");
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        foreach ([
+            $isMysql
+                ? 'ALTER TABLE incoming_invoices ADD UNIQUE KEY uq_incoming_invoices_identity (supplier_tax_number, invoice_number, batch_index)'
+                : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_incoming_invoices_identity ON incoming_invoices(supplier_tax_number, invoice_number, batch_index)',
+            'CREATE INDEX idx_incoming_invoices_ins_date ON incoming_invoices(nav_ins_date)',
+            'CREATE INDEX idx_incoming_invoices_issue_date ON incoming_invoices(invoice_issue_date)',
+            'CREATE INDEX idx_incoming_invoices_supplier ON incoming_invoices(supplier_tax_number)',
+            $isMysql
+                ? 'ALTER TABLE incoming_invoice_items ADD UNIQUE KEY uq_incoming_invoice_items_line (incoming_invoice_id, line_number)'
+                : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_incoming_invoice_items_line ON incoming_invoice_items(incoming_invoice_id, line_number)',
+            $isMysql
+                ? 'ALTER TABLE incoming_invoice_sync ADD UNIQUE KEY uq_incoming_invoice_sync_provider (provider)'
+                : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_incoming_invoice_sync_provider ON incoming_invoice_sync(provider)',
+        ] as $sql) {
+            try {
+                $this->pdo->exec($sql);
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+        }
+
+        // A sync-állapot sor MINDIG legyen jelen (idle-ként), hogy a
+        // worker/manuális-trigger sose kelljen "hozz létre, ha nincs"
+        // ágat futtatnia — egyetlen, előre garantált sor. INSERT OR
+        // IGNORE/IGNORE (NEM sima INSERT): egy megszakadt-majd-újrafuttatott
+        // migráció esetén ez a sor MÁR létezhet (lásd az osztály docblockja
+        // az atomicitásról) — sima INSERT-tel ez egy el nem kapott UNIQUE-
+        // ütközési hibát dobna (az isBenignSchemaError() csak "already
+        // exists"-jellegű SÉMA-hibákat ismer fel, egy sor-szintű UNIQUE-
+        // ütközést NEM), ami MINDEN további kérést véglegesen elhasalna —
+        // élesben ténylegesen ez történt, éles adatbázison reprodukálva és
+        // javítva.
+        $sql = $isMysql
+            ? "INSERT IGNORE INTO incoming_invoice_sync (provider, status, created_at, updated_at) VALUES ('nav', 'idle', NOW(), NOW())"
+            : "INSERT OR IGNORE INTO incoming_invoice_sync (provider, status, created_at, updated_at) VALUES ('nav', 'idle', datetime('now'), datetime('now'))";
+        try {
+            $this->pdo->exec($sql);
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+    }
+
+    // ---- Beérkező (NAV) számlák ----
+
+    public function getIncomingInvoiceById(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM incoming_invoices WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    /**
+     * A módosító/sztornó dokumentumok `original_invoice_number` mezője
+     * alapján megkeresi a helyi táblában az EREDETI számlát (ha az is
+     * szinkronizálva már) — a UI ezzel ad kattintható hivatkozást a
+     * módosítás/sztornó és az eredeti számla között, ha mindkettő a
+     * lokálisan szinkronizált időablakba esik.
+     */
+    public function findIncomingInvoiceBySupplierAndNumber(string $supplierTaxNumber, string $invoiceNumber): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM incoming_invoices WHERE supplier_tax_number = ? AND invoice_number = ? ORDER BY batch_index ASC LIMIT 1');
+        $stmt->execute([$supplierTaxNumber, $invoiceNumber]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    /**
+     * Egy NAV queryInvoiceDigest válasz EGY digest-bejegyzését menti el,
+     * race-safe módon — `INSERT OR IGNORE`/`INSERT IGNORE` a
+     * `UNIQUE(supplier_tax_number, invoice_number, batch_index)`-re (lásd
+     * migrateV20IncomingInvoices() docblockja). `null`-lal tér vissza, ha
+     * a sor MÁR létezett (idempotens no-op — nem hiba, ugyanaz a mintázat,
+     * mint insertQueuedInvoice()-nál).
+     */
+    public function insertIncomingInvoiceDigestEntry(array $entry): ?array
+    {
+        $now = date('Y-m-d H:i:s');
+        $sql = $this->driver === 'mysql'
+            ? "INSERT IGNORE INTO incoming_invoices
+                (nav_transaction_id, invoice_number, batch_index, supplier_tax_number, supplier_group_member_tax_number,
+                 supplier_name, customer_tax_number, customer_name, invoice_operation, invoice_category,
+                 original_invoice_number, modification_index, invoice_issue_date, invoice_delivery_date, payment_date,
+                 payment_method, currency, net_total, vat_total, gross_total, nav_ins_date,
+                 first_seen_at, last_synced_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            : "INSERT OR IGNORE INTO incoming_invoices
+                (nav_transaction_id, invoice_number, batch_index, supplier_tax_number, supplier_group_member_tax_number,
+                 supplier_name, customer_tax_number, customer_name, invoice_operation, invoice_category,
+                 original_invoice_number, modification_index, invoice_issue_date, invoice_delivery_date, payment_date,
+                 payment_method, currency, net_total, vat_total, gross_total, nav_ins_date,
+                 first_seen_at, last_synced_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+        $netTotal = $entry['net_total'] ?? 0.0;
+        $vatTotal = $entry['vat_total'] ?? 0.0;
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute([
+            $entry['nav_transaction_id'] ?? null,
+            $entry['invoice_number'],
+            $entry['batch_index'] ?? 0,
+            $entry['supplier_tax_number'],
+            $entry['supplier_group_member_tax_number'] ?? null,
+            $entry['supplier_name'],
+            $entry['customer_tax_number'] ?? null,
+            $entry['customer_name'] ?? null,
+            $entry['invoice_operation'],
+            $entry['invoice_category'] ?? null,
+            $entry['original_invoice_number'] ?? null,
+            $entry['modification_index'] ?? null,
+            $entry['invoice_issue_date'] ?? null,
+            $entry['invoice_delivery_date'] ?? null,
+            $entry['payment_date'] ?? null,
+            $entry['payment_method'] ?? null,
+            $entry['currency'] ?? 'HUF',
+            $netTotal,
+            $vatTotal,
+            round((float) $netTotal + (float) $vatTotal, 2),
+            $entry['nav_ins_date'],
+            $now,
+            $now,
+            $now,
+            $now,
+        ]);
+
+        if ($stmt->rowCount() === 0) {
+            return null;
+        }
+        return $this->getIncomingInvoiceById((int) $this->pdo->lastInsertId());
+    }
+
+    /**
+     * A LAZY részletnézet-lekérdezés (queryInvoiceData) eredményét menti:
+     * a szállító országát (amit a digest nem ad) és a tételsorokat, majd
+     * beállítja `detail_fetched_at`-ot, hogy a KÖVETKEZŐ megnyitás már ne
+     * hívja újra a NAV-ot ugyanerre a számlára.
+     *
+     * @param array $items lista ['line_number','description','quantity','unit_of_measure','unit_net_price','vat_rate','net_amount','vat_amount','gross_amount']
+     */
+    public function saveIncomingInvoiceDetail(int $incomingInvoiceId, ?string $supplierCountry, array $items): void
+    {
+        $now = date('Y-m-d H:i:s');
+
+        $this->pdo->prepare('UPDATE incoming_invoices SET supplier_country = ?, detail_fetched_at = ?, updated_at = ? WHERE id = ?')
+            ->execute([$supplierCountry, $now, $now, $incomingInvoiceId]);
+
+        $itemSql = $this->driver === 'mysql'
+            ? "INSERT IGNORE INTO incoming_invoice_items
+                (incoming_invoice_id, line_number, description, quantity, unit_of_measure, unit_net_price, vat_rate, net_amount, vat_amount, gross_amount, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            : "INSERT OR IGNORE INTO incoming_invoice_items
+                (incoming_invoice_id, line_number, description, quantity, unit_of_measure, unit_net_price, vat_rate, net_amount, vat_amount, gross_amount, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        $itemStmt = $this->pdo->prepare($itemSql);
+        foreach ($items as $item) {
+            $itemStmt->execute([
+                $incomingInvoiceId,
+                $item['line_number'],
+                $item['description'] ?? null,
+                $item['quantity'] ?? null,
+                $item['unit_of_measure'] ?? null,
+                $item['unit_net_price'] ?? null,
+                $item['vat_rate'] ?? null,
+                $item['net_amount'] ?? null,
+                $item['vat_amount'] ?? null,
+                $item['gross_amount'] ?? null,
+                $now,
+            ]);
+        }
+    }
+
+    public function getIncomingInvoiceItems(int $incomingInvoiceId): array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM incoming_invoice_items WHERE incoming_invoice_id = ? ORDER BY line_number ASC');
+        $stmt->execute([$incomingInvoiceId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * A "Beérkezett számlák" nézet szűrt listája — `listInvoices()`
+     * mintájára.
+     *
+     * @param array $filters opcionális: date_from/date_to (invoice_issue_date-re),
+     *   supplier (szállító név VAGY adószám LIKE), invoice_number, tax_number
+     *   (pontos egyezés supplier_tax_number-re), operation ('CREATE'|'MODIFY'|'STORNO'),
+     *   currency
+     */
+    public function listIncomingInvoices(array $filters = [], int $limit = 300): array
+    {
+        $where = [];
+        $params = [];
+
+        if (!empty($filters['date_from'])) {
+            $where[] = 'invoice_issue_date >= ?';
+            $params[] = $filters['date_from'];
+        }
+        if (!empty($filters['date_to'])) {
+            $where[] = 'invoice_issue_date <= ?';
+            $params[] = $filters['date_to'];
+        }
+        if (!empty($filters['supplier'])) {
+            $where[] = '(supplier_name LIKE ? OR supplier_tax_number LIKE ?)';
+            $params[] = '%' . $filters['supplier'] . '%';
+            $params[] = '%' . $filters['supplier'] . '%';
+        }
+        if (!empty($filters['invoice_number'])) {
+            $where[] = 'invoice_number LIKE ?';
+            $params[] = '%' . $filters['invoice_number'] . '%';
+        }
+        if (!empty($filters['tax_number'])) {
+            $where[] = 'supplier_tax_number = ?';
+            $params[] = $filters['tax_number'];
+        }
+        if (!empty($filters['operation']) && in_array($filters['operation'], ['CREATE', 'MODIFY', 'STORNO'], true)) {
+            $where[] = 'invoice_operation = ?';
+            $params[] = $filters['operation'];
+        }
+        if (!empty($filters['currency'])) {
+            $where[] = 'currency = ?';
+            $params[] = $filters['currency'];
+        }
+
+        $sql = 'SELECT * FROM incoming_invoices';
+        if ($where) {
+            $sql .= ' WHERE ' . implode(' AND ', $where);
+        }
+        $sql .= ' ORDER BY invoice_issue_date DESC, id DESC LIMIT ' . (int) $limit;
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    // ---- Beérkező-számla sync állapotgép (race-safe) ----
+
+    public function getIncomingInvoiceSyncState(string $provider = 'nav'): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM incoming_invoice_sync WHERE provider = ?');
+        $stmt->execute([$provider]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    /**
+     * Atomikusan lefoglalja a sync-sort — csak akkor sikeres, ha NEM
+     * `running` állapotú, VAGY `running`, de a zárja elavult. Pontosan a
+     * `claimQueuedInvoiceForSubmission()` már bevált elve (a `rowCount()`
+     * dönt, nem egy korábbi SELECT), egyetlen sorra alkalmazva — ez a
+     * PRIMER védelem az ellen, hogy a manuális és az automatikus sync
+     * egyszerre fusson (lásd Phase 6 terv 6. pontja).
+     */
+    public function claimIncomingInvoiceSync(string $provider = 'nav', int $staleAfterSeconds = 1800): ?array
+    {
+        $now = date('Y-m-d H:i:s');
+        $staleBefore = date('Y-m-d H:i:s', time() - $staleAfterSeconds);
+
+        $stmt = $this->pdo->prepare("
+            UPDATE incoming_invoice_sync
+            SET status = 'running', locked_at = ?, last_attempt_at = ?, updated_at = ?
+            WHERE provider = ?
+              AND (status != 'running' OR locked_at IS NULL OR locked_at < ?)
+        ");
+        $stmt->execute([$now, $now, $now, $provider, $staleBefore]);
+
+        if ($stmt->rowCount() === 0) {
+            return null;
+        }
+        return $this->getIncomingInvoiceSyncState($provider);
+    }
+
+    /**
+     * Ablakonkénti cursor-előrehaladás — a `running` állapotot és a
+     * zárat NEM érinti (a worker még dolgozhat további ablakokon), csak
+     * a magas-vízjelet tolja előre, hogy egy megszakadt/korlátozott
+     * futás ne dolgozza fel feleslegesen újra a már kész ablakokat.
+     */
+    public function advanceIncomingInvoiceSyncCursor(string $provider, string $cursorInsDate): void
+    {
+        $this->pdo->prepare('UPDATE incoming_invoice_sync SET sync_cursor_ins_date = ?, updated_at = ? WHERE provider = ?')
+            ->execute([$cursorInsDate, date('Y-m-d H:i:s'), $provider]);
+    }
+
+    public function markIncomingInvoiceSyncSuccess(string $provider, string $cursorInsDate, string $requestedInterval): void
+    {
+        $now = date('Y-m-d H:i:s');
+        $this->pdo->prepare("
+            UPDATE incoming_invoice_sync
+            SET status = 'success', sync_cursor_ins_date = ?, last_requested_interval = ?, last_success_at = ?,
+                attempts = 0, next_attempt_at = NULL, locked_at = NULL, last_error = NULL, updated_at = ?
+            WHERE provider = ?
+        ")->execute([$cursorInsDate, $requestedInterval, $now, $now, $provider]);
+    }
+
+    /**
+     * Átmeneti (hálózati/timeout/NAV 5xx) hiba után `retry`-ra állítja,
+     * a megadott $nextAttemptAt időpontig várakozásra — a locked_at
+     * felszabadul, hogy a claimIncomingInvoiceSync() a következő
+     * cron-tick-nél (ha a next_attempt_at már elmúlt) újra próbálkozhasson.
+     */
+    public function markIncomingInvoiceSyncRetry(string $provider, string $error, string $nextAttemptAt, int $attempts): void
+    {
+        $this->pdo->prepare("
+            UPDATE incoming_invoice_sync
+            SET status = 'retry', last_error = ?, attempts = ?, next_attempt_at = ?, locked_at = NULL, updated_at = ?
+            WHERE provider = ?
+        ")->execute([$error, $attempts, $nextAttemptAt, date('Y-m-d H:i:s'), $provider]);
+    }
+
+    /**
+     * Végleges, NEM újrapróbálandó hiba (üzleti validációs hiba,
+     * hitelesítési hiba, kimerült backoff) — terminális, admin
+     * figyelmét igényli, de a legközelebbi manuális/automatikus
+     * próbálkozás (a claim WHERE-je `status != 'running'`-t is enged)
+     * TOVÁBBRA IS újra megpróbálhatja, csak nincs automatikus retry-ütemezés rá.
+     */
+    public function markIncomingInvoiceSyncFailed(string $provider, string $error): void
+    {
+        $this->pdo->prepare("
+            UPDATE incoming_invoice_sync
+            SET status = 'failed', last_error = ?, next_attempt_at = NULL, locked_at = NULL, updated_at = ?
+            WHERE provider = ?
+        ")->execute([$error, date('Y-m-d H:i:s'), $provider]);
+    }
+
+    /**
+     * Az ELSŐ sync kezdő időpontját állítja be (admin által választott 7
+     * nap / 30 nap / egyedi tartomány, lásd nav-incoming-sync-trigger.php)
+     * — de KIZÁRÓLAG akkor hat, ha `sync_cursor_ins_date` MÉG NULL (azaz
+     * még sosem futott sikeres/részleges sync). Race-safe, feltételes
+     * UPDATE: ha két admin-kérés (vagy egy admin-kérés és a cron) épp
+     * egyszerre próbálná beállítani az első sync kezdőpontját, csak az
+     * NYER, amelyiket a DB ténylegesen elsőként hajtja végre — a
+     * másodiknak a WHERE feltétele már nem teljesül, no-op marad. Egy már
+     * folyamatban lévő/befejezett synchez ez a metódus SOSE nyúl hozzá
+     * (nem írja felül a cursor-t utólag), azt kizárólag a
+     * advanceIncomingInvoiceSyncCursor()/markIncomingInvoiceSyncSuccess()
+     * teheti.
+     */
+    public function setIncomingInvoiceSyncCursorIfUnset(string $provider, string $cursorInsDate): void
+    {
+        $this->pdo->prepare('UPDATE incoming_invoice_sync SET sync_cursor_ins_date = ?, updated_at = ? WHERE provider = ? AND sync_cursor_ins_date IS NULL')
+            ->execute([$cursorInsDate, date('Y-m-d H:i:s'), $provider]);
     }
 
     public function findProductByBarcode(string $barcode): ?array

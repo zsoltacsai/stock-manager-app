@@ -366,6 +366,185 @@ class NavClient
         ];
     }
 
+    /**
+     * POST /queryInvoiceDigest — bejövő (vagy kimenő) számlák kivonatos
+     * listázása egy `insDate` (a NAV saját, monoton feldolgozási
+     * időbélyege) alapú UTC időablakban, lapozva. Mező- és
+     * struktúra-forrás: invoiceApi.xsd `QueryInvoiceDigestRequestType` /
+     * `QueryInvoiceDigestResponseType` / `InvoiceDigestType` — SEMMI nincs
+     * kitalálva. A `MandatoryQueryParamsType` az `invoiceIssueDate` /
+     * `insDate` / `originalInvoiceNumber` HÁROM lehetősége közül egy
+     * xs:choice — ez a metódus szándékosan mindig az `insDate`-et
+     * használja (lásd Phase 6 terv indoklása: ez a NAV saját feldolgozási
+     * időbélyege, ideális magas-vízjel az inkrementális synchez).
+     *
+     * A specifikáció szerint (1.6.x, "the difference between the times
+     * given cannot exceed 35 days (or 840 hours)") az $insDateFrom..
+     * $insDateTo közti különbség NEM haladhatja meg a 35 napot — ezt a
+     * HÍVÓ (NavIncomingInvoiceSync) felelőssége betartani, ez a metódus
+     * önmagában nem validálja (ugyanúgy, ahogy a meglévő
+     * queryTransactionList() sem).
+     *
+     * Nincs exchange token — ugyanaz az "1.5.2" aláírás-eset, mint
+     * queryTransactionList()/queryTransactionStatus() esetén (a
+     * BasicOnlineInvoiceRequestType nem igényel külön hitelesítést a
+     * manageInvoice-hoz képest).
+     */
+    public function queryInvoiceDigest(string $insDateFrom, string $insDateTo, string $invoiceDirection, int $page = 1): array
+    {
+        [$requestId, $timestamp, $tsForSig] = $this->buildHeader();
+        $passwordHash = strtoupper(hash('sha512', $this->password));
+        $signature = $this->simpleSignature($requestId, $tsForSig);
+
+        $xml = '<?xml version="1.0" encoding="UTF-8"?>'
+            . '<QueryInvoiceDigestRequest xmlns:common="http://schemas.nav.gov.hu/NTCA/1.0/common" xmlns="http://schemas.nav.gov.hu/OSA/3.0/api">'
+            . $this->headerXml($requestId, $timestamp)
+            . $this->userXml($passwordHash, $signature)
+            . $this->softwareXml()
+            . '<page>' . $page . '</page>'
+            . '<invoiceDirection>' . htmlspecialchars($invoiceDirection, ENT_XML1) . '</invoiceDirection>'
+            . '<invoiceQueryParams>'
+            . '<mandatoryQueryParams>'
+            . '<insDate>'
+            . '<dateTimeFrom>' . htmlspecialchars($insDateFrom, ENT_XML1) . '</dateTimeFrom>'
+            . '<dateTimeTo>' . htmlspecialchars($insDateTo, ENT_XML1) . '</dateTimeTo>'
+            . '</insDate>'
+            . '</mandatoryQueryParams>'
+            . '</invoiceQueryParams>'
+            . '</QueryInvoiceDigestRequest>';
+
+        try {
+            $response = $this->post('/queryInvoiceDigest', $xml);
+        } catch (Throwable $e) {
+            return ['success' => false, 'invoices' => [], 'current_page' => null, 'available_page' => null, 'http_status' => null, 'nav_error_code' => null, 'error' => $e->getMessage()];
+        }
+
+        $doc = $this->parseXml($response['body']);
+        $funcCode = $this->extractValue($doc, 'funcCode');
+        if ($funcCode !== 'OK') {
+            $errorCode = $this->extractValue($doc, 'errorCode');
+            $message = $this->extractValue($doc, 'message');
+            return [
+                'success' => false, 'invoices' => [], 'current_page' => null, 'available_page' => null,
+                'http_status' => $response['status'], 'nav_error_code' => $errorCode,
+                'error' => $message ?? $errorCode ?? 'Ismeretlen NAV hiba (a válasz nem tartalmazott funcCode=OK jelzést).',
+            ];
+        }
+
+        $invoices = [];
+        if ($doc !== null) {
+            foreach ($doc->xpath("//*[local-name()='invoiceDigest']") as $digest) {
+                $invoices[] = [
+                    'invoice_number' => $this->extractValueRelative($digest, 'invoiceNumber'),
+                    'batch_index' => $this->extractValueRelative($digest, 'batchIndex'),
+                    'invoice_operation' => $this->extractValueRelative($digest, 'invoiceOperation'),
+                    'invoice_category' => $this->extractValueRelative($digest, 'invoiceCategory'),
+                    'invoice_issue_date' => $this->extractValueRelative($digest, 'invoiceIssueDate'),
+                    'supplier_tax_number' => $this->extractValueRelative($digest, 'supplierTaxNumber'),
+                    'supplier_group_member_tax_number' => $this->extractValueRelative($digest, 'supplierGroupMemberTaxNumber'),
+                    'supplier_name' => $this->extractValueRelative($digest, 'supplierName'),
+                    'customer_tax_number' => $this->extractValueRelative($digest, 'customerTaxNumber'),
+                    'customer_group_member_tax_number' => $this->extractValueRelative($digest, 'customerGroupMemberTaxNumber'),
+                    'customer_name' => $this->extractValueRelative($digest, 'customerName'),
+                    'payment_method' => $this->extractValueRelative($digest, 'paymentMethod'),
+                    'payment_date' => $this->extractValueRelative($digest, 'paymentDate'),
+                    'invoice_appearance' => $this->extractValueRelative($digest, 'invoiceAppearance'),
+                    'source' => $this->extractValueRelative($digest, 'source'),
+                    'invoice_delivery_date' => $this->extractValueRelative($digest, 'invoiceDeliveryDate'),
+                    'currency' => $this->extractValueRelative($digest, 'currency'),
+                    'invoice_net_amount' => $this->extractValueRelative($digest, 'invoiceNetAmount'),
+                    'invoice_net_amount_huf' => $this->extractValueRelative($digest, 'invoiceNetAmountHUF'),
+                    'invoice_vat_amount' => $this->extractValueRelative($digest, 'invoiceVatAmount'),
+                    'invoice_vat_amount_huf' => $this->extractValueRelative($digest, 'invoiceVatAmountHUF'),
+                    'transaction_id' => $this->extractValueRelative($digest, 'transactionId'),
+                    'index' => $this->extractValueRelative($digest, 'index'),
+                    'original_invoice_number' => $this->extractValueRelative($digest, 'originalInvoiceNumber'),
+                    'modification_index' => $this->extractValueRelative($digest, 'modificationIndex'),
+                    'ins_date' => $this->extractValueRelative($digest, 'insDate'),
+                    'completeness_indicator' => $this->extractValueRelative($digest, 'completenessIndicator'),
+                ];
+            }
+        }
+
+        return [
+            'success' => true,
+            'invoices' => $invoices,
+            'current_page' => $this->extractValue($doc, 'currentPage'),
+            'available_page' => $this->extractValue($doc, 'availablePage'),
+            'http_status' => $response['status'], 'nav_error_code' => null, 'error' => null,
+        ];
+    }
+
+    /**
+     * POST /queryInvoiceData — egy adott, már ismert számlaszámhoz tartozó
+     * TELJES számla-adattartalom lekérdezése (LAZY, csak részletnézet
+     * megnyitásakor hívandó — lásd Phase 6 terv 2b. pont indoklása).
+     * Struktúra-forrás: invoiceApi.xsd `QueryInvoiceDataRequestType` /
+     * `InvoiceNumberQueryType` / `QueryInvoiceDataResponseType` /
+     * `InvoiceDataResultType` — SEMMI nincs kitalálva.
+     *
+     * A válasz `invoiceData` mezője BASE64-kódolt XML, UGYANABBAN a
+     * `invoiceData.xsd` sémában, amit a meglévő NavInvoiceXmlBuilder a
+     * KIMENŐ oldalon épít — ennek a base64-dekódolt tartalomnak a
+     * feldolgozása (tételsorok, supplierAddress stb. kinyerése) a HÍVÓ
+     * (NavIncomingInvoiceSync) felelőssége, ez a metódus csak a
+     * dekódolatlan base64 tartalmat adja vissza.
+     */
+    public function queryInvoiceData(string $invoiceNumber, string $invoiceDirection, ?string $supplierTaxNumber = null, ?int $batchIndex = null): array
+    {
+        [$requestId, $timestamp, $tsForSig] = $this->buildHeader();
+        $passwordHash = strtoupper(hash('sha512', $this->password));
+        $signature = $this->simpleSignature($requestId, $tsForSig);
+
+        $invoiceNumberQuery = '<invoiceNumberQuery>'
+            . '<invoiceNumber>' . htmlspecialchars($invoiceNumber, ENT_XML1) . '</invoiceNumber>'
+            . '<invoiceDirection>' . htmlspecialchars($invoiceDirection, ENT_XML1) . '</invoiceDirection>';
+        if ($batchIndex !== null) {
+            $invoiceNumberQuery .= '<batchIndex>' . $batchIndex . '</batchIndex>';
+        }
+        if ($supplierTaxNumber !== null && $supplierTaxNumber !== '') {
+            $invoiceNumberQuery .= '<supplierTaxNumber>' . htmlspecialchars($supplierTaxNumber, ENT_XML1) . '</supplierTaxNumber>';
+        }
+        $invoiceNumberQuery .= '</invoiceNumberQuery>';
+
+        $xml = '<?xml version="1.0" encoding="UTF-8"?>'
+            . '<QueryInvoiceDataRequest xmlns:common="http://schemas.nav.gov.hu/NTCA/1.0/common" xmlns="http://schemas.nav.gov.hu/OSA/3.0/api">'
+            . $this->headerXml($requestId, $timestamp)
+            . $this->userXml($passwordHash, $signature)
+            . $this->softwareXml()
+            . $invoiceNumberQuery
+            . '</QueryInvoiceDataRequest>';
+
+        try {
+            $response = $this->post('/queryInvoiceData', $xml);
+        } catch (Throwable $e) {
+            return ['success' => false, 'found' => false, 'invoice_data_base64' => null, 'compressed' => false, 'http_status' => null, 'nav_error_code' => null, 'error' => $e->getMessage()];
+        }
+
+        $doc = $this->parseXml($response['body']);
+        $funcCode = $this->extractValue($doc, 'funcCode');
+        if ($funcCode !== 'OK') {
+            $errorCode = $this->extractValue($doc, 'errorCode');
+            $message = $this->extractValue($doc, 'message');
+            return [
+                'success' => false, 'found' => false, 'invoice_data_base64' => null, 'compressed' => false,
+                'http_status' => $response['status'], 'nav_error_code' => $errorCode,
+                'error' => $message ?? $errorCode ?? 'Ismeretlen NAV hiba (a válasz nem tartalmazott funcCode=OK jelzést).',
+            ];
+        }
+
+        $invoiceDataBase64 = $this->extractValue($doc, 'invoiceData');
+        $compressed = $this->extractValue($doc, 'compressedContentIndicator');
+
+        return [
+            'success' => true,
+            'found' => $invoiceDataBase64 !== null,
+            'invoice_data_base64' => $invoiceDataBase64,
+            'compressed' => $compressed === 'true',
+            'http_status' => $response['status'], 'nav_error_code' => null, 'error' => null,
+        ];
+    }
+
     // ---- Aláírás-számítás ----
 
     /**

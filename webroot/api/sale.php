@@ -4,6 +4,7 @@ declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 require_once __DIR__ . '/../../src/LowStockNotifier.php';
 require_once __DIR__ . '/../../src/InvoiceService.php';
+require_once __DIR__ . '/../../src/ReceiptPrinter.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     send_json(['error' => 'POST only'], 405);
@@ -425,12 +426,32 @@ if ($lowStockCrossed) {
     }
 }
 
+// Automatikus hálózati nyomtatás — SZÁNDÉKOSAN az eladás COMMIT-ja UTÁN,
+// a válasz elküldése ELŐTTI, KÜLÖNÁLLÓ, hibatűrő lépésként (nem a fenti
+// tranzakció része): egy nyomtatási hiba (nyomtató kikapcsolva, hálózati
+// hiba stb.) SOSE ronthatja el/vonhatja vissza a már sikeresen rögzített
+// eladást — az eladás EKKORRA már véglegesen megtörtént. A kliens a
+// válaszban kapott `print` mezőből tudja megjeleníteni "Eladás sikeres,
+// de a nyomtatás sikertelen" üzenetet, és a meglévő "Nyomtatás" gombbal
+// (print-receipt.php, ami UGYANEZT a ReceiptPrinter::printForSale()
+// segédfüggvényt hívja) bármikor manuálisan újranyomtatható.
+$printResult = null;
+if (!empty($appSettings['printer_auto_print_enabled'])) {
+    try {
+        $saleForPrint = $db->getSaleWithItems($saleId);
+        $printResult = $saleForPrint ? ReceiptPrinter::printForSale($appSettings, $saleForPrint, __DIR__ . '/../assets') : ['success' => false, 'error' => 'Az eladás nem olvasható vissza nyomtatáshoz.'];
+    } catch (Throwable $e) {
+        $printResult = ['success' => false, 'error' => $e->getMessage()];
+    }
+}
+
 send_json([
     'sale_id'        => $saleId,
     'receipt_token'  => $db->getSaleReceiptToken($saleId),
     'total'          => round($total, 2),
     'subtotal'       => round($subtotal, 2),
     'invoice'        => $invoiceResult,
+    'print'          => $printResult,
     'wc_push_errors' => $pushErrors,
     'oversold_items' => $oversoldItems,
     'loyalty'        => $customer ? [
@@ -501,6 +522,10 @@ function build_idempotent_replay_response(Database $db, array $sale, string $inv
         'subtotal'       => null,
         'replayed'       => true,
         'invoice'        => $invoice,
+        // A visszajátszás SOSE indít újra nyomtatást — az EREDETI kérés már
+        // eldöntötte (vagy megpróbálta) a nyomtatást; egy visszajátszott
+        // kérésre fizikailag újranyomtatni két nyugtát eredményezne.
+        'print'          => null,
         'wc_push_errors' => [],
         'oversold_items' => [],
         'loyalty' => !empty($sale['customer_id']) ? [

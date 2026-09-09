@@ -1106,6 +1106,17 @@ checkoutBtn.addEventListener('click', async () => {
             // legyen a kasszásnak mondott első/fő mondat.
             msg += ' Figyelem: az eladás rögzítve van, de a számla kiállítása nem sikerült — szólj a vezetőnek (' + (data.invoice.error || '?') + ').';
         }
+        if (data.print) {
+            if (data.print.success) {
+                msg += ' Nyugta kinyomtatva.';
+            } else {
+                // Az eladás EKKORRA már véglegesen rögzítve van — a
+                // nyomtatási hiba sose vonja vissza — csak jelezzük, és a
+                // "Nyugta megtekintése / nyomtatása" gombbal (lásd lentebb)
+                // bármikor manuálisan újranyomtatható.
+                msg += ' Figyelem: az automatikus nyomtatás sikertelen (' + (data.print.error || '?') + ') — nyomtasd újra a "Nyugta megtekintése" gombbal.';
+            }
+        }
         if (data.wc_push_errors && data.wc_push_errors.length) {
             msg += ' WooCommerce sync hiba: ' + data.wc_push_errors.join('; ');
         }

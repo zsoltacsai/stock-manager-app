@@ -435,5 +435,83 @@ CREATE TABLE IF NOT EXISTS invoices (
     CONSTRAINT fk_invoices_sale FOREIGN KEY (sale_id) REFERENCES sales(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Beérkező (más adózók által kiállított) NAV számlák — SZÁNDÉKOSAN KÜLÖN
+-- az `invoices` (kimenő) modelltől, lásd Database::migrateV20IncomingInvoices()
+-- docblockja az indoklásért.
+CREATE TABLE IF NOT EXISTS incoming_invoices (
+    id                                INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    nav_transaction_id                VARCHAR(64),
+    invoice_number                    VARCHAR(64) NOT NULL,
+    batch_index                       INT UNSIGNED NOT NULL DEFAULT 0,
+    supplier_tax_number               VARCHAR(16) NOT NULL,
+    supplier_group_member_tax_number  VARCHAR(16),
+    supplier_name                     VARCHAR(512) NOT NULL,
+    supplier_country                  VARCHAR(8),
+    customer_tax_number               VARCHAR(16),
+    customer_name                     VARCHAR(512),
+    invoice_operation                 VARCHAR(16) NOT NULL,
+    invoice_category                  VARCHAR(16),
+    original_invoice_number           VARCHAR(64),
+    modification_index                VARCHAR(32),
+    invoice_issue_date                VARCHAR(16),
+    invoice_delivery_date             VARCHAR(16),
+    payment_date                      VARCHAR(16),
+    payment_method                    VARCHAR(16),
+    currency                          VARCHAR(8) NOT NULL DEFAULT 'HUF',
+    net_total                         DECIMAL(14,4),
+    vat_total                         DECIMAL(14,4),
+    gross_total                       DECIMAL(14,4),
+    nav_ins_date                      VARCHAR(32) NOT NULL,
+    detail_fetched_at                 DATETIME NULL,
+    first_seen_at                     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_synced_at                    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at                        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_incoming_invoices_identity (supplier_tax_number, invoice_number, batch_index),
+    KEY idx_incoming_invoices_ins_date (nav_ins_date),
+    KEY idx_incoming_invoices_issue_date (invoice_issue_date),
+    KEY idx_incoming_invoices_supplier (supplier_tax_number)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Tételsorok — LAZY módon, csak a részletnézet első megnyitásakor
+-- (queryInvoiceData) töltve.
+CREATE TABLE IF NOT EXISTS incoming_invoice_items (
+    id                     INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    incoming_invoice_id    INT UNSIGNED NOT NULL,
+    line_number            INT UNSIGNED NOT NULL,
+    description            TEXT,
+    quantity                DECIMAL(14,4),
+    unit_of_measure         VARCHAR(32),
+    unit_net_price          DECIMAL(14,4),
+    vat_rate                VARCHAR(8),
+    net_amount               DECIMAL(14,4),
+    vat_amount               DECIMAL(14,4),
+    gross_amount             DECIMAL(14,4),
+    created_at               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_incoming_invoice_items_line (incoming_invoice_id, line_number),
+    CONSTRAINT fk_incoming_invoice_items_invoice FOREIGN KEY (incoming_invoice_id) REFERENCES incoming_invoices(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- A bejövő-számla sync race-safe állapotgépe — KÜLÖN TÁBLA, nem
+-- Settings-kulcs (atomikus claim kell).
+CREATE TABLE IF NOT EXISTS incoming_invoice_sync (
+    id                       INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    provider                 VARCHAR(16) NOT NULL DEFAULT 'nav',
+    status                   VARCHAR(16) NOT NULL DEFAULT 'idle',
+    sync_cursor_ins_date     VARCHAR(32),
+    last_requested_interval  VARCHAR(64),
+    last_success_at          DATETIME NULL,
+    last_attempt_at          DATETIME NULL,
+    attempts                 INT UNSIGNED NOT NULL DEFAULT 0,
+    next_attempt_at          DATETIME NULL,
+    locked_at                DATETIME NULL,
+    last_error               TEXT,
+    created_at                DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_incoming_invoice_sync_provider (provider)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT INTO incoming_invoice_sync (provider, status)
+SELECT 'nav', 'idle' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM incoming_invoice_sync WHERE provider = 'nav');
+
 INSERT INTO schema_version (version)
 SELECT 16 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM schema_version);

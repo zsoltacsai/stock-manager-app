@@ -914,4 +914,117 @@ final class DatabaseTest extends TestCase
         $doneRowAfter = $verifyDb->getInvoiceById((int) $doneRow['id']);
         $this->assertSame('done', $doneRowAfter['status'], 'A már korábban lezárt sor státusza nem változhatott — nem lehetett újra claim-elve.');
     }
+
+    /**
+     * A `testNavInvoiceQueueClaimIsAtomicAcrossRealConcurrentProcesses()`
+     * pontos mintája, DE a bejövő-számla sync EGYETLEN, közös sorára (nem N
+     * darab, egyenként külön claim-elhető queue-sorra) — ez pontosan a
+     * Phase 6 terv 6. és 20. pontjának bizonyítéka: "két párhuzamos syncből
+     * csak egy tényleges feldolgozás marad". Minden gyermekfolyamat PONTOSAN
+     * EGYSZER próbál claim-elni; aki sikerrel jár, 300ms-ig "dolgozik"
+     * (usleep) MIELŐTT felszabadítaná a zárat — ha az atomikus claim
+     * valójában nem lenne atomikus, egy MÁSIK, ezalatt induló folyamat is
+     * sikerrel claim-elhetné ugyanazt a sort ("dupla feldolgozás").
+     */
+    public function testIncomingInvoiceSyncClaimIsAtomicAcrossRealConcurrentProcesses(): void
+    {
+        if (!function_exists('proc_open')) {
+            $this->markTestSkipped('proc_open nem elérhető — VALÓDI többfolyamatos konkurrencia-teszt itt nem futott le.');
+        }
+
+        $dbPath = sys_get_temp_dir() . '/sm_incoming_sync_concurrency_test_' . bin2hex(random_bytes(8)) . '.sqlite';
+        register_shutdown_function(static function () use ($dbPath) {
+            @unlink($dbPath);
+            @unlink($dbPath . '-shm');
+            @unlink($dbPath . '-wal');
+        });
+
+        $projectRoot = dirname(__DIR__);
+        $processCount = 16;
+
+        // A `new Database(...)` maga hozza létre (és seedeli az egyetlen
+        // 'nav' sync-sort) a sémát — külön setup-adat NEM kell, csak a
+        // fájl létrehozása MIELŐTT a gyermekfolyamatok elindulnak.
+        $setupDb = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $dbPath]], $projectRoot);
+        unset($setupDb);
+
+        $resultFile = sys_get_temp_dir() . '/sm_incoming_sync_concurrency_result_' . bin2hex(random_bytes(6)) . '.txt';
+        register_shutdown_function(static function () use ($resultFile) {
+            @unlink($resultFile);
+        });
+
+        $childScriptPath = sys_get_temp_dir() . '/sm_incoming_sync_concurrency_child_' . bin2hex(random_bytes(6)) . '.php';
+        file_put_contents($childScriptPath, <<<'PHP'
+            <?php
+            require $argv[1] . '/src/Database.php';
+            $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $argv[2]]], $argv[1]);
+            $row = $db->claimIncomingInvoiceSync('nav', 1800);
+            if ($row !== null) {
+                $start = microtime(true);
+                usleep(300000);
+                $end = microtime(true);
+                $db->markIncomingInvoiceSyncSuccess('nav', '2026-01-01T00:00:00Z', 'test');
+                file_put_contents($argv[3], "claimed,$start,$end\n", FILE_APPEND | LOCK_EX);
+            } else {
+                file_put_contents($argv[3], "skipped\n", FILE_APPEND | LOCK_EX);
+            }
+            PHP);
+        register_shutdown_function(static function () use ($childScriptPath) {
+            @unlink($childScriptPath);
+        });
+
+        $handles = [];
+        $devNull = sys_get_temp_dir() . '/sm_incoming_sync_concurrency_out_' . bin2hex(random_bytes(4)) . '.log';
+        for ($i = 0; $i < $processCount; $i++) {
+            $handles[] = proc_open(
+                [PHP_BINARY, $childScriptPath, $projectRoot, $dbPath, $resultFile],
+                [1 => ['file', $devNull, 'a'], 2 => ['file', $devNull, 'a']],
+                $pipes
+            );
+        }
+        foreach ($handles as $handle) {
+            if (is_resource($handle)) {
+                proc_close($handle);
+            }
+        }
+        @unlink($devNull);
+
+        $lines = array_filter(explode("\n", trim((string) @file_get_contents($resultFile))));
+        $claimedWindows = [];
+        $skippedCount = 0;
+        foreach ($lines as $line) {
+            if ($line === 'skipped') {
+                $skippedCount++;
+                continue;
+            }
+            [, $start, $end] = explode(',', $line);
+            $claimedWindows[] = ['start' => (float) $start, 'end' => (float) $end];
+        }
+
+        $this->assertCount($processCount, $lines, "Mind a $processCount folyamatnak pontosan egyszer kellett volna próbálkoznia.");
+        $this->assertGreaterThanOrEqual(1, count($claimedWindows), 'Legalább egy folyamatnak sikerrel claim-elnie kellett a sync-sort.');
+        $this->assertSame($processCount, count($claimedWindows) + $skippedCount);
+
+        // A VALÓDI, kritikus bizonyíték: a claim-elt "birtoklási ablakok"
+        // (claim ... 300ms munka ... release) IDŐBEN SOSE fedhetik egymást
+        // — ha egy folyamat lassabban indult (proc_open ütemezési
+        // ingadozás) és emiatt csak egy KORÁBBI claim felszabadulása UTÁN
+        // próbálkozott, az önmagában legitim (a sor akkor már szabad
+        // volt), DE két folyamat egyidejűleg SOSE tarthatja a zárat — ez
+        // bizonyítaná, hogy két syncworker párhuzamosan dolgozna ugyanazon
+        // a szinkronizáción.
+        usort($claimedWindows, static fn ($a, $b) => $a['start'] <=> $b['start']);
+        for ($i = 1; $i < count($claimedWindows); $i++) {
+            $this->assertGreaterThanOrEqual(
+                $claimedWindows[$i - 1]['end'],
+                $claimedWindows[$i]['start'],
+                'Két claim-elt "birtoklási ablak" időben átfedte egymást — ez azt jelentené, hogy két folyamat EGYSZERRE dolgozott ugyanazon a bejövő-számla syncen (a claim NEM atomikus).'
+            );
+        }
+
+        $verifyDb = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $dbPath]], $projectRoot);
+        $finalState = $verifyDb->getIncomingInvoiceSyncState('nav');
+        $this->assertSame('success', $finalState['status']);
+        $this->assertNull($finalState['locked_at']);
+    }
 }

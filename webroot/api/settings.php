@@ -4,6 +4,7 @@ declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 require_once __DIR__ . '/../../src/Settings.php';
 require_once __DIR__ . '/../../src/UrlSafety.php';
+require_once __DIR__ . '/../../src/EscPosPrinter.php';
 
 $settings = new Settings(__DIR__ . '/../../data/settings.json');
 
@@ -39,6 +40,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'low_stock_notify_webhook', 'low_stock_notify_email',
         'receipt_header_lines', 'receipt_footer_lines',
         'cron_secret',
+        'smtp_host', 'smtp_username', 'smtp_password', 'smtp_from_name', 'smtp_from_email',
+        'receipt_public_base_url',
     ];
     // Ezeknél a mezőknél a válasz (lásd lentebb) sose küldi ki a valódi
     // értéket — a felület üresen, egy "(mentve)" jelzéssel mutatja őket.
@@ -54,6 +57,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // URL-t, üzenetet tud küldeni vele, tehát ugyanúgy titokként kell
         // kezelni, mint egy API-kulcsot (lásd $secretResponseFields is).
         'low_stock_notify_webhook',
+        'smtp_password',
     ];
     // Ezeket a mezőket a szerver ténylegesen FEL IS HÍVJA — itt kell
     // elutasítani egy belső/nem-publikus URL elmentését, mielőtt egyáltalán
@@ -80,7 +84,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // Logikai (be/ki) mezők.
-    $boolFields = ['auto_sync_enabled', 'printer_enabled', 'backup_enabled', 'szamlazz_send_email', 'nav_test_mode', 'nav_queue_enabled', 'receipt_show_logo', 'loyalty_enabled'];
+    $boolFields = ['auto_sync_enabled', 'printer_enabled', 'backup_enabled', 'szamlazz_send_email', 'nav_test_mode', 'nav_queue_enabled', 'nav_incoming_sync_enabled', 'receipt_show_logo', 'loyalty_enabled', 'printer_auto_print_enabled', 'printer_qr_enabled'];
     foreach ($boolFields as $field) {
         if (isset($input[$field])) {
             $update[$field] = (bool) $input[$field];
@@ -91,8 +95,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($input['auto_sync_interval_minutes'])) {
         $update['auto_sync_interval_minutes'] = max(1, (int) $input['auto_sync_interval_minutes']);
     }
+    if (isset($input['printer_ip']) && trim((string) $input['printer_ip']) !== '') {
+        // Nyomtató-cím validáció: érvényes IP VAGY hostname szintaxis — a
+        // nyomtató NORMÁL esetben a helyi (privát) hálózaton van, ezért
+        // ITT (ellentétben a GeoBlocker/UrlSafety kimenő HTTP-hívásaival)
+        // SZÁNDÉKOSAN NEM tiltjuk a privát IP-tartományokat — az lenne a
+        // hibás viselkedés egy nyomtató-mezőnél. Az illetéktelen elérés
+        // ellen a require_admin() gate (lásd printer-test.php) véd:
+        // ez a mező csak formai (garbage-bemenet elleni) ellenőrzés.
+        $ip = trim((string) $input['printer_ip']);
+        $isValidIp = filter_var($ip, FILTER_VALIDATE_IP) !== false;
+        $isValidHostname = preg_match('/^(?=.{1,253}$)([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/', $ip) === 1;
+        if (!$isValidIp && !$isValidHostname) {
+            send_json(['error' => 'Érvénytelen nyomtató IP-cím vagy hostname.'], 400);
+        }
+    }
     if (isset($input['printer_port'])) {
-        $update['printer_port'] = max(1, (int) $input['printer_port']);
+        $update['printer_port'] = max(1, min(65535, (int) $input['printer_port']));
+    }
+    if (isset($input['printer_encoding']) && array_key_exists($input['printer_encoding'], EscPosPrinter::CODEPAGES)) {
+        $update['printer_encoding'] = $input['printer_encoding'];
+    }
+    if (isset($input['smtp_port'])) {
+        $update['smtp_port'] = max(1, min(65535, (int) $input['smtp_port']));
+    }
+    if (isset($input['smtp_encryption']) && in_array($input['smtp_encryption'], ['none', 'ssl', 'starttls'], true)) {
+        $update['smtp_encryption'] = $input['smtp_encryption'];
+    }
+    if (isset($input['smtp_from_email']) && trim((string) $input['smtp_from_email']) !== '' && !filter_var(trim((string) $input['smtp_from_email']), FILTER_VALIDATE_EMAIL)) {
+        send_json(['error' => 'Érvénytelen "Feladó email" cím.'], 400);
     }
     if (isset($input['printer_paper_width'])) {
         $update['printer_paper_width'] = max(20, (int) $input['printer_paper_width']);
@@ -192,6 +223,7 @@ $secretResponseFields = [
     'szamlazz_agent_key', 'wc_consumer_key', 'wc_consumer_secret', 'wc_webhook_secret',
     'nav_password', 'nav_signer_key', 'nav_exchange_key', 'cron_secret',
     'low_stock_notify_webhook',
+    'smtp_password',
 ];
 foreach ($secretResponseFields as $field) {
     $data[$field . '_set'] = !empty($data[$field]);

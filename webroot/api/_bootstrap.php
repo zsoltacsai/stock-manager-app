@@ -75,7 +75,7 @@ $currentScript = basename($_SERVER['SCRIPT_NAME'] ?? '');
 // felhasználni, és fordítva. A token KIZÁRÓLAG az X-Cron-Token fejlécben
 // fogadott el — SOSE query-stringben —, mert egy URL-be írt titok
 // szerver-/proxy-naplókba, böngésző-előzményekbe kerülhet.
-$cronScripts = ['auto-backup-run.php', 'auto-sync-run.php', 'nav-queue-run.php'];
+$cronScripts = ['auto-backup-run.php', 'auto-sync-run.php', 'nav-queue-run.php', 'nav-incoming-sync-run.php'];
 $isCronScript = in_array($currentScript, $cronScripts, true);
 
 if ($isCronScript) {

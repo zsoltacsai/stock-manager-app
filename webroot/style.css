@@ -698,13 +698,24 @@ html[data-theme="light"] #global-search-input {
 }
 .filter-grid label { margin-bottom: 4px; }
 .gt-hidden-label { visibility: hidden; }
+/* padding/margin-bottom !important: egy .filter-grid-en belüli <select>
+   gyakran egy .import-card-en belül is van (pl. kimeno-szamlak.php) — a
+   .import-card select {padding: 12px ...; margin-bottom: 14px} szabály
+   (style.css lejjebb) UGYANOLYAN specificitású, és mivel a fájlban
+   KÉSŐBB szerepel, forrás-sorrend alapján felülírná mindkettőt: a
+   10px-es paddinget 12px-re (a fix height:41px + box-sizing:border-box
+   mellett ez a 2px eltérés pont annyi, hogy a 16px-es betű teteje
+   levágódjon — élő böngészőben TÉNYLEGESEN levágott szöveget okozott),
+   és a margin-bottom:0-t 14px-re (emiatt a select vizuálisan lejjebb
+   csúszott a sortársaihoz — pl. a "Dátum"/"Azonosító" input mezőkhöz —
+   képest, mert azok margin-bottom-ja 0 maradt, a selecté nem). */
 .filter-grid input[type="text"], .filter-grid input[type="date"], .filter-grid select {
-    padding: 10px 12px; font-size: 16px; border-radius: 8px;
+    padding: 10px 12px !important; font-size: 16px; border-radius: 8px;
     border: 1px solid var(--border); background-color: var(--panel-light); color: var(--text);
-    width: 100%; margin-bottom: 0;
+    width: 100%; margin-bottom: 0 !important;
     height: 41px; box-sizing: border-box;
 }
-.filter-grid select { padding-right: 38px; }
+.filter-grid select { padding-right: 38px !important; }
 /* A toolbar button sitting in a .filter-grid next to a labeled field (e.g.
    "Dátum" above an <input>) has no label of its own, so its "natural"
    height is shorter than the field's label+input block. Any attempt to

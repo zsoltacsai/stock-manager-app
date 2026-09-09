@@ -62,6 +62,23 @@ class Settings
         'printer_ip'          => '',
         'printer_port'        => 9100,
         'printer_paper_width' => 42,
+        // Kódlap az ékezetes (magyar) karakterekhez — lásd EscPosPrinter::CODEPAGES
+        // docblockja: mindhárom lehetőség (cp852/cp1250/iso88592) hivatalosan
+        // igazoltan támogatott az Epson TM-T20III-on, a tényleges alapértelmezés
+        // (cp852) valódi hardveren ellenőrizve (lásd README).
+        'printer_encoding'         => 'cp852',
+        // Kasszaeladás után automatikus hálózati nyomtatás — alapból KIKAPCSOLVA,
+        // hogy egy meglévő telepítésen a nyomtató beállítása nélkül sose próbáljon
+        // váratlanul csatlakozni. A nyomtatási hiba SOSE rontja el magát az eladást
+        // (lásd webroot/api/sale.php — a nyomtatás az eladás COMMIT-ja UTÁNI,
+        // különálló, hibatűrő lépés).
+        'printer_auto_print_enabled' => false,
+        'printer_qr_enabled'         => false,
+        // A nyomtatott nyugtára kerülő QR-kód linkje ehhez az alap URL-hez
+        // fűzi hozzá a már meglévő digitális nyugta útvonalat
+        // (receipt.html?sale_id=...&token=...) — ÜRESEN a QR-kód kihagyásra
+        // kerül (nincs kitalált/nem működő link), lásd print-receipt.php.
+        'receipt_public_base_url'    => '',
 
         'backup_enabled'          => false,
         'backup_time'             => '23:30',
@@ -149,6 +166,26 @@ class Settings
         'nav_queue_enabled'          => false,
         'last_nav_queue_run_at'      => '',
         'last_nav_queue_run_summary' => '',
+
+        // A NAV BEJÖVŐ számla-sync háttér-workere
+        // (webroot/api/nav-incoming-sync-run.php) — ugyanaz az
+        // "enabled-flag + cron hívja" minta, mint nav_queue_enabled fentebb,
+        // teljesen FÜGGETLEN attól (a kimenő queue-t nem érinti, ha ez ki
+        // van kapcsolva, és fordítva). Alapértelmezetten KIKAPCSOLVA.
+        'nav_incoming_sync_enabled'          => false,
+        'last_nav_incoming_sync_run_at'      => '',
+        'last_nav_incoming_sync_run_summary' => '',
+
+        // SMTP (Beállítások → Email fül) — lásd src/MailerService.php.
+        // Üres host esetén a meglévő send-receipt-email.php a korábbi,
+        // PHP mail()-alapú útra esik vissza (lásd ott).
+        'smtp_host'       => '',
+        'smtp_port'       => 587,
+        'smtp_username'   => '',
+        'smtp_password'   => '',
+        'smtp_encryption' => 'starttls', // 'none' | 'ssl' | 'starttls'
+        'smtp_from_name'  => '',
+        'smtp_from_email' => '',
 
         'low_stock_default_threshold' => 5,
         'low_stock_notify_webhook'    => '',

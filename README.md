@@ -271,9 +271,116 @@ tábla saját, Számlázz.hu-val OSZTOTT auto-increment id-jára épül —
 (a NAV felé beküldött `invoiceNumber` a ténylegesen kiállított számla
 jogi sorszáma, nem egy belső azonosító) — lásd `ROADMAP.md` "NAV Online
 Számla — production előtti nyitott döntési pont" szakaszát a részletes
-indoklásért. A `MODIFY`/`STORNO` (helyesbítés/sztornó) műveletek,
-valamint a "Beérkezett számlák"/"Kimenő számlák" listanézet egy
-következő fejlesztési kör feladata.
+indoklásért. A KIMENŐ oldal `MODIFY`/`STORNO` (helyesbítés/sztornó)
+beküldése egy következő fejlesztési kör feladata (a "Kimenő számlák"
+listanézet — `kimeno-szamlak.php` — MÁR elérhető, csak `CREATE`
+beküldést támogat). A BEJÖVŐ oldal (más adózók által kiállított
+számlák NAV-szinkronja) lásd lent.
+
+### NAV Online Számla — Beérkezett számlák (bejövő szinkron)
+
+Ez a FORDÍTOTT irány a fenti kimenő NAV-integrációhoz képest: más
+adózók által a Stock Manager tulajdonosának kiállított, a NAV-nál
+regisztrált számlák (`invoiceDirection=INBOUND`) helyi szinkronizálása,
+listázása és részletnézete — **kizárólag olvasás jellegű**, a NAV-hoz
+ebben a körben semmi nem kerül beküldésre.
+
+**Miért külön adatmodell a kimenő `invoices` táblától?** Az `invoices`
+tábla állapotgépe (`queued→processing→submitted→done/failed/dead_letter/
+uncertain`) a MI SAJÁT beküldésünk életciklusát írja le — egy bejövő
+számlának nincs "beküldési állapota", egyszerűen VAN vagy NINCS a
+NAV-nál. Emiatt 3 KÜLÖN tábla tárolja: `incoming_invoices` (fejléc-
+szintű adatok, digest-forrásból), `incoming_invoice_items` (tételsorok,
+LAZY módon, csak a részletnézet első megnyitásakor lekérdezve),
+`incoming_invoice_sync` (race-safe sync-állapotgép, egyetlen sor a
+`'nav'` providerhez).
+
+**Beállítás** (Beállítások → Számlázás): a fenti kimenő NAV-hitelesítő
+adatokat használja (nincs külön bejövő-specifikus titok) — csak a "NAV
+bejövő számla sync háttér-feldolgozás" jelölőnégyzetet kell bekapcsolni,
+ÉS a cron feladatot beállítani (lásd lent).
+
+**Szinkron algoritmus**: a NAV `queryInvoiceDigest` operációja
+`insDate` (a NAV saját, monoton feldolgozási időbélyege) szerinti UTC
+időablakban listáz, lapozva. A NAV hivatalos specifikációja szerint egy
+lekérdezési ablak **legfeljebb 35 nap (840 óra)** lehet — élő NAV
+sandbox hívással is igazolt korlát (`BAD_QUERY_PARAM_RANGE_EXCEEDED`
+hiba egy 60 napos próba-ablakra). Emiatt egy hosszabb (pl. első sync,
+vagy egy régóta kimaradt cron utáni) céltartományt a rendszer
+automatikusan ≤35-napos ablakokra darabolja, és **minden egyes,
+sikeresen VÉGIGLAPOZOTT ablak után azonnal előrehaladtja a sync
+cursor-t** (`sync_cursor_ins_date`) — egy megszakadt/korlátozott futás
+így sose dolgozza fel feleslegesen újra a már kész ablakokat.
+
+**Deduplikáció**: a NAV adatmodellje szerint minden eredeti ÉS minden
+módosító/sztornó dokumentum SAJÁT, egyedi `invoiceNumber`-t kap az adott
+szállítónál (ÁFA tv. 169-170. §) — ez a `UNIQUE(supplier_tax_number,
+invoice_number, batch_index)` a helyi dedup-kulcs, `INSERT OR IGNORE`
+véd az ismételt sync duplikálása ellen. Emellett a sync-állapotsor
+atomikus claim-je (`Database::claimIncomingInvoiceSync()`) garantálja,
+hogy egyszerre csak EGY sync-futás (manuális VAGY automatikus)
+dolgozhat — valódi, több-folyamatos konkurrencia-teszttel bizonyítva
+(`tests/DatabaseTest.php::testIncomingInvoiceSyncClaimIsAtomicAcrossRealConcurrentProcesses()`).
+
+**Módosítás/sztornó**: a digest `invoiceOperation` (`CREATE`/`MODIFY`/
+`STORNO`) + `originalInvoiceNumber` + `modificationIndex` mezői alapján
+a "Beérkezett számlák" nézet badge-ként jelzi a típust, és a
+részletnézetben — ha megtalálható helyben — kattintható hivatkozást ad
+az eredeti számlára.
+
+**Tételsorok, LAZY betöltve**: a digest-lekérdezés NEM ad tétel-szintű
+adatot — csak a részletnézet ELSŐ megnyitásakor indul egy
+`queryInvoiceData` hívás (`invoiceData.xsd`-séma, UGYANAZ, amit a
+`NavInvoiceXmlBuilder` a kimenő oldalon ír), ami a tételsorokat és a
+szállító országát adja vissza. Ez tudatos terheléscsökkentés — egy
+digest-lapon akár 50+ számla is lehet, ezek mindegyikéhez sync-enként
+külön lekérdezést indítani irreális NAV-terhelés lenne.
+
+**Bruttó összeg**: a NAV digest-válasza NEM ad külön bruttó mezőt, csak
+nettó és ÁFA összeget — a `gross_total` a Stock Manager saját, HELYBEN
+számított értéke (nettó + ÁFA), ezt a "Beérkezett számlák" részletnézet
+is explicit jelzi.
+
+**Manuális sync** ("Beérkezett számlák" oldal → "Számlák frissítése"
+gomb): választható időszak (utolsó 7 nap / utolsó 30 nap / egyedi
+dátumtól) — ez az ELSŐ sync kezdőpontját állítja be (`sync_cursor_ins_date`
+addig NULL). Ha a cron-worker MÁR fut, a manuális trigger `409`-et ad
+(ugyanazt az atomikus claim-et próbálja, mint a cron), NEM indít
+párhuzamos syncet.
+
+**Cron beállítás.**
+
+| Kérdés | Válasz |
+|---|---|
+| Melyik endpoint? | `webroot/api/nav-incoming-sync-run.php` |
+| Milyen gyakran? | **Óránként** javasolt (`0 * * * *`) — a bejövő számlák NEM annyira időérzékenyek, mint a kimenő beküldés |
+| Milyen header? | `X-Cron-Token: <cron_secret>` — UGYANAZ a mechanizmus/titok, mint `nav-queue-run.php`-nál |
+| Egy hívás mennyit dolgoz fel? | Legfeljebb 3, egyenként ≤35-napos ablakot (timeout-védelem — egy erősen elmaradt sync több cron-tick alatt éri utol magát) |
+
+```
+0 * * * * curl -s -H "X-Cron-Token: <a beállított cron_secret>" http://localhost:8000/api/nav-incoming-sync-run.php > /dev/null
+```
+
+**Mi történik, ha a cron kimarad?** Semmi vészes — a `sync_cursor_ins_date`
+a legutóbbi sikeres állapotnál marad, a következő futás onnan folytatja.
+A 35 napos ablak-darabolás miatt egy hosszan kimaradt cron (pl. hetekig
+állt) több cron-tick alatt éri utol magát, nem egyetlen HTTP-kérésben —
+**nincs adatvesztés, csak késés**.
+
+**Hiba/retry**: a kimenő NAV queue-val megegyező 9-lépéses exponenciális
+backoff (1p/5p/15p/30p/1ó/3ó/6ó/12ó/24ó). Állapotok: `idle`/`running`/
+`success`/`retry`/`failed` — nincs külön `dead_letter`, egy kimerült
+backoff `failed`-re vált, de a legközelebbi manuális VAGY automatikus
+próbálkozás továbbra is megpróbálhatja.
+
+**PDF**: a NAV Online Számla API nem biztosít PDF-et bejövő számlákhoz
+(csak strukturált XML/JSON-adatot) — a "Beérkezett számlák" nézet ezt
+explicit jelzi, NEM generál hamis PDF-et.
+
+**Ismert korlátok**: a `queryInvoiceChainDigest` (teljes módosítási lánc
+lekérdezése) NEM használt — a lista-/részletnézet a digest-szintű
+`originalInvoiceNumber`/`modificationIndex` mezőkből épül fel, ami az
+egyszerű (egy-szintű) módosítási láncokat lefedi.
 
 ## Adatbázis: SQLite vs MySQL
 
@@ -355,6 +462,83 @@ Ez semmin nem változtat viselkedésben — ugyanazok a funkciók, csak
 olcsóbb futtatni, ahogy az eladási tábla tízezres-százezres sorszámra
 nő.
 
+### Migráció megbízhatóság / helyreállítás
+
+**Élesben reprodukált és javított hiba**: egy migráció (a Phase 6
+"Beérkezett számlák" bejövő-számla tábláinak létrehozása) félbeszakadt
+egy fejlesztés közbeni élő szerverkérés miatt úgy, hogy a
+`schema_version` már 20-ra ugrott, miközben a 3 új tábla (`incoming_
+invoices`/`incoming_invoice_items`/`incoming_invoice_sync`) ténylegesen
+NEM jött létre — a "Beérkezett számlák" oldal fatal error-t dobott
+minden kérésnél. **A valódi ok**: a migráció nem volt tranzakcióba
+csomagolva (minden `CREATE TABLE`/`INSERT` önállóan, azonnal
+commit-olt), és a seed-sor beszúrása nem volt idempotens.
+
+**A javítás két rétegű, motoronként eltérő garanciával**:
+1. **SQLite**: a migráció SAJÁT tranzakcióba van csomagolva (ugyanaz a
+   `$wasInTransaction`-minta, amit a `migrateV6ManualSaleItems()` már
+   korábban is használt egy kockázatosabb tábla-újraépítéshez) — SQLite-on
+   a `CREATE TABLE`/`CREATE INDEX` TELJES ÉRTÉKŰEN tranzakcionális, tehát
+   itt **valódi, teljes atomicitás** érhető el: egy genuinely sikertelen
+   migráció a MÁR létrehozott táblákat is visszavonja, a `schema_version`
+   SEM lép előre (valódi, reprodukált teszttel bizonyítva, lásd lent).
+2. **MySQL**: a `CREATE TABLE`/`ALTER TABLE` a MySQL/InnoDB dokumentált,
+   általános viselkedése miatt (implicit commit) tranzakción belül SEM
+   vonható vissza — ez NEM ennek a projektnek a korlátja (ugyanez igaz
+   pl. a Rails/Laravel/Doctrine migrációs rendszereire is). Az itt
+   érvényes, motor-független garancia emiatt NEM a tranzakciós rollback,
+   hanem az, hogy **minden migrációs lépés idempotens** (`CREATE TABLE
+   IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, és — ez volt a
+   konkrétan hiányzó rész — `INSERT OR IGNORE`/`INSERT IGNORE` a
+   seed-soroknál sima `INSERT` helyett): egy megszakadt migráció a
+   KÖVETKEZŐ kérésnél, a hiányzó résztől folytatva, HIBA NÉLKÜL
+   fejeződik be — nincs "poison" állapot, ami minden további kérést
+   elhasalna.
+
+**A `schema_version` SOSE léphet előre a szükséges objektumok
+létrehozása nélkül, motortól függetlenül** — ez egy STRUKTURÁLIS
+garancia: az `ensureSchema()` a teljes migrációs láncot (minden
+`migrateVN...()` hívást) egyetlen, KÖRÜLÖTTE lévő try/catch NÉLKÜLI
+szekvenciában futtatja, a `setSchemaVersion()` pedig ennek a
+szekvenciának a LEGUTOLSÓ sora — emiatt BÁRMELYIK migrációs lépésből
+származó kivétel (a tényleges hiba, VAGY akár egy másodlagos, a
+rollback-kísérlet során felmerülő kivétel MySQL-en, ahol a PDO
+tranzakció-állapota az implicit commit után bizonytalan lehet)
+garantáltan megakadályozza, hogy a `setSchemaVersion()` valaha
+lefusson — ezt közvetlenül, sor-szintű kódátvizsgálással ellenőriztem
+(nem csak feltételeztem).
+
+**MySQL-specifikus korlát, átlátszóan dokumentálva**: ebben a
+fejlesztői környezetben NEM állt rendelkezésre futó MySQL-szerver — a
+fenti MySQL-re vonatkozó elemzés (idempotencia, biztonságos
+újrafuttathatóság) kód-szintű átvizsgáláson és a MySQL dokumentált,
+általános DDL/implicit-commit viselkedésén alapul, NEM egy éles
+MySQL-en ténylegesen lefuttatott teszten. Production MySQL-bevezetés
+előtt érdemes a `tests/MigrationAtomicityTest.php` konkurrencia- és
+megszakítás-teszteit egy valódi MySQL-példányon is lefuttatni (a
+tesztek maguk motor-függetlenek, csak a `config/config.php` `db.driver`
+átállítása szükséges hozzá).
+
+**Tesztek** (`tests/MigrationAtomicityTest.php`): megszakadt-majd-
+újrafuttatott migráció hibamentesen befejeződik (két különböző
+megszakítási ponton is); egy GENUINE hiba a MÁR létrehozott táblákat is
+visszavonja SQLite-on, a `schema_version` nem lép előre; valódi,
+16 párhuzamos folyamattal futtatott konkurrencia-teszt igazolja, hogy
+több egyidejű `Database`-példányosítás (mind ugyanazt a migrálatlan
+fájlt látva) sose hibázik, és a végállapot konzisztens (mindhárom
+tábla létrejön, pontosan egy seed-sor).
+
+**Ha egy éles adatbázis mégis ebbe az állapotba kerülne** (`schema_
+version` már a legújabb, de egy migrációhoz tartozó tábla hiányzik):
+az adott `migrateVN...()` metódus egy PHP Reflection-nal közvetlenül
+újra lefuttatható (lásd a fenti javítás előtti hiba diagnosztizálásának
+és javításának menetét) — VAGY egyszerűbben, a `schema_version` sort
+kézzel eggyel visszaállítva a következő `ensureSchema()`-hívás (bármelyik
+oldal megnyitása) automatikusan, hiba nélkül újra lefuttatja a hiányzó
+migrációt (a fenti idempotencia-garancia miatt). Mindkét esetben
+KÖTELEZŐ egy biztonsági mentés készítése a `data/stock.sqlite`-ról
+előtte.
+
 ## Logó és automatikus szinkron (felső sáv beállításai)
 
 Minden oldal felső sávjában van egy logó (bal felül), egy szinkron
@@ -421,22 +605,78 @@ vagy a "Nyugta" linkkel a Napi zárás oldalról):
   keresztül egy hálózati hőnyomtató "raw"/9100-as portos felületére —
   ugyanaz a mechanizmus, amit a legtöbb megfizethető Ethernet/WiFi
   nyugtanyomtató használ (Epson TM-*, Xprinter, Zjiang, stb.), nem kell
-  hozzá speciális driver. Állítsd be az IP-t/portot/papírszélességet,
-  és küldj egy teszt oldalt a Beállítások → Nyomtató alól.
+  hozzá speciális driver. Állítsd be az IP-t/portot/papírszélességet a
+  Beállítások → Nyomtató alatt.
 
-**Érdemes tudni erről a korlátról**: az ESC/POS nyomtatóknak egy
-nyomtató-specifikus kódlap-parancs kell az ékezetes karakterek helyes
-megjelenítéséhez, ami modellenként/firmware-enként eltér. Ahelyett hogy
-kockáztatná a torz szöveget, az `EscPosPrinter` mindent egyszerű
-ASCII-re alakít nyomtatás előtt (á→a, ő→o, stb.) — az ékezetek elvesznek
-a hálózaton nyomtatott nyugtán, de semmi nem jelenik meg halandzsaként.
-A böngészős nyomtatásnak nincs ilyen korlátja, mivel az normál HTML/CSS
-— használd ezt, ha számít az ékezetes szöveg a fizikai nyugtán.
+### Karakterkódolás (ékezetes karakterek)
+
+**Korábbi, hibás állapot (javítva)**: az `EscPosPrinter` korábban minden
+ékezetes karaktert egyszerű ASCII-re transzliterált (iconv TRANSLIT),
+ami a VALÓS nyomtatón olvashatatlan, aposztróf-szerű torzítást okozott
+("Termék" helyett "Term'ek") — a nyomtató ténylegesen támogatta a
+megfelelő kódlapot, csak sose lett kiválasztva/elküldve neki.
+
+A javítás után a nyomtató a `ESC t` (Select character code table)
+paranccsal explicit kiválasztja a kívánt kódlapot, és a szöveget ARRA a
+kódlapra konvertálja (nem ASCII-re). Az Epson TM-T20III hivatalos
+ESC/POS Command Reference-e (download4.epson.biz) és a modellenkénti
+Code Page Support tábla alapján a TM-T20III a 0-5, 11-21, 26, 30-53
+kódlap-oldalakat támogatja — ebbe három, a magyar ékezetes
+karakterkészletet (á é í ó ö ő ú ü ű + nagybetűs változatok)
+teljeskörűen lefedő kódlap tartozik:
+
+| Beállítás | ESC/POS kódlap | `ESC t` paraméter |
+|---|---|---|
+| `cp852` (alapértelmezett) | PC852 (DOS Latin 2) | 18 |
+| `cp1250` | WPC1250 (Windows Latin 2) | 45 |
+| `iso88592` | ISO-8859-2 (Latin 2) | 39 |
+
+**Valódi Epson TM-T20III hardveren ellenőrizve** (nem csak feltételezve):
+a `cp852` alapértelmezéssel egy élő teszt nyomtatás (`ÁÉÍÓÖŐÚÜŰ áéíóöőúüű`
+és "Árvíztűrő tükörfúrógép") helyesen, torzítás nélkül jelent meg a
+papíron. Ha egy MÁSIK Epson/ESC-POS modellen az alapértelmezett kódlap
+mégsem lenne megfelelő, válts a Beállítások → Nyomtató "Kódlap"
+legördülőjén — mindhárom opció hivatalosan igazoltan támogatott, a
+"Teszt nyomtatás" gombbal azonnal ellenőrizhető, melyik ad helyes
+eredményt a saját nyomtatódon.
+
+A böngészős nyomtatásnak nincs ilyen korlátja, mivel az normál HTML/CSS.
 
 A csak-USB (nem hálózati) hőnyomtatók közvetlenül nem támogatottak;
 vagy állíts eléjük egy kis nyomtatószervert, vagy hagyatkozz a
 böngészős nyomtatásra, ha az operációs rendszernek már van hozzá
 drivere.
+
+### QR-kód a nyugtán
+
+Ha a nyomtatód támogatja (az Epson TM-T20III hivatalosan igazoltan
+támogatja — `GS ( k` Two-dimensional Code Commands, `<Function 165/167/
+169/180/181>`, valódi hardveren tesztelve), a "QR-kód nyomtatása a
+nyugtára" bekapcsolásával minden nyomtatott nyugta aljára egy QR-kód
+kerül, ami a MÁR MEGLÉVŐ digitális nyugta linkjére mutat
+(`receipt.html?sale_id=...&token=...`). Ehhez meg kell adni egy
+"Digitális nyugta publikus alap-URL"-t (a vevő telefonjáról is elérhető
+webcím) — ha ez üres, a QR-kód egyszerűen kimarad (SOSE generálunk egy
+nem működő linket). A "Teszt nyomtatás" gomb mellett egy "Teszt
+nyomtatás mintát is tartalmazzon" jelölőnégyzettel egy minta-QR-kód is
+kérhető (fix, nem-üzleti teszt-szöveggel), a nyomtató QR-támogatásának
+ellenőrzésére, digitális nyugta beállítása nélkül is.
+
+### Automatikus hálózati nyomtatás
+
+A "Automatikus nyomtatás minden kasszaeladás után" bekapcsolásával
+minden sikeres kasszaeladás után a rendszer automatikusan elküldi a
+nyugtát a beállított hálózati nyomtatóra — alapból KIKAPCSOLVA. **A
+nyomtatási hiba SOSE rontja el/vonja vissza az eladást**: az eladás a
+nyomtatás megkísérlése ELŐTT már véglegesen, tartósan rögzítve van
+(lásd `webroot/api/sale.php` — a nyomtatás a tranzakció COMMIT-ja
+UTÁNI, teljesen különálló, hibatűrő lépés). Ha a nyomtatás mégis
+sikertelen, a kasszás egyértelmű "Figyelem: az automatikus nyomtatás
+sikertelen" visszajelzést kap, és a nyugta a "Nyugta megtekintése /
+nyomtatása" gombbal bármikor manuálisan újranyomtatható — nincs
+külön "retry" mechanizmus/queue, mert egy azonnali kasszai
+visszajelzés + egyszerű manuális újranyomtatás elegendő (nem egy
+háttérben, később is befejeződő NAV-jellegű folyamat).
 
 ## Automatikus mentések (helyi + Dropbox/Google Drive)
 
@@ -1034,14 +1274,62 @@ Egy eladás után a nyugta panel egy e-mail mezőt kap (előre kitöltve a
 kiválasztott törzsvásárló mentett e-mail címével, ha van), és egy
 "E-mail küldése" gombot, ami a nyugta egy HTML változatát küldi el.
 
-**Fontos**: ez a PHP beépített `mail()` függvényét használja — nincs
-SMTP könyvtár, nincs külső függőség, összhangban az app többi részével.
-De a `mail()` csak akkor működik, ha a szervernek van beállított
+**Alapértelmezetten** ez a PHP beépített `mail()` függvényét használja —
+ez viszont csak akkor működik, ha a szervernek van beállított
 levelezés-továbbítója (sendmail/postfix, gyakori valódi megosztott
-tárhelyen). Ez **nem** fog magától működni `php -S` helyi fejlesztésen
-vagy a legtöbb friss VPS telepítésen, külön levelezés-beállítás nélkül
-— a végpont egy egyértelmű hibát ad vissza, ami ezt elmagyarázza,
-ahelyett hogy csendben elhasalna, amikor a `mail()` hibát jelez.
+tárhelyen), **nem** fog magától működni `php -S` helyi fejlesztésen
+vagy a legtöbb friss VPS telepítésen.
+
+### SMTP (Beállítások → Email)
+
+Ha be van állítva SMTP host, a rendszer AZT használja `mail()` helyett
+— működik `sendmail`/levelezés-továbbító nélkül is, bármelyik valódi
+SMTP-szolgáltatóval (Gmail, saját tárhelyi SMTP, SendGrid/Mailgun SMTP-
+kompatibilis módban, stb.).
+
+**Miért PHPMailer, és miért nem saját SMTP-implementáció**: a projekt
+Composer NÉLKÜL fut (lásd `tests/bootstrap.php`) — egy saját SMTP-
+kliens írása (TLS/STARTTLS, autentikáció, MIME-encoding mind
+finomság-érzékeny terület) könnyen hibás/nem biztonságos lenne. Ehelyett
+a PHPMailer könyvtár 3 forrásfájlja van közvetlenül bevendorolva
+(`vendor/phpmailer/{Exception,PHPMailer,SMTP}.php`, **v7.1.1**,
+github.com/PHPMailer/PHPMailer, LGPL-2.1 licenc, Composer NÉLKÜLI
+"közvetlen include" használat — ezt a PHPMailer saját dokumentációja is
+kifejezetten támogatja/dokumentálja). Nincs `composer.json`/lockfile
+(a projekt egésze nem használ Composert) — a verzió-követés ITT, ebben
+a README-ben történik.
+
+**Frissítés**: töltsd le az új release ugyanezen 3 fájlját
+(`src/Exception.php`, `src/PHPMailer.php`, `src/SMTP.php` a PHPMailer
+GitHub repo-jából) a `vendor/phpmailer/` mappába, majd futtasd a teljes
+PHPUnit suite-ot (`tests/MailerServiceTest.php` egy valódi, helyi SMTP-
+protokollt beszélő teszt-szerverrel ellenőrzi a küldést) — biztonsági
+frissítés esetén ez a szokásos módja.
+
+**Mezők**: host, port, felhasználónév, jelszó, titkosítás (Nincs /
+SSL-TLS / STARTTLS — alapértelmezett: STARTTLS, a legtöbb modern SMTP-
+szolgáltató ezt várja a 587-es porton), feladó neve/email címe.
+
+**Biztonság**: az SMTP jelszó SOSE jelenik meg nyers formában egy
+`GET /api/settings.php` válaszban (csak egy `smtp_password_set: true/
+false` jelző, ugyanaz a minta, mint a NAV/WooCommerce/Dropbox
+titkoknál) — a mentéskor üresen hagyott jelszó-mező NEM törli a
+korábban elmentett értéket. Egy sikertelen teszt-küldés hibaüzenete
+(`webroot/api/smtp-test.php`) SOSE tartalmazza a jelszót.
+
+**Teszt email küldése**: a Beállítások → Email alján — admin jogszintet
+és a normál CSRF-védelmet igényli, akárcsak a nyomtató-teszt. A
+mentetlen form-értékekkel is tesztelhető ("Mentés" előtt is), pontosan
+úgy, mint a nyomtató-teszt gomb.
+
+**`REAL EXTERNAL SMTP DELIVERY NOT TESTED`** — az SMTP-kliens teljes
+protokoll-folyamata (EHLO/MAIL FROM/RCPT TO/DATA/QUIT, hitelesítés,
+hibakezelés) egy valódi, helyi teszt-SMTP-szerverrel van bizonyítva
+(`tests/MailerServiceTest.php`), DE ebben a fejlesztői környezetben
+nem állt rendelkezésre biztonságosan használható, valódi külső SMTP-
+fiók — emiatt a TÉNYLEGES külső kézbesítés (egy valódi Gmail/tárhelyi/
+SendGrid-jellegű SMTP-szolgáltatóval végződő, ténylegesen megérkező
+email) production bevezetés előtti, még ellenőrizendő pont marad.
 
 ## Dolgozói jogszintek
 

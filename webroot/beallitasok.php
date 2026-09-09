@@ -38,12 +38,13 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:900px;">
+<div class="import-panel" style="max-width:1100px;">
     <div class="import-card">
         <div class="tabs">
             <button class="tab-btn active" data-tab="tab-sync-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>Szinkronizálás</button>
             <button class="tab-btn" data-tab="tab-logo-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>Logó</button>
             <button class="tab-btn" data-tab="tab-printer-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>Nyomtató</button>
+            <button class="tab-btn" data-tab="tab-email-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22 6 12 13 2 6"></polyline></svg>Email</button>
             <button class="tab-btn" data-tab="tab-backup-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>Mentés</button>
             <button class="tab-btn" data-tab="tab-szamlazz-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>Számlázz.hu</button>
             <button class="tab-btn" data-tab="tab-wc-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>WooCommerce</button>
@@ -134,17 +135,112 @@ if (!Auth::isLoggedIn($appSettings)) {
                     </select>
                 </div>
             </div>
+            <label for="printer-encoding">Kódlap (ékezetes karakterekhez)</label>
+            <select id="printer-encoding">
+                <option value="cp852">CP852 (DOS Latin 2) — alapértelmezett</option>
+                <option value="cp1250">CP1250 (Windows Latin 2)</option>
+                <option value="iso88592">ISO-8859-2 (Latin 2)</option>
+            </select>
+            <p class="muted" style="margin-top:-6px;">
+                Mindhárom kódlap teljeskörűen lefedi a magyar ékezetes karaktereket
+                (Epson TM-T20III hivatalos ESC/POS specifikációja alapján igazolt) — ha a
+                teszt nyomtatáson az ékezetek nem megfelelően jelennek meg, próbálj egy
+                másik kódlapot.
+            </p>
+            <label class="checkbox-line">
+                <input type="checkbox" id="printer-auto-print-enabled">
+                Automatikus nyomtatás minden kasszaeladás után
+            </label>
+            <p class="muted" style="margin-top:-6px;">
+                Ha a nyomtatás sikertelen, az eladás AKKOR IS sikeres marad — a nyugta a
+                "Nyugta megtekintése / nyomtatása" gombbal bármikor manuálisan
+                újranyomtatható.
+            </p>
+            <label class="checkbox-line">
+                <input type="checkbox" id="printer-qr-enabled">
+                QR-kód nyomtatása a nyugtára (digitális nyugta linkje)
+            </label>
+            <label for="receipt-public-base-url">Digitális nyugta publikus alap-URL</label>
+            <input type="text" id="receipt-public-base-url" placeholder="https://kassza.pelda-bolt.hu">
+            <p class="muted" style="margin-top:-6px;">
+                A vevő telefonjáról is elérhető webcím, ahonnan a bolt/kassza elérhető —
+                ide fűződik a nyugta linkje. Üresen hagyva a QR-kód kimarad (nem
+                generálunk egy nem működő linket).
+            </p>
             <p class="muted">
                 ESC/POS hálózati (Ethernet/WiFi) hőnyomtatókhoz, "raw" / 9100-as port
                 módban. Ha USB-s vagy nem ESC/POS nyomtatód van, használd helyette a
                 nyugtán a "Nyomtatás böngészőből" gombot — az bármilyen, a géphez
                 telepített nyomtatóval működik.
             </p>
+            <label class="checkbox-line">
+                <input type="checkbox" id="printer-test-include-qr">
+                Teszt nyomtatás mintát is tartalmazzon
+            </label>
             <div class="modal-actions">
                 <button id="printer-test-btn" class="btn btn-secondary" style="flex:1;">Teszt nyomtatás</button>
                 <button id="settings-save-printer-btn" class="btn btn-primary">Mentés</button>
             </div>
             <p id="settings-printer-feedback" class="modal-feedback"></p>
+        </div>
+
+        <div id="tab-email-settings" class="tab-panel">
+            <label for="smtp-host">SMTP host</label>
+            <input type="text" id="smtp-host" placeholder="smtp.pelda-szolgaltato.hu">
+            <div class="field-row">
+                <div>
+                    <label for="smtp-port">Port</label>
+                    <input type="text" id="smtp-port" value="587">
+                </div>
+                <div>
+                    <label for="smtp-encryption">Titkosítás</label>
+                    <select id="smtp-encryption">
+                        <option value="starttls" selected>STARTTLS</option>
+                        <option value="ssl">SSL/TLS</option>
+                        <option value="none">Nincs</option>
+                    </select>
+                </div>
+            </div>
+            <div class="field-row">
+                <div>
+                    <label for="smtp-username">Felhasználónév</label>
+                    <input type="text" id="smtp-username" placeholder="pelda@pelda-bolt.hu">
+                </div>
+                <div>
+                    <label for="smtp-password">Jelszó</label>
+                    <input type="password" id="smtp-password" placeholder="(mentve)">
+                </div>
+            </div>
+            <div class="field-row">
+                <div>
+                    <label for="smtp-from-name">Feladó neve</label>
+                    <input type="text" id="smtp-from-name" placeholder="Példa Bolt">
+                </div>
+                <div>
+                    <label for="smtp-from-email">Feladó email</label>
+                    <input type="text" id="smtp-from-email" placeholder="pelda@pelda-bolt.hu">
+                </div>
+            </div>
+            <p class="muted">
+                Ha nincs SMTP beállítva, a digitális nyugta e-mail küldése a szerver PHP
+                <code>mail()</code> funkcióját használja, aminek működéséhez egy helyben
+                konfigurált levelezőszerverre (pl. sendmail/postfix) van szükség — sok
+                fejlesztői/felhő-környezetben ez alapból nincs beállítva. SMTP-vel ez
+                enélkül is működik.
+            </p>
+            <div class="modal-actions">
+                <button id="settings-save-email-btn" class="btn btn-primary">Mentés</button>
+            </div>
+            <p id="settings-email-feedback" class="modal-feedback"></p>
+
+            <div style="margin-top:18px; border-top:1px solid var(--border); padding-top:14px;">
+                <label for="smtp-test-email">Teszt email küldése</label>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <input type="text" id="smtp-test-email" placeholder="cel@email.hu" style="flex:1 1 200px; margin-bottom:0;">
+                    <button id="smtp-test-btn" class="btn btn-secondary">Küldés</button>
+                </div>
+                <p id="smtp-test-feedback" class="modal-feedback"></p>
+            </div>
         </div>
 
         <div id="tab-backup-settings" class="tab-panel">
@@ -346,6 +442,10 @@ if (!Auth::isLoggedIn($appSettings)) {
             <label class="checkbox-line" style="margin-top:14px;">
                 <input type="checkbox" id="nav-queue-enabled">
                 NAV számla queue háttér-feldolgozás bekapcsolva (cron szükséges hozzá — lásd README)
+            </label>
+            <label class="checkbox-line">
+                <input type="checkbox" id="nav-incoming-sync-enabled">
+                NAV bejövő számla sync háttér-feldolgozás bekapcsolva (külön cron szükséges hozzá — lásd README, Beérkezett számlák oldal)
             </label>
 
             <button id="settings-save-nav-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Mentés</button>

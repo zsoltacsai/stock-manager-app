@@ -421,4 +421,81 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_sale_provider ON invoices(sale_id
 CREATE INDEX IF NOT EXISTS idx_invoices_status_next_attempt ON invoices(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_invoices_provider ON invoices(provider);
 
+-- Beérkező (más adózók által kiállított) NAV számlák — SZÁNDÉKOSAN KÜLÖN
+-- az `invoices` (kimenő) modelltől, lásd Database::migrateV20IncomingInvoices()
+-- docblockja az indoklásért.
+CREATE TABLE IF NOT EXISTS incoming_invoices (
+    id                                INTEGER PRIMARY KEY AUTOINCREMENT,
+    nav_transaction_id                TEXT,
+    invoice_number                    TEXT NOT NULL,
+    batch_index                       INTEGER NOT NULL DEFAULT 0,
+    supplier_tax_number               TEXT NOT NULL,
+    supplier_group_member_tax_number  TEXT,
+    supplier_name                     TEXT NOT NULL,
+    supplier_country                  TEXT,             -- csak részletnézet-lekérdezés (queryInvoiceData) után
+    customer_tax_number               TEXT,
+    customer_name                     TEXT,
+    invoice_operation                 TEXT NOT NULL,     -- CREATE | MODIFY | STORNO
+    invoice_category                  TEXT,              -- NORMAL | SIMPLIFIED | AGGREGATE
+    original_invoice_number           TEXT,              -- csak MODIFY/STORNO esetén
+    modification_index                TEXT,
+    invoice_issue_date                TEXT,
+    invoice_delivery_date             TEXT,
+    payment_date                      TEXT,
+    payment_method                    TEXT,
+    currency                          TEXT NOT NULL DEFAULT 'HUF',
+    net_total                         REAL,
+    vat_total                         REAL,
+    gross_total                       REAL,              -- helyben számolt (net+vat), NEM közvetlen NAV-mező
+    nav_ins_date                      TEXT NOT NULL,      -- a NAV saját feldolgozási időbélyege — inkrementális sync magas-vízjel
+    detail_fetched_at                 TEXT,               -- NULL amíg a queryInvoiceData részlet még nem történt meg
+    first_seen_at                     TEXT NOT NULL DEFAULT (datetime('now')),
+    last_synced_at                    TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at                        TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at                        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_incoming_invoices_identity ON incoming_invoices(supplier_tax_number, invoice_number, batch_index);
+CREATE INDEX IF NOT EXISTS idx_incoming_invoices_ins_date ON incoming_invoices(nav_ins_date);
+CREATE INDEX IF NOT EXISTS idx_incoming_invoices_issue_date ON incoming_invoices(invoice_issue_date);
+CREATE INDEX IF NOT EXISTS idx_incoming_invoices_supplier ON incoming_invoices(supplier_tax_number);
+
+-- Tételsorok — LAZY módon, csak a részletnézet első megnyitásakor
+-- (queryInvoiceData) töltve, lásd migrateV20IncomingInvoices() docblockja.
+CREATE TABLE IF NOT EXISTS incoming_invoice_items (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    incoming_invoice_id    INTEGER NOT NULL REFERENCES incoming_invoices(id),
+    line_number            INTEGER NOT NULL,
+    description            TEXT,
+    quantity                REAL,
+    unit_of_measure         TEXT,
+    unit_net_price          REAL,
+    vat_rate                TEXT,
+    net_amount               REAL,
+    vat_amount               REAL,
+    gross_amount             REAL,
+    created_at               TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_incoming_invoice_items_line ON incoming_invoice_items(incoming_invoice_id, line_number);
+
+-- A bejövő-számla sync race-safe állapotgépe — KÜLÖN TÁBLA, nem
+-- Settings-kulcs, mert atomikus claim kell (lásd
+-- Database::claimIncomingInvoiceSync() docblockja).
+CREATE TABLE IF NOT EXISTS incoming_invoice_sync (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider                 TEXT NOT NULL DEFAULT 'nav',
+    status                   TEXT NOT NULL DEFAULT 'idle',   -- idle | running | success | retry | failed
+    sync_cursor_ins_date     TEXT,
+    last_requested_interval  TEXT,
+    last_success_at          TEXT,
+    last_attempt_at          TEXT,
+    attempts                 INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at          TEXT,
+    locked_at                TEXT,
+    last_error               TEXT,
+    created_at               TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at               TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_incoming_invoice_sync_provider ON incoming_invoice_sync(provider);
+INSERT INTO incoming_invoice_sync (provider, status) SELECT 'nav', 'idle' WHERE NOT EXISTS (SELECT 1 FROM incoming_invoice_sync WHERE provider = 'nav');
+
 INSERT INTO schema_version (version) SELECT 16 WHERE NOT EXISTS (SELECT 1 FROM schema_version);

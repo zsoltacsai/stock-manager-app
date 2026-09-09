@@ -158,9 +158,27 @@ if ('serviceWorker' in navigator) {
     const printerIp = document.getElementById('printer-ip');
     const printerPort = document.getElementById('printer-port');
     const printerPaperWidth = document.getElementById('printer-paper-width');
+    const printerEncoding = document.getElementById('printer-encoding');
+    const printerAutoPrintEnabled = document.getElementById('printer-auto-print-enabled');
+    const printerQrEnabled = document.getElementById('printer-qr-enabled');
+    const receiptPublicBaseUrl = document.getElementById('receipt-public-base-url');
+    const printerTestIncludeQr = document.getElementById('printer-test-include-qr');
     const printerTestBtn = document.getElementById('printer-test-btn');
     const settingsSavePrinterBtn = document.getElementById('settings-save-printer-btn');
     const settingsPrinterFeedback = document.getElementById('settings-printer-feedback');
+
+    const smtpHost = document.getElementById('smtp-host');
+    const smtpPort = document.getElementById('smtp-port');
+    const smtpEncryption = document.getElementById('smtp-encryption');
+    const smtpUsername = document.getElementById('smtp-username');
+    const smtpPassword = document.getElementById('smtp-password');
+    const smtpFromName = document.getElementById('smtp-from-name');
+    const smtpFromEmail = document.getElementById('smtp-from-email');
+    const settingsSaveEmailBtn = document.getElementById('settings-save-email-btn');
+    const settingsEmailFeedback = document.getElementById('settings-email-feedback');
+    const smtpTestEmail = document.getElementById('smtp-test-email');
+    const smtpTestBtn = document.getElementById('smtp-test-btn');
+    const smtpTestFeedback = document.getElementById('smtp-test-feedback');
 
     const backupEnabled = document.getElementById('backup-enabled');
     const backupTime = document.getElementById('backup-time');
@@ -211,6 +229,7 @@ if ('serviceWorker' in navigator) {
     const navSupplierAddress = document.getElementById('nav-supplier-address');
     const navSupplierBankAccount = document.getElementById('nav-supplier-bank-account');
     const navQueueEnabled = document.getElementById('nav-queue-enabled');
+    const navIncomingSyncEnabled = document.getElementById('nav-incoming-sync-enabled');
     const settingsSaveNavBtn = document.getElementById('settings-save-nav-btn');
     const settingsNavFeedback = document.getElementById('settings-nav-feedback');
 
@@ -364,6 +383,18 @@ if ('serviceWorker' in navigator) {
         if (printerIp) printerIp.value = data.printer_ip || '';
         if (printerPort) printerPort.value = String(data.printer_port || 9100);
         if (printerPaperWidth) printerPaperWidth.value = String(data.printer_paper_width || 42);
+        if (printerEncoding) printerEncoding.value = data.printer_encoding || 'cp852';
+        if (printerAutoPrintEnabled) printerAutoPrintEnabled.checked = !!data.printer_auto_print_enabled;
+        if (printerQrEnabled) printerQrEnabled.checked = !!data.printer_qr_enabled;
+        if (receiptPublicBaseUrl) receiptPublicBaseUrl.value = data.receipt_public_base_url || '';
+
+        if (smtpHost) smtpHost.value = data.smtp_host || '';
+        if (smtpPort) smtpPort.value = String(data.smtp_port || 587);
+        if (smtpEncryption) smtpEncryption.value = data.smtp_encryption || 'starttls';
+        if (smtpUsername) smtpUsername.value = data.smtp_username || '';
+        applySecretField(smtpPassword, data, 'smtp_password', '');
+        if (smtpFromName) smtpFromName.value = data.smtp_from_name || '';
+        if (smtpFromEmail) smtpFromEmail.value = data.smtp_from_email || '';
 
         if (backupEnabled) backupEnabled.checked = !!data.backup_enabled;
         if (backupTime) backupTime.value = data.backup_time || '23:30';
@@ -413,6 +444,7 @@ if ('serviceWorker' in navigator) {
         if (navSupplierAddress) navSupplierAddress.value = data.nav_supplier_address || '';
         if (navSupplierBankAccount) navSupplierBankAccount.value = data.nav_supplier_bank_account || '';
         if (navQueueEnabled) navQueueEnabled.checked = !!data.nav_queue_enabled;
+        if (navIncomingSyncEnabled) navIncomingSyncEnabled.checked = !!data.nav_incoming_sync_enabled;
 
         if (wcStoreUrl) wcStoreUrl.value = data.wc_store_url || '';
         applySecretField(wcConsumerKey, data, 'wc_consumer_key', 'ck_...');
@@ -755,6 +787,10 @@ if ('serviceWorker' in navigator) {
                         printer_ip: printerIp.value.trim(),
                         printer_port: parseInt(printerPort.value, 10) || 9100,
                         printer_paper_width: parseInt(printerPaperWidth.value, 10) || 42,
+                        printer_encoding: printerEncoding ? printerEncoding.value : 'cp852',
+                        printer_auto_print_enabled: printerAutoPrintEnabled ? printerAutoPrintEnabled.checked : false,
+                        printer_qr_enabled: printerQrEnabled ? printerQrEnabled.checked : false,
+                        receipt_public_base_url: receiptPublicBaseUrl ? receiptPublicBaseUrl.value.trim() : '',
                     }),
                 });
                 const data = await res.json();
@@ -792,6 +828,8 @@ if ('serviceWorker' in navigator) {
                         printer_ip: printerIp.value.trim(),
                         printer_port: parseInt(printerPort.value, 10) || 9100,
                         printer_paper_width: parseInt(printerPaperWidth.value, 10) || 42,
+                        printer_encoding: printerEncoding ? printerEncoding.value : 'cp852',
+                        include_qr_sample: printerTestIncludeQr ? printerTestIncludeQr.checked : false,
                         staff_id: staffId,
                     }),
                 });
@@ -801,6 +839,76 @@ if ('serviceWorker' in navigator) {
             } catch (err) {
                 settingsPrinterFeedback.textContent = 'Hiba: ' + err.message;
                 settingsPrinterFeedback.className = 'modal-feedback error';
+            }
+        });
+    }
+
+    if (settingsSaveEmailBtn) {
+        settingsSaveEmailBtn.addEventListener('click', async () => {
+            settingsEmailFeedback.textContent = 'Mentés...';
+            settingsEmailFeedback.className = 'modal-feedback';
+            try {
+                const res = await fetch('/api/settings.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        smtp_host: smtpHost.value.trim(),
+                        smtp_port: parseInt(smtpPort.value, 10) || 587,
+                        smtp_encryption: smtpEncryption.value,
+                        smtp_username: smtpUsername.value.trim(),
+                        smtp_password: smtpPassword.value,
+                        smtp_from_name: smtpFromName.value.trim(),
+                        smtp_from_email: smtpFromEmail.value.trim(),
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+                applySettings(data);
+                settingsEmailFeedback.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;vertical-align:-1px;margin-right:4px;"><polyline points="20 6 9 17 4 12"></polyline></svg>Mentve';
+                settingsEmailFeedback.classList.add('saved-flash');
+                setTimeout(() => settingsEmailFeedback.classList.remove('saved-flash'), 1200);
+            } catch (err) {
+                settingsEmailFeedback.textContent = 'Hiba: ' + err.message;
+                settingsEmailFeedback.className = 'modal-feedback error';
+            }
+        });
+    }
+
+    if (smtpTestBtn) {
+        smtpTestBtn.addEventListener('click', async () => {
+            const toEmail = smtpTestEmail.value.trim();
+            if (!toEmail) {
+                smtpTestFeedback.textContent = 'Add meg a cél email címet.';
+                smtpTestFeedback.className = 'modal-feedback error';
+                return;
+            }
+            smtpTestFeedback.textContent = 'Küldés...';
+            smtpTestFeedback.className = 'modal-feedback';
+            smtpTestBtn.disabled = true;
+            try {
+                const res = await fetch('/api/smtp-test.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        to_email: toEmail,
+                        smtp_host: smtpHost.value.trim(),
+                        smtp_port: parseInt(smtpPort.value, 10) || 587,
+                        smtp_encryption: smtpEncryption.value,
+                        smtp_username: smtpUsername.value.trim(),
+                        smtp_password: smtpPassword.value,
+                        smtp_from_name: smtpFromName.value.trim(),
+                        smtp_from_email: smtpFromEmail.value.trim(),
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+                smtpTestFeedback.textContent = 'Teszt email elküldve.';
+                smtpTestFeedback.className = 'modal-feedback';
+            } catch (err) {
+                smtpTestFeedback.textContent = 'Hiba: ' + err.message;
+                smtpTestFeedback.className = 'modal-feedback error';
+            } finally {
+                smtpTestBtn.disabled = false;
             }
         });
     }
@@ -935,6 +1043,7 @@ if ('serviceWorker' in navigator) {
                         nav_supplier_address: navSupplierAddress.value.trim(),
                         nav_supplier_bank_account: navSupplierBankAccount.value.trim(),
                         nav_queue_enabled: navQueueEnabled.checked,
+                        nav_incoming_sync_enabled: navIncomingSyncEnabled.checked,
                     }),
                 });
                 const data = await res.json();

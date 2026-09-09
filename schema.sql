@@ -393,4 +393,32 @@ CREATE TABLE IF NOT EXISTS webshop_orders (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_webshop_orders_wc_order_id ON webshop_orders(wc_order_id);
 CREATE INDEX IF NOT EXISTS idx_webshop_orders_status ON webshop_orders(status);
 
+-- Egységes, szolgáltató-független kimenő számla-nyilvántartás (Számlázz.hu
+-- ÉS a NAV Online Számla közös helye) — lásd Database::migrateV19Invoices()
+-- docblockja a tervezési döntés indoklásáért (miért nincs külön "queue" tábla).
+CREATE TABLE IF NOT EXISTS invoices (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    sale_id         INTEGER NOT NULL REFERENCES sales(id),
+    provider        TEXT NOT NULL,                    -- 'szamlazz' | 'nav'
+    status          TEXT NOT NULL DEFAULT 'queued',    -- queued | processing | submitted | done | failed | dead_letter
+    provider_ref    TEXT,                              -- NAV transactionId; NULL Számlázz.hu-nál
+    invoice_number  TEXT,
+    net_total       REAL,
+    vat_total       REAL,
+    gross_total     REAL,
+    currency        TEXT NOT NULL DEFAULT 'HUF',
+    issued_at       TEXT,
+    pdf_path        TEXT,                              -- csak Számlázz.hu — a NAV API-nak nincs PDF-fogalma
+    attempts        INTEGER NOT NULL DEFAULT 0,        -- csak NAV
+    next_attempt_at TEXT,                               -- csak NAV — worker esedékesség-ellenőrzés
+    locked_at       TEXT,                               -- feldolgozási foglalás, ugyanaz a minta, mint sales.invoice_claim_at
+    last_error      TEXT,
+    payload_json    TEXT,                               -- csak NAV — a beütemezéskori kosár/vevő pillanatképe
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_sale_provider ON invoices(sale_id, provider);
+CREATE INDEX IF NOT EXISTS idx_invoices_status_next_attempt ON invoices(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_invoices_provider ON invoices(provider);
+
 INSERT INTO schema_version (version) SELECT 16 WHERE NOT EXISTS (SELECT 1 FROM schema_version);

@@ -2,7 +2,7 @@
 
 class Database
 {
-    private const SCHEMA_VERSION = 18;
+    private const SCHEMA_VERSION = 19;
 
     private PDO $pdo;
     private string $driver;
@@ -122,6 +122,9 @@ class Database
             }
             if ($version < 18) {
                 $this->migrateV18SaleIdempotencyFingerprint();
+            }
+            if ($version < 19) {
+                $this->migrateV19Invoices();
             }
         }
 
@@ -747,6 +750,95 @@ class Database
         ]);
     }
 
+    /**
+     * Egységes, szolgáltató-független számla-tábla — a NAV Online Számla
+     * (a Számlázz.hu mellett választható második számlázási szolgáltató,
+     * lásd Settings::DEFAULTS 'invoice_provider') és a Számlázz.hu
+     * kimenő számláinak KÖZÖS nyilvántartása. SZÁNDÉKOSAN nem külön
+     * "queue" tábla + külön "invoices" tábla: egy NAV-számla és a hozzá
+     * tartozó feldolgozási sor UGYANAZ a valós dolog minden állapotában
+     * (queued → processing → submitted → done/failed/dead_letter), egy
+     * külön tábla csak azt kockáztatná, hogy a kettő szétcsúszik. A
+     * UNIQUE(sale_id, provider) egyben az idempotencia-védelem is: egy
+     * eladáshoz szolgáltatónként legfeljebb egy sor tartozhat, az
+     * ismételt beütemezés (pl. egy elveszett válasz utáni újrapróbálkozás
+     * sale.php felől) biztonságosan no-op (INSERT OR IGNORE / INSERT
+     * IGNORE).
+     *
+     * A meglévő sales.szamlazz_invoice_number / szamlazz_pdf_path /
+     * status / invoice_claim_at oszlopok VÁLTOZATLANOK maradnak — a
+     * Számlázz.hu-s út továbbra is a meglévő tryClaimInvoiceIssuance()/
+     * attachInvoiceToSale() párost használja (lásd SzamlazzInvoiceProvider),
+     * és ez a tábla csak egy TÜKÖR-bejegyzést kap utána, hogy az
+     * egységesített "Kimenő számlák" nézetnek egyetlen, szolgáltató-
+     * független helye legyen az olvasáshoz.
+     *
+     * FONTOS, DOKUMENTÁLT KORLÁT (ugyanaz, mint tryClaimInvoiceIssuance()-
+     * nál): a `locked_at` csak azt garantálja, hogy egy adott pillanatban
+     * csak egy HELYI worker kezdhet bele egy adott sor feldolgozásába — ha
+     * a NAV-hívás ténylegesen célba ér, de a válasz elvész, mielőtt a
+     * transactionId elmentődne, egy újrapróbálkozás emiatt elméletileg
+     * másodszor is beküldhetné ugyanazt a számlát, mert a NAV API-nak
+     * nincs erre valódi, a helyi rendszer által kihasználható dedup-kulcsa.
+     * "Legalább egyszer" garantált helyileg, "pontosan egyszer" a NAV
+     * felé nem — ugyanaz a korlát, mint amit a Számlázz.hu-integráció
+     * docblockja is nyíltan vállal.
+     */
+    private function migrateV19Invoices(): void
+    {
+        $isMysql = $this->driver === 'mysql';
+        $pk = $isMysql ? 'INT UNSIGNED AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
+        $intCol = $isMysql ? 'INT UNSIGNED NOT NULL' : 'INTEGER NOT NULL REFERENCES sales(id)';
+        $moneyCol = $isMysql ? 'DECIMAL(12,2)' : 'REAL';
+        $textCol = 'TEXT';
+        $ts = $isMysql ? 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' : "TEXT NOT NULL DEFAULT (datetime('now'))";
+        $tsNull = $isMysql ? 'DATETIME NULL' : 'TEXT';
+        // MySQL-en a sale_id -> sales(id) hivatkozás egy külön, névvel
+        // ellátott CONSTRAINT-ként kerül be (ugyanaz a minta, mint
+        // webshop_orders.fk_webshop_orders_sale-nél); SQLite-on ez már
+        // magába az oszlop-definícióba (REFERENCES sales(id)) beépül —
+        // lásd fent az $intCol értékét.
+        $fkConstraint = $isMysql ? ', CONSTRAINT fk_invoices_sale FOREIGN KEY (sale_id) REFERENCES sales(id)' : '';
+        $engine = $isMysql ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : '';
+
+        try {
+            $this->pdo->exec("CREATE TABLE IF NOT EXISTS invoices (
+                id $pk,
+                sale_id $intCol,
+                provider VARCHAR(16) NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'queued',
+                provider_ref VARCHAR(64),
+                invoice_number VARCHAR(64),
+                net_total $moneyCol,
+                vat_total $moneyCol,
+                gross_total $moneyCol,
+                currency VARCHAR(8) NOT NULL DEFAULT 'HUF',
+                issued_at $tsNull,
+                pdf_path $textCol,
+                attempts INT UNSIGNED NOT NULL DEFAULT 0,
+                next_attempt_at $tsNull,
+                locked_at $tsNull,
+                last_error $textCol,
+                payload_json $textCol,
+                created_at $ts,
+                updated_at $ts
+                $fkConstraint
+            )$engine");
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        foreach ([
+            $isMysql
+                ? 'ALTER TABLE invoices ADD UNIQUE KEY uq_invoices_sale_provider (sale_id, provider)'
+                : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_sale_provider ON invoices(sale_id, provider)',
+            'CREATE INDEX idx_invoices_status_next_attempt ON invoices(status, next_attempt_at)',
+            'CREATE INDEX idx_invoices_provider ON invoices(provider)',
+        ] as $sql) {
+            try {
+                $this->pdo->exec($sql);
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+        }
+    }
+
     public function findProductByBarcode(string $barcode): ?array
     {
         $stmt = $this->pdo->prepare('SELECT * FROM products WHERE barcode = ?');
@@ -1210,6 +1302,89 @@ class Database
             UPDATE sales SET szamlazz_invoice_number = ?, szamlazz_pdf_path = ?, status = ?, invoice_claim_at = NULL WHERE id = ?
         ');
         $stmt->execute([$invoiceNumber, $pdfPath, $status, $saleId]);
+    }
+
+    /**
+     * Egy (szinkron, azonnal lezáruló — jelenleg csak Számlázz.hu-s)
+     * számlázási kísérlet eredményének tükrözése az egységes `invoices`
+     * táblába, hogy egy jövőbeli, szolgáltató-független "Kimenő számlák"
+     * nézet egyetlen helyről olvashasson. A tényleges Számlázz.hu-
+     * specifikus állapotot (sales.szamlazz_invoice_number/szamlazz_pdf_path/
+     * status/invoice_claim_at) továbbra is KIZÁRÓLAG attachInvoiceToSale()
+     * kezeli, változatlanul — ez a metódus csak egy MÁSODLAGOS,
+     * upsert-elt tükör-bejegyzést ír, sose helyettesíti azt, és a
+     * meglévő számlázási folyamat viselkedését nem befolyásolja (ha ez a
+     * hívás bármiért elhasalna, azt a hívó — SzamlazzInvoiceProvider —
+     * szándékosan elnyeli, nem engedi meghiúsítani a már ténylegesen
+     * megtörtént számlázást).
+     *
+     * UPSERT, mert egy korábban sikertelen (invoice_failed) kísérlet
+     * utáni manuális újrapróbálkozás ugyanarra a sale_id+provider
+     * kombinációra fut újra — a UNIQUE(sale_id, provider) index miatt ez
+     * módosítja, nem duplikálja a korábbi tükör-sort.
+     */
+    public function upsertInvoiceMirror(
+        int $saleId,
+        string $provider,
+        bool $success,
+        ?string $invoiceNumber,
+        ?string $pdfPath,
+        ?string $error,
+        float $netTotal,
+        float $vatTotal,
+        float $grossTotal,
+        string $currency
+    ): void {
+        $status = $success ? 'done' : 'failed';
+        $now = date('Y-m-d H:i:s');
+        $issuedAt = $success ? $now : null;
+
+        $params = [
+            ':sale_id' => $saleId,
+            ':provider' => $provider,
+            ':status' => $status,
+            ':invoice_number' => $invoiceNumber,
+            ':net_total' => $netTotal,
+            ':vat_total' => $vatTotal,
+            ':gross_total' => $grossTotal,
+            ':currency' => $currency,
+            ':issued_at' => $issuedAt,
+            ':pdf_path' => $pdfPath,
+            ':last_error' => $error,
+            ':now' => $now,
+        ];
+
+        if ($this->driver === 'mysql') {
+            $sql = "INSERT INTO invoices
+                    (sale_id, provider, status, invoice_number, net_total, vat_total, gross_total, currency, issued_at, pdf_path, last_error, created_at, updated_at)
+                VALUES
+                    (:sale_id, :provider, :status, :invoice_number, :net_total, :vat_total, :gross_total, :currency, :issued_at, :pdf_path, :last_error, :now, :now)
+                ON DUPLICATE KEY UPDATE
+                    status = VALUES(status), invoice_number = VALUES(invoice_number),
+                    net_total = VALUES(net_total), vat_total = VALUES(vat_total), gross_total = VALUES(gross_total),
+                    currency = VALUES(currency), issued_at = VALUES(issued_at), pdf_path = VALUES(pdf_path),
+                    last_error = VALUES(last_error), updated_at = VALUES(updated_at)";
+        } else {
+            $sql = "INSERT INTO invoices
+                    (sale_id, provider, status, invoice_number, net_total, vat_total, gross_total, currency, issued_at, pdf_path, last_error, created_at, updated_at)
+                VALUES
+                    (:sale_id, :provider, :status, :invoice_number, :net_total, :vat_total, :gross_total, :currency, :issued_at, :pdf_path, :last_error, :now, :now)
+                ON CONFLICT(sale_id, provider) DO UPDATE SET
+                    status = excluded.status, invoice_number = excluded.invoice_number,
+                    net_total = excluded.net_total, vat_total = excluded.vat_total, gross_total = excluded.gross_total,
+                    currency = excluded.currency, issued_at = excluded.issued_at, pdf_path = excluded.pdf_path,
+                    last_error = excluded.last_error, updated_at = excluded.updated_at";
+        }
+
+        $this->pdo->prepare($sql)->execute($params);
+    }
+
+    public function findInvoiceBySaleAndProvider(int $saleId, string $provider): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM invoices WHERE sale_id = ? AND provider = ?');
+        $stmt->execute([$saleId, $provider]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
     }
 
     public function getSaleReceiptToken(int $saleId): ?string

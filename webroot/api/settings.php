@@ -119,6 +119,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($input['backup_provider']) && in_array($input['backup_provider'], ['none', 'dropbox', 'googledrive'], true)) {
         $update['backup_provider'] = $input['backup_provider'];
     }
+    if (isset($input['invoice_provider']) && in_array($input['invoice_provider'], ['szamlazz', 'nav'], true)) {
+        $update['invoice_provider'] = $input['invoice_provider'];
+    }
     if (isset($input['dropbox_folder'])) {
         $update['dropbox_folder'] = trim((string) $input['dropbox_folder']) ?: '/StockManagerBackups';
     }

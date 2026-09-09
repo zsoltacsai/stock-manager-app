@@ -89,6 +89,13 @@ class Settings
             ['value' => 'Utánvét', 'color' => '#f97316'],
         ],
 
+        // Melyik szolgáltató állítja ki a számlákat — 'szamlazz' (a
+        // korábbi, egyetlen, változatlan viselkedés) vagy 'nav' (NAV
+        // Online Számla). Az alapérték SZÁNDÉKOSAN 'szamlazz', hogy a
+        // meglévő telepítéseknél frissítés után SEMMI ne változzon
+        // automatikusan — lásd InvoiceService.
+        'invoice_provider'         => 'szamlazz',
+
         'szamlazz_agent_key'       => '',
         'szamlazz_default_payment' => 'Készpénz',
         'szamlazz_default_vat'     => '27',

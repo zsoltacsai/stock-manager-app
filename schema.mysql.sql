@@ -406,5 +406,34 @@ CREATE TABLE IF NOT EXISTS webshop_orders (
     CONSTRAINT fk_webshop_orders_sale FOREIGN KEY (sale_id) REFERENCES sales(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Egységes, szolgáltató-független kimenő számla-nyilvántartás (Számlázz.hu
+-- ÉS a NAV Online Számla közös helye) — lásd Database::migrateV19Invoices()
+-- docblockja a tervezési döntés indoklásáért (miért nincs külön "queue" tábla).
+CREATE TABLE IF NOT EXISTS invoices (
+    id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    sale_id         INT UNSIGNED NOT NULL,
+    provider        VARCHAR(16) NOT NULL,
+    status          VARCHAR(20) NOT NULL DEFAULT 'queued',
+    provider_ref    VARCHAR(64),
+    invoice_number  VARCHAR(64),
+    net_total       DECIMAL(12,2),
+    vat_total       DECIMAL(12,2),
+    gross_total     DECIMAL(12,2),
+    currency        VARCHAR(8) NOT NULL DEFAULT 'HUF',
+    issued_at       DATETIME NULL,
+    pdf_path        TEXT,
+    attempts        INT UNSIGNED NOT NULL DEFAULT 0,
+    next_attempt_at DATETIME NULL,
+    locked_at       DATETIME NULL,
+    last_error      TEXT,
+    payload_json    TEXT,
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_invoices_sale_provider (sale_id, provider),
+    KEY idx_invoices_status_next_attempt (status, next_attempt_at),
+    KEY idx_invoices_provider (provider),
+    CONSTRAINT fk_invoices_sale FOREIGN KEY (sale_id) REFERENCES sales(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 INSERT INTO schema_version (version)
 SELECT 16 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM schema_version);

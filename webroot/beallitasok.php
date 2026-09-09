@@ -238,7 +238,24 @@ if (!Auth::isLoggedIn($appSettings)) {
         </div>
 
         <div id="tab-szamlazz-settings" class="tab-panel">
-            <strong>Fizetési módok</strong>
+            <label for="invoice-provider" style="display:block;">Számlázási szolgáltató</label>
+            <select id="invoice-provider">
+                <option value="szamlazz">Számlázz.hu</option>
+                <option value="nav">NAV Online Számla</option>
+            </select>
+            <p class="muted" style="margin-top:-6px;">
+                Melyik szolgáltató állítsa ki a tényleges számlákat. A NAV Online
+                Számla keretrendszer szinten már készen áll (közös számla-
+                nyilvántartás, beállítások), DE a tényleges NAV-beküldés még
+                <strong>nincs bekötve ebben a verzióban</strong> — ha mégis ezt
+                választod, az eladás rögzítése változatlanul sikeres marad, csak a
+                számla-kiállítás fog egyértelmű, "még nincs bekötve" hibát adni,
+                amíg a NAV-integráció el nem készül egy következő körben.
+            </p>
+            <button id="settings-save-invoice-provider-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Mentés</button>
+            <p id="settings-invoice-provider-feedback" class="modal-feedback"></p>
+
+            <strong style="display:block; margin-top:20px; border-top:1px solid var(--border); padding-top:14px;">Fizetési módok</strong>
             <p class="muted" style="margin-top:4px;">
                 A kasszán és a beérkező webshop-rendelések leadásakor választható
                 fizetési módok listája — bővítsd ki pl. "Stripe"-pal, ha a
@@ -279,7 +296,11 @@ if (!Auth::isLoggedIn($appSettings)) {
             <p id="settings-szamlazz-feedback" class="modal-feedback"></p>
 
             <p class="muted" style="margin-top:20px; border-top:1px solid var(--border); padding-top:14px;">
-                <strong>NAV cégadat lekérdezés</strong> (adószám alapján automatikus kitöltés a "Vevő számlát kér" résznél)
+                <strong>NAV technikai felhasználó</strong> — jelenleg a cégadat
+                lekérdezéshez (adószám alapján automatikus kitöltés a "Vevő
+                számlát kér" résznél) használt, ugyanez a hitelesítő adat fogja
+                a jövőben a fenti "NAV Online Számla" számlázási szolgáltatót is
+                kiszolgálni, amint az ténylegesen bekötésre kerül.
             </p>
             <label for="nav-login">NAV technikai felhasználó — login</label>
             <input type="text" id="nav-login">

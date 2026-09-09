@@ -3,6 +3,7 @@
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 require_once __DIR__ . '/../../src/LowStockNotifier.php';
+require_once __DIR__ . '/../../src/InvoiceService.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     send_json(['error' => 'POST only'], 405);
@@ -32,10 +33,15 @@ $idempotencyKey = trim((string) ($input['idempotency_key'] ?? ''));
 // Database::migrateV18SaleIdempotencyFingerprint() docblockja.
 $idempotencyFingerprint = $idempotencyKey !== '' ? build_sale_fingerprint($input) : null;
 
+// Az egységes 'invoices' tábla óta (lásd Database::migrateV19Invoices()) a
+// visszajátszott válasz számla-részét is a kiválasztott szolgáltató alapján
+// kell rekonstruálni — lásd build_idempotent_replay_response() docblockja.
+$invoiceProviderKey = (string) ($appSettings['invoice_provider'] ?? 'szamlazz') === 'nav' ? 'nav' : 'szamlazz';
+
 if ($idempotencyKey !== '') {
     $existingSale = $db->findSaleByIdempotencyKey($idempotencyKey);
     if ($existingSale) {
-        match_or_reject_idempotent_replay($existingSale, $idempotencyFingerprint); // sose tér vissza — vagy 200 visszajátszás, vagy 409
+        match_or_reject_idempotent_replay($db, $existingSale, $idempotencyFingerprint, $invoiceProviderKey); // sose tér vissza — vagy 200 visszajátszás, vagy 409
     }
 }
 
@@ -312,7 +318,7 @@ try {
     if ($idempotencyKey !== '' && str_contains($e->getMessage(), 'idempotency_key')) {
         $winner = $db->findSaleByIdempotencyKey($idempotencyKey);
         if ($winner) {
-            match_or_reject_idempotent_replay($winner, $idempotencyFingerprint); // sose tér vissza
+            match_or_reject_idempotent_replay($db, $winner, $idempotencyFingerprint, $invoiceProviderKey); // sose tér vissza
         }
     }
     send_json(['error' => 'Az eladás rögzítése sikertelen: ' . $e->getMessage()], 500);
@@ -325,51 +331,45 @@ if ($claimError !== null) {
 $invoiceResult = null;
 
 if ($buyer !== null) {
-    // Atomikus foglalás a Számlázz.hu hívás ELŐTT — lásd
-    // Database::tryClaimInvoiceIssuance() docblockja. Ezen a ponton ez
-    // csak elméleti védelem (ez a sale most, ebben a kérésben jött
-    // létre, tehát MÉG SENKI más nem tudhat róla) — a gyakorlati esete
-    // ennek a webshop-order-invoice.php-nál van (egy MÁR LÉTEZŐ eladás
-    // utólagos, esetleg duplán elindított számlázásakor). Itt a
-    // konzisztencia kedvéért ugyanazt az utat használjuk.
-    if (!$db->tryClaimInvoiceIssuance($saleId)) {
-        $invoiceResult = ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => 'A számla kiállítása már folyamatban van.'];
-    } else {
-        $szamlazz = new SzamlazzClient($config['szamlazz']);
+    // A lineItems[]['unit_price'] a kedvezmény ELŐTTI (kosár-összeállításkori)
+    // egységárat tartalmazza — enélkül az arányosítás nélkül a számla
+    // felé mindig a teljes, kedvezmény nélküli összeg menne ki, akkor is, ha
+    // kupon/hűségpont/hűségszint/ajándékutalvány miatt a vevő ténylegesen
+    // kevesebbet fizetett (lásd sales.total). Ugyanaz az arányosítási minta,
+    // mint getDailySummary()-ban és api/return-create.php-ban.
+    $invoiceDiscountRatio = $subtotal > 0 ? min(1, $total / $subtotal) : 1.0;
 
-        // A lineItems[]['unit_price'] a kedvezmény ELŐTTI (kosár-összeállításkori)
-        // egységárat tartalmazza — enélkül az arányosítás nélkül a Számlázz.hu
-        // felé mindig a teljes, kedvezmény nélküli összeg menne ki, akkor is, ha
-        // kupon/hűségpont/hűségszint/ajándékutalvány miatt a vevő ténylegesen
-        // kevesebbet fizetett (lásd sales.total). Ugyanaz az arányosítási minta,
-        // mint getDailySummary()-ban és api/return-create.php-ban.
-        $invoiceDiscountRatio = $subtotal > 0 ? min(1, $total / $subtotal) : 1.0;
+    $invoiceItems = array_map(fn($i) => [
+        'name'             => $i['name'],
+        'qty'              => $i['qty'],
+        'unit_price_gross' => round($i['unit_price'] * $invoiceDiscountRatio, 2),
+        'vat_rate'         => $i['vat_rate'],
+    ], $lineItems);
 
-        $invoiceItems = array_map(fn($i) => [
-            'name'             => $i['name'],
-            'qty'              => $i['qty'],
-            'unit_price_gross' => round($i['unit_price'] * $invoiceDiscountRatio, 2),
-            'vat_rate'         => $i['vat_rate'],
-        ], $lineItems);
-
-        $languageOverride = $input['invoice_language'] ?? null;
-
-        try {
-            $invoiceResult = $szamlazz->createInvoice($buyer, $invoiceItems, (string) $saleId, $languageOverride, $paymentMethod);
-        } catch (Throwable $e) {
-            $invoiceResult = ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => $e->getMessage()];
-        }
-
-        // attachInvoiceToSale() sikertelenség esetén is felszabadítja a
-        // fenti foglalást (invoice_claim_at = NULL), engedve egy azonnali
-        // manuális újrapróbálkozást a felületről.
-        $db->attachInvoiceToSale(
-            $saleId,
-            $invoiceResult['invoice_number'] ?? null,
-            $invoiceResult['pdf_path'] ?? null,
-            $invoiceResult['success'] ? 'completed' : 'invoice_failed'
-        );
+    $invoiceNetTotal = 0.0;
+    foreach ($invoiceItems as $ii) {
+        $vatPct = is_numeric($ii['vat_rate']) ? ((float) $ii['vat_rate']) / 100 : 0.0;
+        $lineGross = $ii['unit_price_gross'] * $ii['qty'];
+        $invoiceNetTotal += is_numeric($ii['vat_rate']) ? round($lineGross / (1 + $vatPct), 2) : $lineGross;
     }
+    $invoiceGrossTotal = round($total, 2);
+    $invoiceVatTotal = round($invoiceGrossTotal - $invoiceNetTotal, 2);
+
+    $languageOverride = $input['invoice_language'] ?? null;
+
+    $invoiceService = new InvoiceService($config, $appSettings);
+    $invoiceResult = $invoiceService->processInvoice([
+        'db'             => $db,
+        'sale_id'        => $saleId,
+        'buyer'          => $buyer,
+        'items'          => $invoiceItems,
+        'language'       => $languageOverride,
+        'payment_method' => $paymentMethod,
+        'totals'         => [
+            'net' => $invoiceNetTotal, 'vat' => $invoiceVatTotal, 'gross' => $invoiceGrossTotal,
+            'currency' => $config['szamlazz']['currency'] ?? 'HUF',
+        ],
+    ]);
 }
 
 $pushErrors = [];
@@ -456,27 +456,51 @@ send_json([
 /**
  * Egy korábban (ugyanezzel az idempotencia-kulccsal) már sikeresen
  * feldolgozott eladáshoz tartozó válasz újraépítése, KIZÁRÓLAG a
- * sales sor saját, már perzisztált mezőiből — nincs külön "válasz-
- * pillanatkép" oszlop/tábla, mert minden szükséges adat már úgyis ott
- * van a sales/sale_items rekordokban. Ha az eredeti kérés még a számla-
- * kiállítás/WooCommerce-push "farok" feldolgozásánál tart (a sale már
- * commit-olva van, de invoice/wc_push_errors még nem), ez akkor is egy
- * KORREKT, csak kevésbé részletes választ ad — a legfontosabb garancia
- * (az eladás rögzítve van, itt a sale_id/receipt_token) mindig igaz.
+ * sales sor saját, már perzisztált mezőiből (plusz, ha van, az egységes
+ * `invoices` tükör-sorból — lásd Database::migrateV19Invoices()) — nincs
+ * külön "válasz-pillanatkép" oszlop/tábla, mert minden szükséges adat
+ * már úgyis ott van. Ha az eredeti kérés még a számla-kiállítás/
+ * WooCommerce-push "farok" feldolgozásánál tart (a sale már commit-olva
+ * van, de invoice/wc_push_errors még nem), ez akkor is egy KORREKT,
+ * csak kevésbé részletes választ ad — a legfontosabb garancia (az
+ * eladás rögzítve van, itt a sale_id/receipt_token) mindig igaz.
+ *
+ * A számla-rész forrása szolgáltató-függő: a 'szamlazz' provider a
+ * SzamlazzInvoiceProvider által is írt `invoices`-tükröt ÉS a régi
+ * sales.szamlazz_invoice_number/status oszlopokat is használhatná, de
+ * mivel MINDKETTŐT ugyanaz az attachInvoiceToSale()/upsertInvoiceMirror()
+ * pár írja egyszerre, a régi sales-oszlopok maradnak az elsődleges,
+ * változatlan forrás (visszafelé kompatibilis a V19 előtti sale-ekkel
+ * is, amikhez sose lesz `invoices` sor). Egy jövőbeli 'nav' provider
+ * viszont KIZÁRÓLAG az `invoices` táblát írja (a sales.szamlazz_*
+ * oszlopokhoz sosem nyúl) — ott ez az egyetlen forrás.
  */
-function build_idempotent_replay_response(array $sale): array
+function build_idempotent_replay_response(Database $db, array $sale, string $invoiceProviderKey): array
 {
+    if ($invoiceProviderKey === 'nav') {
+        $mirror = $db->findInvoiceBySaleAndProvider((int) $sale['id'], 'nav');
+        $invoice = $mirror
+            ? ($mirror['status'] === 'done'
+                ? ['success' => true, 'invoice_number' => $mirror['invoice_number'], 'pdf_path' => $mirror['pdf_path'], 'error' => null]
+                : ($mirror['status'] === 'failed' || $mirror['status'] === 'dead_letter'
+                    ? ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => $mirror['last_error'] ?? 'A NAV számla kiállítása korábban sikertelen volt.']
+                    : null)) // queued/processing/submitted — még folyamatban, lásd sale.php processInvoice()
+            : null;
+    } else {
+        $invoice = !empty($sale['szamlazz_invoice_number'])
+            ? ['success' => true, 'invoice_number' => $sale['szamlazz_invoice_number'], 'pdf_path' => $sale['szamlazz_pdf_path'] ?? null, 'error' => null]
+            : (($sale['status'] ?? '') === 'invoice_failed'
+                ? ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => 'A számla kiállítása korábban sikertelen volt — nézd meg az eladást a listában, és próbáld újra onnan.']
+                : null);
+    }
+
     return [
         'sale_id'        => (int) $sale['id'],
         'receipt_token'  => $sale['receipt_token'],
         'total'          => round((float) $sale['total'], 2),
         'subtotal'       => null,
         'replayed'       => true,
-        'invoice'        => !empty($sale['szamlazz_invoice_number'])
-            ? ['success' => true, 'invoice_number' => $sale['szamlazz_invoice_number'], 'pdf_path' => $sale['szamlazz_pdf_path'] ?? null, 'error' => null]
-            : (($sale['status'] ?? '') === 'invoice_failed'
-                ? ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => 'A számla kiállítása korábban sikertelen volt — nézd meg az eladást a listában, és próbáld újra onnan.']
-                : null),
+        'invoice'        => $invoice,
         'wc_push_errors' => [],
         'oversold_items' => [],
         'loyalty' => !empty($sale['customer_id']) ? [
@@ -573,7 +597,7 @@ function build_sale_fingerprint(array $input): string
  * SOSE tér vissza — vagy egy 200-as visszajátszást, vagy egy 409-es
  * hibát küld (send_json() mindkét esetben exit-tel zár).
  */
-function match_or_reject_idempotent_replay(array $existingSale, ?string $requestFingerprint): void
+function match_or_reject_idempotent_replay(Database $db, array $existingSale, ?string $requestFingerprint, string $invoiceProviderKey): void
 {
     $storedFingerprint = $existingSale['idempotency_fingerprint'] ?? null;
     if ($storedFingerprint !== null && $storedFingerprint !== '' && $storedFingerprint !== $requestFingerprint) {
@@ -581,5 +605,5 @@ function match_or_reject_idempotent_replay(array $existingSale, ?string $request
             'error' => 'Ugyanaz az idempotencia-kulcs egy korábbitól eltérő tartalmú kéréssel érkezett — ez a kérés nem dolgozható fel. Töltsd újra az oldalt, és próbáld újra a vásárlást.',
         ], 409);
     }
-    send_json(build_idempotent_replay_response($existingSale));
+    send_json(build_idempotent_replay_response($db, $existingSale, $invoiceProviderKey));
 }

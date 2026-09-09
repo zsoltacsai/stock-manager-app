@@ -188,6 +188,10 @@ if ('serviceWorker' in navigator) {
     const settingsPaymentMethodsFeedback = document.getElementById('settings-payment-methods-feedback');
     let currentPaymentMethods = [];
 
+    const invoiceProvider = document.getElementById('invoice-provider');
+    const settingsSaveInvoiceProviderBtn = document.getElementById('settings-save-invoice-provider-btn');
+    const settingsInvoiceProviderFeedback = document.getElementById('settings-invoice-provider-feedback');
+
     const szamlazzAgentKey = document.getElementById('szamlazz-agent-key');
     const szamlazzDefaultPayment = document.getElementById('szamlazz-default-payment');
     const szamlazzDefaultVat = document.getElementById('szamlazz-default-vat');
@@ -383,6 +387,8 @@ if ('serviceWorker' in navigator) {
         if (szamlazzDefaultPayment) {
             szamlazzDefaultPayment.innerHTML = currentPaymentMethods.map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.value)}</option>`).join('');
         }
+
+        if (invoiceProvider) invoiceProvider.value = data.invoice_provider === 'nav' ? 'nav' : 'szamlazz';
 
         applySecretField(szamlazzAgentKey, data, 'szamlazz_agent_key', '');
         if (szamlazzDefaultPayment) szamlazzDefaultPayment.value = data.szamlazz_default_payment || 'Készpénz';
@@ -839,6 +845,31 @@ if ('serviceWorker' in navigator) {
                 settingsBackupFeedback.className = 'modal-feedback error';
             } finally {
                 backupNowBtn.disabled = false;
+            }
+        });
+    }
+
+    if (settingsSaveInvoiceProviderBtn) {
+        settingsSaveInvoiceProviderBtn.addEventListener('click', async () => {
+            settingsInvoiceProviderFeedback.textContent = 'Mentés...';
+            settingsInvoiceProviderFeedback.className = 'modal-feedback';
+            try {
+                const res = await fetch('/api/settings.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        invoice_provider: invoiceProvider.value,
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+                applySettings(data);
+                settingsInvoiceProviderFeedback.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;vertical-align:-1px;margin-right:4px;"><polyline points="20 6 9 17 4 12"></polyline></svg>Mentve';
+                settingsInvoiceProviderFeedback.classList.add('saved-flash');
+                setTimeout(() => settingsInvoiceProviderFeedback.classList.remove('saved-flash'), 1200);
+            } catch (err) {
+                settingsInvoiceProviderFeedback.textContent = 'Hiba: ' + err.message;
+                settingsInvoiceProviderFeedback.className = 'modal-feedback error';
             }
         });
     }

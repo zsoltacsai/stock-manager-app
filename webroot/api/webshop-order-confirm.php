@@ -3,6 +3,7 @@
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 require_once __DIR__ . '/../../src/LowStockNotifier.php';
+require_once __DIR__ . '/../../src/InvoiceService.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     send_json(['error' => 'POST only'], 405);
@@ -110,24 +111,42 @@ if ($issueInvoice) {
     if (!$hasRequiredFields) {
         $invoiceResult = ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => 'A rendelés számlázási címe hiányos (név/irányítószám/település/cím szükséges), a számla nem állítható ki automatikusan.'];
     } else {
-        $szamlazz = new SzamlazzClient($config['szamlazz']);
         $invoiceItems = array_map(fn($i) => [
             'name'             => $i['name'],
             'qty'              => $i['qty'],
             'unit_price_gross' => $i['unit_price'],
             'vat_rate'         => $i['vat_rate'],
         ], $lineItems);
-        try {
-            $invoiceResult = $szamlazz->createInvoice($buyer, $invoiceItems, (string) $saleId, null, $paymentMethod);
-        } catch (Throwable $e) {
-            $invoiceResult = ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => $e->getMessage()];
+
+        $netTotal = 0.0;
+        foreach ($invoiceItems as $ii) {
+            $vatPct = is_numeric($ii['vat_rate']) ? ((float) $ii['vat_rate']) / 100 : 0.0;
+            $lineGross = (float) $ii['unit_price_gross'] * (float) $ii['qty'];
+            $netTotal += is_numeric($ii['vat_rate']) ? round($lineGross / (1 + $vatPct), 2) : $lineGross;
         }
-        $db->attachInvoiceToSale(
-            $saleId,
-            $invoiceResult['invoice_number'] ?? null,
-            $invoiceResult['pdf_path'] ?? null,
-            $invoiceResult['success'] ? 'completed' : 'invoice_failed'
-        );
+        $grossTotal = round((float) $order['total'], 2);
+        $vatTotal = round($grossTotal - $netTotal, 2);
+
+        // Korábban ez a végpont — a másik két számlázó hívóponttal
+        // (sale.php, webshop-order-invoice.php) ellentétben — KÖZVETLENÜL
+        // hívta a SzamlazzClient-et, tryClaimInvoiceIssuance() nélkül. Az
+        // InvoiceService/SzamlazzInvoiceProvider most már ITT is
+        // kikényszeríti ugyanazt az atomikus foglalást — ez egy
+        // mellékesen, a provider-absztrakcióra való áttéréssel együtt
+        // javított inkonzisztencia, nem önálló, külön kért módosítás.
+        $invoiceService = new InvoiceService($config, $appSettings);
+        $invoiceResult = $invoiceService->processInvoice([
+            'db'             => $db,
+            'sale_id'        => $saleId,
+            'buyer'          => $buyer,
+            'items'          => $invoiceItems,
+            'language'       => null,
+            'payment_method' => $paymentMethod,
+            'totals'         => [
+                'net' => $netTotal, 'vat' => $vatTotal, 'gross' => $grossTotal,
+                'currency' => $config['szamlazz']['currency'] ?? 'HUF',
+            ],
+        ]);
     }
 }
 

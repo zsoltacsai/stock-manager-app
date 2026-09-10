@@ -1,8 +1,11 @@
 # Stock Manager — localhost vonalkód-kassza
 
-**Verzió: 1.0 RC5** (release candidate — a fejlesztés innentől kizárólag
-hibakeresésre és bugfixekre koncentrál, új funkció tervezetten nem kerül
-bele az 1.0 véglegesig)
+**Verzió: 1.0** (production release)
+
+Stock Manager 1.0 az első production kiadás, az 1.0 RC stabilizációs és
+biztonsági hardening ciklus lezárása után. A feature freeze innentől is
+érvényben marad az 1.1-es fejlesztési körig — új funkció (pl. számla
+MODIFY/STORNO, lásd ROADMAP.md) csak ott kerül bevezetésre.
 
 Egy önállóan üzemeltethető PHP alkalmazás egy kisbolt/webshop teljes napi
 üzemeltetéséhez: USB vonalkódolvasós kassza, beszerzés és leltár, több
@@ -29,6 +32,25 @@ Beérkező eladások).
 Alapból nincs Composer, nincs adatbázis-szerver — minden PHP beépített
 webszerverén és egyetlen SQLite fájlon fut. Lásd lentebb az "Adatbázis:
 SQLite vs MySQL" szakaszt, ha ez már kevés lenne.
+
+## 1.0 Production Checklist
+
+Az alkalmazás 1.0 production release, de az alábbi, telepítéstől függő
+ellenőrzések továbbra is a telepítő/üzemeltető felelőssége — ezek nem
+alkalmazási hibák, hanem az adott környezetre jellemző, egyszeri
+beállítási lépések:
+
+- **HTTPS** — valódi tanúsítvány a nyilvános/távoli telepítésnél (lásd `telepites-tavoli-szerver.txt`)
+- **PHP verzió/kiterjesztések** — lásd "Követelmények" fent
+- **Adatbázis** — SQLite (alapértelmezett) vagy MySQL; **MySQL esetén éles validáció szükséges** (ez a projekt fejlesztői környezetében nem tesztelhető élő MySQL szerver nélkül)
+- **Migrációk** — friss telepítésnél automatikus (`schema.sql`/`schema.mysql.sql`), meglévő telepítés frissítésénél a `Database` osztály automatikusan lefuttatja
+- **Biztonsági mentés** — `data/.backup-encryption-key` és `data/backups/` írhatók legyenek, cron beállítva
+- **Cron** — lásd "Automatikus feladatok" lentebb (szinkron, mentés, NAV kimenő/bejövő)
+- **NAV konfiguráció** — technikai felhasználó, tesztmód kikapcsolása élesítéskor, **működő kimenő TLS/CA-tár szükséges a célszerveren**
+- **SMTP** — Beállítások → Email, **javasolt egy valódi teszt-email küldése élesítés előtt**
+- **Nyomtató** — Beállítások → Nyomtató, IP/port, kódlap
+- **Biztonság** — alkalmazás-jelszó bekapcsolása, ha nem csak localhost-ról érhető el
+- **Smoke test** — egy teljes eladás rögzítése (nyugta + ha releváns, számla) éles beüzemelés után
 
 ## Beüzemelés
 

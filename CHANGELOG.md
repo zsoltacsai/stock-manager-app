@@ -4,6 +4,50 @@ Ez a fájl a Stock Manager verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## [1.0.0] — 2026-09-10
+
+Stock Manager 1.0 az első production kiadás, az 1.0 RC stabilizációs és
+biztonsági hardening ciklus lezárása után.
+
+### Added
+- NAV Online Számla kimenő integráció — közvetlen NAV-beküldés, tartós
+  és race-safe queue, retry/backoff, timeout-biztonság, bizonytalan
+  tranzakció helyreállítása.
+- NAV Online Számla bejövő szinkronizáció (Beérkezett számlák).
+- Kimenő számlák — egységes, szolgáltató-független (NAV + Számlázz.hu)
+  nézet.
+- Hálózati (ESC/POS) nyomtatás, Epson TM-T20III CP852 magyar
+  ékezet-támogatással.
+- QR-kód nyomtatása a nyugtán.
+- Automatikus hálózati nyomtatás minden kasszaeladás után.
+- SMTP e-mail-küldés beállítása (Beállítások → Email).
+- Korábbi (legacy) számlák visszamenőleges rögzítésére szolgáló
+  backfill eszköz.
+
+### Security
+- CSRF-védelem kikényszerítve.
+- SSRF-védelem (kimenő kapcsolatok célcím-ellenőrzése).
+- Számla-idempotencia.
+- Queue-konkurrencia védelem.
+- Mentés titkosítása nyugalmi állapotban.
+- Visszaállítás-biztonság.
+- Jogosultság-hardening.
+- Számla-helyreállítási védelmek.
+
+### Fixed
+Az 1.0 RC stabilizációs kör legfontosabb, production-blocker javításai:
+- MySQL friss-telepítési séma lemaradása.
+- Mentés-visszaállítás fájlnév-ütközése.
+- NAV bizonytalan-egyeztetés végtelen újra-feldolgozási hurka.
+- NAV végleges státusz-ellenőrzési hiba kezelése.
+- Számlázz.hu transport-bizonytalanság.
+- Termék létrehozás/szerkesztés dupla-beküldés elleni védelem.
+- Dolgozó-létrehozás jogosultsági rése.
+
+### Tested
+- Teljes PHPUnit reguressziós szvit, 3 egymást követő futtatás:
+  330 teszt / 946 assertion / 0 failure / 0 error / 2 skip.
+
 ## 1.0 RC5 (2026-09-09)
 
 ### Hozzáadva

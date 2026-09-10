@@ -131,8 +131,8 @@ befolyásolja a MODIFY/STORNO implementációt.
 **Trigger, ami miatt érdemes lenne elővenni**: ha a napi üzletmenetben
 ténylegesen felmerül a kiállított (NAV-nak beküldött vagy Számlázz.hu-n
 kiállított) számla utólagos javításának/érvénytelenítésének igénye —
-enélkül ez ma tisztán elméleti, a jelenlegi RC-ben nincs éles NAV-fiókon
-kiállított, javítandó számla.
+enélkül ez ma tisztán elméleti, a jelenlegi 1.0 kiadásban nincs éles
+NAV-fiókon kiállított, javítandó számla.
 
 ## NAV Online Számla — Beérkezett számlák: ismert korlátok / jövőbeli bővítés
 

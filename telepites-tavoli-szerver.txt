@@ -257,16 +257,35 @@ porton, hanem a rendes 80/443-on):
 
     * * * * *     curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "https://kassza.pelda.hu/api/auto-sync-run.php" > /dev/null
     */15 * * * *  curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "https://kassza.pelda.hu/api/auto-backup-run.php" > /dev/null
+    * * * * *     curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "https://kassza.pelda.hu/api/nav-queue-run.php" > /dev/null
+    0 * * * *     curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "https://kassza.pelda.hu/api/nav-incoming-sync-run.php" > /dev/null
 
 (A token a Beállítások → Mentés alatt beállítható cron titkos
 tokennel egyezzen — enélkül ezek a végpontok bejelentkezés nélkül
 sose futnának le, cron ugyanis nem tud böngészőben bejelentkezni. A
 token KIZÁRÓLAG az X-Cron-Token fejlécben megy, sose URL-ben/
 query-stringben — egy URL-be írt titok webszerver-/proxy-naplókba
-kerülhetne; a végpont query-string tokent el sem fogad. A
+kerülhetne; egyik végpont sem fogad el query-string tokent. A
 Beállítások oldal a "localhost:8000"-es változatot mutatja
 példaként, mert az a helyi/fejlesztői telepítésre utal — élesben a
-fenti, a saját domained szerinti sort használd, a saját tokeneddel.)
+fenti, a saját domained szerinti sort használd, a saját tokeneddel.
+
+Az utolsó két sor a NAV Online Számla integrációhoz tartozik: a
+nav-queue-run.php a kimenő (a boltban kiállított) számlák NAV felé
+történő tényleges beküldését végzi, a nav-incoming-sync-run.php a
+más adózók által kiállított, beérkező számlák szinkronját. Mindkettő
+önmagától "skipped"-del tér vissza, ha a NAV integráció nincs
+bekapcsolva (Beállítások → Számlázz.hu → "NAV számla queue
+háttér-feldolgozás bekapcsolva" / "NAV bejövő számla sync
+háttér-feldolgozás bekapcsolva") vagy a NAV hitelesítő adatok még
+nincsenek kitöltve — tehát ártalmatlan felvenni akkor is, ha egyelőre
+nem használod a NAV-integrációt. DE ha bekapcsolod a NAV Online Számla
+közvetlen kiállítást, a nav-queue-run.php cron-belépés attól kezdve
+NEM opcionális: enélkül a kiállított NAV-számlák tartósan, látszólag
+hiba nélkül "queued" állapotban maradnak, sose kerülnek ténylegesen
+beküldésre. Egy kimaradt cron-futás egyik NAV-végpontnál sem okoz
+adatvesztést — mindkettő onnan folytatja, ahol a legutóbbi sikeres
+futás abbahagyta.)
 
 
 ---------------------------------------------------------------

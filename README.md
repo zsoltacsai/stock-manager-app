@@ -14,7 +14,8 @@ Beérkező eladások).
 
 ## Követelmények
 
-- PHP 8.1+ (fejlesztve és tesztelve **PHP 8.5** ellen), `curl`,
+- PHP 8.1+ (fejlesztve és tesztelve **PHP 8.3** ellen — ugyanaz a verzió,
+  amit a telepítési útmutató (`install.txt`) is használ), `curl`,
   `xmlwriter`, `fileinfo` kiterjesztésekkel, plusz `pdo_sqlite`
   (alapértelmezett) vagy `pdo_mysql` (ha MySQL-re váltasz — lásd lentebb)
 - A `data/`, `invoices/` és `webroot/assets/` mappáknak írhatónak kell
@@ -165,11 +166,15 @@ pending}` alakú eredményt ad.
 Minden kassza-eladás meghívja a Számlázz.hu Számla Agent XML API-ját
 (`src/SzamlazzClient.php`), hogy valódi számlát állítson ki, és letölti
 a PDF-et az `invoices/` mappába. Ez **szinkron**: a válasz még az
-eladási kérésen belül megérkezik. Ha a számla létrehozása sikertelen
-(pl. hibás agent kulcs, hálózati akadozás), az eladás helyben ekkor is
-rögzítésre kerül `invoice_failed` státusszal, hogy ne vesszen el a
-tranzakció — a számla utólag manuálisan újra kiállítható a Számlázz.hu
-felületén, az adatbázisban lévő eladási adatok alapján.
+eladási kérésen belül megérkezik. Ha a számla létrehozása MEGERŐSÍTETTEN
+sikertelen (pl. hibás agent kulcs — a Számlázz.hu ténylegesen válaszolt
+egy elutasítással), az eladás helyben ekkor is rögzítésre kerül
+`invoice_failed` státusszal, hogy ne vesszen el a tranzakció — a számla
+utólag azonnal, automatikusan újrapróbálható. Ha viszont a hívásra
+EGYÁLTALÁN nem érkezett válasz (hálózati hiba/timeout — nem tudható, a
+Számlázz.hu ténylegesen létrehozta-e a számlát), a sale `invoice_uncertain`
+státuszba kerül, és admin kézi feloldása szükséges — lásd "Ismert,
+tudatosan vállalt maradék korlátok" lentebb.
 
 ### NAV Online Számla
 
@@ -217,7 +222,9 @@ processing (manageInvoice hívás közben timeout — NEM tudni, a NAV
             megkapta-e a kérést) ──► uncertain
                 │
                 ▼ (queryTransactionList-alapú egyeztetés, max 3x)
-     submitted (találat) VAGY uncertain marad (admin beavatkozás)
+     submitted (találat)  VAGY  uncertain_manual (nincs találat 3x után —
+                                VALÓDI terminális állapot, admin kézi
+                                újrapróbálkozása szükséges, lásd lent)
 ```
 
 **Sose küld vak duplikált számlát**: ha a `manageInvoice` hívás
@@ -251,9 +258,15 @@ régen, a queue-tól teljesen függetlenül sikeres volt — csak a
 juk egyre inkább a múltba csúszik. Amint a cron újraindul, a worker a
 KÖVETKEZŐ percben egyszerűen felveszi a fonalat onnan, ahol abbamaradt
 — nincs "elveszett" munka, nincs időkorlát, ameddig a cron
-visszatérhet. (A kivétel a `dead_letter` állapot: az onnan való
+visszatérhet. (A kivétel a `dead_letter` és az `uncertain_manual`
+állapot: mindkettőből VALÓDI terminális állapot, onnan való
 kilábaláshoz admin kézi retry szükséges, `webroot/api/nav-invoice-retry.php`
-— ez szándékos, nem a cron-kimaradás következménye.)
+— ez szándékos, nem a cron-kimaradás következménye. Az `uncertain_manual`
+akkor áll be, ha a bizonytalan kimenetelű kérés
+`queryTransactionList`-alapú egyeztetése 3 próbálkozás után sem tud
+egyértelmű választ adni — a rendszer ekkor SZÁNDÉKOSAN leáll az
+automatikus egyeztetéssel, hogy ne terhelje feleslegesen/korlátlanul a
+NAV API-t, és admin figyelmét kérje.)
 
 **Elavult ("stale") zár helyreállítása**: ha egy worker-futás menet
 közben megszakad (pl. a PHP-folyamat összeomlik egy `manageInvoice`
@@ -1703,19 +1716,31 @@ munkamenetén keresztül férhet hozzá bármelyik nyugtához.
 
 ### Ismert, tudatosan vállalt maradék korlátok
 
-- **Számlázz.hu-számlázás nem garantáltan "pontosan egyszer"**: a
-  helyi adatbázis egy atomikus foglalással (`invoice_claim_at`,
-  90 másodperces elévülési ablak) kizárja, hogy két egyidejű kérés
-  mindkettő ténylegesen kiállítson egy számlát ugyanarra az eladásra —
-  de ha a Számlázz.hu-hívás sikerrel lezajlik, ám a válasz a helyi
-  szerverhez sose ér vissza (hálózati hiba, folyamat-összeomlás), a
-  foglalás előbb-utóbb elévül, és egy manuális újrapróbálkozás
-  EKKOR elméletileg egy második számlát is kiállíthat. A Számlázz.hu
-  Számla Agent API nem kínál idempotencia-kulcsot ennek kiküszöbölésére
-  — ez egy a helyi rendszer és a külső szolgáltatás határán fennálló,
-  csak a szolgáltató oldali dedup-lehetőség hiánya miatt megoldhatatlan
-  rés, amit a kód szándékosan "legalább egyszer", nem "pontosan
-  egyszer" garanciaként dokumentál (lásd `Database::tryClaimInvoiceIssuance()`).
+- **Számlázz.hu-számlázás: transport-bizonytalanság kezelve (P1-5),
+  vak duplikátum-kockázat strukturálisan kizárva.** A helyi adatbázis
+  egy atomikus foglalással (`invoice_claim_at`, 90 másodperces
+  elévülési ablak) kizárja, hogy két egyidejű kérés mindkettő
+  ténylegesen kiállítson egy számlát ugyanarra az eladásra. Egy
+  SzamlazzClient-hívás kétféleképpen bukhat el: (1) a Számlázz.hu
+  ténylegesen VÁLASZOLT (akár elutasítással) — ez egy DEFINITÍV
+  kimenet, biztonságosan `invoice_failed`-ként rögzül, azonnal
+  retry-elhető; (2) a hívásra EGYÁLTALÁN nem érkezett válasz
+  (hálózati hiba/timeout) — ez esetben NEM TUDHATÓ, hogy a Számlázz.hu
+  ténylegesen létrehozta-e a számlát, ezért a sale `invoice_uncertain`
+  állapotba kerül, ami STRUKTURÁLISAN (nem csak az elévülési ablak
+  lejártáig) kizárja a további automatikus próbálkozást — lásd
+  `Database::tryClaimInvoiceIssuance()`/`markSaleInvoiceUncertain()`.
+  Admin a Számlázz.hu felületén ellenőrizve, a "Kimenő számlák" nézet
+  "Feloldás" műveletével (`webroot/api/szamlazz-invoice-resolve-uncertain.php`)
+  zárhatja le manuálisan: vagy megerősíti, hogy nem készült számla
+  (a sale ismét számlázható lesz), vagy rögzíti a ténylegesen
+  megtalált számlaszámot (új kísérlet NÉLKÜL). Maradék, ŐSZINTE
+  KORLÁT: a Számlázz.hu Számla Agent API nem kínál dokumentált,
+  megbízható idempotencia-kulcsot/lekérdezési mechanizmust, amivel a
+  rendszer AUTOMATIKUSAN egyeztethetné a bizonytalan kimenetelt (mint
+  ahogy a NAV-oldal a `queryTransactionList`-tel teszi) — ezért itt a
+  védelem "sose küldj vakon másodikat, kérj admin megerősítést",
+  NEM "automatikusan bizonyítottan pontosan egyszer".
 - **A mentés-titkosítási kulcs nem valódi KMS/HSM** — lásd "Automatikus
   mentések" szakasz.
 - Lásd még: "Üzemmód: Helyi vs. Nyilvános" (a reverse proxy mögötti

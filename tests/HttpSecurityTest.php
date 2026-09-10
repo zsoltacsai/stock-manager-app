@@ -880,6 +880,15 @@ final class HttpSecurityTest extends TestCase
      * listStaff(true) többé nem üres, tehát minden KÉSŐBBI teszt (ebben
      * és a jövőbeli tesztfájlokban, ha ugyanezt a szerverpéldányt bővítik)
      * már a "van dolgozói PIN-rendszer" ágat futtatja.
+     *
+     * A MÁSODIK (cashier) dolgozó felvétele előtt a session PIN-nel
+     * bejelentkezik a frissen létrehozott adminként — ez a P1-4 javítás
+     * ÓTA szükséges: amint van már felvett dolgozó, ÚJ dolgozó
+     * létrehozása (nem csak admin-szerepkör adása/meglévő szerkesztése)
+     * is vezetői jogszintet kér, lásd staff-save.php. (Korábban ez a
+     * lépés kihagyható volt — pontosan ez volt a P1-4 alatt javított
+     * hiba: bármelyik bejelentkezett, nem-admin session is felvehetett
+     * új dolgozót.)
      */
     public function test52_CreateAdminAndCashierStaffForAdminGateTests(): void
     {
@@ -892,10 +901,96 @@ final class HttpSecurityTest extends TestCase
         ], ['X-CSRF-Token' => $csrf], $jar);
         $this->assertSame(200, $admin['status'], 'Az első (admin) dolgozó felvételének sikeresnek kell lennie: ' . $admin['body']);
 
+        $staffLogin = self::request('POST', '/api/staff-login.php', ['pin' => '13579'], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $staffLogin['status'], 'A frissen létrehozott admin PIN-bejelentkezésének sikeresnek kell lennie: ' . $staffLogin['body']);
+
         $cashier = self::request('POST', '/api/staff-save.php', [
             'name' => 'Teszt Pénztáros', 'pin' => '24680', 'role' => 'cashier',
         ], ['X-CSRF-Token' => $csrf], $jar);
-        $this->assertSame(200, $cashier['status'], 'A második (nem-admin) dolgozó felvételének sikeresnek kell lennie: ' . $cashier['body']);
+        $this->assertSame(200, $cashier['status'], 'A második (nem-admin) dolgozó felvételének admin-bejelentkezéssel sikeresnek kell lennie: ' . $cashier['body']);
+    }
+
+    /**
+     * P1-4 regresszió: a staff-save.php korábban CSAK admin-szerepkör
+     * adásakor vagy MEGLÉVŐ dolgozó szerkesztésekor kért vezetői
+     * jogszintet — egy ÚJ, sima "cashier" szerepkörű dolgozó létrehozása
+     * (a leggyakoribb eset) kimaradt a feltételből, tehát bármelyik
+     * bejelentkezett (nem-admin) session korlátlanul fabrikálhatott új
+     * dolgozó-azonosítókat, amint a PIN-rendszer már működésben volt.
+     */
+    public function test52b_StaffSaveRejectsNewStaffCreationFromAuthenticatedNonAdminSession(): void
+    {
+        // Alkalmazás-jelszóval belépve, MAJD a (test52-ben létrehozott)
+        // pénztáros PIN-jével is — tehát bejelentkezett, DE NEM admin.
+        $jar = self::cookieJar('staff-save-cashier-tries-to-create-staff');
+        $login = self::request('POST', '/api/login.php', ['password' => 'nagyon-titkos-jelszo-123'], [], $jar);
+        $this->assertSame(200, $login['status']);
+
+        $staffLogin = self::request('POST', '/api/staff-login.php', ['pin' => '24680'], ['X-CSRF-Token' => $login['json']['csrf_token']], $jar);
+        $this->assertSame(200, $staffLogin['status']);
+        $this->assertSame('cashier', $staffLogin['json']['staff']['role'] ?? null);
+
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        $res = self::request('POST', '/api/staff-save.php', [
+            'name' => 'Csalárd Új Dolgozó', 'pin' => '11223', 'role' => 'cashier',
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(403, $res['status'], 'Nem-admin dolgozói session ne tudjon ÚJ dolgozót létrehozni.');
+        $this->assertStringContainsString('vezetői jogszint', $res['json']['error'] ?? '');
+    }
+
+    public function test52c_StaffSaveRejectsUnauthenticatedNewStaffCreation(): void
+    {
+        $freshJar = self::cookieJar('staff-save-unauthenticated');
+        $res = self::request('POST', '/api/staff-save.php', [
+            'name' => 'Ismeretlen Dolgozó', 'pin' => '99887', 'role' => 'cashier',
+        ], [], $freshJar);
+        $this->assertSame(401, $res['status'], 'Bejelentkezés nélkül a dolgozó-létrehozás ne legyen elérhető.');
+    }
+
+    public function test52d_StaffSaveAllowsNewStaffCreationFromAdminSession(): void
+    {
+        $jar = self::cookieJar('staff-save-admin-creates-staff');
+        $login = self::request('POST', '/api/login.php', ['password' => 'nagyon-titkos-jelszo-123'], [], $jar);
+        $this->assertSame(200, $login['status']);
+
+        $staffLogin = self::request('POST', '/api/staff-login.php', ['pin' => '13579'], ['X-CSRF-Token' => $login['json']['csrf_token']], $jar);
+        $this->assertSame(200, $staffLogin['status']);
+        $this->assertSame('admin', $staffLogin['json']['staff']['role'] ?? null);
+
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        $res = self::request('POST', '/api/staff-save.php', [
+            'name' => 'Admin Által Felvett Dolgozó', 'pin' => '55443', 'role' => 'cashier',
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $res['status'], 'Admin session-nek új dolgozót kell tudnia felvennie: ' . $res['body']);
+    }
+
+    /**
+     * "Editing existing staff follows existing intended rules" — ez a
+     * viselkedés NEM változott a P1-4 javítással (a meglévő dolgozó
+     * szerkesztése már korábban is vezetői jogszintet kért), csak
+     * explicit regresszióként rögzítjük.
+     */
+    public function test52e_StaffSaveStillRejectsEditingExistingStaffFromNonAdminSession(): void
+    {
+        $jar = self::cookieJar('staff-save-cashier-tries-to-edit');
+        $login = self::request('POST', '/api/login.php', ['password' => 'nagyon-titkos-jelszo-123'], [], $jar);
+        $this->assertSame(200, $login['status']);
+
+        $staffLogin = self::request('POST', '/api/staff-login.php', ['pin' => '24680'], ['X-CSRF-Token' => $login['json']['csrf_token']], $jar);
+        $this->assertSame(200, $staffLogin['status']);
+        $cashierId = $staffLogin['json']['staff']['id'];
+
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        $res = self::request('POST', '/api/staff-save.php', [
+            'id' => $cashierId, 'name' => 'Átnevezett Saját Magam',
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(403, $res['status'], 'Nem-admin session ne tudjon MEGLÉVŐ dolgozó-rekordot szerkeszteni (ez már a javítás előtt is védve volt).');
     }
 
     public function test53_BackupRestoreRejectsAuthenticatedNonAdminStaff(): void

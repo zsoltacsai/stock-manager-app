@@ -22,6 +22,22 @@ class BackupManager
         return $this->driver === 'mysql' ? 'sql' : 'sqlite';
     }
 
+    /**
+     * A `date('Ymd_His')` mintájú fájlnév csak 1 másodperc felbontású — két
+     * mentés (pl. egy visszaállítás előtti biztonsági mentés és a
+     * ténylegesen visszaállítandó fájl) ugyanabban a másodpercben azonos
+     * névre futhatott ki, és a később írt felülírta a korábbit, a
+     * visszaállítás forrásfájlát is beleértve (empirikusan reprodukálva —
+     * lásd restoreFromFile()). A backupDir-en belül egyedi, fájlrendszer-
+     * biztonságos nevet ad, amit a hívó ELŐRE, még bármilyen írás előtt
+     * elkérhet, hogy egy ütközést a tényleges mentés elkészítése ELŐTT
+     * ki lehessen zárni (lásd restoreFromFile() explicit védelme).
+     */
+    private function generateBackupFilename(): string
+    {
+        return 'stockmanager_backup_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . $this->extension();
+    }
+
     // ------------------------------------------------------------------
     // Titkosítás nyugalmi állapotban (encryption at rest). A mentés
     // TARTALMAZZA a data/settings.json-t (lásd backupSettingsSidecar()),
@@ -157,9 +173,9 @@ class BackupManager
         return $encFilename;
     }
 
-    private function createSqliteSnapshot(): string
+    private function createSqliteSnapshot(?string $filename = null): string
     {
-        $filename = 'stockmanager_backup_' . date('Ymd_His') . '.sqlite';
+        $filename = $filename ?? $this->generateBackupFilename();
         $destination = $this->backupDir . '/' . $filename;
 
         $pdo = new PDO('sqlite:' . $this->dbConfig['sqlite']['path']);
@@ -201,9 +217,9 @@ class BackupManager
         return $base . '.settings.json';
     }
 
-    private function createMysqlSnapshot(): string
+    private function createMysqlSnapshot(?string $filename = null): string
     {
-        $filename = 'stockmanager_backup_' . date('Ymd_His') . '.sql';
+        $filename = $filename ?? $this->generateBackupFilename();
         $destination = $this->backupDir . '/' . $filename;
         $m = $this->dbConfig['mysql'];
 
@@ -343,13 +359,44 @@ class BackupManager
         }
     }
 
+    /**
+     * P0-2 explicit védelme: soha ne írjuk felül a visszaállítás
+     * forrásfájlját a visszaállítás-előtti biztonsági mentéssel. Önálló,
+     * mellékhatás-mentes metódus, hogy közvetlenül, determinisztikusan
+     * tesztelhető legyen (lásd BackupManagerTest.php) — nem csak közvetve,
+     * a teljes restoreFromFile()-on és a véletlen fájlnév-generáláson
+     * keresztül.
+     */
+    private function ensureSafetyBackupFilenameDoesNotCollideWithSource(string $safetyBackupEncFilename, string $sourcePath): void
+    {
+        if ($safetyBackupEncFilename === basename($sourcePath)) {
+            throw new RuntimeException(
+                'Belső hiba: a biztonsági mentés fájlneve egybeesne a visszaállítandó forrásfájléval — ' .
+                'a visszaállítás megszakítva, mielőtt bármi íródott volna a lemezre. Próbáld újra.'
+            );
+        }
+    }
+
     public function restoreFromFile(string $sourcePath): array
     {
         if (!is_file($sourcePath)) {
             throw new RuntimeException('A visszaállítandó fájl nem található.');
         }
 
-        $safetyBackupPlain = $this->driver === 'mysql' ? $this->createMysqlSnapshot() : $this->createSqliteSnapshot();
+        // Explicit védelem: a biztonsági mentés végleges (titkosított) neve
+        // MÉG BÁRMILYEN ÍRÁS ELŐTT előre generálódik, hogy egy esetleges
+        // névütközést a visszaállítandó forrásfájllal itt, korán ki lehessen
+        // zárni — a fenti generateBackupFilename() önmagában is gyakorlatilag
+        // kizárja az ütközést (időbélyeg + véletlen utótag), de ez a
+        // konkrét, explicit ellenőrzés akkor is megvédi a forrást, ha ez
+        // valaha mégis megváltozna.
+        $safetyBackupFilename = $this->generateBackupFilename();
+        $safetyBackupEncFilename = $safetyBackupFilename . '.enc';
+        $this->ensureSafetyBackupFilenameDoesNotCollideWithSource($safetyBackupEncFilename, $sourcePath);
+
+        $safetyBackupPlain = $this->driver === 'mysql'
+            ? $this->createMysqlSnapshot($safetyBackupFilename)
+            : $this->createSqliteSnapshot($safetyBackupFilename);
         $safetyBackup = $this->encryptSnapshotFiles($safetyBackupPlain);
 
         // Visszafelé kompatibilis: a data/backups mappából kiválasztott

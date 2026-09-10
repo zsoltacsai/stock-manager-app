@@ -220,11 +220,12 @@ d) Nyomtatás:
 8. AUTOMATIKUS FELADATOK (opcionális)
 ---------------------------------------------------------------
 
-Az automatikus WooCommerce-szinkron és az automatikus napi biztonsági
-mentés csak akkor fut le ténylegesen a háttérben, ha valami rendszeresen
-"megkopogtatja" — a beépített PHP szerver magától nem ébred fel. Ehhez
-a Windows Feladatütemezőben (Task Scheduler) hozz létre két ismétlődő
-feladatot, amik ezt futtatják:
+Az automatikus WooCommerce-szinkron, az automatikus napi biztonsági
+mentés, ÉS a NAV Online Számla kimenő/bejövő feldolgozása csak akkor
+fut le ténylegesen a háttérben, ha valami rendszeresen "megkopogtatja"
+— a beépített PHP szerver magától nem ébred fel. Ehhez a Windows
+Feladatütemezőben (Task Scheduler) hozz létre ismétlődő feladatokat,
+amik ezt futtatják:
 
   Szinkron (percenként elég):
     curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "http://localhost:8000/api/auto-sync-run.php"
@@ -232,19 +233,48 @@ feladatot, amik ezt futtatják:
   Biztonsági mentés (15 percenként elég):
     curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "http://localhost:8000/api/auto-backup-run.php"
 
-A token a Beállítások → Mentés alatt beállítható cron titkos
-tokennel egyezzen — enélkül ez a két végpont bejelentkezés nélkül
-sose futna le (a Feladatütemező nem tud böngészőben bejelentkezni).
-A token KIZÁRÓLAG az X-Cron-Token fejlécben megy, sose URL-ben/
-query-stringben (egy URL-be írt titok könnyen bekerülhetne
-naplókba/előzményekbe) — a végpont query-string tokent el sem fogad.
+  NAV kimenő számla-queue (javasolt: percenként):
+    curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "http://localhost:8000/api/nav-queue-run.php"
 
-Mindkettő ártalmatlan, ha gyakrabban hívod, mint kell — az endpoint
+  NAV bejövő számla-szinkron (javasolt: óránként):
+    curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "http://localhost:8000/api/nav-incoming-sync-run.php"
+
+Mind a négy végpont ugyanazt a hitelesítést használja: a token a
+Beállítások → Mentés alatt beállítható cron titkos tokennel egyezzen
+— enélkül egyik végpont se futna le bejelentkezés nélkül (a
+Feladatütemező nem tud böngészőben bejelentkezni). A token KIZÁRÓLAG
+az X-Cron-Token fejlécben megy, sose URL-ben/query-stringben (egy
+URL-be írt titok könnyen bekerülhetne naplókba/előzményekbe) — egyik
+végpont sem fogad el query-string tokent.
+
+Mindegyik ártalmatlan, ha gyakrabban hívod, mint kell — az endpoint
 saját maga dönti el, hogy tényleg esedékes-e a futás, és "skipped"-del
-tér vissza, ha még nem.
+tér vissza, ha még nem (a NAV-végpontok pl. akkor is, ha a NAV
+integráció ki van kapcsolva, vagy a NAV-hitelesítő adatok még nincsenek
+kitöltve).
+
+FONTOS a NAV kimenő queue-hoz (nav-queue-run.php): ha a Beállítások →
+Számlázz.hu fülön bekapcsolod a NAV Online Számla közvetlen kiállítást
+(`invoice_provider = nav`, "NAV számla queue háttér-feldolgozás
+bekapcsolva"), ez a cron-feladat NEM opcionális — enélkül
+a kiállított NAV-számlák csak "queued" állapotban maradnak a
+adatbázisban, SOSE kerülnek ténylegesen beküldésre a NAV felé, tartósan
+és látszólag hiba nélkül. Ha kimarad egy-egy cron-futás (pl. a gép ki
+volt kapcsolva), nincs adatvesztés — a soron következő futás egyszerűen
+folytatja onnan, ahol tartott (a `next_attempt_at`/backoff-ütemezés
+szerint esedékes sorokat dolgozza fel); egy régen beragadt, összeomlott
+worker zárja (10 percnél régebbi `processing`-állapot) automatikusan
+újra feldolgozhatóvá válik a következő futáskor.
+
+A NAV bejövő szinkronhoz (nav-incoming-sync-run.php) hasonlóan: ha
+kimarad egy-két óránkénti futás, a szinkron-kurzor a legutóbbi sikeres
+állapotnál marad, és a következő futás onnan folytatja — a NAV 35 napos
+lekérdezési-ablak korlátja miatt egy hosszan kimaradt szinkron több
+cron-tick alatt éri utol magát, adatvesztés nélkül, csak késéssel.
 
 A tényleges gyakoriságot/be- és kikapcsolást a Beállítások →
-Szinkronizálás és Beállítások → Mentés füleken állíthatod be.
+Szinkronizálás, Beállítások → Mentés és Beállítások → Számlázz.hu
+füleken állíthatod be.
 
 
 ---------------------------------------------------------------

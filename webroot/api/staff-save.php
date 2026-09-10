@@ -18,13 +18,21 @@ if (!empty($input['pin']) && !preg_match('/^\d{4,8}$/', (string) $input['pin']))
     send_json(['error' => 'A PIN-kód 4-8 számjegy legyen.'], 400);
 }
 
-// Admin szerepkör adása vagy egy meglévő dolgozó szerkesztése (pl. PIN
-// visszaállítása) vezetői jogszintet kér — de csak akkor, ha már van
-// felvéve dolgozó (ha a PIN-rendszer még be sincs üzemelve, az első
-// dolgozó felvétele szabadon engedélyezett).
-$requestedRole = ($input['role'] ?? 'cashier') === 'admin' ? 'admin' : 'cashier';
-$privileged = $requestedRole === 'admin' || !empty($input['id']);
-if ($privileged && $db->listStaff(true) && !$db->isStaffAdmin(Auth::currentStaffId())) {
+// Admin szerepkör adása, egy meglévő dolgozó szerkesztése (pl. PIN
+// visszaállítása), VAGY ÚJ dolgozó felvétele — MIND vezetői jogszintet
+// kér, amint a PIN-rendszer ténylegesen üzembe lett helyezve (van már
+// legalább egy felvett dolgozó, aktív vagy inaktív). Ha a PIN-rendszer
+// még be sincs üzemelve (még egyetlen dolgozó sincs felvéve), az ELSŐ
+// dolgozó felvétele szabadon engedélyezett — enélkül a bootstrap
+// lehetetlen lenne (senki nem lenne admin, aki jóváhagyhatná az elsőt).
+//
+// P1-4 javítás: korábban ez a védelem CSAK admin-szerepkör adására és
+// MEGLÉVŐ dolgozó szerkesztésére vonatkozott ("privileged" külön
+// számítva) — egy ÚJ, sima "cashier" szerepkörű dolgozó létrehozása (a
+// leggyakoribb eset) kimaradt a feltételből, tehát bármelyik
+// bejelentkezett (nem admin) felhasználó korlátlanul fabrikálhatott új
+// dolgozó-azonosítókat, akár a PIN-rendszer már működésben volt is.
+if ($db->listStaff(true) && !$db->isStaffAdmin(Auth::currentStaffId())) {
     send_json(['error' => 'Ehhez vezetői jogszint szükséges.'], 403);
 }
 

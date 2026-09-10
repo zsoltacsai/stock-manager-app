@@ -165,12 +165,29 @@ class NavInvoiceQueueWorker
                     $summary['still_pending']++;
                     break;
 
-                case 'retry':
                 case 'permanent':
+                    // P1-1 javítás: egy VÉGLEGES (nem-újrapróbálandó) hiba a
+                    // queryTransactionStatus-hívás SORÁN (pl. időközben
+                    // visszavont/érvénytelenített NAV hitelesítő adat) korábban
+                    // csendben visszakerült 'submitted'-re, a last_error-t
+                    // NULL-ra törölve — a számla ezután egy teljesen
+                    // egészséges, feldolgozás alatt álló számlától
+                    // megkülönböztethetetlennek TŰNT, miközben valójában
+                    // véglegesen elakadt, örökké pollozva, admin számára
+                    // láthatatlanul. Terminális 'failed'-re vált, a last_error
+                    // MEGMARAD (diagnosztikai kontextus), admin kézi
+                    // újrapróbálkozással indíthatja újra (lásd
+                    // resetInvoiceForManualRetry()).
+                    $this->db->markInvoiceFailed((int) $row['id'], (string) ($result['error'] ?? 'A NAV állapot-lekérdezése végleges hibát adott vissza.'));
+                    $summary['failed']++;
+                    break;
+
+                case 'retry':
                 default:
-                    // Egy queryTransactionStatus-hívás hibája (hálózat/timeout)
-                    // sose vezet 'uncertain'-re (nincs mellékhatása) — vissza
-                    // 'submitted'-re, rövid késleltetéssel újra esedékes.
+                    // Egy queryTransactionStatus-hívás ÁTMENETI hibája
+                    // (hálózat/timeout/5xx) sose vezet 'uncertain'-re (nincs
+                    // mellékhatása) — vissza 'submitted'-re, rövid
+                    // késleltetéssel újra esedékes.
                     $this->db->markInvoiceSubmitted(
                         (int) $row['id'],
                         (string) $row['provider_ref'],
@@ -214,8 +231,13 @@ class NavInvoiceQueueWorker
                 // A bounded egyeztetési kísérletek kimerültek — innentől
                 // csakis admin-kezdeményezett kézi feloldás (lásd
                 // Database::resetInvoiceForManualRetry()), SOSE automatikus
-                // vak manageInvoice-újraküldés.
-                $this->db->markInvoiceUncertain((int) $row['id'], (string) ($result['error'] ?? ''), null, $attempts);
+                // vak manageInvoice-újraküldés. VALÓDI terminális állapotba
+                // kerül ('uncertain_manual'), NEM 'uncertain'-be NULL
+                // next_attempt_at-tal — az utóbbi a claim-lekérdezés
+                // szerint "azonnal esedékes"-nek számított, ami végtelen,
+                // öngerjesztő újra-feldolgozáshoz vezetett (P0-3, lásd
+                // Database::markInvoiceUncertainManual() docblockja).
+                $this->db->markInvoiceUncertainManual((int) $row['id'], (string) ($result['error'] ?? ''), $attempts);
                 $summary['gave_up']++;
                 continue;
             }

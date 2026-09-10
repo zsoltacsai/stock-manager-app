@@ -301,6 +301,140 @@ final class NavInvoiceQueueWorkerTest extends TestCase
         $this->assertSame(0, $statusChecks['claimed']);
     }
 
+    // ---- P0-3: uncertain-recovery kimerülés -> VALÓDI terminális állapot ----
+
+    /**
+     * A P0-3 hiba reprodukciója és javításának bizonyítása: korábban a
+     * kimerült egyeztetési kísérletek után a sor 'uncertain' maradt, NULL
+     * next_attempt_at-tal, amit a claim-lekérdezés "azonnal esedékes"-ként
+     * értelmezett — a sor emiatt MINDEN további worker-futásban újra
+     * claim-elődött és újra feldolgozódott, korlátlan NAV API-forgalmat
+     * okozva. Ez a teszt pontosan a MAX_UNCERTAIN_RECOVERY_ATTEMPTS (3)
+     * kimerítéséig futtatja a recovery-t, majd bizonyítja, hogy: a sor
+     * VALÓDI terminális állapotba ('uncertain_manual') kerül, a
+     * next_attempt_at NULL marad (de a claim ettől függetlenül sem találja
+     * meg, mert a státusz maga nincs a jogosult-listában), a last_error
+     * megmarad, PONTOSAN 3 queryTransactionList-hívás történt (egy sem a
+     * kimerülés UTÁN, sem ugyanabban, sem egy KÖVETKEZŐ worker-futásban),
+     * és admin kézi újrapróbálkozással a sor visszaállítható.
+     */
+    public function testUncertainRecoveryExhaustionBecomesTerminalAndIsNeverReclaimedAgain(): void
+    {
+        $db = tests_new_database();
+        $saleId = $db->insertSale(1270.0, 'Készpénz');
+        $bootstrapProvider = $this->providerWith(fn () => ['status' => 200, 'body' => '']);
+        $bootstrapProvider->enqueue($db, $saleId, $this->sampleContext());
+        $row = $db->findInvoiceBySaleAndProvider($saleId, 'nav');
+        $db->pdo()->exec("UPDATE invoices SET status = 'uncertain', attempts = 0, next_attempt_at = datetime('now', '-1 minute') WHERE id = " . (int) $row['id']);
+
+        $listCallCount = 0;
+        $tokenBody = $this->tokenExchangeSuccessBody();
+        // Egy queryTransactionList-válasz, ami SOSE talál egyező tranzakciót
+        // -- az egyeztetés minden alkalommal 'still_uncertain'-t ad vissza.
+        $emptyListBody = '<?xml version="1.0"?><QueryTransactionListResponse xmlns:common="http://schemas.nav.gov.hu/NTCA/1.0/common" xmlns="http://schemas.nav.gov.hu/OSA/3.0/api">'
+            . '<common:result><funcCode>OK</funcCode></common:result>'
+            . '<transactionListResult><currentPage>1</currentPage><availablePage>1</availablePage></transactionListResult>'
+            . '</QueryTransactionListResponse>';
+        $transport = function (string $url) use ($tokenBody, $emptyListBody, &$listCallCount) {
+            if (str_contains($url, 'tokenExchange')) return ['status' => 200, 'body' => $tokenBody];
+            if (str_contains($url, 'queryTransactionList')) { $listCallCount++; return ['status' => 200, 'body' => $emptyListBody]; }
+            return ['status' => 500, 'body' => ''];
+        };
+        $clientFactory = fn () => new NavClient($this->fakeNavConfig(), $transport);
+        $provider = new NavInvoiceProvider($this->fakeNavConfig(), $this->fakeSupplierConfig(), new NavTokenCache(sys_get_temp_dir() . '/sm_navtoken_test_' . bin2hex(random_bytes(6)) . '.json'), $clientFactory);
+        $worker = new NavInvoiceQueueWorker($db, $provider);
+
+        // 1. és 2. próbálkozás -- MÉG marad 'uncertain' (a MAX=3 alatt).
+        $db->pdo()->exec("UPDATE invoices SET next_attempt_at = datetime('now', '-1 minute') WHERE id = " . (int) $row['id']);
+        $s1 = $worker->processDueUncertainRecovery();
+        $this->assertSame(1, $s1['still_uncertain']);
+        $mid1 = $db->getInvoiceById((int) $row['id']);
+        $this->assertSame('uncertain', $mid1['status']);
+        $this->assertSame(1, (int) $mid1['attempts']);
+
+        $db->pdo()->exec("UPDATE invoices SET next_attempt_at = datetime('now', '-1 minute') WHERE id = " . (int) $row['id']);
+        $s2 = $worker->processDueUncertainRecovery();
+        $this->assertSame(1, $s2['still_uncertain']);
+        $mid2 = $db->getInvoiceById((int) $row['id']);
+        $this->assertSame('uncertain', $mid2['status']);
+        $this->assertSame(2, (int) $mid2['attempts']);
+
+        // 3. próbálkozás -- a bounded kísérletek KIMERÜLNEK.
+        $db->pdo()->exec("UPDATE invoices SET next_attempt_at = datetime('now', '-1 minute') WHERE id = " . (int) $row['id']);
+        $s3 = $worker->processDueUncertainRecovery();
+        $this->assertSame(1, $s3['gave_up']);
+
+        $final = $db->getInvoiceById((int) $row['id']);
+        $this->assertSame('uncertain_manual', $final['status'], 'A kimerült egyeztetésnek VALÓDI terminális állapotba kell kerülnie.');
+        $this->assertSame(3, (int) $final['attempts']);
+        $this->assertNull($final['next_attempt_at']);
+        $this->assertNotEmpty($final['last_error'], 'A diagnosztikai hibaüzenetnek meg kell maradnia admin számára.');
+        $this->assertSame(3, $listCallCount, 'Pontosan 3 queryTransactionList-hívás -- egy sem a kimerülés UTÁN.');
+
+        // UGYANEBBEN a worker-példányban egy azonnali újabb hívás NEM
+        // claim-eli újra ugyanazt a sort (a mai cron-tick nem ismétli).
+        $sameRunAgain = $worker->processDueUncertainRecovery();
+        $this->assertSame(0, $sameRunAgain['claimed'], 'A kimerült sor ugyanabban a futásban se claim-elhető újra.');
+        $this->assertSame(3, $listCallCount, 'A kimerülés utáni claim-kísérlet nem indíthat újabb NAV-hívást.');
+
+        // Egy KÖVETKEZŐ cron-hívás (új worker-példány) se nyúl hozzá -- ez
+        // volt pontosan a P0-3 végtelen ciklusa.
+        $nextCronWorker = new NavInvoiceQueueWorker($db, $provider);
+        $nextRun = $nextCronWorker->processDueUncertainRecovery();
+        $this->assertSame(0, $nextRun['claimed'], 'A következő cron-futás se claim-elheti újra a kimerült sort.');
+        $this->assertSame(3, $listCallCount, 'A "következő cron-futás" se indíthat újabb NAV queryTransactionList-hívást.');
+
+        // Admin kézi újrapróbálkozása visszaállítja 'queued'-ra.
+        $manualReset = $db->resetInvoiceForManualRetry((int) $row['id']);
+        $this->assertTrue($manualReset, 'Adminnak kézzel újra kell tudnia próbálni egy kimerült uncertain_manual sort.');
+        $afterReset = $db->getInvoiceById((int) $row['id']);
+        $this->assertSame('queued', $afterReset['status']);
+        $this->assertSame(0, (int) $afterReset['attempts']);
+    }
+
+    // ---- P1-1: végleges hiba a státusz-ellenőrzés SORÁN ----
+
+    /**
+     * A P1-1 hiba reprodukciója és javításának bizonyítása: korábban egy
+     * queryTransactionStatus-hívás VÉGLEGES (nem-újrapróbálandó) hibája
+     * (pl. időközben visszavont NAV hitelesítő adat) csendben visszakerült
+     * 'submitted'-re, a last_error-t NULL-ra törölve — a számla ezután egy
+     * teljesen egészséges, feldolgozás alatt álló számlától
+     * megkülönböztethetetlennek TŰNT, örökké pollozva, admin számára
+     * láthatatlanul.
+     */
+    public function testPermanentStatusCheckFailurePreservesErrorAndStopsPolling(): void
+    {
+        $db = tests_new_database();
+        $submitProvider = $this->providerWith(fn () => ['status' => 200, 'body' => $this->envelopeBody('OK', ['transactionId' => 'TXN1'])]);
+        $row = $this->enqueueSale($db, $submitProvider);
+
+        $worker = new NavInvoiceQueueWorker($db, $submitProvider);
+        $worker->processDueSubmissions();
+        $submitted = $db->getInvoiceById((int) $row['id']);
+        $this->assertSame('submitted', $submitted['status']);
+
+        // A státusz-ellenőrzés VÉGLEGES, nem-újrapróbálandó hibát ad
+        // vissza (pl. időközben visszavont hitelesítő adat).
+        $db->pdo()->exec("UPDATE invoices SET next_attempt_at = datetime('now', '-1 minute') WHERE id = " . (int) $row['id']);
+        $permanentProvider = $this->providerWith(fn () => ['status' => 401, 'body' => $this->envelopeBody('ERROR', [], 'INVALID_SECURITY_USER')]);
+        $worker2 = new NavInvoiceQueueWorker($db, $permanentProvider);
+        $summary = $worker2->processDueStatusChecks();
+
+        $this->assertSame(1, $summary['claimed']);
+        $this->assertSame(1, $summary['failed'], 'Egy végleges státusz-ellenőrzési hibának a "failed" számlálót kell növelnie, NEM a "retried"-et.');
+        $this->assertSame(0, $summary['retried']);
+
+        $final = $db->getInvoiceById((int) $row['id']);
+        $this->assertSame('failed', $final['status'], 'Terminális "failed" állapotba kell kerülnie, NEM csendben visszakerülnie "submitted"-re.');
+        $this->assertNotEmpty($final['last_error'], 'A last_error-nak MEG KELL maradnia -- ez volt pontosan a P1-1 hibája.');
+
+        // A soron TÖBBÉ NEM fut le automatikus pollozás -- a claim
+        // ('submitted' állapotokra szűkítve) nem is találja meg.
+        $again = $worker2->processDueStatusChecks();
+        $this->assertSame(0, $again['claimed'], 'Egy terminálisan "failed" sort a státusz-ellenőrzés claim-je nem szabad újra megtalálnia.');
+    }
+
     // ---- Manual retry ----
 
     public function testManualRetryResetsFailedInvoiceToQueued(): void

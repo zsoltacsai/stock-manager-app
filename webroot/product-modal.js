@@ -283,7 +283,8 @@ window.ProductModal = (function () {
         modal.classList.remove('open');
     });
 
-    document.getElementById('product-modal-save').addEventListener('click', async () => {
+    const productModalSaveBtn = document.getElementById('product-modal-save');
+    productModalSaveBtn.addEventListener('click', async () => {
         if (!pName.value.trim()) {
             feedback.textContent = 'A megnevezés kötelező.';
             feedback.className = 'modal-feedback error';
@@ -295,6 +296,11 @@ window.ProductModal = (function () {
             return;
         }
 
+        // P1-3 javítás: dupla kattintás (pl. lassú hálózat alatt türelmetlen
+        // újra-kattintás) korábban két külön terméket hozott létre, mert a
+        // gomb a kérés alatt is kattintható maradt — lásd a szerver-oldali
+        // védelmi réteget is: Database::saveProduct() docblokkja.
+        productModalSaveBtn.disabled = true;
         feedback.textContent = 'Mentés...';
         feedback.className = 'modal-feedback';
 
@@ -349,6 +355,8 @@ window.ProductModal = (function () {
         } catch (err) {
             feedback.textContent = 'Hiba: ' + err.message;
             feedback.className = 'modal-feedback error';
+        } finally {
+            productModalSaveBtn.disabled = false;
         }
     });
 

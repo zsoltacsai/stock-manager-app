@@ -74,6 +74,66 @@ konkrét séma eldőlt.
 mielőtt `invoice_provider='nav'` valódi, éles (nem teszt-rendszerű)
 NAV-fiókkal, valódi vevőknek kiállított számlákra bekapcsolásra kerül.
 
+## Számla MÓDOSÍTÁS és SZTORNÓ (NAV + Számlázz.hu) — 1.1-re halasztva
+
+**2026-09-09-én egy részletes ("Phase 8") specifikáció érkezett** a kimenő
+számlák utólagos módosítására (módosító számla) és érvénytelenítésére
+(sztornó) — mind NAV Online Számla, mind Számlázz.hu felé. Mivel a
+projekt 2026-09-05 óta **1.0 RC feature freeze**-ben van (lásd
+CHANGELOG.md / a projekt szabálya: csak hibajavítás, új funkció csak
+kifejezett jóváhagyással), ez a kör **nem indult el** — a specifikáció
+lényegi pontjai itt kerülnek rögzítésre, hogy 1.1-ben újra elővehető
+legyen kódolás nélküli újratervezés nélkül.
+
+**Előfeltétel**: mielőtt ez a kör elindul, a fenti "NAV Online Számla —
+production előtti nyitott döntési pont: számlaszám-generálás" szakaszban
+leírt számlaszám-kérdést véglegesíteni kell — a módosító/sztornó számla
+is saját, önálló sorszámot kap, tehát a numbering-döntés közvetlenül
+befolyásolja a MODIFY/STORNO implementációt.
+
+**A specifikáció fő pontjai** (rövidítve, a teljes szöveg a
+2026-09-09-i beszélgetésben található):
+
+- **Architektúra**: a meglévő `InvoiceService` rétegen KERESZTÜL, nem
+  megkerülve; provider-specifikus logika NEM kerülhet `sale.php`-ba —
+  `NavInvoiceProvider` és `SzamlazzInvoiceProvider` kapja a tényleges
+  MODIFY/STORNO műveletet, a meglévő Számlázz.hu-kliens/architektúra
+  újrahasználásával (nem egy második, párhuzamos rendszer).
+- **NAV MODIFY/STORNO**: a hivatalos NAV Online Számla API szerinti
+  módosítás/sztornó-művelet, a `manageInvoice` meglévő mintájára — az
+  eredeti számla SOSE íródik felül, a kapcsolat (`original_invoice_id`
+  vagy ezzel egyenértékű explicit FK, NEM számlaszám-string-parszolás)
+  az adatbázisban tárolandó.
+- **Adatmodell**: a számla ÉLETCIKLUS-állapota (queued/submitted/
+  processing/done/failed/uncertain/dead_letter) és az ÜZLETI TÍPUSA
+  (normal/modification/storno) két KÜLÖN mező — nem szabad egy
+  státuszmezőbe összemosni.
+- **Idempotencia**: dupla kattintás a "Sztornó"-ra vagy egy timeout
+  utáni retry NEM hozhat létre két sztornó/módosító számlát — stabil
+  művelet-azonosító szükséges, ugyanaz az elv, mint a meglévő
+  NAV-queue race-safe claim-mechanizmusánál.
+- **Jogosultság**: MODIFY/STORNO csak admin jogosultsággal, minden
+  állapotváltó végpont POST + auth + CSRF, GET mutation tilos — a
+  meglévő `require_admin()` mintára.
+- **UI**: a "Kimenő számlák" részletnézetében "Módosító számla" /
+  "Sztornó számla" gombok, csak akkor látszanak, ha az adott
+  számla/provider/állapot mellett érvényes a művelet, megerősítő
+  dialógussal (visszafordíthatatlan pénzügyi művelet SOHA egyetlen
+  véletlen kattintásra ne történjen meg).
+- **NAV uncertain-recovery kiterjesztése**: a meglévő tranzakció-
+  helyreállítási logikának úgy kell bővülnie, hogy egy MODIFY/STORNO
+  timeout utáni helyreállítás SOSE hozzon létre tévedésből egy
+  CREATE-et (vagy fordítva).
+- **Tesztelés**: valódi NAV sandbox teszt normál/módosító/sztornó
+  számlára, a meglévő 300+ tesztes reguressziós szvit háromszori
+  lefuttatása, konkurrencia-teszt két egyidejű sztornó-kérésre.
+
+**Trigger, ami miatt érdemes lenne elővenni**: ha a napi üzletmenetben
+ténylegesen felmerül a kiállított (NAV-nak beküldött vagy Számlázz.hu-n
+kiállított) számla utólagos javításának/érvénytelenítésének igénye —
+enélkül ez ma tisztán elméleti, a jelenlegi RC-ben nincs éles NAV-fiókon
+kiállított, javítandó számla.
+
 ## NAV Online Számla — Beérkezett számlák: ismert korlátok / jövőbeli bővítés
 
 A bejövő (más adózók által kiállított) számlák NAV-szinkronja

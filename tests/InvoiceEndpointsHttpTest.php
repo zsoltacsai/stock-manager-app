@@ -386,4 +386,89 @@ final class InvoiceEndpointsHttpTest extends TestCase
         $this->assertStringContainsString('SZ-2026-TEST-1', $res['body']);
         $this->assertStringContainsString('SM-NAV-2026-TEST-2', $res['body']);
     }
+
+    // -----------------------------------------------------------------
+    // P1-5: szamlazz-invoice-resolve-uncertain.php — HTTP-szintű auth/CSRF
+    // -----------------------------------------------------------------
+
+    /** Egy friss 'invoice_uncertain' állapotú sale-t hoz létre, a SHARED teszt-sqlite fájlon. */
+    private static function createUncertainSale(): int
+    {
+        $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => self::$root . '/data/stock.sqlite']], self::$root);
+        $saleId = $db->insertSale(1270.0, 'Készpénz');
+        $db->markSaleInvoiceUncertain($saleId, 'Teszt: szimulált transport-hiba');
+        return $saleId;
+    }
+
+    public function testResolveUncertainRequiresLogin(): void
+    {
+        $freshJar = self::cookieJar('resolve-uncertain-no-login');
+        $res = self::request('POST', '/api/szamlazz-invoice-resolve-uncertain.php', ['sale_id' => 1], [], $freshJar);
+        $this->assertSame(401, $res['status']);
+    }
+
+    public function testResolveUncertainRequiresCsrfToken(): void
+    {
+        $saleId = self::createUncertainSale();
+        // Bejelentkezve, DE X-CSRF-Token fejléc nélkül -- a globális
+        // CSRF-védelemnek (lásd _bootstrap.php) el kell utasítania, mielőtt
+        // bármi az üzleti logikáig eljutna.
+        $res = self::request('POST', '/api/szamlazz-invoice-resolve-uncertain.php', ['sale_id' => $saleId], [], self::$loggedInJar);
+        $this->assertSame(403, $res['status']);
+    }
+
+    public function testResolveUncertainRejectsMissingSaleId(): void
+    {
+        $status = self::request('GET', '/api/auth-status.php', null, [], self::$loggedInJar);
+        $csrf = $status['json']['csrf_token'];
+
+        $res = self::request('POST', '/api/szamlazz-invoice-resolve-uncertain.php', ['sale_id' => 0], ['X-CSRF-Token' => $csrf], self::$loggedInJar);
+        $this->assertSame(400, $res['status']);
+    }
+
+    public function testResolveUncertainReturns404ForNonexistentSale(): void
+    {
+        $status = self::request('GET', '/api/auth-status.php', null, [], self::$loggedInJar);
+        $csrf = $status['json']['csrf_token'];
+
+        $res = self::request('POST', '/api/szamlazz-invoice-resolve-uncertain.php', ['sale_id' => 9999999], ['X-CSRF-Token' => $csrf], self::$loggedInJar);
+        $this->assertSame(404, $res['status']);
+    }
+
+    public function testResolveUncertainRejectsSaleNotInUncertainState(): void
+    {
+        $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => self::$root . '/data/stock.sqlite']], self::$root);
+        $completedSaleId = $db->insertSale(1270.0, 'Készpénz'); // sima 'completed' állapotú, sose volt uncertain.
+
+        $status = self::request('GET', '/api/auth-status.php', null, [], self::$loggedInJar);
+        $csrf = $status['json']['csrf_token'];
+
+        $res = self::request('POST', '/api/szamlazz-invoice-resolve-uncertain.php', ['sale_id' => $completedSaleId], ['X-CSRF-Token' => $csrf], self::$loggedInJar);
+        $this->assertSame(409, $res['status']);
+    }
+
+    public function testResolveUncertainWithoutInvoiceNumberResetsToCompleted(): void
+    {
+        $saleId = self::createUncertainSale();
+        $status = self::request('GET', '/api/auth-status.php', null, [], self::$loggedInJar);
+        $csrf = $status['json']['csrf_token'];
+
+        $res = self::request('POST', '/api/szamlazz-invoice-resolve-uncertain.php', ['sale_id' => $saleId], ['X-CSRF-Token' => $csrf], self::$loggedInJar);
+        $this->assertSame(200, $res['status'], $res['body']);
+        $this->assertSame('completed', $res['json']['sale']['status'] ?? null);
+        $this->assertArrayHasKey('szamlazz_invoice_number', $res['json']['sale'] ?? []);
+        $this->assertNull($res['json']['sale']['szamlazz_invoice_number']);
+    }
+
+    public function testResolveUncertainWithInvoiceNumberRecordsItWithoutRetrying(): void
+    {
+        $saleId = self::createUncertainSale();
+        $status = self::request('GET', '/api/auth-status.php', null, [], self::$loggedInJar);
+        $csrf = $status['json']['csrf_token'];
+
+        $res = self::request('POST', '/api/szamlazz-invoice-resolve-uncertain.php', ['sale_id' => $saleId, 'invoice_number' => 'SZ-2026-HTTP-FOUND'], ['X-CSRF-Token' => $csrf], self::$loggedInJar);
+        $this->assertSame(200, $res['status'], $res['body']);
+        $this->assertSame('completed', $res['json']['sale']['status'] ?? null);
+        $this->assertSame('SZ-2026-HTTP-FOUND', $res['json']['sale']['szamlazz_invoice_number'] ?? null);
+    }
 }

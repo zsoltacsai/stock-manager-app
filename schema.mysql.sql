@@ -142,8 +142,11 @@ CREATE TABLE IF NOT EXISTS sales (
     staff_id                 INT UNSIGNED NULL,
     szamlazz_invoice_number  VARCHAR(64) NULL,
     szamlazz_pdf_path        VARCHAR(255) NULL,
-    status                   VARCHAR(32) NOT NULL DEFAULT 'completed',
+    status                   VARCHAR(32) NOT NULL DEFAULT 'completed', -- completed | invoice_failed | invoice_uncertain
     receipt_token            VARCHAR(64) NULL,
+    idempotency_key          VARCHAR(64) NULL,
+    idempotency_fingerprint  VARCHAR(64) NULL,
+    invoice_claim_at         DATETIME NULL,
     created_at               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     -- The daily zárás report filters by date on every load — this index is
     -- the difference between a table scan and an index range seek once
@@ -152,6 +155,7 @@ CREATE TABLE IF NOT EXISTS sales (
     KEY idx_sales_customer_id (customer_id),
     KEY idx_sales_coupon_id (coupon_id),
     KEY idx_sales_staff_id (staff_id),
+    UNIQUE KEY uq_sales_idempotency_key (idempotency_key),
     CONSTRAINT fk_sales_customer FOREIGN KEY (customer_id) REFERENCES customers(id),
     CONSTRAINT fk_sales_coupon FOREIGN KEY (coupon_id) REFERENCES coupons(id),
     CONSTRAINT fk_sales_staff FOREIGN KEY (staff_id) REFERENCES staff(id)

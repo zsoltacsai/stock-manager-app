@@ -1440,6 +1440,25 @@ class Database
             return (int) $p['id'];
         }
 
+        // P1-3 javítás: egy dupla kattintás (vagy egy elveszett válasz utáni
+        // automatikus kliens-oldali újrapróbálkozás) két, TARTALMILAG AZONOS
+        // "új termék" kérést küldhetett be — a barcode-dal rendelkező esetet
+        // a hívó (webroot/api/product-save.php) MÁR véd a meglévő
+        // findProductByBarcode()-ellenőrzéssel, DE barcode NÉLKÜL (a
+        // leggyakoribb eset egy gyors termékfelvitelnél) semmi nem
+        // akadályozta meg, hogy két azonos INSERT lefusson. Ez EGY, kis,
+        // gyakorlati védelmi vonal (NEM egy teljes idempotencia-kulcs-
+        // architektúra, mint sale.php-nál) — ŐSZINTE KORLÁT: SELECT-majd-
+        // INSERT, tehát NEM atomikus két, ténylegesen egyidejű (néhány
+        // ezredmásodpercen belüli) kérésre; AZT a réteget a kliens-oldali
+        // gombletiltás adja (lásd product-modal.js). Ez a réteg a
+        // GYAKORLATBAN releváns, néhány másodperces időablakon belüli,
+        // tartalmilag azonos ismételt beküldést fedi le.
+        $recentDuplicateId = $this->findRecentlyCreatedIdenticalProduct($p);
+        if ($recentDuplicateId !== null) {
+            return $recentDuplicateId;
+        }
+
         $stmt = $this->pdo->prepare('
             INSERT INTO products (
                 name, unit, group_name, cikkszam, vtsz, barcode, currency,
@@ -1455,6 +1474,37 @@ class Database
         ');
         $stmt->execute($this->productParams($p, $now));
         return (int) $this->pdo->lastInsertId();
+    }
+
+    /** @see saveProduct() a hívási hely docblokkjáért (P1-3, pontos indoklás/korlát). */
+    private function findRecentlyCreatedIdenticalProduct(array $p): ?int
+    {
+        $stmt = $this->pdo->prepare('
+            SELECT id, updated_at FROM products
+            WHERE name = :name AND unit = :unit AND currency = :currency
+              AND ROUND(net_price, 2) = ROUND(:net_price, 2)
+              AND ROUND(price, 2) = ROUND(:price, 2)
+            ORDER BY id DESC
+            LIMIT 1
+        ');
+        $stmt->execute([
+            ':name'      => $p['name'],
+            ':unit'      => ($p['unit'] ?? '') ?: 'db',
+            ':currency'  => ($p['currency'] ?? '') ?: 'HUF',
+            ':net_price' => (float) $p['net_price'],
+            ':price'     => (float) $p['price'],
+        ]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row === false || empty($row['updated_at'])) {
+            return null;
+        }
+
+        $updatedAtTs = strtotime((string) $row['updated_at']);
+        if ($updatedAtTs === false || (time() - $updatedAtTs) > 5) {
+            return null;
+        }
+
+        return (int) $row['id'];
     }
 
     private function productParams(array $p, string $now): array
@@ -1765,29 +1815,101 @@ class Database
      * egy ténylegesen még folyamatban lévő, csak lassú hívást ne
      * előzhessen meg egy türelmetlen újrapróbálkozás.
      *
-     * FONTOS, DOKUMENTÁLT KORLÁT: ez a foglalás csak azt garantálja, hogy
-     * a HELYI adatbázisban csak egy kérés kezdhet bele a Számlázz.hu
-     * hívásba. Ha a hívás ténylegesen elindul, de a VÁLASZ vész el
-     * (hálózati hiba a kérés UTÁN), a Számlázz.hu oldalán a számla
-     * elkészülhetett, miközben a helyi állapot "sikertelen"-t vagy
-     * "elévült foglalás"-t mutat, és egy újrapróbálkozás ismét kiállítana
-     * egy MÁSODIK számlát — ez a helyi-DB ↔ külső-szolgáltatás határ
-     * elkerülhetetlen rése, amit a Számlázz.hu Számla Agent API nem kínál
-     * idempotencia-kulcsot a kiküszöbölésére (csak a szamlaKulsoAzon
-     * mezőt, ami NEM garantált egyedi-kiállítási védelem a dokumentáció
-     * szerint). "Legalább egyszer" garantált, "pontosan egyszer" nem.
+     * FONTOS, DOKUMENTÁLT KORLÁT (P1-5 ÓTA RÉSZLEGESEN KEZELVE): ez a
+     * foglalás csak azt garantálja, hogy a HELYI adatbázisban csak egy
+     * kérés kezdhet bele a Számlázz.hu hívásba. Ha a hívás ténylegesen
+     * elindul, de a VÁLASZ vész el (hálózati hiba a kérés UTÁN), a
+     * Számlázz.hu oldalán a számla elkészülhetett, miközben a helyi
+     * állapot bizonytalan — a Számlázz.hu Számla Agent API nem kínál
+     * idegazolt, dokumentált idempotencia-kulcsot a kiküszöbölésére
+     * (csak a szamlaKulsoAzon mezőt, ami NEM garantált egyedi-kiállítási
+     * védelem a dokumentáció szerint). EMIATT egy ilyen VALÓDI, transport-
+     * szintű hiba (a kérésre EGYÁLTALÁN nem érkezett válasz) NEM vezet
+     * automatikus retry-hoz — a hívó (SzamlazzInvoiceProvider::issueSync())
+     * a sale-t 'invoice_uncertain' állapotba teszi
+     * (markSaleInvoiceUncertain()), amit az alábbi WHERE-feltétel
+     * STRUKTURÁLISAN kizár az újra-claim-elésből, amíg admin kézzel fel
+     * nem oldja (resolveUncertainSzamlazzInvoice()) — "vakon SOSE küld
+     * második számlát" immár garantált, a korábbi "elévült foglalás utáni
+     * automatikus újrapróbálkozás" kockázat helyett.
      */
     public function tryClaimInvoiceIssuance(int $saleId, int $staleAfterSeconds = 90): bool
     {
         $staleBefore = date('Y-m-d H:i:s', time() - $staleAfterSeconds);
-        $stmt = $this->pdo->prepare('
+        $stmt = $this->pdo->prepare("
             UPDATE sales
             SET invoice_claim_at = :now
             WHERE id = :id
               AND szamlazz_invoice_number IS NULL
+              AND status != 'invoice_uncertain'
               AND (invoice_claim_at IS NULL OR invoice_claim_at < :staleBefore)
-        ');
+        ");
         $stmt->execute([':now' => date('Y-m-d H:i:s'), ':id' => $saleId, ':staleBefore' => $staleBefore]);
+        return $stmt->rowCount() > 0;
+    }
+
+    /**
+     * P1-5: a Számlázz.hu-hívás VÁLASZA elveszett (transport-szintű hiba
+     * — pl. hálózati timeout, a kérés talán megérkezett, talán nem), tehát
+     * NEM TUDHATÓ, hogy a számla ténylegesen kiállításra került-e. A sor
+     * 'invoice_uncertain' állapotba kerül — lásd tryClaimInvoiceIssuance()
+     * docblockja a strukturális garanciáért (nincs automatikus retry).
+     */
+    public function markSaleInvoiceUncertain(int $saleId, string $error): void
+    {
+        $this->pdo->prepare("UPDATE sales SET status = 'invoice_uncertain', invoice_claim_at = NULL WHERE id = ?")
+            ->execute([$saleId]);
+    }
+
+    /**
+     * Admin-kezdeményezett kézi feloldás egy 'invoice_uncertain' sorra —
+     * csak ilyen állapotból engedélyezett (atomikus, feltételes UPDATE).
+     * KÉT lehetséges kimenet:
+     *   - $foundInvoiceNumber KITÖLTVE: az admin a Számlázz.hu felületén
+     *     ellenőrizve MEGTALÁLTA a ténylegesen kiállított számlát — a
+     *     sale ettől rögzül számlázottnak, ÚJ kísérlet NÉLKÜL (a
+     *     duplikátum-kockázat itt sose merül fel, mert nem hívjuk újra
+     *     a Számlázz.hu-t).
+     *   - $foundInvoiceNumber NULL: az admin megerősítette, hogy NEM
+     *     készült számla — a sor visszaáll 'completed'-re, a KÖVETKEZŐ
+     *     normál számlázási kísérlet (pl. a webshop-order-invoice.php
+     *     újbóli meghívása) ismét megpróbálhatja.
+     *
+     * A `sales` mellett a szolgáltató-független `invoices` TÜKÖR-sort is
+     * rendezi (lásd upsertInvoiceMirror() docblokkja) — enélkül a "Kimenő
+     * számlák" nézet a feloldás UTÁN is a régi "uncertain_manual" badge-et
+     * mutatná, holott a helyi állapot már rendezve van.
+     */
+    public function resolveUncertainSzamlazzInvoice(int $saleId, ?string $foundInvoiceNumber): bool
+    {
+        if ($foundInvoiceNumber !== null && $foundInvoiceNumber !== '') {
+            $stmt = $this->pdo->prepare("
+                UPDATE sales SET szamlazz_invoice_number = ?, status = 'completed', invoice_claim_at = NULL
+                WHERE id = ? AND status = 'invoice_uncertain'
+            ");
+            $stmt->execute([$foundInvoiceNumber, $saleId]);
+            if ($stmt->rowCount() > 0) {
+                $this->pdo->prepare("
+                    UPDATE invoices SET status = 'done', invoice_number = ?, issued_at = ?, last_error = NULL, updated_at = ?
+                    WHERE sale_id = ? AND provider = 'szamlazz'
+                ")->execute([$foundInvoiceNumber, date('Y-m-d H:i:s'), date('Y-m-d H:i:s'), $saleId]);
+            }
+        } else {
+            $stmt = $this->pdo->prepare("
+                UPDATE sales SET status = 'completed', invoice_claim_at = NULL
+                WHERE id = ? AND status = 'invoice_uncertain'
+            ");
+            $stmt->execute([$saleId]);
+            if ($stmt->rowCount() > 0) {
+                // Nem tudjuk, hogy KÉSZÜLT-e számla, admin megerősítette,
+                // hogy nem — a tükör-sor ettől kezdve semmilyen aktív
+                // problémát nem ír le (a sale ismét "friss, még nem
+                // számlázott" állapotú), ezért törlődik, NEM egy hamis
+                // "failed"/"done" státusszal marad a UI-ban.
+                $this->pdo->prepare("DELETE FROM invoices WHERE sale_id = ? AND provider = 'szamlazz' AND status = 'uncertain_manual'")
+                    ->execute([$saleId]);
+            }
+        }
         return $stmt->rowCount() > 0;
     }
 
@@ -1834,9 +1956,17 @@ class Database
         float $netTotal,
         float $vatTotal,
         float $grossTotal,
-        string $currency
+        string $currency,
+        ?string $statusOverride = null
     ): void {
-        $status = $success ? 'done' : 'failed';
+        // $statusOverride (P1-5): bizonytalan kimenetelű (transport-hiba
+        // utáni) kísérletnél sem 'done', sem sima 'failed' nem pontos — az
+        // 'uncertain_manual' érték (ugyanaz a szóhasználat, mint a NAV
+        // kimerült-egyeztetés terminális állapotánál, lásd
+        // markInvoiceUncertainManual()) jelzi a "Kimenő számlák" UI-nak,
+        // hogy admin kézi feloldása szükséges, NEM egy sima, egyszerűen
+        // újrapróbálható hiba.
+        $status = $statusOverride ?? ($success ? 'done' : 'failed');
         $now = date('Y-m-d H:i:s');
         $issuedAt = $success ? $now : null;
 
@@ -1908,7 +2038,7 @@ class Database
     public const INVOICE_STATUS_BUCKETS = [
         'done' => ['done'],
         'pending' => ['queued', 'processing', 'processing_status_check', 'processing_uncertain_recovery', 'submitted'],
-        'failed' => ['failed', 'dead_letter', 'uncertain'],
+        'failed' => ['failed', 'dead_letter', 'uncertain', 'uncertain_manual'],
     ];
 
     /**
@@ -2196,19 +2326,45 @@ class Database
     }
 
     /**
+     * P0-3 javítás: a bounded queryTransactionList-alapú egyeztetési
+     * kísérletek (lásd NavInvoiceQueueWorker::MAX_UNCERTAIN_RECOVERY_ATTEMPTS)
+     * KIMERÜLTEK — VALÓDI terminális állapot, NEM 'uncertain' NULL
+     * next_attempt_at-tal. Az utóbbi látszólag ártalmatlan volt, de a
+     * claimUncertainInvoiceForRecovery() (lásd claimInvoiceRow()) a NULL
+     * next_attempt_at-ot "azonnal esedékes"-ként értelmezte, tehát a sor
+     * MINDEN további workerfutás alatt újra claim-elődött és újra
+     * feldolgozódott — végtelen, öngerjesztő NAV API-forgalmat okozva
+     * (empirikusan reprodukálva). A 'uncertain_manual' állapot NINCS benne
+     * egyetlen claim-hívás jogosult-állapot listájában sem (lásd
+     * claimUncertainInvoiceForRecovery()) — tehát STRUKTURÁLISAN
+     * kizárt az automatikus újra-feldolgozás, nem csak egy konkrét
+     * időbélyeg-értéken múlik. A last_error és attempts MEGMARAD
+     * (diagnosztikai kontextus admin számára), NEM törlődik.
+     */
+    public function markInvoiceUncertainManual(int $id, string $error, int $attempts): void
+    {
+        $this->pdo->prepare("
+            UPDATE invoices
+            SET status = 'uncertain_manual', last_error = ?, next_attempt_at = NULL, locked_at = NULL, attempts = ?, updated_at = ?
+            WHERE id = ?
+        ")->execute([$error, $attempts, date('Y-m-d H:i:s'), $id]);
+    }
+
+    /**
      * Admin-kezdeményezett kézi újrapróbálkozás — csak terminális
-     * (failed/dead_letter/uncertain) állapotból engedélyezett, atomikusan
-     * (a feltételes UPDATE WHERE-je zárja ki, hogy egy épp folyamatban
-     * lévő — 'processing'/'submitted'/'queued'/'done' — sort megzavarjon).
-     * Nullázza az attempts-et — az operátor szándéka egy TELJESEN friss
-     * próbálkozás, nem a kimerült backoff folytatása.
+     * (failed/dead_letter/uncertain/uncertain_manual) állapotból
+     * engedélyezett, atomikusan (a feltételes UPDATE WHERE-je zárja ki,
+     * hogy egy épp folyamatban lévő — 'processing'/'submitted'/'queued'/
+     * 'done' — sort megzavarjon). Nullázza az attempts-et — az operátor
+     * szándéka egy TELJESEN friss próbálkozás, nem a kimerült backoff
+     * folytatása.
      */
     public function resetInvoiceForManualRetry(int $id): bool
     {
         $stmt = $this->pdo->prepare("
             UPDATE invoices
             SET status = 'queued', attempts = 0, next_attempt_at = NULL, locked_at = NULL, last_error = NULL, updated_at = ?
-            WHERE id = ? AND status IN ('failed', 'dead_letter', 'uncertain')
+            WHERE id = ? AND status IN ('failed', 'dead_letter', 'uncertain', 'uncertain_manual')
         ");
         $stmt->execute([date('Y-m-d H:i:s'), $id]);
         return $stmt->rowCount() > 0;

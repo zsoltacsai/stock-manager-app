@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS sales (
     staff_id                 INTEGER REFERENCES staff(id),
     szamlazz_invoice_number  TEXT,
     szamlazz_pdf_path        TEXT,
-    status                   TEXT NOT NULL DEFAULT 'completed', -- completed | invoice_failed
+    status                   TEXT NOT NULL DEFAULT 'completed', -- completed | invoice_failed | invoice_uncertain (P1-5: Számlázz.hu transport-hiba, admin feloldása szükséges)
     receipt_token            TEXT,                  -- kitalálhatatlan token a nyugta bejelentkezés nélküli megtekintéséhez (QR-kód)
     idempotency_key          TEXT,                  -- kliens-generált kulcs, duplikált eladás (dupla kattintás/újrapróbálkozás) elleni védelemhez — lásd Database::insertSale()
     idempotency_fingerprint  TEXT,                  -- a kérés üzletileg releváns mezőinek sha256-hash-e — ugyanaz a kulcs, de eltérő ujjlenyomat esetén 409 Conflict, lásd sale.php build_sale_fingerprint()

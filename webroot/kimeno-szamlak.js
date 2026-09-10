@@ -20,7 +20,7 @@ const fmt = (n) => new Intl.NumberFormat('hu-HU').format(Math.round(Number(n) ||
 const STATUS_BUCKETS = {
     done: ['done'],
     pending: ['queued', 'processing', 'processing_status_check', 'processing_uncertain_recovery', 'submitted'],
-    failed: ['failed', 'dead_letter', 'uncertain'],
+    failed: ['failed', 'dead_letter', 'uncertain', 'uncertain_manual'],
 };
 
 function statusBucket(status) {
@@ -55,6 +55,7 @@ function statusDetailText(status) {
     const texts = {
         dead_letter: 'Ismételt próbálkozás kimerült — admin kézi újrapróbálkozása szükséges.',
         uncertain: 'Bizonytalan kimenetel — a rendszer egyezteti a NAV-val, hogy a korábbi kérés megérkezett-e.',
+        uncertain_manual: 'Bizonytalan kimenetel — az automatikus egyeztetés kimerült, a rendszer TÖBBÉ NEM próbálkozik automatikusan. Admin kézi újrapróbálkozása szükséges (lásd az alábbi hibaüzenetet).',
         failed: 'A NAV/Számlázz.hu véglegesen elutasította a számlát.',
         queued: 'A számla be van ütemezve, hamarosan beküldésre kerül.',
         processing: 'A számla beküldése éppen folyamatban van.',
@@ -139,7 +140,15 @@ async function openDetail(id) {
             ${inv.pdf_path
                 ? `<a href="/api/invoice-pdf.php?id=${inv.id}" target="_blank" class="btn btn-secondary" style="width:100%; margin-top:8px; display:block; text-align:center;">PDF megtekintése</a>`
                 : '<p class="muted" style="margin-top:8px;">Nincs elmentett PDF ehhez a számlához.</p>'}
-            ${bucket === 'failed' ? '<p class="muted" style="margin-top:8px;">A számla manuális újraküldése a Számlázz.hu felületén történik.</p>' : ''}
+            ${bucket === 'failed' && inv.status !== 'uncertain_manual' ? '<p class="muted" style="margin-top:8px;">A számla manuális újraküldése a Számlázz.hu felületén történik.</p>' : ''}
+            ${inv.status === 'uncertain_manual' ? `
+                <div style="margin-top:8px; padding:10px; border:1px solid var(--border); border-radius:8px;">
+                    <p class="muted" style="margin:0 0 8px;">Ellenőrizd a Számlázz.hu felületén, hogy készült-e számla ehhez az eladáshoz, majd oldd fel a bizonytalan állapotot:</p>
+                    <input type="text" id="szamlazz-resolve-invoice-number" placeholder="Számlaszám, ha TALÁLTÁL egyet (üresen hagyva: nem készült számla)" style="margin-bottom:8px;">
+                    <button class="btn btn-primary" id="szamlazz-resolve-btn" style="width:100%;">Feloldás</button>
+                    <p id="szamlazz-resolve-feedback" class="modal-feedback"></p>
+                </div>
+            ` : ''}
         ` : '<p class="muted" style="margin-top:8px;">Nincs PDF (NAV-számla — a NAV Online Számla API-nak nincs PDF-fogalma).</p>';
 
         detailContent.innerHTML = `
@@ -181,6 +190,37 @@ async function openDetail(id) {
                     feedback.textContent = 'Hiba: ' + err.message;
                     feedback.className = 'modal-feedback error';
                     retryBtn.disabled = false;
+                }
+            });
+        }
+
+        const resolveBtn = document.getElementById('szamlazz-resolve-btn');
+        if (resolveBtn) {
+            resolveBtn.addEventListener('click', async () => {
+                resolveBtn.disabled = true;
+                const feedback = document.getElementById('szamlazz-resolve-feedback');
+                feedback.textContent = 'Feloldás...';
+                feedback.className = 'modal-feedback';
+                const invoiceNumber = document.getElementById('szamlazz-resolve-invoice-number').value.trim();
+                try {
+                    const resolveRes = await fetch('/api/szamlazz-invoice-resolve-uncertain.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sale_id: inv.sale_id, invoice_number: invoiceNumber }),
+                    });
+                    const resolveData = await resolveRes.json();
+                    if (!resolveRes.ok) throw new Error(resolveData.error || 'ismeretlen hiba');
+                    // Ha nem volt megadott számlaszám, a tükör-sor törlődött
+                    // (lásd Database::resolveUncertainSzamlazzInvoice()) — a
+                    // részletnézet újratöltése emiatt itt szándékosan
+                    // NEM történik meg (404-et adna), csak a lista frissül,
+                    // a modal bezárásával.
+                    detailModal.classList.remove('open');
+                    loadInvoices();
+                } catch (err) {
+                    feedback.textContent = 'Hiba: ' + err.message;
+                    feedback.className = 'modal-feedback error';
+                    resolveBtn.disabled = false;
                 }
             });
         }

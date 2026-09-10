@@ -42,6 +42,89 @@ final class DatabaseTest extends TestCase
         $this->assertSame(3, (int) $sale['items'][0]['qty']);
     }
 
+    // ------------------------------------------------------------------
+    // P1-3 regresszió: a termék-felvitel/szerkesztő modal dupla kattintás
+    // (vagy egy elveszett válasz utáni ismételt beküldés) ellen korábban
+    // sem kliens-, sem szerver-oldali védelem nem volt — két külön
+    // terméksor jött létre. A kliens-oldali gombletiltást (product-
+    // modal.js) itt nem lehet egységtesztelni (nincs böngésző), de a
+    // szerver-oldali, tartalom- és időablak-alapú védelmet (lásd
+    // Database::saveProduct()/findRecentlyCreatedIdenticalProduct())
+    // igen — ez a réteg pontosan a hálózati-újrapróbálkozás jellegű
+    // duplikátumot fedi le.
+    // ------------------------------------------------------------------
+
+    public function testRapidDuplicateProductCreateReturnsSameProductNotADuplicate(): void
+    {
+        $db = tests_new_database();
+        $payload = $this->sampleProduct(['name' => 'Duplikátum Teszt Termék', 'barcode' => null]);
+
+        $firstId = $db->saveProduct($payload);
+        // Ugyanaz a tartalom, SZINTE azonnal újra beküldve -- pontosan
+        // egy dupla kattintás vagy egy gyors hálózati újrapróbálkozás
+        // szimulációja.
+        $secondId = $db->saveProduct($payload);
+
+        $this->assertSame($firstId, $secondId, 'Egy azonnali, tartalmilag azonos ismételt beküldésnek a MEGLÉVŐ terméket kell visszaadnia, nem egy másodikat létrehoznia.');
+
+        $stmt = $db->pdo()->prepare('SELECT COUNT(*) FROM products WHERE name = ?');
+        $stmt->execute(['Duplikátum Teszt Termék']);
+        $this->assertSame(1, (int) $stmt->fetchColumn(), 'Pontosan EGY terméksornak szabad létrejönnie, nem kettőnek.');
+    }
+
+    public function testProductCreateWithDifferentContentIsNeverTreatedAsDuplicate(): void
+    {
+        $db = tests_new_database();
+        $firstId = $db->saveProduct($this->sampleProduct(['name' => 'Termék A', 'price' => 1270]));
+        $secondId = $db->saveProduct($this->sampleProduct(['name' => 'Termék B', 'price' => 1270]));
+
+        $this->assertNotSame($firstId, $secondId, 'Két, TARTALMÁBAN eltérő (más néven) termék sose vonódhat össze.');
+
+        $count = (int) $db->pdo()->query('SELECT COUNT(*) FROM products')->fetchColumn();
+        $this->assertSame(2, $count);
+    }
+
+    public function testLegitimateSecondIdenticalProductAfterTheDeduplicationWindowIsCreatedSeparately(): void
+    {
+        $db = tests_new_database();
+        $payload = $this->sampleProduct(['name' => 'Ismételt Termék Később', 'barcode' => null]);
+        $firstId = $db->saveProduct($payload);
+
+        // Szimuláljuk, hogy ténylegesen eltelt a néhány másodperces
+        // dedup-ablak (pl. az operátor tudatosan, később hoz létre egy
+        // MÁSODIK, azonos nevű/árú terméket) -- ez NEM lehet örökre
+        // letiltva, csak a valóban azonnali duplikátum ellen véd.
+        $db->pdo()->exec("UPDATE products SET updated_at = datetime('now', '-1 hour') WHERE id = " . (int) $firstId);
+
+        $secondId = $db->saveProduct($payload);
+
+        $this->assertNotSame($firstId, $secondId, 'A dedup-időablakon TÚL egy tudatos, ismételt létrehozásnak ténylegesen új sort kell eredményeznie.');
+
+        $stmt = $db->pdo()->prepare('SELECT COUNT(*) FROM products WHERE name = ?');
+        $stmt->execute(['Ismételt Termék Később']);
+        $this->assertSame(2, (int) $stmt->fetchColumn());
+    }
+
+    public function testProductUpdateIsNeverAffectedByDuplicateCreateGuard(): void
+    {
+        // A védelem KIZÁRÓLAG új (id nélküli) termékre vonatkozik -- egy
+        // meglévő termék normál, ismételt mentése (pl. csak egy mezőt
+        // módosítva, majd rögtön újra menteni) sose ütközhet ebbe.
+        $db = tests_new_database();
+        $id = $db->saveProduct($this->sampleProduct(['name' => 'Szerkesztett Termék']));
+
+        $updatedId1 = $db->saveProduct($this->sampleProduct(['id' => $id, 'name' => 'Szerkesztett Termék', 'notes' => 'v1']));
+        $updatedId2 = $db->saveProduct($this->sampleProduct(['id' => $id, 'name' => 'Szerkesztett Termék', 'notes' => 'v2']));
+
+        $this->assertSame($id, $updatedId1);
+        $this->assertSame($id, $updatedId2);
+        $product = $db->findProductById($id);
+        $this->assertSame('v2', $product['notes']);
+
+        $count = (int) $db->pdo()->query('SELECT COUNT(*) FROM products')->fetchColumn();
+        $this->assertSame(1, $count, 'Egy meglévő termék ismételt mentése sose hozhat létre új sort.');
+    }
+
     public function testDecrementStockAllowsNegative(): void
     {
         // Az app szándékosan engedi a túlértékesítést (lásd README) — a

@@ -4,7 +4,7 @@ declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 
 // A NAV-számla queue kézi újrapróbálkozása érzékeny — csak terminális
-// (failed/dead_letter/uncertain) állapotú sorra engedélyezett, és
+// (failed/dead_letter/uncertain/uncertain_manual) állapotú sorra engedélyezett, és
 // vezetői jogszintet igényel (lásd require_admin() docblockja), ugyanúgy,
 // mint a Beállítások bármely más módosítása. A CSRF-védelem a normál,
 // nem-cron végpontokra vonatkozó általános szabály szerint automatikusan
@@ -27,7 +27,7 @@ if (!$invoice || $invoice['provider'] !== 'nav') {
 
 $reset = $db->resetInvoiceForManualRetry($id);
 if (!$reset) {
-    send_json(['error' => 'Csak sikertelen (failed/dead_letter/uncertain) állapotú bejegyzés próbálható újra manuálisan — ez a bejegyzés jelenleg "' . $invoice['status'] . '" állapotban van.'], 409);
+    send_json(['error' => 'Csak sikertelen (failed/dead_letter/uncertain/uncertain_manual) állapotú bejegyzés próbálható újra manuálisan — ez a bejegyzés jelenleg "' . $invoice['status'] . '" állapotban van.'], 409);
 }
 
 send_json(['ok' => true, 'invoice' => $db->getInvoiceById($id)]);

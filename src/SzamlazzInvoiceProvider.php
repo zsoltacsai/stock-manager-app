@@ -41,6 +41,23 @@ class SzamlazzInvoiceProvider implements InvoiceProviderInterface
         $db = $context['db'];
         $saleId = (int) $context['sale_id'];
 
+        // P1-5: ha egy KORÁBBI kísérlet bizonytalan kimenetellel zárult
+        // (a Számlázz.hu válasza elveszett — lásd lent), a sale
+        // 'invoice_uncertain' állapotban van, és tryClaimInvoiceIssuance()
+        // STRUKTURÁLISAN kizárja az automatikus újra-claim-elést. Ez az
+        // előzetes ellenőrzés csak egy világosabb, specifikus hibaüzenetet
+        // ad — a tényleges védelmet a claim WHERE-feltétele adja, ez az
+        // olvasás csupán advisory (ugyanaz az elv, mint a queue-claim
+        // mintáknál máshol az appban).
+        $sale = $db->getSaleWithItems($saleId);
+        if ($sale !== null && ($sale['status'] ?? '') === 'invoice_uncertain') {
+            return [
+                'success' => false, 'invoice_number' => null, 'pdf_path' => null,
+                'error' => 'A korábbi számlázási kísérlet kimenetele bizonytalan (a Számlázz.hu válasza elveszett) — admin kézi ellenőrzése/feloldása szükséges, mielőtt új kísérlet indulhatna.',
+                'uncertain' => true,
+            ];
+        }
+
         // Atomikus foglalás a Számlázz.hu hívás ELŐTT — lásd
         // Database::tryClaimInvoiceIssuance() docblockja. Ugyanaz a minta,
         // mint korábban közvetlenül a hívó végpontokban volt.
@@ -65,12 +82,42 @@ class SzamlazzInvoiceProvider implements InvoiceProviderInterface
                 $context['payment_method'] ?? null
             );
         } catch (Throwable $e) {
-            $result = ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => $e->getMessage()];
+            // P1-5, KULCSFONTOSSÁGÚ MEGKÜLÖNBÖZTETÉS: a SzamlazzClient
+            // KIZÁRÓLAG akkor dob kifelé (lásd SzamlazzClient::postXml()),
+            // ha a HTTP-hívásra EGYÁLTALÁN nem érkezett válasz (curl-szintű
+            // transport-hiba) — minden EGYÉB kimenetet (sikeres kiállítás,
+            // VAGY a Számlázz.hu által explicit visszautasított kérés,
+            // szlahu_error fejléccel) egy sima, visszaadott tömbként közöl
+            // (lásd handleResponse()), sose kivétellel. Egy idekerülő
+            // kivétel tehát MINDIG "nem tudni, a Számlázz.hu megkapta-e a
+            // kérést" — NEM szabad ugyanúgy kezelni, mint egy megerősített
+            // elutasítást (a korábbi hiba pontosan ez volt: mindkettő
+            // csendben 'invoice_failed'-ként végződött, ami azonnali
+            // automatikus újrapróbálkozást engedett, és egy elveszett-
+            // válaszos esetben VALÓS duplikált számlát kockáztatott).
+            $db->markSaleInvoiceUncertain($saleId, $e->getMessage());
+            try {
+                $totals = $context['totals'] ?? [];
+                $db->upsertInvoiceMirror(
+                    $saleId, 'szamlazz', false, null, null, $e->getMessage(),
+                    (float) ($totals['net'] ?? 0.0), (float) ($totals['vat'] ?? 0.0),
+                    (float) ($totals['gross'] ?? 0.0), (string) ($totals['currency'] ?? 'HUF'),
+                    'uncertain_manual'
+                );
+            } catch (Throwable $mirrorError) {
+                // Lásd lent — a tükör-bejegyzés írási hibája sose írhatja
+                // felül a fő eredményt.
+            }
+            return [
+                'success' => false, 'invoice_number' => null, 'pdf_path' => null,
+                'error' => $e->getMessage(), 'uncertain' => true,
+            ];
         }
 
-        // attachInvoiceToSale() sikertelenség esetén is felszabadítja a
-        // fenti foglalást (invoice_claim_at = NULL), engedve egy azonnali
-        // manuális újrapróbálkozást a felületről — változatlan viselkedés.
+        // Ide csak a KÉT DEFINITÍV kimenet jut el: sikeres kiállítás, vagy
+        // a Számlázz.hu által ténylegesen megválaszolt (tehát megerősítve
+        // ELUTASÍTOTT) kérés — mindkettő biztonságosan retry-elhető, ha
+        // sikertelen, mert TUDJUK, hogy nem jött létre számla.
         $db->attachInvoiceToSale(
             $saleId,
             $result['invoice_number'] ?? null,

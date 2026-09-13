@@ -50,8 +50,8 @@ if (!filter_var($smtpConfig['from_email'], FILTER_VALIDATE_EMAIL)) {
     send_json(['error' => 'Érvénytelen "Feladó email" cím.'], 400);
 }
 
-$subject = 'Stock Manager — teszt email';
-$html = '<div style="font-family:Arial,sans-serif;"><h2>Stock Manager</h2><p>Ez egy teszt email az SMTP beállítások ellenőrzéséhez.</p><p>Ha ezt megkaptad, az SMTP kapcsolat, hitelesítés és a kézbesítés rendben működik.</p></div>';
+$subject = 'FountainTrade — teszt email';
+$html = '<div style="font-family:Arial,sans-serif;"><h2>FountainTrade</h2><p>Ez egy teszt email az SMTP beállítások ellenőrzéséhez.</p><p>Ha ezt megkaptad, az SMTP kapcsolat, hitelesítés és a kézbesítés rendben működik.</p></div>';
 
 $result = MailerService::send($smtpConfig, $toEmail, $subject, $html);
 

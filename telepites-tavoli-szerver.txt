@@ -1,5 +1,5 @@
 ===============================================================
- STOCK MANAGER — TÁVOLI (LINUX) SZERVERES TELEPÍTÉS,
+ FOUNTAINTRADE — TÁVOLI (LINUX) SZERVERES TELEPÍTÉS,
  TÖBB KASSZA/ESZKÖZ EGYIDEJŰ HASZNÁLATÁHOZ
 ===============================================================
 

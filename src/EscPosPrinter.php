@@ -88,7 +88,7 @@ class EscPosPrinter
         if ($logoPath) {
             $out .= $this->buildLogoRaster($logoPath);
         }
-        $out .= $this->bold(true) . $this->encodeText($shop['name'] ?: 'Stock Manager') . "\n" . $this->bold(false);
+        $out .= $this->bold(true) . $this->encodeText($shop['name'] ?: 'FountainTrade') . "\n" . $this->bold(false);
         $out .= "Teszt nyomtatas\n";
         $out .= str_repeat('-', $this->paperWidth) . "\n";
         $out .= date('Y-m-d H:i:s') . "\n";
@@ -107,7 +107,7 @@ class EscPosPrinter
         if ($includeQrSample) {
             $out .= "\n";
             $out .= self::ESC . 'a' . "\x01";
-            $out .= $this->buildQrCode('Stock Manager - nyomtato teszt');
+            $out .= $this->buildQrCode('FountainTrade - nyomtato teszt');
             $out .= "\n";
         }
 

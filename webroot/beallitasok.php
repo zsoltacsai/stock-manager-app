@@ -19,7 +19,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#22c55e">
-<title>Stock Manager — Beállítások</title>
+<title>FountainTrade — Beállítások</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>

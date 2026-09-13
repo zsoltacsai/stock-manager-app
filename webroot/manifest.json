@@ -1,6 +1,6 @@
 {
-    "name": "Stock Manager",
-    "short_name": "Stock Manager",
+    "name": "FountainTrade",
+    "short_name": "FountainTrade",
     "description": "Helyi kassza, beszerzés és készletkezelő",
     "start_url": "index.php",
     "scope": ".",

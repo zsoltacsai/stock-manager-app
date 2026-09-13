@@ -268,7 +268,7 @@ lenne más forrásból érkező rendelésekre is), DE minden platform saját
 API-regisztrációt, hitelesítést és — jellemzően — saját
 étlap-/termékkatalógus-szinkronizálási logikát igényel (pl. a Foodora
 API-nak saját elvárásai vannak az étel-kategóriákra, allergén-adatokra,
-nyitvatartásra), ami egy éttermi/vendéglátós profilú Stock Manager
+nyitvatartásra), ami egy éttermi/vendéglátós profilú FountainTrade
 telepítésnek releváns, egy bolt/kiskereskedés jellegűnek viszont nem.
 
 **Trigger, ami miatt érdemes lenne**: ha egy konkrét vendéglátós

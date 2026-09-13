@@ -268,7 +268,7 @@ class BackupManager
         }
         @chmod($destination, 0600); // rögtön a létrehozás után, még az írás megkezdése előtt
 
-        fwrite($out, "-- Stock Manager PHP-based MySQL dump (mysqldump not available)\n");
+        fwrite($out, "-- FountainTrade PHP-based MySQL dump (mysqldump not available)\n");
         fwrite($out, "-- Generated: " . date('c') . "\n\nSET FOREIGN_KEY_CHECKS=0;\n\n");
 
         $tables = $pdo->query('SHOW TABLES')->fetchAll(PDO::FETCH_COLUMN);
@@ -456,14 +456,14 @@ class BackupManager
         }
         unset($check);
 
-        // Ellenőrizzük, hogy ez ténylegesen egy Stock Manager mentés-e, ne
+        // Ellenőrizzük, hogy ez ténylegesen egy FountainTrade mentés-e, ne
         // csak "bármilyen SQLite fájl" — enélkül egy véletlenül rossz fájl
         // kiválasztása (pl. a data/backups mappából egy nem idevaló .sqlite)
         // "sikeres" visszaállítás látszatával cserélné le az éles adatbázist.
         $requiredTables = ['products', 'sales', 'customers'];
         $missing = array_diff($requiredTables, $tables);
         if ($missing) {
-            throw new RuntimeException('A fájl nem tűnik Stock Manager adatbázis-mentésnek (hiányzó tábla: ' . implode(', ', $missing) . ').');
+            throw new RuntimeException('A fájl nem tűnik FountainTrade adatbázis-mentésnek (hiányzó tábla: ' . implode(', ', $missing) . ').');
         }
 
         $liveDbPath = $this->dbConfig['sqlite']['path'];

@@ -1,8 +1,8 @@
-# Stock Manager — localhost vonalkód-kassza
+# FountainTrade — Point of Sale & Inventory
 
 **Verzió: 1.0** (production release)
 
-Stock Manager 1.0 az első production kiadás, az 1.0 RC stabilizációs és
+FountainTrade 1.0 az első production kiadás, az 1.0 RC stabilizációs és
 biztonsági hardening ciklus lezárása után. A feature freeze innentől is
 érvényben marad az 1.1-es fejlesztési körig — új funkció (pl. számla
 MODIFY/STORNO, lásd ROADMAP.md) csak ott kerül bevezetésre.
@@ -315,7 +315,7 @@ számlák NAV-szinkronja) lásd lent.
 ### NAV Online Számla — Beérkezett számlák (bejövő szinkron)
 
 Ez a FORDÍTOTT irány a fenti kimenő NAV-integrációhoz képest: más
-adózók által a Stock Manager tulajdonosának kiállított, a NAV-nál
+adózók által a FountainTrade tulajdonosának kiállított, a NAV-nál
 regisztrált számlák (`invoiceDirection=INBOUND`) helyi szinkronizálása,
 listázása és részletnézete — **kizárólag olvasás jellegű**, a NAV-hoz
 ebben a körben semmi nem kerül beküldésre.
@@ -372,7 +372,7 @@ digest-lapon akár 50+ számla is lehet, ezek mindegyikéhez sync-enként
 külön lekérdezést indítani irreális NAV-terhelés lenne.
 
 **Bruttó összeg**: a NAV digest-válasza NEM ad külön bruttó mezőt, csak
-nettó és ÁFA összeget — a `gross_total` a Stock Manager saját, HELYBEN
+nettó és ÁFA összeget — a `gross_total` a FountainTrade saját, HELYBEN
 számított értéke (nettó + ÁFA), ezt a "Beérkezett számlák" részletnézet
 is explicit jelzi.
 

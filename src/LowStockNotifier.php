@@ -51,6 +51,6 @@ class LowStockNotifier
             $products
         );
         $body = "Alacsony készletszint riasztás:\n\n" . implode("\n", $lines);
-        @mail($to, 'Stock Manager — alacsony készlet riasztás', $body, 'Content-Type: text/plain; charset=UTF-8');
+        @mail($to, 'FountainTrade — alacsony készlet riasztás', $body, 'Content-Type: text/plain; charset=UTF-8');
     }
 }

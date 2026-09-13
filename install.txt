@@ -1,5 +1,5 @@
 ===============================================================
- STOCK MANAGER — TELEPÍTÉSI ÚTMUTATÓ (Windows)
+ FOUNTAINTRADE — TELEPÍTÉSI ÚTMUTATÓ (Windows)
 ===============================================================
 
 Ez egy helyi (localhost) PHP alkalmazás vonalkódos pénztárgéphez /

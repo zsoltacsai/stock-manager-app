@@ -148,7 +148,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <meta charset="UTF-8">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Stock Manager — Telepítés</title>
+<title>FountainTrade — Telepítés</title>
 <link rel="stylesheet" href="style.css">
 <style>
     body { padding-left: 0; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
@@ -175,7 +175,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <body>
 <div class="install-card">
     <img src="assets/logo-default.svg" alt="Logó" class="install-logo">
-    <h2 style="margin-top:0;">Stock Manager telepítése</h2>
+    <h2 style="margin-top:0;">FountainTrade telepítése</h2>
     <p class="muted" style="margin-top:-8px;">
         Az alkalmazás alapból SQLite-tal, teljesen konfiguráció nélkül is működik —
         ez a varázsló csak akkor szükséges, ha MySQL-t szeretnél használni, vagy meg

@@ -1,12 +1,12 @@
 # Changelog
 
-Ez a fájl a Stock Manager verzióinak fontosabb változásait követi. A
+Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
 ## [1.0.0] — 2026-09-10
 
-Stock Manager 1.0 az első production kiadás, az 1.0 RC stabilizációs és
+FountainTrade 1.0 az első production kiadás, az 1.0 RC stabilizációs és
 biztonsági hardening ciklus lezárása után.
 
 ### Added

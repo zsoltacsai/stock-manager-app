@@ -934,6 +934,7 @@ if (!Auth::isLoggedIn($appSettings)) {
     </div>
 </div>
 
+<script src="api.js"></script>
 <script src="topbar.js"></script>
 <script src="import.js"></script>
 <script src="beallitasok.js"></script>

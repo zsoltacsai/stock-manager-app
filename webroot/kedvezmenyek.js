@@ -39,10 +39,13 @@ const cpnNotes = document.getElementById('cpn-notes');
 const cpnActive = document.getElementById('cpn-active');
 
 async function loadCoupons() {
-    const res = await fetch('/api/coupons-list.php');
-    const data = await res.json();
-    allCoupons = data.coupons || [];
-    renderCoupons();
+    try {
+        const data = await fetchJson('/api/coupons-list.php');
+        allCoupons = data.coupons || [];
+        renderCoupons();
+    } catch (err) {
+        couponsBody.innerHTML = `<tr><td colspan="7" class="muted" style="text-align:center; padding:24px;">Hiba a kuponok betöltésekor: ${escapeHtml(err.message)}</td></tr>`;
+    }
 }
 
 function renderCoupons() {
@@ -140,10 +143,13 @@ const giftCardHistoryBody = document.getElementById('gift-card-history-body');
 const giftCardHistoryClose = document.getElementById('gift-card-history-close');
 
 async function loadGiftCards() {
-    const res = await fetch('/api/gift-cards-list.php');
-    const data = await res.json();
-    allGiftCards = data.gift_cards || [];
-    renderGiftCards();
+    try {
+        const data = await fetchJson('/api/gift-cards-list.php');
+        allGiftCards = data.gift_cards || [];
+        renderGiftCards();
+    } catch (err) {
+        giftCardsBody.innerHTML = `<tr><td colspan="6" class="muted" style="text-align:center; padding:24px;">Hiba az utalványok betöltésekor: ${escapeHtml(err.message)}</td></tr>`;
+    }
 }
 
 function renderGiftCards() {

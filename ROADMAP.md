@@ -6,6 +6,29 @@ vagy mert a projekt jelenlegi mérete/célközönsége mellett a
 komplexitás/haszon arány rossz. Egy jövőbeli 1.1-es (vagy későbbi) körben
 érdemes újra megnézni őket, ha a körülmények változnak.
 
+## Beszerzés-idempotencia, WooCommerce-push megbízhatóság, ár-validáció, import-keményítés, frontend hibakezelés — MEGOLDVA (1.1.1)
+
+Öt, egymástól független stabilitási/megbízhatósági javítás egy
+maintenance release-ben — nem új üzleti funkció, hanem a napi használat
+alatt már bizonyítottan előforduló hézagok zárása. Lásd README
+"FountainTrade 1.1.1 — stabilitási és megbízhatósági javítások" szakasza
+a teljes technikai indoklásért:
+
+- Beszerzés-rögzítés idempotencia-védelme (a sale-nél már bevált minta,
+  most a beszerzésre is kiterjesztve — valódi 16-folyamatos
+  konkurrencia-teszttel bizonyítva).
+- WooCommerce készlet-push aszinkron queue-ra állítva (a NAV queue
+  mintáját követve) — egy lassú/elérhetetlen WooCommerce-szerver többé
+  nem lassítja a kasszát/beszerzést/leltárt.
+- Központi, minden ár-írási útvonalon (kézi szerkesztés, CSV/JutaSoft
+  import, WooCommerce-behúzás) érvényesített ár-validáció.
+- Import: soronkénti (nem all-or-nothing) hibakezelés hibás áraknál +
+  valódi JutaSoft export-fixture regresszió + árva ideiglenes fájlok
+  automatikus seprése.
+- 18 lista-betöltő frontend oldal + a backend globális hibakezelője —
+  egy HTTP-hiba többé nem jelenik meg csendben üres listaként/nyers PHP
+  hibaként.
+
 ## NAV Online Számla — számlaszám-generálás — MEGOLDVA (1.1.0)
 
 **Ez a korábban nyitott döntési pont a FountainTrade 1.1.0 MODIFY/STORNO

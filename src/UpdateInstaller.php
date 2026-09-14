@@ -242,7 +242,21 @@ final class UpdateInstaller
                         // visszavonása, hanem a MIGRÁCIÓ ELŐTTI teljes
                         // adatbázis-mentés visszaállítása, hogy a régi kód
                         // GARANTÁLTAN a régi sémával fusson újra együtt.
-                        $this->backupManager->restoreFromFile($this->appRoot . '/data/backups/' . $backupReference);
+                        // KRITIKUS: lásd Database::closeForExternalFileReplacement()
+                        // docblockja — a restoreFromFile() a live SQLite
+                        // fájlt egy NYERS fájlmásolással írja felül; ha
+                        // eközben a $this->db kapcsolat nyitva marad,
+                        // VALÓS fájlsérülést okozhat (nem csak elavult
+                        // kapcsolat-állapotot), amit egy utólagos
+                        // reconnect() már nem tud orvosolni. A kapcsolatot
+                        // ezért a másolás KÖRÜL kell teljesen le- majd
+                        // újranyitni, nem csak utána lecserélni.
+                        $this->db->closeForExternalFileReplacement();
+                        try {
+                            $this->backupManager->restoreFromFile($this->appRoot . '/data/backups/' . $backupReference);
+                        } finally {
+                            $this->db->reconnect();
+                        }
                     }
                     $this->setMaintenanceMode(false);
                     $rollbackState = 'success';

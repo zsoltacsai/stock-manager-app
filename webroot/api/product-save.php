@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
+require_once __DIR__ . '/../../src/PriceValidator.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     send_json(['error' => 'POST only'], 405);
@@ -15,6 +16,17 @@ if (empty($p['name'])) {
 
 $vatRate = (string) ($p['vat_rate'] ?? $config['szamlazz']['default_vat_rate']);
 $vatPct  = is_numeric($vatRate) ? ((float) $vatRate) / 100 : 0.0;
+
+// A backend a HITELES forrás minden ár-validációra (lásd PriceValidator
+// docblockja) — a nyers, még nem castolt bemenetet ellenőrizzük ($p[...],
+// NEM a lenti (float) cast utáni értéket), hogy egy nem-numerikus bemenet
+// (pl. "abc") is elutasításra kerüljön, ne csendben 0-ra silányodjon.
+if (isset($p['net_price']) && $p['net_price'] !== '' && !PriceValidator::isValid($p['net_price'])) {
+    send_json(['error' => PriceValidator::describeError($p['net_price'], 'nettó ár')], 400);
+}
+if (isset($p['gross_price']) && $p['gross_price'] !== '' && !PriceValidator::isValid($p['gross_price'])) {
+    send_json(['error' => PriceValidator::describeError($p['gross_price'], 'bruttó ár')], 400);
+}
 
 $net = isset($p['net_price']) && $p['net_price'] !== '' ? (float) $p['net_price'] : null;
 $gross = isset($p['gross_price']) && $p['gross_price'] !== '' ? (float) $p['gross_price'] : null;

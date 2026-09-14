@@ -52,10 +52,13 @@ function tierFor(totalSpent) {
 }
 
 async function loadCustomers() {
-    const res = await fetch('/api/customers-list.php?include_deleted=1');
-    const data = await res.json();
-    allCustomers = data.customers || [];
-    renderTable();
+    try {
+        const data = await fetchJson('/api/customers-list.php?include_deleted=1');
+        allCustomers = data.customers || [];
+        renderTable();
+    } catch (err) {
+        customersBody.innerHTML = `<tr><td colspan="6" class="muted" style="text-align:center; padding:24px;">Hiba a vásárlók betöltésekor: ${escapeHtml(err.message)}</td></tr>`;
+    }
 }
 
 function renderTable() {

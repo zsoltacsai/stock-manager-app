@@ -11,6 +11,25 @@ $input = json_input();
 $lines = $input['items'] ?? [];
 $supplier = $input['supplier'] ?? [];
 
+// Kliens által generált, egy adott "beszerzés-leadási kísérlethez" tartozó
+// kulcs — PONTOSAN ugyanaz a minta, mint api/sale.php-ban (lásd ott a
+// docblockot a teljes indoklásért): dupla kattintás, hálózati
+// újrapróbálkozás, vagy egy elveszett válasz utáni manuális újraküldés
+// esetén ez zárja ki, hogy ugyanaz a logikai beszerzés kétszer kerüljön
+// rögzítésre (duplán megnövelt készlet, duplán kiküldött WooCommerce-push).
+// A tényleges atomikus védelmet a purchases.idempotency_key UNIQUE indexe
+// adja (lásd Database::recordPurchase()), nem ez az előzetes ellenőrzés
+// önmagában.
+$idempotencyKey = trim((string) ($input['idempotency_key'] ?? ''));
+$idempotencyFingerprint = $idempotencyKey !== '' ? build_purchase_fingerprint($input) : null;
+
+if ($idempotencyKey !== '') {
+    $existingPurchase = $db->findPurchaseByIdempotencyKey($idempotencyKey);
+    if ($existingPurchase) {
+        match_or_reject_idempotent_purchase_replay($db, $existingPurchase, $idempotencyFingerprint); // sose tér vissza
+    }
+}
+
 if (empty($lines)) {
     send_json(['error' => 'A beszerzési tételek listája üres'], 400);
 }
@@ -71,43 +90,97 @@ $purchase = [
     'note'                => $input['note'] ?? null,
 ];
 
-$result = $db->recordPurchase($purchase, $items);
-
-$pushErrors = [];
 try {
-    $wc = new WooCommerceClient($config['woocommerce']);
-    foreach ($items as $item) {
-        if (empty($item['wc_product_id'])) {
-            continue;
-        }
-        // A tényleges, a tranzakció commit-ja UTÁN érvényes készletet
-        // olvassuk újra az adatbázisból soronként, nem a recordPurchase()
-        // elején (a teljes beszerzés feldolgozása előtt) készült egyszeri
-        // csoportos pillanatfelvételből — különben egy közben (a beszerzés
-        // több tételének kiküldése közben) lezajló másik eladás/beszerzés
-        // elavult, abszolút értékkel íródna felül itt. Ugyanaz a minta, mint
-        // api/sale.php-ban.
-        $current = $db->findProductById($item['product_id']);
-        if (!$current) {
-            continue;
-        }
-        try {
-            $wc->updateStock((int) $item['wc_product_id'], (int) $current['stock_qty']);
-            $db->touchWcSyncedAt($item['product_id']);
-            $db->logSync('push', $item['product_id'], 'Stock pushed after purchase #' . $result['purchase_id']);
-        } catch (Throwable $e) {
-            $pushErrors[] = $item['name'] . ': ' . $e->getMessage();
-            $db->logSync('push', $item['product_id'], 'FAILED: ' . $e->getMessage());
+    $result = $db->recordPurchase($purchase, $items, $idempotencyKey, $idempotencyFingerprint);
+} catch (Throwable $e) {
+    // Ha ez éppen az idempotencia-kulcs UNIQUE-ütközése, egy VERSENYHELYZETBEN
+    // futó másik kérés (nem egy korábbi, időben eltolt újrapróbálkozás, hanem
+    // egy szinte pontosan egyidejű másik kérés ugyanazzal a kulccsal) már
+    // megnyerte a beszúrást — lásd api/sale.php ugyanezen mintájának
+    // docblockja a teljes indoklásért. A győztes eredményét adjuk vissza,
+    // nem hibát.
+    if ($idempotencyKey !== '' && str_contains($e->getMessage(), 'idempotency_key')) {
+        $winner = $db->findPurchaseByIdempotencyKey($idempotencyKey);
+        if ($winner) {
+            match_or_reject_idempotent_purchase_replay($db, $winner, $idempotencyFingerprint); // sose tér vissza
         }
     }
-} catch (Throwable $e) {
-    $pushErrors[] = $e->getMessage();
+    send_json(['error' => 'A beszerzés rögzítése sikertelen: ' . $e->getMessage()], 500);
 }
 
+// A WooCommerce-push MÁR beütemezve a recordPurchase() saját tranzakciójában
+// (lásd Database::enqueueWcPush()) — a tényleges kiküldés egy külön,
+// cron-indított workerben (WcPushQueueWorker) történik, ASZINKRON, hogy egy
+// lassú/elérhetetlen WooCommerce szerver se várassa meg a beszerzés
+// rögzítését. A 'wc_push_errors' mező visszafelé kompatibilitásból marad.
 send_json([
     'purchase_id'      => $result['purchase_id'],
     'total_net'        => $result['total_net'],
     'total_gross'      => $result['total_gross'],
     'updated_products' => array_values($result['updated_products']),
-    'wc_push_errors'   => $pushErrors,
+    'wc_push_errors'   => [],
 ]);
+
+/**
+ * Determinisztikus "ujjlenyomat" a kérés üzletileg releváns mezőiről —
+ * PONTOSAN ugyanaz az elv, mint api/sale.php build_sale_fingerprint()-jénél
+ * (lásd ott a teljes docblockot): csak a szerver-oldali eredményt ténylegesen
+ * befolyásoló mezők szerepelnek, stabil (rendezett) formában.
+ */
+function build_purchase_fingerprint(array $input): string
+{
+    $lines = is_array($input['items'] ?? null) ? array_values($input['items']) : [];
+    $normalizedItems = array_map(static function ($line) {
+        $line = is_array($line) ? $line : [];
+        return [
+            'product_id'    => isset($line['product_id']) ? (int) $line['product_id'] : null,
+            'qty'           => isset($line['qty']) ? (int) $line['qty'] : null,
+            'unit_cost_net' => isset($line['unit_cost_net']) ? round((float) $line['unit_cost_net'], 2) : null,
+            'vat_rate'      => isset($line['vat_rate']) ? (string) $line['vat_rate'] : null,
+        ];
+    }, $lines);
+    usort($normalizedItems, static fn(array $a, array $b): int =>
+        [(string) $a['product_id'], $a['qty']] <=> [(string) $b['product_id'], $b['qty']]);
+
+    $supplier = is_array($input['supplier'] ?? null) ? $input['supplier'] : [];
+    $supplier = array_map('strval', $supplier);
+    ksort($supplier);
+
+    $fingerprintData = [
+        'items'             => $normalizedItems,
+        'supplier_id'       => !empty($input['supplier_id']) ? (int) $input['supplier_id'] : null,
+        'supplier'          => $supplier,
+        'payment_method'    => (string) ($input['payment_method'] ?? 'készpénz'),
+        'currency'          => (string) ($input['currency'] ?? 'HUF'),
+        'discount_percent'  => round((float) ($input['discount_percent'] ?? 0), 2),
+        'paid'              => !empty($input['paid']),
+        'note'              => (string) ($input['note'] ?? ''),
+    ];
+
+    return hash('sha256', json_encode($fingerprintData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+}
+
+/**
+ * Egy korábban (ugyanezzel az idempotencia-kulccsal) már sikeresen rögzített
+ * beszerzés visszajátszása — PONTOSAN ugyanaz az elv, mint api/sale.php
+ * match_or_reject_idempotent_replay()-jénél. SOSE tér vissza — vagy egy
+ * 200-as visszajátszást, vagy egy 409-es hibát küld.
+ */
+function match_or_reject_idempotent_purchase_replay(Database $db, array $existingPurchase, ?string $requestFingerprint): void
+{
+    $storedFingerprint = $existingPurchase['idempotency_fingerprint'] ?? null;
+    if ($storedFingerprint !== null && $storedFingerprint !== '' && $storedFingerprint !== $requestFingerprint) {
+        send_json([
+            'error' => 'Ugyanaz az idempotencia-kulcs egy korábbitól eltérő tartalmú kéréssel érkezett — ez a kérés nem dolgozható fel. Töltsd újra az oldalt, és próbáld újra a rögzítést.',
+        ], 409);
+    }
+
+    send_json([
+        'purchase_id'      => (int) $existingPurchase['id'],
+        'total_net'        => round((float) $existingPurchase['total_net'], 2),
+        'total_gross'      => round((float) $existingPurchase['total_gross'], 2),
+        'updated_products' => [],
+        'wc_push_errors'   => [],
+        'replayed'         => true,
+    ]);
+}

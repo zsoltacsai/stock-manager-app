@@ -1,6 +1,25 @@
 let allProducts = [];
 const purchaseCart = new Map();
 
+// Idempotencia-kulcs a jelenlegi beszerzés-rögzítési kísérlethez — PONTOSAN
+// ugyanaz a minta, mint app.js currentCheckoutIdempotencyKey()-jénél (lásd
+// ott a teljes docblockot): dupla kattintás/hálózati újrapróbálkozás esetén
+// egy ismételt "Beszerzés mentése" UGYANAZT a kulcsot küldi újra, amit a
+// szerver (api/purchase-save.php) felismer és biztonságosan visszajátszik,
+// duplikált rögzítés/duplán megnövelt készlet nélkül.
+let purchaseIdempotencyKey = null;
+function currentPurchaseIdempotencyKey() {
+    if (!purchaseIdempotencyKey) {
+        purchaseIdempotencyKey = (window.crypto && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+    }
+    return purchaseIdempotencyKey;
+}
+function resetPurchaseIdempotencyKey() {
+    purchaseIdempotencyKey = null;
+}
+
 const barcodeInput   = document.getElementById('barcode-input');
 const scanFeedback   = document.getElementById('scan-feedback');
 const searchInput    = document.getElementById('search-input');
@@ -54,9 +73,12 @@ supplierPicker.addEventListener('change', () => {
 });
 
 async function loadProducts() {
-    const res = await fetch('/api/products.php');
-    const data = await res.json();
-    allProducts = data.products || [];
+    try {
+        const data = await fetchJson('/api/products.php');
+        allProducts = data.products || [];
+    } catch (err) {
+        showScanFeedback('Hiba a termékkatalógus betöltésekor: ' + err.message, 'error');
+    }
 }
 
 Promise.all([loadSuppliers(), loadProducts()]).then(applyPurchasePrefill);
@@ -249,7 +271,7 @@ saveBtn.addEventListener('click', async () => {
         unit_cost_gross: grossFromNet(line.unit_cost_net, line.vat_rate),
     }));
 
-    const payload = { items };
+    const payload = { items, idempotency_key: currentPurchaseIdempotencyKey() };
 
     if (supplierToggle.checked) {
         payload.supplier = {
@@ -290,6 +312,7 @@ saveBtn.addEventListener('click', async () => {
         saveFeedback.textContent = msg;
         saveFeedback.className = 'feedback ok';
 
+        resetPurchaseIdempotencyKey();
         purchaseCart.clear();
         renderCart();
         loadProducts();

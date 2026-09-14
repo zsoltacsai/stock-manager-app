@@ -665,9 +665,12 @@ function resetBuyerForm() {
 }
 
 async function loadProducts() {
-    const res = await fetch('/api/products.php');
-    const data = await res.json();
-    allProducts = data.products || [];
+    try {
+        const data = await fetchJson('/api/products.php');
+        allProducts = data.products || [];
+    } catch (err) {
+        showScanFeedback('Hiba a termékkatalógus betöltésekor: ' + err.message, true);
+    }
 }
 loadProducts();
 loadFrequentProducts();

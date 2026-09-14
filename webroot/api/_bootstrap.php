@@ -10,6 +10,48 @@ header('X-Frame-Options: DENY');
 header('Referrer-Policy: same-origin');
 header('Content-Type: application/json; charset=utf-8');
 
+// 1.1.1 — globális, központi "biztonsági háló" MINDEN API-végpontra: eddig
+// az egyes végpontoknak EGYENKÉNT kellett try/catch-csel körbevenniük minden
+// kockázatos hívást (van, amelyik ezt elmulasztotta, pl. product-save.php
+// $db->saveProduct()-hívása, settings.php $settings->save()/read()-je) —
+// egy ott elszabaduló, el nem kapott Throwable/fatal hiba a PHP alapértelmezett
+// hibakezelőjéhez jutott volna, aminek a viselkedése (HTML-formázott hibaüzenet,
+// esetleg fájlelérési úttal) KIZÁRÓLAG a szerver `display_errors` beállításától
+// függ — amit ez az alkalmazás eddig SOHASEM állított be explicit módon,
+// tehát a tényleges viselkedés a hoszt saját PHP-konfigurációjának (fejlesztői
+// szerver, megosztott tárhely stb.) volt kiszolgáltatva. Ez itt EXPLICIT
+// kikapcsolja a hibák kliens felé történő megjelenítését, és minden, egyébként
+// el nem kapott hibát egységes, secret nélküli JSON-válaszra fordít — az
+// 'error'-log-ba viszont a teljes részlet bekerül, diagnosztikai célra.
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+
+function send_generic_server_error(): void
+{
+    if (!headers_sent()) {
+        http_response_code(500);
+        header('Content-Type: application/json; charset=utf-8');
+    }
+    echo json_encode(['error' => 'Váratlan szerverhiba történt. Próbáld újra, vagy értesítsd az üzemeltetőt.'], JSON_UNESCAPED_UNICODE);
+}
+
+set_exception_handler(function (Throwable $e): void {
+    error_log('[stock-manager] Uncaught ' . get_class($e) . ': ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+    send_generic_server_error();
+});
+
+register_shutdown_function(function (): void {
+    $error = error_get_last();
+    // Csak a TÉNYLEGESEN végzetes hibatípusok (nem pl. egy figyelmen kívül
+    // hagyható E_WARNING/E_DEPRECATED, ami minden kérés végén lefutna emiatt
+    // a shutdown-handleren) — ezek azok, amiket set_exception_handler() NEM
+    // fog el (nem Throwable-ként megjelenő, klasszikus PHP fatal hibák).
+    if ($error !== null && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        error_log('[stock-manager] Fatal error: ' . $error['message'] . ' in ' . $error['file'] . ':' . $error['line']);
+        send_generic_server_error();
+    }
+});
+
 require_once __DIR__ . '/../../src/Database.php';
 require_once __DIR__ . '/../../src/WooCommerceClient.php';
 require_once __DIR__ . '/../../src/SzamlazzClient.php';
@@ -75,7 +117,7 @@ $currentScript = basename($_SERVER['SCRIPT_NAME'] ?? '');
 // felhasználni, és fordítva. A token KIZÁRÓLAG az X-Cron-Token fejlécben
 // fogadott el — SOSE query-stringben —, mert egy URL-be írt titok
 // szerver-/proxy-naplókba, böngésző-előzményekbe kerülhet.
-$cronScripts = ['auto-backup-run.php', 'auto-sync-run.php', 'nav-queue-run.php', 'nav-incoming-sync-run.php', 'update-check-run.php'];
+$cronScripts = ['auto-backup-run.php', 'auto-sync-run.php', 'nav-queue-run.php', 'nav-incoming-sync-run.php', 'update-check-run.php', 'wc-queue-run.php'];
 $isCronScript = in_array($currentScript, $cronScripts, true);
 
 if ($isCronScript) {

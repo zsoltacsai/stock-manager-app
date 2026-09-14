@@ -1,0 +1,14 @@
+Raktárkészlet nyomtatás
+Jutasoft Kereskedelmi és Szolgáltató Kft.
+A lista típusa :,Raktárkészlet lista
+Szűrés :,Minden cikkcsoport
+Nyomtatás dátuma :,2026.09.14 10:32
+Oldal :,1/1
+Vonalkód,Kód,Megnevezés,Típus,Készlet,M.Egys,Besz.ár,Egys.ár,ÁFA%
+5998012345670,ART-1001,Csavarhúzó készlet 6 részes,Szerszám,25,db,1200,1900,27
+5998012345687,ART-1002,Fúrógép 500W,Szerszám,8,db,8500,14900,27
+5998012345694,ART-1003,Munkakesztyű L,Védőfelszerelés,120,pár,180,350,27
+,ART-1005,Hegesztőpálca 2mm,Hegesztés,50,csomag,850,1490,27
+5998012345700,ART-1006,Sérült tétel (hibás ár teszt),Egyéb,3,db,-100,200,27
+,,Eladási érték 27%-os ÁFA kulcs:,,,,,152340,
+,,Összesen:,,,,,,

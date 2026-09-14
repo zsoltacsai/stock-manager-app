@@ -89,6 +89,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 </div>
 
+<script src="api.js"></script>
 <script src="topbar.js"></script>
 <script src="rendszerallapot.js"></script>
 </body>

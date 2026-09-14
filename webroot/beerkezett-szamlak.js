@@ -42,8 +42,7 @@ function currentFilters() {
 
 async function loadInvoices() {
     try {
-        const res = await fetch('/api/incoming-invoices-list.php?' + currentFilters().toString());
-        const data = await res.json();
+        const data = await fetchJson('/api/incoming-invoices-list.php?' + currentFilters().toString());
         renderResults(data.invoices || []);
     } catch (err) {
         resultsBody.innerHTML = `<tr><td colspan="10" class="muted">Hiba: ${escapeHtml(err.message)}</td></tr>`;

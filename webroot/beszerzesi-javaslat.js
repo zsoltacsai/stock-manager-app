@@ -3,11 +3,10 @@ const fmt = (n) => new Intl.NumberFormat('hu-HU').format(Math.round(n));
 async function loadSuggestions() {
     const box = document.getElementById('suggestions-content');
     try {
-        const res = await fetch('/api/purchase-suggestions.php');
-        const data = await res.json();
+        const data = await fetchJson('/api/purchase-suggestions.php');
         renderGroups(data.groups || []);
-    } catch (e) {
-        box.innerHTML = '<p class="feedback error">A javaslatok betöltése sikertelen.</p>';
+    } catch (err) {
+        box.innerHTML = `<p class="feedback error">A javaslatok betöltése sikertelen: ${escapeHtml(err.message)}</p>`;
     }
 }
 

@@ -841,6 +841,102 @@ final class HttpSecurityTest extends TestCase
     }
 
     // -----------------------------------------------------------------
+    // 7c) purchase-save.php — idempotencia-kulcs ÉS ujjlenyomat (1.1.1) —
+    //    PONTOSAN a fenti 7b) sale.php Fp1-Fp5 mintáját követi.
+    // -----------------------------------------------------------------
+
+    private function ensurePurchaseFingerprintTestFixtures(): array
+    {
+        [$jar, $csrf] = $this->ensureFingerprintTestFixtures(); // ugyanaz a bejelentkezett session + self::$fpProductId
+        return [$jar, $csrf];
+    }
+
+    public function testPp1_SameKeySameRequestReplaysOriginalPurchase(): void
+    {
+        [$jar, $csrf] = $this->ensurePurchaseFingerprintTestFixtures();
+        $key = bin2hex(random_bytes(16));
+        $payload = [
+            'items' => [['product_id' => self::$fpProductId, 'qty' => 3, 'unit_cost_net' => 100]],
+            'idempotency_key' => $key,
+        ];
+
+        $first = self::request('POST', '/api/purchase-save.php', $payload, ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $first['status'], $first['body']);
+        $this->assertArrayNotHasKey('replayed', $first['json']);
+
+        $second = self::request('POST', '/api/purchase-save.php', $payload, ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $second['status'], $second['body']);
+        $this->assertTrue($second['json']['replayed'] ?? false, 'Azonos kulcs + azonos kérés esetén visszajátszásnak kell történnie.');
+        $this->assertSame($first['json']['purchase_id'], $second['json']['purchase_id']);
+        $this->assertSame($first['json']['total_gross'], $second['json']['total_gross']);
+    }
+
+    public function testPp2_SameKeyDifferentQuantityIsRejectedWith409(): void
+    {
+        [$jar, $csrf] = $this->ensurePurchaseFingerprintTestFixtures();
+        $key = bin2hex(random_bytes(16));
+
+        $first = self::request('POST', '/api/purchase-save.php', [
+            'items' => [['product_id' => self::$fpProductId, 'qty' => 1, 'unit_cost_net' => 100]],
+            'idempotency_key' => $key,
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $first['status'], $first['body']);
+
+        // UGYANAZ a kulcs, de eltérő mennyiség — ez egy MÁSIK logikai kérés.
+        $second = self::request('POST', '/api/purchase-save.php', [
+            'items' => [['product_id' => self::$fpProductId, 'qty' => 5, 'unit_cost_net' => 100]],
+            'idempotency_key' => $key,
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(409, $second['status'], 'Azonos kulcs, de eltérő tétel-mennyiség esetén 409-et kell kapni, nem az első beszerzés visszajátszását.');
+    }
+
+    public function testPp3_SameKeyDifferentUnitCostIsRejectedWith409(): void
+    {
+        [$jar, $csrf] = $this->ensurePurchaseFingerprintTestFixtures();
+        $key = bin2hex(random_bytes(16));
+
+        $first = self::request('POST', '/api/purchase-save.php', [
+            'items' => [['product_id' => self::$fpProductId, 'qty' => 1, 'unit_cost_net' => 100]],
+            'idempotency_key' => $key,
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $first['status'], $first['body']);
+
+        $second = self::request('POST', '/api/purchase-save.php', [
+            'items' => [['product_id' => self::$fpProductId, 'qty' => 1, 'unit_cost_net' => 250]],
+            'idempotency_key' => $key,
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(409, $second['status'], 'Azonos kulcs, de eltérő beszerzési egységár esetén 409-et kell kapni.');
+    }
+
+    public function testPp4_DifferentKeysCreateIndependentPurchasesEvenWithIdenticalCart(): void
+    {
+        [$jar, $csrf] = $this->ensurePurchaseFingerprintTestFixtures();
+        $payloadA = [
+            'items' => [['product_id' => self::$fpProductId, 'qty' => 2, 'unit_cost_net' => 100]],
+            'idempotency_key' => bin2hex(random_bytes(16)),
+        ];
+        $payloadB = $payloadA;
+        $payloadB['idempotency_key'] = bin2hex(random_bytes(16));
+
+        $purchaseA = self::request('POST', '/api/purchase-save.php', $payloadA, ['X-CSRF-Token' => $csrf], $jar);
+        $purchaseB = self::request('POST', '/api/purchase-save.php', $payloadB, ['X-CSRF-Token' => $csrf], $jar);
+
+        $this->assertSame(200, $purchaseA['status'], $purchaseA['body']);
+        $this->assertSame(200, $purchaseB['status'], $purchaseB['body']);
+        $this->assertNotSame($purchaseA['json']['purchase_id'], $purchaseB['json']['purchase_id'], 'Két KÜLÖNBÖZŐ kulcs — akár azonos kosártartalommal is — két FÜGGETLEN beszerzést kell, hogy létrehozzon.');
+    }
+
+    public function testPp5_NegativeUnitCostIsRejectedBeforeAnyPersistence(): void
+    {
+        [$jar, $csrf] = $this->ensurePurchaseFingerprintTestFixtures();
+
+        $res = self::request('POST', '/api/purchase-save.php', [
+            'items' => [['product_id' => self::$fpProductId, 'qty' => 1, 'unit_cost_net' => -50]],
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(400, $res['status'], 'Negatív beszerzési egységárral a kérésnek el kell buknia, mielőtt bármi rögzülne.');
+    }
+
+    // -----------------------------------------------------------------
     // 8) backup-restore.php — require_admin() kényszerítése (C1 javítás
     //    regressziós tesztjei). Ettől a ponttól a megosztott szerverpéldány
     //    már jelszóval védett + "network" módban van (lásd 30-as/40-es

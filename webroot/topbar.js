@@ -1738,11 +1738,10 @@ if ('serviceWorker' in navigator) {
         }
         searchDebounce = setTimeout(async () => {
             try {
-                const res = await fetch('/api/global-search.php?query=' + encodeURIComponent(q));
-                const data = await res.json();
+                const data = await fetchJson('/api/global-search.php?query=' + encodeURIComponent(q));
                 renderSearchResults(data);
-            } catch (e) {
-                searchResults.innerHTML = '<p class="feedback error">A keresés sikertelen.</p>';
+            } catch (err) {
+                searchResults.innerHTML = `<p class="feedback error">A keresés sikertelen: ${escapeHtml(err.message)}</p>`;
             }
         }, 200);
     });

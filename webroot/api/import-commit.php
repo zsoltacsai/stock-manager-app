@@ -49,14 +49,29 @@ try {
 $inserted = 0;
 $updated = 0;
 $skipped = 0;
+$rejected = [];
 
+// SZÁNDÉKOSAN egyetlen tranzakció az EGÉSZ importra (mint korábban is), DE
+// egy hibás ÁR miatt rossz sor NEM dobja el a tranzakciót (nem `throw`-ol) —
+// egyszerűen kihagyjuk AZT az egy sort, és folytatjuk a többivel, ugyanabban
+// a tranzakcióban. Így "98 érvényes + 2 hibás" eredménye 98 importált sor +
+// 2 elutasított sor lesz, NEM egy teljes rollback — lásd README "Import
+// soronkénti hibakezelés" szakasza az indoklásért (a jelenlegi import-
+// szerződés soha nem volt "minden-vagy-semmi" a rossz ADATTARTALOM miatt,
+// csak VALÓDI kivétel — pl. DB-hiba — esetén marad az).
 $db->beginTransaction();
 try {
-    foreach ($parsed['rows'] as $row) {
+    foreach ($parsed['rows'] as $i => $row) {
         $normalized = ProductRowNormalizer::normalize($row, $profile);
 
         if (ProductRowNormalizer::shouldSkip($normalized, $profile)) {
             $skipped++;
+            continue;
+        }
+
+        $validationError = ProductRowNormalizer::validationError($normalized);
+        if ($validationError !== null) {
+            $rejected[] = ['row' => $i + 1, 'name' => $normalized['name'], 'reason' => $validationError];
             continue;
         }
 
@@ -78,7 +93,7 @@ $db->logAudit(
     'product_import',
     'product',
     null,
-    "Forrás: {$profile['label']} — $inserted új, $updated frissítve, $skipped kihagyva (összesen " . count($parsed['rows']) . ' sor)',
+    "Forrás: {$profile['label']} — $inserted új, $updated frissítve, $skipped kihagyva, " . count($rejected) . ' elutasítva (összesen ' . count($parsed['rows']) . ' sor)',
     (int) ($appSettings['audit_log_retention_days'] ?? 30)
 );
 
@@ -87,4 +102,5 @@ send_json([
     'inserted' => $inserted,
     'updated'  => $updated,
     'skipped'  => $skipped,
+    'rejected' => $rejected,
 ]);

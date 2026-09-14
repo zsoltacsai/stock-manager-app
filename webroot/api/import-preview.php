@@ -40,6 +40,25 @@ if ($_FILES['file']['size'] > IMPORT_MAX_UPLOAD_BYTES) {
 $importDir = __DIR__ . '/../../data/imports';
 @mkdir($importDir, 0775, true);
 
+// Egy elindított, de sose befejezett import (a felhasználó bezárja a lapot
+// előnézet után, session lejár stb.) helyben hagyja a .upload/.csv fájlt —
+// import-commit.php csak a SIKERES/megpróbált commit útján törli (lásd ott
+// a finally blokkot). Enélkül ezek örökre a data/imports/ könyvtárban
+// maradnának. Ez itt egy OPPORTUNISTA seprés minden ÚJ előnézet-indításkor
+// — nem egy külön cron-job, mert az importok ritkák, egy plusz fájllista-
+// bejárás elhanyagolható rásegítés minden feltöltéshez képest. Konkurrencia-
+// biztos: csak a $STALE_AFTER_SECONDS-nál RÉGEBBI fájlokat törli — egy
+// ÉPPEN folyamatban lévő (a preview és a commit közötti pár másodperces/
+// perces ablakban lévő) importot ez sose érint, mert az ő fájlja túl friss.
+$staleAfterSeconds = 4 * 3600;
+$staleCandidates = array_merge(glob($importDir . '/*.upload') ?: [], glob($importDir . '/*.csv') ?: []);
+foreach ($staleCandidates as $staleFile) {
+    $mtime = @filemtime($staleFile);
+    if ($mtime !== false && (time() - $mtime) > $staleAfterSeconds) {
+        @unlink($staleFile);
+    }
+}
+
 $token = bin2hex(random_bytes(8));
 $uploadedPath = $importDir . '/' . $token . '.upload';
 
@@ -87,6 +106,7 @@ $total = count($normalized);
 $missingName = 0;
 $skippedNoIdentifier = 0;
 $zeroPrice = 0;
+$invalidPrice = 0;
 $blankBarcode = 0;
 $willUpdate = 0;
 $willInsert = 0;
@@ -109,6 +129,14 @@ foreach ($normalized as $n) {
     }
     if ($n['price'] <= 0) {
         $zeroPrice++;
+    }
+    // Az invalid_price (negatív ár, lásd ProductRowNormalizer::validationError())
+    // SZÁNDÉKOSAN KÜLÖN számláló a zero_price-tól — a nulla ár megengedett
+    // (lásd PriceValidator docblockja), a negatív VISZONT ténylegesen
+    // elutasításra kerül a commit lépésben, ezt itt, előnézetben is jelezni
+    // kell, hogy a felhasználó MÉG a tényleges importálás előtt lássa.
+    if (ProductRowNormalizer::validationError($n) !== null) {
+        $invalidPrice++;
     }
     if ($n['barcode'] === '') {
         $blankBarcode++;
@@ -133,6 +161,7 @@ send_json([
         'missing_name'          => $missingName,
         'skipped_no_identifier' => $skippedNoIdentifier,
         'zero_price'            => $zeroPrice,
+        'invalid_price'         => $invalidPrice,
         'blank_barcode'         => $blankBarcode,
         'duplicate_barcodes'    => $duplicatesInFile,
         'will_insert'           => $willInsert,

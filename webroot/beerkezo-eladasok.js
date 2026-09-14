@@ -31,8 +31,7 @@ window.smSettingsPromise.then((data) => {
 async function loadOrders() {
     resultsBody.innerHTML = '<tr><td colspan="7" class="muted" style="text-align:center; padding:24px;">Betöltés...</td></tr>';
     try {
-        const res = await fetch('/api/webshop-orders-list.php?status=' + encodeURIComponent(currentStatusFilter));
-        const data = await res.json();
+        const data = await fetchJson('/api/webshop-orders-list.php?status=' + encodeURIComponent(currentStatusFilter));
         allOrders = data.orders || [];
         renderResults();
         updateTabBadge(data.draft_count || 0);

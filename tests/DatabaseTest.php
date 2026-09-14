@@ -757,6 +757,131 @@ final class DatabaseTest extends TestCase
         $this->assertNull($found['idempotency_fingerprint']);
     }
 
+    // ---- 1.1.1 — purchase idempotency (a fenti sale-mintát követi) ----
+
+    public function testRecordPurchaseEnforcesUniqueIdempotencyKey(): void
+    {
+        $db = tests_new_database();
+        $productId = $db->saveProduct($this->sampleProduct());
+        $items = [[
+            'product_id' => $productId, 'wc_product_id' => null, 'name' => 'Teszt termék',
+            'qty' => 1, 'vat_rate' => '27', 'unit_cost_net' => 1000.0, 'unit_cost_gross' => 1270.0,
+        ]];
+
+        $first = $db->recordPurchase(['discount_percent' => 0], $items, 'purchase-idem-key-1');
+        $this->assertGreaterThan(0, $first['purchase_id']);
+
+        // Egy második recordPurchase ugyanazzal a kulccsal az adatbázis
+        // szintjén (UNIQUE INDEX) kell hogy elbukjon — pontosan ugyanaz a
+        // garancia, mint insertSale()-nél, lásd recordPurchase() docblockja.
+        $this->expectException(PDOException::class);
+        $db->recordPurchase(['discount_percent' => 0], $items, 'purchase-idem-key-1');
+    }
+
+    public function testRecordPurchaseAllowsMultipleNullIdempotencyKeys(): void
+    {
+        $db = tests_new_database();
+        $productId = $db->saveProduct($this->sampleProduct());
+        $items = [[
+            'product_id' => $productId, 'wc_product_id' => null, 'name' => 'Teszt termék',
+            'qty' => 1, 'vat_rate' => '27', 'unit_cost_net' => 1000.0, 'unit_cost_gross' => 1270.0,
+        ]];
+
+        $first = $db->recordPurchase(['discount_percent' => 0], $items);
+        $second = $db->recordPurchase(['discount_percent' => 0], $items);
+        $this->assertNotSame($first['purchase_id'], $second['purchase_id']);
+    }
+
+    public function testFindPurchaseByIdempotencyKeyReturnsTheOriginalPurchase(): void
+    {
+        $db = tests_new_database();
+        $productId = $db->saveProduct($this->sampleProduct());
+        $items = [[
+            'product_id' => $productId, 'wc_product_id' => null, 'name' => 'Teszt termék',
+            'qty' => 1, 'vat_rate' => '27', 'unit_cost_net' => 1000.0, 'unit_cost_gross' => 1270.0,
+        ]];
+        $result = $db->recordPurchase(['discount_percent' => 0], $items, 'purchase-idem-key-2', 'fp-hash-xyz');
+
+        $found = $db->findPurchaseByIdempotencyKey('purchase-idem-key-2');
+        $this->assertNotNull($found);
+        $this->assertSame($result['purchase_id'], (int) $found['id']);
+        $this->assertSame('fp-hash-xyz', $found['idempotency_fingerprint']);
+
+        $this->assertNull($db->findPurchaseByIdempotencyKey('does-not-exist'));
+        $this->assertNull($db->findPurchaseByIdempotencyKey(''));
+    }
+
+    public function testRecordPurchaseEnqueuesWcPushForSyncedItemsOnly(): void
+    {
+        $db = tests_new_database();
+        $syncedId = $db->saveProduct($this->sampleProduct(['sync_to_woocommerce' => true]));
+        $db->pdo()->prepare('UPDATE products SET wc_product_id = 555 WHERE id = ?')->execute([$syncedId]);
+        $unsyncedId = $db->saveProduct($this->sampleProduct());
+
+        $items = [
+            ['product_id' => $syncedId, 'wc_product_id' => 555, 'name' => 'Szinkronizált', 'qty' => 1, 'vat_rate' => '27', 'unit_cost_net' => 100.0, 'unit_cost_gross' => 127.0],
+            ['product_id' => $unsyncedId, 'wc_product_id' => null, 'name' => 'Nem szinkronizált', 'qty' => 1, 'vat_rate' => '27', 'unit_cost_net' => 100.0, 'unit_cost_gross' => 127.0],
+        ];
+        $result = $db->recordPurchase(['discount_percent' => 0], $items);
+
+        $queued = $db->claimQueuedWcPush();
+        $this->assertNotNull($queued, 'A WC-vel szinkronizált tételhez tartozó push-nak be kell kerülnie a queue-ba.');
+        $this->assertSame($syncedId, (int) $queued['product_id']);
+        $this->assertSame('purchase', $queued['trigger_type']);
+        $this->assertSame($result['purchase_id'], (int) $queued['trigger_id']);
+
+        $this->assertNull($db->claimQueuedWcPush(), 'A nem szinkronizált tételhez NEM szabad push-sort létrehozni.');
+    }
+
+    public function testEnqueueWcPushIsIdempotentForTheSameTriggerEvent(): void
+    {
+        $db = tests_new_database();
+        $productId = $db->saveProduct($this->sampleProduct());
+
+        $first = $db->enqueueWcPush($productId, 555, 'sale', 42);
+        $second = $db->enqueueWcPush($productId, 555, 'sale', 42);
+
+        $this->assertNotNull($first);
+        $this->assertNull($second, 'Ugyanaz a kiváltó esemény (sale:42, ugyanaz a termék) kétszer NEM ütemezhető be — idempotens no-op.');
+    }
+
+    public function testClaimQueuedWcPushIsExclusiveUntilStale(): void
+    {
+        $db = tests_new_database();
+        $productId = $db->saveProduct($this->sampleProduct());
+        $db->enqueueWcPush($productId, 555, 'sale', 1);
+
+        $claimed = $db->claimQueuedWcPush(600);
+        $this->assertNotNull($claimed);
+        // Egy második claim ugyanarra a (most 'processing' állapotú, friss
+        // zárú) sorra nem szerezhet semmit — pontosan a claimInvoiceRow()
+        // mintája.
+        $this->assertNull($db->claimQueuedWcPush(600), 'A már claim-elt sor ne legyen újra megszerezhető egy friss záron belül.');
+    }
+
+    public function testWcPushRetryDeadLetterAndManualResetLifecycle(): void
+    {
+        $db = tests_new_database();
+        $productId = $db->saveProduct($this->sampleProduct());
+        $row = $db->enqueueWcPush($productId, 555, 'sale', 1);
+        $id = (int) $row['id'];
+
+        $db->claimQueuedWcPush();
+        $db->scheduleWcPushRetry($id, 'átmeneti hiba', date('Y-m-d H:i:s', time() - 1), 1);
+        $refetched = $db->getWcPushQueueRowById($id);
+        $this->assertSame('queued', $refetched['status']);
+        $this->assertSame(1, (int) $refetched['attempts']);
+
+        $db->markWcPushDeadLetter($id, 'végleg kimerült backoff');
+        $refetched = $db->getWcPushQueueRowById($id);
+        $this->assertSame('dead_letter', $refetched['status']);
+
+        $this->assertTrue($db->resetWcPushForManualRetry($id));
+        $refetched = $db->getWcPushQueueRowById($id);
+        $this->assertSame('queued', $refetched['status']);
+        $this->assertSame(0, (int) $refetched['attempts']);
+    }
+
     public function testTryClaimInvoiceIssuanceIsExclusiveUntilReleased(): void
     {
         $db = tests_new_database();

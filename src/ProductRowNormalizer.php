@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/PriceValidator.php';
+
 class ProductRowNormalizer
 {
     private const ALLOWED_VAT_RATES = ['27', '18', '5', '0'];
@@ -64,6 +66,31 @@ class ProductRowNormalizer
             return true;
         }
         return false;
+    }
+
+    /**
+     * @return string|null null, ha a sor ár-mezői érvényesek, egyébként egy
+     *         admin-nak mutatható rövid hibaüzenet. Lásd PriceValidator
+     *         docblockja az üzleti szabályért (negatív TILOS, nulla
+     *         megengedett). A hívónak (import-commit.php) ezt a sort NEM
+     *         szabad importálnia — de a többi, érvényes sort igen (lásd ott
+     *         a "soronkénti, nem all-or-nothing" viselkedés indoklását) —,
+     *         és NEM keverendő össze shouldSkip()-pel: az egy MÁS okból
+     *         (nem valódi termék-sor) hagy ki sorokat, csendben, hiba
+     *         nélkül; ez itt egy VALÓDI termék-sort jelez HIBÁSNAK.
+     */
+    public static function validationError(array $normalized): ?string
+    {
+        foreach ([
+            'net_price'          => 'nettó ár',
+            'price'               => 'bruttó ár',
+            'purchase_price_net' => 'beszerzési ár',
+        ] as $field => $label) {
+            if (!PriceValidator::isValid($normalized[$field])) {
+                return "Érvénytelen $label ({$normalized[$field]}) — negatív ár nem importálható.";
+            }
+        }
+        return null;
     }
 
     public static function parseNumber(string $raw): float

@@ -18,8 +18,7 @@ async function loadPurchases() {
     if (fQuery.value.trim()) params.set('query', fQuery.value.trim());
 
     try {
-        const res = await fetch('/api/purchases-list.php?' + params.toString());
-        const data = await res.json();
+        const data = await fetchJson('/api/purchases-list.php?' + params.toString());
         renderResults(data.purchases || []);
     } catch (err) {
         resultsBody.innerHTML = `<tr><td colspan="6" class="muted">Hiba: ${escapeHtml(err.message)}</td></tr>`;

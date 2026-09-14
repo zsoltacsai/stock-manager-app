@@ -339,6 +339,7 @@ if (!Auth::isLoggedIn($appSettings)) {
     </div>
 </div>
 
+<script src="api.js"></script>
 <script src="topbar.js"></script>
 <script src="barcode-scanner.js"></script>
 <script src="vendor/tinymce/tinymce.min.js"></script>

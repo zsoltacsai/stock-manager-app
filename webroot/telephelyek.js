@@ -21,11 +21,14 @@ function getCurrentStaffId() {
 }
 
 async function loadLocations() {
-    const res = await fetch('/api/locations-list.php');
-    const data = await res.json();
-    allLocations = data.locations || [];
-    renderLocations();
-    populateTransferSelects();
+    try {
+        const data = await fetchJson('/api/locations-list.php');
+        allLocations = data.locations || [];
+        renderLocations();
+        populateTransferSelects();
+    } catch (err) {
+        locationsBody.innerHTML = `<tr><td colspan="4" class="muted" style="text-align:center; padding:24px;">Hiba a telephelyek betöltésekor: ${escapeHtml(err.message)}</td></tr>`;
+    }
 }
 
 function renderLocations() {
@@ -178,18 +181,21 @@ transferSubmitBtn.addEventListener('click', async () => {
 // --- Előzmények ---
 async function loadTransferHistory() {
     const body = document.getElementById('transfer-history-body');
-    const res = await fetch('/api/stock-transfer-history.php');
-    const data = await res.json();
-    const transfers = data.transfers || [];
-    body.innerHTML = transfers.length ? transfers.map(t => `
-        <tr>
-            <td>${t.created_at}</td>
-            <td>${escapeHtml(t.product_name)}</td>
-            <td>${escapeHtml(t.from_name || 'Új készlet')}</td>
-            <td>${escapeHtml(t.to_name)}</td>
-            <td>${t.qty}</td>
-        </tr>
-    `).join('') : '<tr><td colspan="5" class="muted" style="text-align:center; padding:24px;">Még nincs mozgatás.</td></tr>';
+    try {
+        const data = await fetchJson('/api/stock-transfer-history.php');
+        const transfers = data.transfers || [];
+        body.innerHTML = transfers.length ? transfers.map(t => `
+            <tr>
+                <td>${t.created_at}</td>
+                <td>${escapeHtml(t.product_name)}</td>
+                <td>${escapeHtml(t.from_name || 'Új készlet')}</td>
+                <td>${escapeHtml(t.to_name)}</td>
+                <td>${t.qty}</td>
+            </tr>
+        `).join('') : '<tr><td colspan="5" class="muted" style="text-align:center; padding:24px;">Még nincs mozgatás.</td></tr>';
+    } catch (err) {
+        body.innerHTML = `<tr><td colspan="5" class="muted" style="text-align:center; padding:24px;">Hiba az előzmények betöltésekor: ${escapeHtml(err.message)}</td></tr>`;
+    }
 }
 
 document.querySelectorAll('.tab-btn').forEach(btn => {

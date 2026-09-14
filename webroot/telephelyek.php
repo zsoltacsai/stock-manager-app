@@ -120,6 +120,7 @@ if (!Auth::isLoggedIn($appSettings)) {
     </div>
 </div>
 
+<script src="api.js"></script>
 <script src="topbar.js"></script>
 <script src="telephelyek.js"></script>
 </body>

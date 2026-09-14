@@ -2059,6 +2059,202 @@ biztonsági `flex-wrap`-ot a korábbi körökben már alkalmazott mintát
 követve, a legkeskenyebb telefonokon esetlegesen szoros illeszkedés
 elkerülésére.
 
+## FountainTrade 1.1.1 — stabilitási és megbízhatósági javítások
+
+Ez egy **maintenance/reliability release** — nincs benne új nagy üzleti
+funkció, kizárólag a napi használat stabilitását és adatbiztonságát
+javító, célzott javítások, a jelenlegi 1.1.0 architektúrához illesztve.
+
+### Beszerzés-idempotencia
+
+A beszerzés-rögzítés (`api/purchase-save.php`) korábban NEM rendelkezett
+idempotencia-védelemmel — csak a kasszai eladás (`api/sale.php`)
+`sales.idempotency_key`-je (lásd fentebb, 1.0-s bevezetés). Egy dupla
+kattintás, hálózati újrapróbálkozás vagy timeout utáni kézi újraküldés
+emiatt két külön beszerzési rekordot hozhatott létre, duplán megnövelt
+készlettel.
+
+A javítás PONTOSAN a bevált sale-mintát követi:
+- A kliens (`beszerzes.js`) egy `crypto.randomUUID()`-alapú
+  `idempotency_key`-t generál minden beszerzés-rögzítési kísérlethez,
+  ami sikeres mentésig változatlan marad (retry ugyanazt küldi újra).
+- `purchases.idempotency_key` + `purchases.idempotency_fingerprint`
+  oszlopok, UNIQUE INDEX a kulcson (lásd
+  `Database::migrateV23PurchaseIdempotency()`).
+- `api/purchase-save.php`: előzetes ellenőrzés (`findPurchaseByIdempotencyKey()`)
+  gyors, nem-versenyhelyzetes újraküldésre; a TÉNYLEGES, versenyhelyzet-
+  mentes védelmet a DB UNIQUE indexe adja — egy `PDOException`
+  UNIQUE-ütközés esetén a nyertes kérés eredménye kerül visszajátszásra
+  (`replayed: true`), nem hiba.
+- Az ujjlenyomat (fingerprint) megvédi az ellen, hogy ugyanazt a kulcsot
+  valaki egy ténylegesen ELTÉRŐ tartalmú kéréshez próbálja újrafelhasználni
+  (409 Conflict).
+- Valódi, 16 különálló OS-folyamattal bizonyítva
+  (`tests/PurchaseAndWcPushConcurrencyTest.php`): 16 egyidejű, azonos
+  kulcsú beszerzés-kísérlet → pontosan 1 `purchases`-sor, pontosan 1×-es
+  készletnövekedés.
+
+### WooCommerce készlet-push — aszinkron queue
+
+Korábban `api/sale.php`, `api/purchase-save.php` és
+`api/stock-take-complete.php` mindegyike **szinkron, blokkoló** módon
+hívta a `WooCommerceClient::updateStock()`-ot a kérés-válasz cikluson
+BELÜL — egy lassú vagy elérhetetlen WooCommerce-szerver emiatt
+közvetlenül megnövelte a kassza/beszerzés/leltár válaszidejét (akár a
+cURL timeout teljes hosszáig).
+
+Az új architektúra PONTOSAN a bevált NAV-queue mintáját követi (lásd
+lentebb "Számla-műveletek" szakasz), csak egyfázisú állapotgéppel:
+
+```
+sale/purchase/stock-take COMMIT
+        ↓ (ugyanabban a tranzakcióban: Database::enqueueWcPush())
+wc_push_queue (queued)
+        ↓ (külön, cron-indított worker: WcPushQueueWorker)
+queued → processing → done | failed | dead_letter (retry esetén vissza queued-ra)
+```
+
+- **`wc_push_queue` tábla** (`Database::migrateV24WcPushQueue()`):
+  `status`/`attempts`/`next_attempt_at`/`locked_at`/`last_error` — a
+  `invoices` tábla queue-állapotgépének mintája, csak NINCS "beküldve,
+  státuszra várunk" köztes fázis (a WC `updateStock()` hívás önmagában
+  eldönti a sikert).
+- **Idempotens beütemezés**: `operation_key = 'push:{trigger_type}:{trigger_id}:{product_id}'`
+  UNIQUE — ugyanaz a kiváltó esemény (dupla kattintás) nem ütemezhető be
+  kétszer. A TÉNYLEGES "ne fusson kétszer egyidejűleg" védelmet a
+  `claimQueuedWcPush()` feltételes UPDATE-je adja (ugyanaz a
+  claim-with-lock minta, mint a NAV queue-nál).
+- **A push a KIVÁLTÁS pillanatában rögzül, a KÜLDÉS a push PILLANATÁBAN
+  érvényes, friss készletet olvassa** — nem egy beütemezéskori
+  pillanatképet — így egy gyorsan egymást követő két esemény (pl. egy
+  eladás és egy utána következő beszerzés) sose írhat felül egy
+  elavult abszolút értékkel.
+- **Retry/backoff**: ugyanaz a 9-lépéses ütemezés (1p/5p/15p/30p/1ó/3ó/
+  6ó/12ó/24ó), majd `dead_letter` (admin kézi újrapróbálkozásig).
+- **Hiba-osztályozás** (`WooCommerceRequestException`, lásd
+  `src/WooCommerceClient.php`): connect-timeout ÉS teljes-kérés-timeout
+  KÜLÖN (`CURLOPT_CONNECTTIMEOUT` ≠ `CURLOPT_TIMEOUT`); DNS-hiba/
+  kapcsolódási hiba/időtúllépés → mind ÁTMENETI (retryable); HTTP 5xx →
+  ÁTMENETI; HTTP 4xx → VÉGLEGES (business rejection, nem retryable);
+  2xx válasz hibás JSON törzzsel → ÁTMENETI (nem tudható biztosan mi
+  történt, de az `updateStock()` idempotens, egy felesleges
+  újrapróbálkozás ártalmatlan).
+- **Cron-végpont**: `api/wc-queue-run.php` (a meglévő `X-Cron-Token`
+  mechanizmuson át, `cron_secret`, ugyanúgy mint `nav-queue-run.php`).
+  Javasolt gyakoriság: percenként vagy néhány percenként.
+- Valódi, 16 folyamatos konkurrencia-teszttel bizonyítva, hogy egyetlen
+  push-sor sose fut le kétszer párhuzamosan
+  (`tests/PurchaseAndWcPushConcurrencyTest.php`).
+
+**Ismert korlát**: a `wc_push_errors` API-mező minden válaszban
+visszafelé kompatibilitásból megmarad, de MOST MINDIG üres — egy
+push-hiba a queue-ban, `sync_log`-ban naplózva jelenik meg, nem a kérés
+azonnali válaszában (hiszen a push már NEM szinkron).
+
+### Ár-validáció
+
+Korábban SEHOL nem volt szerver-oldali ellenőrzés arra, hogy egy termék
+nettó/bruttó eladási ára vagy beszerzési ára ne lehessen negatív (a
+`zero_price` import-előnézeti számláló csak informatív volt, sosem
+blokkolt). Új, központi `PriceValidator` osztály (`src/PriceValidator.php`):
+üzleti szabály — **negatív ár SOSE fogadható el, NULLA ár megengedett**
+(ez már korábban is előfordult, pl. promóciós tételeknél, ezt a
+viselkedést a javítás nem változtatja meg).
+
+Alkalmazva minden ár-írási útvonalon:
+- `api/product-save.php` — kézi termékszerkesztés (400-as hiba negatív/
+  nem-numerikus árra), PLUSZ egy gyors, UX-célú kliens-oldali előzetes
+  ellenőrzés (`product-modal.js`) — a szerver marad a HITELES forrás.
+- CSV/JutaSoft import (`ProductRowNormalizer::validationError()`) — lásd
+  lentebb "Import — soronkénti hibakezelés".
+- WooCommerce-behúzás (`Database::upsertProductFromWc()`) — védelmi
+  mélység: ha a WC véletlenül negatív árat adna vissza, a HELYI (régi,
+  érvényes) ár marad meg, nem íródik felül egy nyilvánvalóan hibás
+  értékkel.
+
+### Import — soronkénti hibakezelés + JutaSoft regressziós fixture
+
+**Soronkénti (nem all-or-nothing) hibakezelés**: `api/import-commit.php`
+egyetlen tranzakcióban dolgozza fel a teljes fájlt (ez NEM változott),
+de egy hibás ÁR miatt érvénytelen sor MOST már egyszerűen kihagyásra
+kerül (`rejected` tömb a válaszban, ok+sor+név), NEM dobja el az egész
+importot — egy "98 érvényes + 2 hibás" eredménye 98 importált + 2
+elutasított sor, nem egy teljes rollback. Az `import-preview.php` egy
+külön `invalid_price` számlálóval (a meglévő `zero_price`-tól
+KÜLÖNVÁLASZTVA — a nulla ár megengedett, a negatív nem) már ELŐZETESEN
+jelzi ezt, mielőtt a tényleges importálás megtörténne.
+
+**JutaSoft regressziós fixture** (`tests/fixtures/jutasoft_export.csv` +
+`tests/JutasoftImportFixtureTest.php`): egy valódi, reprezentatív
+Jutasoft "Raktárkészlet nyomtatás" export-struktúra (6 sornyi
+riport-metaadat a fejléc előtt, termék-sorok teljes/részleges
+azonosítóval, egy negatív (hibás) árú sor, két összesítő/ÁFA-bontás sor
+azonosító nélkül) — végigfuttatva a TELJES pipeline-on
+(`CsvImporter::readRows()` → `ProductRowNormalizer`), nem csak
+elszigetelt inline stringeken. Külön regresszió bizonyítja, hogy a
+"Besz.ár" oszlop (`purchase_price_net`) NETTÓ értékként, ÁFA-konverzió
+NÉLKÜL kerül be (ez már korábban is így működött, most explicit
+tesztelve).
+
+**Import ideiglenes fájlok**: `data/imports/*.upload`/`*.csv` — korábban
+egy elindított, de sose befejezett import (böngészőlap bezárva előnézet
+után) örökre a könyvtárban maradt (élesben egy 435 KB-os, hetekkel
+korábbi árva fájl bizonyította). Az `import-preview.php` MOST minden
+ÚJ előnézet-indításkor egy opportunista seprést végez: minden 4 óránál
+régebbi `.upload`/`.csv` fájlt töröl — konkurrencia-biztos (egy éppen
+folyamatban lévő import fájlja sosem ilyen régi).
+
+### Frontend API-hibakezelés
+
+Az audit szerint 18 lista-betöltő oldal fetch()-hívása NEM (vagy csak
+részben) ellenőrizte a HTTP-válasz `ok` állapotát, mielőtt a törzsét
+adatként feldolgozta volna — egy nem-2xx JSON hibaválasz emiatt csendben
+"üres listaként" jelent meg, a valódi hibaüzenet sose jutott el a
+felhasználóhoz. Új, központi `webroot/api.js` (`fetchJson()` segédfüggvény,
+minden oldalra felvéve `topbar.js` elé) — minden érintett lista-betöltő
+mostantól ezt hívja, és a dobott hibát a saját listaterületén jeleníti
+meg, a betöltés-állapotot mindig visszaállítva.
+
+### Backend hibakezelés
+
+`webroot/api/_bootstrap.php` egy globális `set_exception_handler()` +
+`register_shutdown_function()` párost kapott: minden, egyébként el nem
+kapott `Throwable`/klasszikus PHP fatal hiba egységes, secret nélküli
+JSON `{"error": "..."}` válaszra fordul (500), a teljes részlet az
+`error_log`-ba kerül. `display_errors` explicit kikapcsolva — korábban
+ez a hoszt saját PHP-konfigurációjától függött, nem volt garantált, hogy
+egy el nem kapott hiba ne HTML-formázott, esetleg fájlelérési utat
+tartalmazó választ adjon vissza egy `Content-Type: application/json`
+válaszba ágyazva.
+
+### Tesztek
+
+Új tesztfájlok: `tests/WooCommerceClientTest.php` (valódi loopback
+stub-szerver — timeout/DNS/4xx/5xx/hibás JSON osztályozás),
+`tests/WcPushQueueWorkerTest.php` (claim/retry/backoff/dead-letter,
+szkriptelt fake klienssel), `tests/PurchaseAndWcPushConcurrencyTest.php`
+(2 valódi 16-folyamatos teszt), `tests/JutasoftImportFixtureTest.php` +
+`tests/fixtures/jutasoft_export.csv`. Bővített meglévő fájlok:
+`tests/DatabaseTest.php`, `tests/HttpSecurityTest.php`,
+`tests/MigrationAtomicityTest.php`.
+
+### Adatbázis-migráció
+
+`Database::SCHEMA_VERSION` 22 → **24** (23 = beszerzés-idempotencia,
+24 = `wc_push_queue`). Mindkét motoron (SQLite + MySQL) migrálva, friss
+telepítési séma is frissítve.
+
+**Váratlanul feltárt és javított, meglévő hiba** (nem 1.1.1-es
+regresszió, de csak ekkor vált megfigyelhetővé): a self-update
+rollback-folyamata (`UpdateInstaller`) a MEGLÉVŐ, még nyitva tartott
+adatbázis-kapcsolat ALATT írta felül nyersen a SQLite-fájlt egy
+mentésből — WAL-módban ez valódi fájlsérülést okozhatott
+("database disk image is malformed"), amit egy nagyobb séma
+(pontosan a fenti `wc_push_queue` tábla bevezetése) determinisztikusan
+reprodukálhatóvá tett. Javítva: `Database::closeForExternalFileReplacement()`
++ `reconnect()` — a kapcsolat a nyers fájlcsere KÖRÜL explicit le- majd
+újranyílik, nem csak utólag cserélődik le.
+
 ## Biztonság
 
 **A valódi védelem az, hogy minden adat és minden művelet kizárólag az

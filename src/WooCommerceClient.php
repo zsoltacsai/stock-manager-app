@@ -2,6 +2,26 @@
 
 require_once __DIR__ . '/UrlSafety.php';
 
+/**
+ * WooCommerce-hívás hibája, EXPLICIT megkülönböztetve, hogy a hívó
+ * (elsősorban WcPushQueueWorker, lásd ott) biztonságosan eldönthesse:
+ * érdemes-e újrapróbálkozni, vagy ez egy végleges, üzleti elutasítás.
+ * $retryable=true: hálózati/időtúllépési/DNS-hiba, HTTP 5xx, vagy
+ * hibásan formázott JSON egy egyébként 2xx válaszon (utóbbinál nem
+ * tudható biztosan, mi történt szerver-oldalon, de az updateStock()
+ * maga idempotens — egy felesleges újra-push ártalmatlan). $retryable=false:
+ * HTTP 4xx (a WooCommerce üzletileg elutasította a kérést — rossz
+ * hitelesítő adat, nem létező termék-id, stb. — újrapróbálkozás
+ * ugyanazzal a kéréssel garantáltan ugyanazt az eredményt adná).
+ */
+class WooCommerceRequestException extends RuntimeException
+{
+    public function __construct(string $message, public readonly bool $retryable, public readonly ?int $httpStatus = null)
+    {
+        parent::__construct($message);
+    }
+}
+
 class WooCommerceClient
 {
     private string $baseUrl;
@@ -237,14 +257,38 @@ class WooCommerceClient
             throw new RuntimeException("WooCommerce URL elutasítva: $urlError");
         }
 
+        $curlOpts = UrlSafety::pinnedCurlOptions($url, (string) $resolvedIp);
+        return self::executeRequest($url, $method, $body, $timeout, $this->consumerKey, $this->consumerSecret, $curlOpts);
+    }
+
+    /**
+     * A tényleges cURL-hívás + válasz-osztályozás (retryable/permanent, lásd
+     * WooCommerceRequestException) — KÜLÖN metódusban, az SSRF-kapun
+     * (UrlSafety::check(), lásd request()) TÚL, hogy a válasz-osztályozási
+     * logika (timeout/DNS/4xx/5xx/hibás JSON) valódi HTTP-hívásokkal
+     * tesztelhető legyen egy loopback teszt-stub szerver ellen — a
+     * UrlSafety::check() SZÁNDÉKOSAN elutasít minden loopback/belső címet
+     * (lásd UrlSafetyTest.php a saját, dedikált tesztjéért), tehát a
+     * teljes request()-en át sose lehetne éles SSRF-védelem megkerülése
+     * nélkül loopback ellen tesztelni — ez a metódus-szétválasztás teszi
+     * lehetővé, hogy tests/WooCommerceClientTest.php Reflection-nel
+     * KÖZVETLENÜL ezt hívja, az SSRF-kaput érintetlenül hagyva.
+     */
+    private static function executeRequest(string $url, string $method, ?array $body, int $timeout, string $consumerKey, string $consumerSecret, array $extraCurlOpts = [])
+    {
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CUSTOMREQUEST  => $method,
-            CURLOPT_USERPWD        => $this->consumerKey . ':' . $this->consumerSecret,
+            CURLOPT_USERPWD        => $consumerKey . ':' . $consumerSecret,
             CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+            // A kapcsolódási (DNS-feloldás + TCP/TLS handshake) és a TELJES
+            // kérés-időkorlátja SZÁNDÉKOSAN külön — egy elérhetetlen/nagyon
+            // lassú DNS/hálózat ne várassa a hívót a teljes $timeout-ig, ha a
+            // kapcsolódás maga sem sikerült egy jóval rövidebb idő alatt.
+            CURLOPT_CONNECTTIMEOUT => min(10, $timeout),
             CURLOPT_TIMEOUT        => $timeout,
-        ] + UrlSafety::pinnedCurlOptions($url, (string) $resolvedIp));
+        ] + $extraCurlOpts);
 
         if ($body !== null) {
             curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body));
@@ -252,9 +296,22 @@ class WooCommerceClient
 
         $response = curl_exec($ch);
         if ($response === false) {
+            $errno = curl_errno($ch);
             $err = curl_error($ch);
             curl_close($ch);
-            throw new RuntimeException("WooCommerce request failed: $err");
+            // Minden cURL-szintű átviteli hiba (DNS-feloldás sikertelen,
+            // kapcsolódás sikertelen, időtúllépés, TLS-hiba stb.) ÁTMENETI-
+            // nek tekintett — lásd WooCommerceRequestException docblockja.
+            // Konkrét kódonkénti szöveges megkülönböztetés csak
+            // diagnosztikai célt szolgál itt, a retryable=true minden
+            // esetben ugyanaz marad.
+            $kind = match ($errno) {
+                CURLE_COULDNT_RESOLVE_HOST => 'DNS-feloldási hiba',
+                CURLE_COULDNT_CONNECT => 'kapcsolódási hiba',
+                CURLE_OPERATION_TIMEDOUT => 'időtúllépés',
+                default => 'átviteli hiba',
+            };
+            throw new WooCommerceRequestException("WooCommerce request failed ($kind): $err", retryable: true);
         }
 
         $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -264,7 +321,23 @@ class WooCommerceClient
 
         if ($status >= 400) {
             $msg = $decoded['message'] ?? $response;
-            throw new RuntimeException("WooCommerce API error ($status): $msg");
+            // HTTP 5xx: a WooCommerce/szerver oldali, jellemzően ÁTMENETI
+            // hiba (túlterhelt szerver, ideiglenes kiesés) — érdemes
+            // újrapróbálkozni. HTTP 4xx: a KÉRÉS maga lett elutasítva
+            // (hibás hitelesítő adat, nem létező erőforrás, érvénytelen
+            // mező) — ugyanazzal a kéréssel egy újrapróbálkozás
+            // garantáltan ugyanezt az eredményt adná, tehát VÉGLEGES.
+            throw new WooCommerceRequestException("WooCommerce API error ($status): $msg", retryable: $status >= 500, httpStatus: $status);
+        }
+
+        if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+            // 2xx HTTP-státusz, de a válasz törzse nem érvényes JSON — nem
+            // tudható biztosan, mi történt ténylegesen a WooCommerce
+            // oldalán, ezért ÁTMENETI hibaként kezelt (lásd a
+            // WooCommerceRequestException osztály docblockja: az
+            // updateStock() idempotens, egy felesleges újrapróbálkozás
+            // ártalmatlan), NEM csendben elfogadott "sikerként".
+            throw new WooCommerceRequestException('WooCommerce válasz nem érvényes JSON (HTTP ' . $status . ')', retryable: true, httpStatus: $status);
         }
 
         return $decoded;

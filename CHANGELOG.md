@@ -4,6 +4,60 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## [1.1.1] — 2026-09-14 (stabilitási / megbízhatósági kiadás)
+
+**Maintenance release — nincs új üzleti funkció, kizárólag stabilitási/
+adatbiztonsági javítások. Lásd README "FountainTrade 1.1.1 — stabilitási
+és megbízhatósági javítások" szakasza a teljes indoklásért.**
+
+### Added
+- `purchases.idempotency_key`/`idempotency_fingerprint` + UNIQUE index —
+  beszerzés-idempotencia, a sale-nél már bevált minta (kliens-generált
+  UUID, előzetes ellenőrzés + DB-szintű UNIQUE-ütközés-visszajátszás).
+- `wc_push_queue` tábla + `WcPushQueueWorker` — aszinkron WooCommerce
+  készlet-push, a NAV queue mintáját követve (claim-with-lock, 9-lépéses
+  retry/backoff, dead_letter). Új cron-végpont: `api/wc-queue-run.php`.
+- `WooCommerceRequestException` — timeout/DNS/5xx (retryable) vs. 4xx
+  (végleges) hiba-osztályozás; külön connect- és teljes-kérés-timeout.
+- `src/PriceValidator.php` — központi ár-validáció (negatív tiltva, nulla
+  megengedett), alkalmazva kézi termékszerkesztésen, CSV/JutaSoft
+  importon és WooCommerce-behúzáson.
+- `webroot/api.js` (`fetchJson()`) — egységes fetch()-becsomagolás, minden
+  oldalon felvéve; 18 lista-betöltő oldal hibakezelése javítva (HTTP
+  hibaválasz többé nem jelenik meg csendben üres listaként).
+- Globális backend hibakezelő (`set_exception_handler`/
+  `register_shutdown_function`) `_bootstrap.php`-ban — minden el nem
+  kapott hiba egységes, secret nélküli JSON 500-ra fordul,
+  `display_errors` explicit kikapcsolva.
+- `tests/fixtures/jutasoft_export.csv` + `tests/JutasoftImportFixtureTest.php`
+  — valódi, reprezentatív JutaSoft export-struktúra regressziós tesztje.
+- `Database::closeForExternalFileReplacement()`/`reconnect()` — biztonságos
+  kapcsolat-csere a self-update rollback fájl-visszaállítása körül.
+
+### Changed
+- `api/sale.php`, `api/purchase-save.php`, `api/stock-take-complete.php` —
+  a WooCommerce-push MOST beütemezés (gyors, helyi INSERT, ugyanabban a
+  tranzakcióban, mint a készletváltozás), NEM szinkron, blokkoló hálózati
+  hívás — egy lassú/elérhetetlen WooCommerce-szerver többé nem
+  lassítja a kasszát/beszerzést/leltárt.
+- `api/import-commit.php` — egy hibás árú (negatív) sor mostantól
+  KIHAGYÁSRA kerül (a válasz `rejected` tömbje jelzi), NEM dobja el az
+  egész importot; `api/import-preview.php` egy külön `invalid_price`
+  számlálóval előzetesen jelzi ugyanezt.
+- `api/import-preview.php` — opportunista seprés a `data/imports/`
+  könyvtárban maradt, 4 óránál régebbi árva ideiglenes fájlokra.
+- `sale.php` — az `InvoiceService::processInvoice()` hívása explicit
+  `try/catch`-be került, hogy egy váratlan hiba a MÁR sikeresen rögzített
+  eladás válaszát ne nyelje el egy generikus szerverhiba mögé.
+
+### Fixed
+- Self-update rollback: a `BackupManager::restoreFromFile()` nyers
+  fájlmásolása a MÉG NYITVA lévő DB-kapcsolat alatt valódi SQLite-fájl-
+  sérülést okozhatott ("database disk image is malformed") — a
+  `wc_push_queue` tábla bevezetése (nagyobb séma) tette
+  determinisztikusan reprodukálhatóvá, de a hiba maga a nyers
+  fájlmásolás architektúrájában volt jelen 1.1.0 óta.
+
 ## [1.1.0] — 2026-09-14 (helyesbítő/sztornó számla)
 
 **A MODIFY/STORNO adatmodell ÉS a tényleges NAV/Számlázz.hu kérés-

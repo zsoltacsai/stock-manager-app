@@ -16,10 +16,13 @@ const stfRole = document.getElementById('stf-role');
 const stfActive = document.getElementById('stf-active');
 
 async function loadStaff() {
-    const res = await fetch('/api/staff-list.php?include_inactive=1');
-    const data = await res.json();
-    allStaff = data.staff || [];
-    renderTable();
+    try {
+        const data = await fetchJson('/api/staff-list.php?include_inactive=1');
+        allStaff = data.staff || [];
+        renderTable();
+    } catch (err) {
+        staffBody.innerHTML = `<tr><td colspan="4" class="muted" style="text-align:center; padding:24px;">Hiba a dolgozók betöltésekor: ${escapeHtml(err.message)}</td></tr>`;
+    }
 }
 
 function renderTable() {

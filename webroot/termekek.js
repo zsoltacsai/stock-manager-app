@@ -44,11 +44,14 @@ async function loadSettingsForThreshold() {
 
 async function loadProducts() {
     const includeDeleted = fDeleted.checked ? '?include_deleted=1' : '';
-    const res = await fetch('/api/products.php' + includeDeleted);
-    const data = await res.json();
-    allProducts = data.products || [];
-    populateGroupFilter();
-    renderTable();
+    try {
+        const data = await fetchJson('/api/products.php' + includeDeleted);
+        allProducts = data.products || [];
+        populateGroupFilter();
+        renderTable();
+    } catch (err) {
+        productsBody.innerHTML = `<tr><td colspan="11" class="muted" style="text-align:center; padding:24px;">Hiba a termékek betöltésekor: ${escapeHtml(err.message)}</td></tr>`;
+    }
 }
 
 function populateGroupFilter() {

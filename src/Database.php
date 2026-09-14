@@ -2,20 +2,30 @@
 
 require_once __DIR__ . '/AppVersion.php';
 require_once __DIR__ . '/InvoiceNumbering.php';
+require_once __DIR__ . '/PriceValidator.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 22;
+    private const SCHEMA_VERSION = 24;
 
     private PDO $pdo;
     private string $driver;
+    private array $dbConfig;
 
     public function __construct(array $dbConfig, string $schemaDir)
     {
         $this->driver = $dbConfig['driver'] ?? 'sqlite';
+        $this->dbConfig = $dbConfig;
+        $this->pdo = $this->connect();
 
+        $schemaPath = rtrim($schemaDir, '/') . '/' . ($this->driver === 'mysql' ? 'schema.mysql.sql' : 'schema.sql');
+        $this->ensureSchema($schemaPath);
+    }
+
+    private function connect(): PDO
+    {
         if ($this->driver === 'mysql') {
-            $m = $dbConfig['mysql'];
+            $m = $this->dbConfig['mysql'];
             $dsn = sprintf(
                 'mysql:host=%s;port=%d;dbname=%s;charset=%s',
                 $m['host'],
@@ -23,24 +33,64 @@ class Database
                 $m['database'],
                 $m['charset'] ?? 'utf8mb4'
             );
-            $this->pdo = new PDO($dsn, $m['username'], $m['password'], [
+            return new PDO($dsn, $m['username'], $m['password'], [
                 PDO::ATTR_ERRMODE                  => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_EMULATE_PREPARES         => false,
                 PDO::MYSQL_ATTR_INIT_COMMAND       => "SET NAMES {$m['charset']}",
             ]);
-            $schemaPath = rtrim($schemaDir, '/') . '/schema.mysql.sql';
-        } else {
-            $sqlitePath = $dbConfig['sqlite']['path'];
-            $this->pdo = new PDO('sqlite:' . $sqlitePath);
-            $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-            $this->pdo->exec('PRAGMA foreign_keys = ON;');
-            $this->pdo->exec('PRAGMA journal_mode = WAL;');
-            $this->pdo->exec('PRAGMA busy_timeout = 5000;');
-            $this->pdo->exec('PRAGMA synchronous = NORMAL;');
-            $schemaPath = rtrim($schemaDir, '/') . '/schema.sql';
         }
 
-        $this->ensureSchema($schemaPath);
+        $sqlitePath = $this->dbConfig['sqlite']['path'];
+        $pdo = new PDO('sqlite:' . $sqlitePath);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo->exec('PRAGMA foreign_keys = ON;');
+        $pdo->exec('PRAGMA journal_mode = WAL;');
+        $pdo->exec('PRAGMA busy_timeout = 5000;');
+        $pdo->exec('PRAGMA synchronous = NORMAL;');
+        return $pdo;
+    }
+
+    /**
+     * Új PDO-kapcsolat nyitása UGYANARRA a fájlra/konfigurációra — a
+     * meglévő kapcsolat eldobása, `ensureSchema()` ÚJRAFUTTATÁSA NÉLKÜL
+     * (a sémát nem kell újra ellenőrizni, csak a kapcsolat-objektum
+     * elavult állapotát). Hívandó `closeForExternalFileReplacement()`
+     * UTÁN (lásd ott a teljes indoklást), a fájl-csere befejeztével.
+     */
+    public function reconnect(): void
+    {
+        $this->pdo = $this->connect();
+    }
+
+    /**
+     * A JELENLEGI PDO-kapcsolat TÉNYLEGES lezárása (nem csak lecserélése)
+     * — a hívónak `reconnect()`-tel kell ÚJRANYITNIA, mihelyt a mögöttes
+     * fájl-csere befejeződött. Eközben MINDEN Database-hívás
+     * (Error: "Typed property Database::$pdo must not be accessed before
+     * initialization") hangosan elbukik — ez SZÁNDÉKOS: jelzi, ha valami
+     * véletlenül DB-műveletet próbálna végezni a fájl-csere KÖZBEN.
+     *
+     * 1.1.1 — erre a hívónak (UpdateInstaller::install(), a MIGRÁCIÓ
+     * ELŐTTI DB-mentés rollback-kori visszaállítása KÖRÜL, lásd ott)
+     * KÖTELEZŐEN szüksége van: `BackupManager::restoreFromFile()` a
+     * SQLite fájlt egy NYERS `copy()`-val írja felül — ha eközben EBBEN a
+     * PHP-folyamatban egy MÁSIK, még nyitva lévő PDO/SQLite-kapcsolat is
+     * memory-mappelve/megnyitva tartja UGYANAZT a fájlt (WAL-módban ez az
+     * alapértelmezett), a nyers felülírás a MEGLÉVŐ kapcsolat oldal-
+     * gyorsítótárával/leképezésével ütközve VALÓS fájlsérülést
+     * okozhat, amit egy PUSZTA reconnect() a copy() UTÁN már nem tud
+     * visszamenőleg orvosolni (a fájl MAGA sérült meg, nem csak a
+     * kapcsolat-objektum elavult) — élesben reprodukálva:
+     * "SQLSTATE[HY000]: General error: 11 database disk image is
+     * malformed", determinisztikusan minden alkalommal (lásd
+     * tests/UpdateInstallerTest.php::testHealthCheckFailureTriggersFullRollback).
+     * A kapcsolat TÉNYLEGES, előzetes lezárása (nem csak lecserélése)
+     * garantálja, hogy a raw `copy()` idején SEMMILYEN nyitott handle ne
+     * ütközzön a fájlon ebben a folyamatban.
+     */
+    public function closeForExternalFileReplacement(): void
+    {
+        unset($this->pdo);
     }
 
     public function pdo(): PDO
@@ -137,6 +187,12 @@ class Database
             }
             if ($version < 22) {
                 $this->migrateV22InvoiceOperations();
+            }
+            if ($version < 23) {
+                $this->migrateV23PurchaseIdempotency();
+            }
+            if ($version < 24) {
+                $this->migrateV24WcPushQueue();
             }
         }
 
@@ -1327,6 +1383,102 @@ class Database
             || str_contains($message, '1091'); // MySQL: can't DROP; check that column/key exists
     }
 
+    /**
+     * 1.1.1 — beszerzés-idempotencia, PONTOSAN a sales.idempotency_key
+     * mintáját követve (lásd migrateV17SaleIdempotency() +
+     * migrateV18SaleIdempotencyFingerprint() docblockja a teljes
+     * indoklásért — kulcs+ujjlenyomat pár, dupla kattintás/hálózati
+     * újrapróbálkozás/konkurrens kérés ellen). A sale-nél két külön
+     * migrációs körben (V17/V18) került be — itt, mivel egyszerre,
+     * frissen vezetjük be mindkettőt, egyetlen migrációban kerülnek fel,
+     * felesleges történeti szétválasztás nélkül.
+     */
+    private function migrateV23PurchaseIdempotency(): void
+    {
+        $this->migrateColumns('purchases', [
+            'idempotency_key'         => $this->driver === 'mysql' ? 'VARCHAR(64) NULL' : 'TEXT',
+            'idempotency_fingerprint' => $this->driver === 'mysql' ? 'VARCHAR(64) NULL' : 'TEXT',
+        ]);
+
+        try {
+            $this->pdo->exec($this->driver === 'mysql'
+                ? 'ALTER TABLE purchases ADD UNIQUE KEY uq_purchases_idempotency_key (idempotency_key)'
+                : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_purchases_idempotency_key ON purchases(idempotency_key)');
+        } catch (PDOException $e) {
+            if (!$this->isBenignSchemaError($e)) {
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * 1.1.1 — aszinkron WooCommerce készlet-push sor, PONTOSAN az
+     * `invoices` queue-állapotgépének mintáját követve (lásd
+     * migrateV19Invoices() docblockja: queued/processing/status +
+     * attempts/next_attempt_at/locked_at/last_error) — csak EGY fázisú
+     * (nincs "beküldve, státuszra várunk" köztes állapot, mert a WC
+     * updateStock() hívás önmagában szinkron/azonnal eldönti a sikert),
+     * ezért nincs 'submitted' állapot, csak queued → processing →
+     * done/failed/dead_letter (retry esetén vissza queued-ra, ugyanúgy,
+     * mint scheduleInvoiceRetry()-nál).
+     *
+     * Az `operation_key` ('push:{trigger_type}:{trigger_id}:{product_id}')
+     * a konkrét KIVÁLTÓ ESEMÉNYHEZ (egy adott eladás/beszerzés/leltár-
+     * lezárás egy adott tételéhez) kötött, nem magához a termékhez — két
+     * KÜLÖNBÖZŐ esemény (pl. egy eladás és egy utána következő beszerzés
+     * ugyanarra a termékre) két külön sort kap, mindkettő a push
+     * IDŐPONTJÁBAN érvényes, friss készletet olvassa ki (lásd
+     * WcPushQueueWorker::processDuePushes()), nem egy a beütemezéskor
+     * rögzített pillanatképet — enélkül egy gyorsan egymást követő két
+     * esemény push-sorrendje felcserélődve egy ELAVULT abszolút értéket
+     * írhatna felül a WooCommerce oldalán. A UNIQUE(operation_key) csak
+     * azt zárja ki, hogy UGYANAZ a kiváltó esemény (dupla kattintás,
+     * hálózati újrapróbálkozás) kétszer kerüljön beütemezésre — ez az
+     * idempotens beütemezés; a TÉNYLEGES "ne fusson kétszer egyidejűleg"
+     * védelmet a claimQueuedWcPush() feltételes UPDATE-je adja, ugyanaz a
+     * minta, mint claimInvoiceRow()-nál.
+     */
+    private function migrateV24WcPushQueue(): void
+    {
+        $isMysql = $this->driver === 'mysql';
+        $pk = $isMysql ? 'INT UNSIGNED AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
+        $intCol = $isMysql ? 'INT UNSIGNED NOT NULL' : 'INTEGER NOT NULL';
+        $ts = $isMysql ? 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' : "TEXT NOT NULL DEFAULT (datetime('now'))";
+        $tsNull = $isMysql ? 'DATETIME NULL' : 'TEXT';
+        $engine = $isMysql ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : '';
+
+        try {
+            $this->pdo->exec("CREATE TABLE IF NOT EXISTS wc_push_queue (
+                id              $pk,
+                product_id      $intCol,
+                wc_product_id   $intCol,
+                trigger_type    VARCHAR(16) NOT NULL,
+                trigger_id      $intCol,
+                operation_key   VARCHAR(191) NOT NULL,
+                status          VARCHAR(16) NOT NULL DEFAULT 'queued',
+                attempts        INT UNSIGNED NOT NULL DEFAULT 0,
+                next_attempt_at $tsNull,
+                locked_at       $tsNull,
+                last_error      TEXT,
+                created_at      $ts,
+                updated_at      $ts
+                " . ($isMysql ? ', CONSTRAINT fk_wc_push_queue_product FOREIGN KEY (product_id) REFERENCES products(id)' : '') . "
+            )$engine");
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        foreach ([
+            $isMysql
+                ? 'ALTER TABLE wc_push_queue ADD UNIQUE KEY uq_wc_push_queue_operation_key (operation_key)'
+                : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_wc_push_queue_operation_key ON wc_push_queue(operation_key)',
+            'CREATE INDEX idx_wc_push_queue_status_next_attempt ON wc_push_queue(status, next_attempt_at)',
+            'CREATE INDEX idx_wc_push_queue_product_id ON wc_push_queue(product_id)',
+        ] as $sql) {
+            try {
+                $this->pdo->exec($sql);
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+        }
+    }
+
     // ---- Önfrissítés (GitHub Release-alapú) ----
 
     private const UPDATE_TERMINAL_STATES = ['idle', 'completed', 'failed', 'rolled_back', 'manual_recovery_required'];
@@ -2033,6 +2185,20 @@ class Database
     public function upsertProductFromWc(array $p): void
     {
         $existing = $this->findProductByWcId((int) $p['wc_product_id']);
+
+        // Védelmi mélység — lásd PriceValidator docblockja: a WooCommerce
+        // REST API-nak elméletileg SOSE kellene negatív árat visszaadnia
+        // (a WC saját admin felülete is tiltja), de ha mégis (hibás
+        // harmadik fél plugin, kézi API-hívás a WC oldalán stb.), egy
+        // meglévő helyi terméknél inkább MEGTARTJUK a régi, érvényes árat,
+        // mint hogy egy nyilvánvalóan hibás értékkel felülírjuk — egy ÚJ
+        // (helyben még nem létező) terméknél pedig 0-ra esik vissza,
+        // ugyanúgy, mint WooCommerceClient::normaliseProduct() hiányzó ár
+        // esetén (lásd ott).
+        if (!PriceValidator::isValid($p['price'] ?? null)) {
+            $this->logSync('pull', $existing['id'] ?? null, "Érvénytelen ár érkezett WooCommerce-ről '{$p['name']}'-hez (WC #{$p['wc_product_id']}) — az ár mező kihagyva ennél a szinkronnál.");
+            $p['price'] = $existing['price'] ?? 0.0;
+        }
         if (!$existing && !empty($p['barcode'])) {
             $byBarcode = $this->findProductByBarcode($p['barcode']);
             // A vonalkód-egyezés csak akkor számít biztonságos párosításnak,
@@ -3488,7 +3654,18 @@ class Database
     // Purchases (beszerzés — incoming stock)
     // ---------------------------------------------------------------
 
-    public function recordPurchase(array $purchase, array $items): array
+    /**
+     * @throws PDOException UNIQUE constraint hibával, ha $idempotencyKey nem
+     *         üres és már létezik egy purchase ugyanezzel a kulccsal —
+     *         PONTOSAN ugyanaz a garancia, mint insertSale()-nél (lásd ott a
+     *         docblockot): az adatbázis UNIQUE INDEXe zárja ki atomikusan,
+     *         hogy két, majdnem egyidejű, ugyanazt a kulcsot használó kérés
+     *         mindkettő sikerüljön. A hívónak (api/purchase-save.php) ezt a
+     *         konkrét hibát el kell kapnia, és findPurchaseByIdempotencyKey()-
+     *         jel visszaadnia az (időközben a MÁSIK kérés által létrehozott)
+     *         eredeti beszerzést, újrafuttatás helyett.
+     */
+    public function recordPurchase(array $purchase, array $items, ?string $idempotencyKey = null, ?string $idempotencyFingerprint = null): array
     {
         // A kedvezmény (discount_percent) a beszerzés végösszegére vonatkozik
         // — tétel-szinten, kerekítés ELŐTT alkalmazzuk, hogy a fejléc-összeg
@@ -3519,11 +3696,13 @@ class Database
                 INSERT INTO purchases (
                     supplier_id, supplier_name, supplier_tax_number, supplier_country, supplier_zip,
                     supplier_city, supplier_address, payment_method, currency,
-                    discount_percent, paid, note, total_net, total_gross, created_at
+                    discount_percent, paid, note, total_net, total_gross,
+                    idempotency_key, idempotency_fingerprint, created_at
                 ) VALUES (
                     :supplier_id, :supplier_name, :supplier_tax_number, :supplier_country, :supplier_zip,
                     :supplier_city, :supplier_address, :payment_method, :currency,
-                    :discount_percent, :paid, :note, :total_net, :total_gross, :now
+                    :discount_percent, :paid, :note, :total_net, :total_gross,
+                    :idempotency_key, :idempotency_fingerprint, :now
                 )
             ');
             $stmt->execute([
@@ -3541,6 +3720,8 @@ class Database
                 ':note'                => $purchase['note'] ?? null,
                 ':total_net'           => round($totalNet, 2),
                 ':total_gross'         => round($totalGross, 2),
+                ':idempotency_key'         => ($idempotencyKey !== null && $idempotencyKey !== '') ? $idempotencyKey : null,
+                ':idempotency_fingerprint' => ($idempotencyFingerprint !== null && $idempotencyFingerprint !== '') ? $idempotencyFingerprint : null,
                 ':now'                 => $now,
             ]);
             $purchaseId = (int) $this->pdo->lastInsertId();
@@ -3574,6 +3755,17 @@ class Database
 
                 $this->applyPurchaseLine($item['product_id'], $item['qty'], $item['unit_cost_net']);
                 $syncStmt->execute(['purchase', $item['product_id'], "Purchase #$purchaseId: +{$item['qty']}", $now]);
+
+                // A WooCommerce-push beütemezése UGYANEBBEN a tranzakcióban —
+                // lásd migrateV24WcPushQueue() docblockja: vagy a beszerzés ÉS
+                // a hozzá tartozó push-sor MINDKETTŐ rögzül, vagy egyik sem
+                // (nem maradhat dangling push egy visszagörgetett beszerzéshez,
+                // és nem veszhet el egy push egy sikeresen commitolt
+                // beszerzéshez, ha a folyamat pont a commit és egy külön,
+                // tranzakción kívüli beütemezés között omlana össze).
+                if (!empty($item['wc_product_id'])) {
+                    $this->enqueueWcPush((int) $item['product_id'], (int) $item['wc_product_id'], 'purchase', $purchaseId);
+                }
             }
 
             $this->commit();
@@ -3591,6 +3783,143 @@ class Database
             'total_gross'      => round($totalGross, 2),
             'updated_products' => $updatedProducts,
         ];
+    }
+
+    public function findPurchaseByIdempotencyKey(string $key): ?array
+    {
+        if ($key === '') {
+            return null;
+        }
+        $stmt = $this->pdo->prepare('SELECT * FROM purchases WHERE idempotency_key = ?');
+        $stmt->execute([$key]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    // ---- WooCommerce push queue (1.1.1) — lásd migrateV24WcPushQueue() docblockja ----
+
+    /**
+     * Egy adott kiváltó esemény (eladás/beszerzés/leltár-lezárás egy adott
+     * tételének) készlet-push-át ütemezi be — idempotens, lásd
+     * migrateV24WcPushQueue() docblockja. A hívónak (recordPurchase(),
+     * sale.php, stock-take-complete.php) ezt UGYANABBAN a tranzakcióban kell
+     * hívnia, mint ami a készletváltozást maga okozza — tartóssági
+     * (durability) garancia, nem versenyhelyzet-védelem.
+     */
+    public function enqueueWcPush(int $productId, int $wcProductId, string $triggerType, int $triggerId): ?array
+    {
+        $now = date('Y-m-d H:i:s');
+        $operationKey = 'push:' . $triggerType . ':' . $triggerId . ':' . $productId;
+        $sql = $this->driver === 'mysql'
+            ? "INSERT IGNORE INTO wc_push_queue (product_id, wc_product_id, trigger_type, trigger_id, operation_key, status, attempts, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?)"
+            : "INSERT OR IGNORE INTO wc_push_queue (product_id, wc_product_id, trigger_type, trigger_id, operation_key, status, attempts, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?)";
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute([$productId, $wcProductId, $triggerType, $triggerId, $operationKey, $now, $now]);
+
+        if ($stmt->rowCount() === 0) {
+            // UNIQUE(operation_key) ütközés — ugyanaz a kiváltó esemény már
+            // beütemezte ezt a push-t (dupla kattintás/hálózati
+            // újrapróbálkozás); idempotens no-op, lásd insertQueuedInvoice().
+            return null;
+        }
+
+        return $this->getWcPushQueueRowById((int) $this->pdo->lastInsertId());
+    }
+
+    public function getWcPushQueueRowById(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM wc_push_queue WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    /**
+     * Atomikusan lefoglal egy esedékes 'queued' sort feldolgozásra —
+     * PONTOSAN ugyanaz a claim-with-lock minta, mint claimInvoiceRow()-nál
+     * (lásd ott a race-safety indoklást): a SELECT csak jelölteket gyűjt, a
+     * tényleges kizárólagosságot minden jelöltre egy feltételes UPDATE adja.
+     */
+    public function claimQueuedWcPush(int $staleAfterSeconds = 600): ?array
+    {
+        $now = date('Y-m-d H:i:s');
+        $staleBefore = date('Y-m-d H:i:s', time() - $staleAfterSeconds);
+
+        $candidateStmt = $this->pdo->prepare("
+            SELECT id FROM wc_push_queue
+            WHERE status IN ('queued', 'processing')
+              AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+              AND (locked_at IS NULL OR locked_at < ?)
+            ORDER BY next_attempt_at IS NULL DESC, next_attempt_at ASC, id ASC
+            LIMIT 20
+        ");
+        $candidateStmt->execute([$now, $staleBefore]);
+        $candidateIds = $candidateStmt->fetchAll(PDO::FETCH_COLUMN);
+
+        foreach ($candidateIds as $id) {
+            $claimStmt = $this->pdo->prepare("
+                UPDATE wc_push_queue SET status = 'processing', locked_at = ?, updated_at = ?
+                WHERE id = ? AND status IN ('queued', 'processing') AND (locked_at IS NULL OR locked_at < ?)
+            ");
+            $claimStmt->execute([$now, $now, $id, $staleBefore]);
+            if ($claimStmt->rowCount() > 0) {
+                return $this->getWcPushQueueRowById((int) $id);
+            }
+        }
+
+        return null;
+    }
+
+    public function markWcPushDone(int $id): void
+    {
+        $this->pdo->prepare("
+            UPDATE wc_push_queue
+            SET status = 'done', last_error = NULL, next_attempt_at = NULL, locked_at = NULL, updated_at = ?
+            WHERE id = ?
+        ")->execute([date('Y-m-d H:i:s'), $id]);
+    }
+
+    /** Végleges, NEM újrapróbálandó hiba (pl. HTTP 4xx — üzleti elutasítás) — lásd markInvoiceFailed(). */
+    public function markWcPushFailed(int $id, string $error): void
+    {
+        $this->pdo->prepare("
+            UPDATE wc_push_queue
+            SET status = 'failed', last_error = ?, next_attempt_at = NULL, locked_at = NULL, updated_at = ?
+            WHERE id = ?
+        ")->execute([$error, date('Y-m-d H:i:s'), $id]);
+    }
+
+    public function scheduleWcPushRetry(int $id, string $error, string $nextAttemptAt, int $attempts): void
+    {
+        $this->pdo->prepare("
+            UPDATE wc_push_queue
+            SET status = 'queued', last_error = ?, next_attempt_at = ?, locked_at = NULL, attempts = ?, updated_at = ?
+            WHERE id = ?
+        ")->execute([$error, $nextAttemptAt, $attempts, date('Y-m-d H:i:s'), $id]);
+    }
+
+    /** @see markInvoiceDeadLetter() — a backoff-ütemezés kimerült. */
+    public function markWcPushDeadLetter(int $id, string $error): void
+    {
+        $this->pdo->prepare("
+            UPDATE wc_push_queue
+            SET status = 'dead_letter', last_error = ?, next_attempt_at = NULL, locked_at = NULL, updated_at = ?
+            WHERE id = ?
+        ")->execute([$error, date('Y-m-d H:i:s'), $id]);
+    }
+
+    /** @see resetInvoiceForManualRetry() — admin-kezdeményezett kézi újrapróbálkozás terminális állapotból. */
+    public function resetWcPushForManualRetry(int $id): bool
+    {
+        $stmt = $this->pdo->prepare("
+            UPDATE wc_push_queue
+            SET status = 'queued', attempts = 0, next_attempt_at = NULL, locked_at = NULL, last_error = NULL, updated_at = ?
+            WHERE id = ? AND status IN ('failed', 'dead_letter')
+        ");
+        $stmt->execute([date('Y-m-d H:i:s'), $id]);
+        return $stmt->rowCount() > 0;
     }
 
     public function bulkSetProductsDeleted(array $ids, bool $deleted): void
@@ -4744,6 +5073,10 @@ class Database
                             'sync_to_woocommerce' => (int) $product['sync_to_woocommerce'],
                             'name' => $product['name'],
                         ];
+                        // A WooCommerce-push beütemezése UGYANEBBEN a
+                        // tranzakcióban — lásd migrateV24WcPushQueue()
+                        // docblockja / recordPurchase() ugyanezen mintája.
+                        $this->enqueueWcPush((int) $product['id'], (int) $product['wc_product_id'], 'stock_take', $id);
                     }
                 }
             }

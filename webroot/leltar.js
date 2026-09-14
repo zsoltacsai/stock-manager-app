@@ -20,9 +20,14 @@ function getCurrentStaffId() {
 }
 
 async function loadStockTakes() {
-    const res = await fetch('/api/stock-takes-list.php');
-    const data = await res.json();
-    const takes = data.stock_takes || [];
+    let takes;
+    try {
+        const data = await fetchJson('/api/stock-takes-list.php');
+        takes = data.stock_takes || [];
+    } catch (err) {
+        stockTakesBody.innerHTML = `<tr><td colspan="4" class="muted" style="text-align:center; padding:24px;">Hiba a leltárak betöltésekor: ${escapeHtml(err.message)}</td></tr>`;
+        return;
+    }
 
     stockTakesBody.innerHTML = takes.length ? takes.map(t => `
         <tr class="clickable-row" data-id="${t.id}">

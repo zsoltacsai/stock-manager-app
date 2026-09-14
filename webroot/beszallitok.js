@@ -16,10 +16,13 @@ const el = {};
 fields.forEach(f => { el[f] = document.getElementById('s-' + f); });
 
 async function loadSuppliers() {
-    const res = await fetch('/api/suppliers-list.php?include_deleted=1');
-    const data = await res.json();
-    allSuppliers = data.suppliers || [];
-    renderTable();
+    try {
+        const data = await fetchJson('/api/suppliers-list.php?include_deleted=1');
+        allSuppliers = data.suppliers || [];
+        renderTable();
+    } catch (err) {
+        suppliersBody.innerHTML = `<tr><td colspan="6" class="muted" style="text-align:center; padding:24px;">Hiba a beszállítók betöltésekor: ${escapeHtml(err.message)}</td></tr>`;
+    }
 }
 
 function renderTable() {

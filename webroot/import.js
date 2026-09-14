@@ -16,13 +16,17 @@ const fmt = (n) => new Intl.NumberFormat('hu-HU').format(Math.round(Number(n) ||
 let currentToken = null;
 
 async function loadProfiles() {
-    const res = await fetch('/api/import-profiles.php');
-    const data = await res.json();
-    profileSelect.innerHTML = (data.profiles || []).map(p => `
-        <option value="${p.key}" ${p.implemented ? '' : 'class="profile-disabled"'}>
-            ${p.label}${p.implemented ? '' : ' (hamarosan)'}
-        </option>
-    `).join('');
+    try {
+        const data = await fetchJson('/api/import-profiles.php');
+        profileSelect.innerHTML = (data.profiles || []).map(p => `
+            <option value="${p.key}" ${p.implemented ? '' : 'class="profile-disabled"'}>
+                ${p.label}${p.implemented ? '' : ' (hamarosan)'}
+            </option>
+        `).join('');
+    } catch (err) {
+        previewFeedback.textContent = 'Hiba a forrás programok betöltésekor: ' + err.message;
+        previewFeedback.className = 'feedback error';
+    }
 }
 loadProfiles();
 

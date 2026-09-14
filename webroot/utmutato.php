@@ -106,6 +106,7 @@ if (!Auth::isLoggedIn($appSettings)) {
     </div>
 </div>
 
+<script src="api.js"></script>
 <script src="topbar.js"></script>
 </body>
 </html>

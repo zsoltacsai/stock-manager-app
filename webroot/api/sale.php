@@ -262,6 +262,14 @@ try {
                 if ($locationId) {
                     $db->decrementLocationStock($item['product_id'], $locationId, $item['qty']);
                 }
+                // A WooCommerce-push beütemezése UGYANEBBEN a tranzakcióban,
+                // NEM egy a commit UTÁNI, külön, blokkoló hálózati hívással —
+                // lásd Database::migrateV24WcPushQueue() docblockja. A tényleges
+                // push egy külön workerben (WcPushQueueWorker, lásd
+                // wc-queue-run.php) fut, ez itt csak egy gyors, helyi INSERT.
+                if (!empty($item['wc_product_id'])) {
+                    $db->enqueueWcPush((int) $item['product_id'], (int) $item['wc_product_id'], 'sale', $saleId);
+                }
             }
         }
 
@@ -358,50 +366,44 @@ if ($buyer !== null) {
 
     $languageOverride = $input['invoice_language'] ?? null;
 
-    $invoiceService = new InvoiceService($config, $appSettings);
-    $invoiceResult = $invoiceService->processInvoice([
-        'db'             => $db,
-        'sale_id'        => $saleId,
-        'buyer'          => $buyer,
-        'items'          => $invoiceItems,
-        'language'       => $languageOverride,
-        'payment_method' => $paymentMethod,
-        'totals'         => [
-            'net' => $invoiceNetTotal, 'vat' => $invoiceVatTotal, 'gross' => $invoiceGrossTotal,
-            'currency' => $config['szamlazz']['currency'] ?? 'HUF',
-        ],
-    ]);
+    // Az eladás EKKORRA már véglegesen, sikeresen rögzült (a fenti tranzakció
+    // már commit-olva van) — egy itt elszabaduló, el nem kapott kivétel (pl.
+    // egy váratlan InvoiceService-hiba) a globális hibakezelőig jutva (lásd
+    // _bootstrap.php) egy generikus "szerverhiba" 500-at adna, ELTITKOLVA a
+    // kasszás elől, hogy az eladás VALÓJÁBAN sikeres volt — ő ezt hibaként
+    // értelmezné, feleslegesen újrapróbálná. Ezért itt explicit elkapjuk, és
+    // az eladás sikeres válasza (lásd lentebb send_json()) MINDIG megérkezik,
+    // csak a számla-rész jelzi a hibát — ugyanaz a minta, mint amit a
+    // WooCommerce-push/nyomtatás blokkok már eddig is követtek.
+    try {
+        $invoiceService = new InvoiceService($config, $appSettings);
+        $invoiceResult = $invoiceService->processInvoice([
+            'db'             => $db,
+            'sale_id'        => $saleId,
+            'buyer'          => $buyer,
+            'items'          => $invoiceItems,
+            'language'       => $languageOverride,
+            'payment_method' => $paymentMethod,
+            'totals'         => [
+                'net' => $invoiceNetTotal, 'vat' => $invoiceVatTotal, 'gross' => $invoiceGrossTotal,
+                'currency' => $config['szamlazz']['currency'] ?? 'HUF',
+            ],
+        ]);
+    } catch (Throwable $e) {
+        error_log('[stock-manager] processInvoice() váratlan hiba sale #' . $saleId . '-nél: ' . $e->getMessage());
+        $invoiceResult = ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => 'Váratlan hiba a számla feldolgozása közben — az eladás rögzítve van.'];
+    }
 }
 
+// A WooCommerce-push MÁR beütemezve a fenti tranzakcióban (lásd
+// Database::enqueueWcPush()) — a tényleges kiküldés egy külön, cron-indított
+// workerben (WcPushQueueWorker) történik, ASZINKRON, hogy egy lassú/
+// elérhetetlen WooCommerce szerver SOSE várassa meg a kasszát. A
+// 'wc_push_errors' mező visszafelé kompatibilitásból marad (mindig üres —
+// egy esetleges push-hiba a queue-ban, admin számára naplózva/kereshetően
+// jelenik meg, nem itt, a kérés válaszában, mert az akkor még nem is
+// ismert).
 $pushErrors = [];
-try {
-    $wc = new WooCommerceClient($config['woocommerce']);
-    foreach ($lineItems as $item) {
-        if (empty($item['wc_product_id'])) {
-            continue;
-        }
-        // A tényleges, a tranzakció commit-ja UTÁN érvényes készletet
-        // olvassuk újra az adatbázisból (nem a kérés elején rögzített
-        // stock_before-ból számolunk) — különben két majdnem egyidejű
-        // eladás egymást írhatná felül egy elavult, abszolút értékkel.
-        // A helyi DB-t itt nem is kell újra frissíteni (setStock), mert
-        // a tranzakció már a helyes relatív decrementStock()-ot alkalmazta.
-        $current = $db->findProductById($item['product_id']);
-        if (!$current) {
-            continue;
-        }
-        try {
-            $wc->updateStock((int) $item['wc_product_id'], (int) $current['stock_qty']);
-            $db->touchWcSyncedAt($item['product_id']);
-            $db->logSync('push', $item['product_id'], 'Stock pushed after sale #' . $saleId);
-        } catch (Throwable $e) {
-            $pushErrors[] = $item['name'] . ': ' . $e->getMessage();
-            $db->logSync('push', $item['product_id'], 'FAILED: ' . $e->getMessage());
-        }
-    }
-} catch (Throwable $e) {
-    $pushErrors[] = $e->getMessage();
-}
 
 $lowStockCrossed = [];
 foreach ($lineItems as $item) {

@@ -115,8 +115,11 @@ CREATE TABLE IF NOT EXISTS purchases (
     note                  TEXT,
     total_net             REAL NOT NULL DEFAULT 0,
     total_gross           REAL NOT NULL DEFAULT 0,
+    idempotency_key         TEXT,
+    idempotency_fingerprint TEXT,
     created_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_purchases_idempotency_key ON purchases(idempotency_key);
 
 CREATE TABLE IF NOT EXISTS purchase_items (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -446,6 +449,27 @@ CREATE TABLE IF NOT EXISTS invoice_modification_sequences (
     last_allocated_index  INTEGER NOT NULL DEFAULT 0,
     updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 1.1.1 — aszinkron WooCommerce készlet-push sor, lásd
+-- Database::migrateV24WcPushQueue() docblockja.
+CREATE TABLE IF NOT EXISTS wc_push_queue (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id      INTEGER NOT NULL REFERENCES products(id),
+    wc_product_id   INTEGER NOT NULL,
+    trigger_type    TEXT NOT NULL,
+    trigger_id      INTEGER NOT NULL,
+    operation_key   TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'queued',
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    locked_at       TEXT,
+    last_error      TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wc_push_queue_operation_key ON wc_push_queue(operation_key);
+CREATE INDEX IF NOT EXISTS idx_wc_push_queue_status_next_attempt ON wc_push_queue(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_wc_push_queue_product_id ON wc_push_queue(product_id);
 
 -- Beérkező (más adózók által kiállított) NAV számlák — SZÁNDÉKOSAN KÜLÖN
 -- az `invoices` (kimenő) modelltől, lásd Database::migrateV20IncomingInvoices()

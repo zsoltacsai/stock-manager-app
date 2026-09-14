@@ -202,9 +202,12 @@ CREATE TABLE IF NOT EXISTS purchases (
     note                  TEXT NULL,
     total_net             DECIMAL(12,2) NOT NULL DEFAULT 0,
     total_gross           DECIMAL(12,2) NOT NULL DEFAULT 0,
+    idempotency_key         VARCHAR(64) NULL,
+    idempotency_fingerprint VARCHAR(64) NULL,
     created_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_purchases_created_at (created_at),
     KEY idx_purchases_supplier_id (supplier_id),
+    UNIQUE KEY uq_purchases_idempotency_key (idempotency_key),
     CONSTRAINT fk_purchases_supplier FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -464,6 +467,28 @@ CREATE TABLE IF NOT EXISTS invoice_modification_sequences (
     last_allocated_index  INT UNSIGNED NOT NULL DEFAULT 0,
     updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_invoice_mod_seq_original FOREIGN KEY (original_invoice_id) REFERENCES invoices(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 1.1.1 — aszinkron WooCommerce készlet-push sor, lásd
+-- Database::migrateV24WcPushQueue() docblockja.
+CREATE TABLE IF NOT EXISTS wc_push_queue (
+    id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    product_id      INT UNSIGNED NOT NULL,
+    wc_product_id   INT UNSIGNED NOT NULL,
+    trigger_type    VARCHAR(16) NOT NULL,
+    trigger_id      INT UNSIGNED NOT NULL,
+    operation_key   VARCHAR(191) NOT NULL,
+    status          VARCHAR(16) NOT NULL DEFAULT 'queued',
+    attempts        INT UNSIGNED NOT NULL DEFAULT 0,
+    next_attempt_at DATETIME NULL,
+    locked_at       DATETIME NULL,
+    last_error      TEXT,
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_wc_push_queue_status_next_attempt (status, next_attempt_at),
+    KEY idx_wc_push_queue_product_id (product_id),
+    UNIQUE KEY uq_wc_push_queue_operation_key (operation_key),
+    CONSTRAINT fk_wc_push_queue_product FOREIGN KEY (product_id) REFERENCES products(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Beérkező (más adózók által kiállított) NAV számlák — SZÁNDÉKOSAN KÜLÖN

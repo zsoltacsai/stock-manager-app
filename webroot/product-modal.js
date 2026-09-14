@@ -295,6 +295,19 @@ window.ProductModal = (function () {
             feedback.className = 'modal-feedback error';
             return;
         }
+        // Gyors, UX-célú előzetes ellenőrzés — a HITELES validáció a
+        // szerveren (PriceValidator, lásd product-save.php) történik, ez itt
+        // csak elkerüli a felesleges kör-utat egy nyilvánvalóan hibás
+        // bemenetnél (negatív, vagy nem szám).
+        for (const [raw, label] of [[pNet.value, 'nettó ár'], [pGross.value, 'bruttó ár']]) {
+            if (raw === '') continue;
+            const n = parseFloat(raw);
+            if (isNaN(n) || n < 0) {
+                feedback.textContent = `Érvénytelen ${label} — negatív vagy nem szám érték nem adható meg.`;
+                feedback.className = 'modal-feedback error';
+                return;
+            }
+        }
 
         // P1-3 javítás: dupla kattintás (pl. lassú hálózat alatt türelmetlen
         // újra-kattintás) korábban két külön terméket hozott létre, mert a

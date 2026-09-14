@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
+require_once __DIR__ . '/../../src/AppVersion.php';
 
 $lowStockThreshold = (int) ($appSettings['low_stock_default_threshold'] ?? 5);
 
@@ -34,6 +35,6 @@ send_json([
     'loyalty_enabled'     => !empty($appSettings['loyalty_enabled']),
 
     'php_version' => PHP_VERSION,
-    'app_version' => '1.0',
+    'app_version' => AppVersion::CURRENT,
     'recent_sync_log' => $db->getRecentSyncLog(20),
 ]);

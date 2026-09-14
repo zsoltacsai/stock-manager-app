@@ -101,4 +101,27 @@ return [
         // Where to save downloaded invoice PDFs.
         'pdf_dir' => __DIR__ . '/../invoices',
     ],
+
+    // ------------------------------------------------------------------
+    // Önfrissítés (GitHub Release-alapú) — lásd README "Önfrissítés"
+    // szakasza. SZÁNDÉKOSAN itt, a config.php-ban van, NEM a Beállítások
+    // alatt (Settings/settings.json) — a hivatalos update-forrás repository
+    // egy DEPLOY-idejű, nem egy admin-által futásidőben módosítható döntés
+    // (ugyanaz az elv, mint a woocommerce/szamlazz tömbök alapértékeinél).
+    // ------------------------------------------------------------------
+    'update' => [
+        'repo_owner' => 'zsoltacsai',
+        'repo_name'  => 'stock-manager-app',
+
+        // A tényleges migráció/egészség-ellenőrzés egy KÜLÖN, frissen
+        // indított PHP CLI folyamatban fut (lásd src/UpdateInstaller.php
+        // docblockja) — ehhez egy VALÓDI CLI PHP futtatható kell.
+        // `PHP_BINARY` a beépített fejlesztői szerver (`php -S`) alatt
+        // helyesen a `php` bináris — DE éles nginx+php-fpm telepítésen
+        // (lásd telepites-tavoli-szerver.txt) a PHP_BINARY a php-fpm
+        // futtathatóra mutatna, ami NEM alkalmas CLI-szkript indítására.
+        // Éles telepítésen ÁLLÍTSD BE explicit a rendszer CLI PHP-jának
+        // elérési útját, pl.: 'php_cli_binary' => '/usr/bin/php8.3',
+        'php_cli_binary' => null,
+    ],
 ];

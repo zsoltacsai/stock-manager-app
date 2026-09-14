@@ -199,6 +199,24 @@ class Settings
         // Cron-hitelesítés (auto-backup-run.php / auto-sync-run.php) — lásd
         // _bootstrap.php. Sose kerül URL-be, csak az X-Cron-Token fejlécbe.
         'cron_secret' => '',
+
+        // Önfrissítés (Beállítások → Frissítések) — lásd README "Önfrissítés"
+        // szakasza és src/UpdateService.php. Az automatikus ELLENŐRZÉS és a
+        // (sokkal kockázatosabb) automatikus TELEPÍTÉS is alapból KIKAPCSOLT
+        // — ugyanaz a minta, mint auto_sync_enabled/backup_enabled/
+        // nav_queue_enabled: egy meglévő telepítésen frissítés után SOSE
+        // induljon el váratlanul semmilyen új automatizmus.
+        'update_auto_check_enabled'   => false,
+        'update_auto_install_enabled' => false,
+        'update_check_interval_hours' => 24,
+        'update_channel'              => 'stable',
+
+        // A karbantartási módot KIZÁRÓLAG az UpdateInstaller állítja be
+        // belsőleg (lásd ott setMaintenanceMode()) — SOSE kerül be a
+        // webroot/api/settings.php elfogadott mezői közé, tehát egy sima
+        // admin POST erre sose tud közvetlenül hatni.
+        'maintenance_mode_active'  => false,
+        'maintenance_mode_message' => '',
     ];
 
     public function __construct(string $path)

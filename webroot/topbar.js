@@ -34,6 +34,23 @@ window.smAuthReady = new Promise((resolve) => { smResolveAuthReady = resolve; })
 (function () {
     const originalFetch = window.fetch;
 
+    // Karbantartási mód (lásd webroot/api/_bootstrap.php) — egy nem-admin
+    // (vagy be sem jelentkezett) session minden nem-fehérlistás API-hívásra
+    // 503-at kap {maintenance:true}-vel a frissítés telepítése közben. Ez
+    // itt egy egyszerű, teljes képernyős sáv megjelenítése — a mögöttes
+    // oldal marad, csak minden interakció le van tiltva, amíg a sáv látszik
+    // (nincs kliens-oldali "próbáld tovább használni" logika, mert a
+    // szerver úgyis mindent visszautasítana).
+    let maintenanceBannerShown = false;
+    function showMaintenanceBanner(message) {
+        if (maintenanceBannerShown) return;
+        maintenanceBannerShown = true;
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed; inset:0; z-index:99999; background:rgba(15,23,42,0.92); color:#fff; display:flex; align-items:center; justify-content:center; text-align:center; padding:24px; font-size:1.1em;';
+        overlay.innerHTML = '<div><div style="font-size:2em; margin-bottom:12px;">⚙️</div><div>' + (window.escapeHtml ? window.escapeHtml(message) : message) + '</div></div>';
+        document.body.appendChild(overlay);
+    }
+
     function handleResponse(response) {
         return (async () => {
             if (response.status === 401 && !location.pathname.endsWith('/login.html')) {
@@ -45,6 +62,15 @@ window.smAuthReady = new Promise((resolve) => { smResolveAuthReady = resolve; })
                         location.href = 'login.html?redirect=' + redirect;
                     }
                 } catch (e) { /* not JSON, or already navigating away — ignore */ }
+            }
+            if (response.status === 503) {
+                try {
+                    const clone = response.clone();
+                    const data = await clone.json();
+                    if (data && data.maintenance) {
+                        showMaintenanceBanner(data.error || 'A FountainTrade frissítése folyamatban van.');
+                    }
+                } catch (e) { /* not JSON — ignore */ }
             }
             return response;
         })();
@@ -166,6 +192,25 @@ if ('serviceWorker' in navigator) {
     const printerTestBtn = document.getElementById('printer-test-btn');
     const settingsSavePrinterBtn = document.getElementById('settings-save-printer-btn');
     const settingsPrinterFeedback = document.getElementById('settings-printer-feedback');
+
+    const updateCurrentVersion = document.getElementById('update-current-version');
+    const updateLatestVersion = document.getElementById('update-latest-version');
+    const updateAvailabilityBadge = document.getElementById('update-availability-badge');
+    const updateStatusLine = document.getElementById('update-status-line');
+    const updateLastCheckLine = document.getElementById('update-last-check-line');
+    const updateLastSuccessLine = document.getElementById('update-last-success-line');
+    const updateProgressLine = document.getElementById('update-progress-line');
+    const updateCheckNowBtn = document.getElementById('update-check-now-btn');
+    const updateInstallNowBtn = document.getElementById('update-install-now-btn');
+    const updateActionFeedback = document.getElementById('update-action-feedback');
+    const updateReleaseNotesBox = document.getElementById('update-release-notes-box');
+    const updateReleaseNotes = document.getElementById('update-release-notes');
+    const updateAutoCheckEnabled = document.getElementById('update-auto-check-enabled');
+    const updateCheckInterval = document.getElementById('update-check-interval');
+    const updateAutoInstallEnabled = document.getElementById('update-auto-install-enabled');
+    const settingsSaveUpdateBtn = document.getElementById('settings-save-update-btn');
+    const settingsUpdateFeedback = document.getElementById('settings-update-feedback');
+    const updateHistoryBody = document.getElementById('update-history-body');
 
     const smtpHost = document.getElementById('smtp-host');
     const smtpPort = document.getElementById('smtp-port');
@@ -379,6 +424,10 @@ if ('serviceWorker' in navigator) {
                   (data.last_auto_sync_summary ? ` — ${data.last_auto_sync_summary}` : '')
                 : 'Még nem futott automatikus szinkron.';
         }
+        if (updateAutoCheckEnabled) updateAutoCheckEnabled.classList.toggle('on', !!data.update_auto_check_enabled);
+        if (updateCheckInterval) updateCheckInterval.value = String(data.update_check_interval_hours || 24);
+        if (updateAutoInstallEnabled) updateAutoInstallEnabled.classList.toggle('on', !!data.update_auto_install_enabled);
+
         if (printerEnabled) printerEnabled.checked = !!data.printer_enabled;
         if (printerIp) printerIp.value = data.printer_ip || '';
         if (printerPort) printerPort.value = String(data.printer_port || 9100);
@@ -1445,6 +1494,179 @@ if ('serviceWorker' in navigator) {
             }
         });
     }
+
+    // =====================================================================
+    // Frissítések (Settings → Frissítések) — lásd src/UpdateService.php.
+    // =====================================================================
+    const UPDATE_STATE_LABELS = {
+        idle: 'Naprakész', checking: 'Ellenőrzés folyamatban...', update_available: 'Frissítés elérhető',
+        downloading: 'Letöltés...', verifying: 'Ellenőrzés...', backing_up: 'Biztonsági mentés készítése...',
+        staging: 'Előkészítés...', maintenance: 'Karbantartási mód bekapcsolása...', installing: 'Telepítés...',
+        migrating: 'Adatbázis-migráció...', health_check: 'Egészség-ellenőrzés...', completed: 'Sikeresen frissítve',
+        failed: 'Sikertelen', rolling_back: 'Visszaállítás...', rolled_back: 'Visszaállítva az előző verzióra',
+        manual_recovery_required: 'Kézi beavatkozás szükséges!',
+    };
+    const UPDATE_IN_PROGRESS_STATES = ['checking', 'downloading', 'verifying', 'backing_up', 'staging', 'maintenance', 'installing', 'migrating', 'health_check', 'rolling_back'];
+
+    let updatePollTimer = null;
+
+    function renderUpdateStatus(data) {
+        if (updateCurrentVersion) updateCurrentVersion.textContent = data.current_version || '—';
+        if (updateLatestVersion) updateLatestVersion.textContent = data.latest_version || '—';
+        if (updateAvailabilityBadge) {
+            updateAvailabilityBadge.innerHTML = data.update_available
+                ? '<span style="color:var(--success,#16a34a); font-weight:600;">Új verzió elérhető</span>'
+                : '<span class="muted">Naprakész</span>';
+        }
+        if (updateStatusLine) updateStatusLine.textContent = 'Frissítés állapota: ' + (UPDATE_STATE_LABELS[data.state] || data.state || '—');
+        if (updateLastCheckLine) {
+            updateLastCheckLine.textContent = 'Utolsó ellenőrzés: ' + (data.last_check_at ? new Date(data.last_check_at).toLocaleString('hu-HU') : 'még nem történt');
+        }
+        if (updateLastSuccessLine) {
+            updateLastSuccessLine.textContent = 'Utolsó sikeres frissítés: ' + (data.last_successful_update_at
+                ? new Date(data.last_successful_update_at).toLocaleString('hu-HU') + (data.last_successful_update_version ? ` (${data.last_successful_update_version})` : '')
+                : 'még nem történt');
+        }
+        const inProgress = UPDATE_IN_PROGRESS_STATES.includes(data.state);
+        if (updateProgressLine) {
+            updateProgressLine.style.display = (inProgress && data.progress_message) ? 'block' : 'none';
+            updateProgressLine.textContent = data.progress_message || '';
+        }
+        if (data.state === 'manual_recovery_required' && updateActionFeedback) {
+            updateActionFeedback.textContent = 'A legutóbbi frissítés visszaállítása sikertelen volt — kézi beavatkozás szükséges (lásd README "Önfrissítés" szakasza).';
+            updateActionFeedback.className = 'modal-feedback error';
+        }
+        if (updateInstallNowBtn) {
+            updateInstallNowBtn.disabled = !data.update_available || inProgress;
+        }
+        if (updateCheckNowBtn) {
+            updateCheckNowBtn.disabled = inProgress;
+        }
+        if (updateReleaseNotesBox && updateReleaseNotes) {
+            if (data.latest_release_notes) {
+                updateReleaseNotesBox.style.display = 'block';
+                updateReleaseNotes.textContent = data.latest_release_notes;
+            } else {
+                updateReleaseNotesBox.style.display = 'none';
+            }
+        }
+
+        if (updatePollTimer) { clearTimeout(updatePollTimer); updatePollTimer = null; }
+        if (inProgress) {
+            updatePollTimer = setTimeout(loadUpdateStatus, 4000);
+        }
+    }
+
+    async function loadUpdateStatus(reloadHistoryAfter) {
+        if (!updateCurrentVersion) return; // ez az oldal nem tartalmazza a Frissítések fület
+        try {
+            const res = await fetch('/api/update-status.php');
+            const data = await res.json();
+            const wasInProgress = updatePollTimer !== null;
+            renderUpdateStatus(data);
+            if (reloadHistoryAfter && !UPDATE_IN_PROGRESS_STATES.includes(data.state) && wasInProgress) {
+                loadUpdateHistory();
+            }
+        } catch (e) { /* ignore — a fül egyszerűen "—" állapotban marad */ }
+    }
+
+    async function loadUpdateHistory() {
+        if (!updateHistoryBody) return;
+        try {
+            const res = await fetch('/api/update-history.php');
+            const data = await res.json();
+            const rows = data.history || [];
+            if (!rows.length) {
+                updateHistoryBody.innerHTML = '<tr><td colspan="5" class="muted">Még nincs frissítési előzmény.</td></tr>';
+                return;
+            }
+            updateHistoryBody.innerHTML = rows.map(h => `
+                <tr>
+                    <td>${escapeHtml(h.started_at || '')}</td>
+                    <td>${escapeHtml(h.from_version || '')}</td>
+                    <td>${escapeHtml(h.to_version || '')}</td>
+                    <td>${h.trigger_source === 'admin' ? 'Admin' : 'Cron'}</td>
+                    <td>${escapeHtml(UPDATE_STATE_LABELS[h.state] || h.state || '')}</td>
+                </tr>
+            `).join('');
+        } catch (e) { /* ignore */ }
+    }
+
+    if (updateCheckNowBtn) {
+        updateCheckNowBtn.addEventListener('click', async () => {
+            updateActionFeedback.textContent = 'Ellenőrzés...';
+            updateActionFeedback.className = 'modal-feedback';
+            updateCheckNowBtn.disabled = true;
+            try {
+                const res = await fetch('/api/update-check.php', { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok || data.ok === false) throw new Error(data.error || 'ismeretlen hiba');
+                updateActionFeedback.textContent = data.update_available
+                    ? `Új verzió elérhető: ${data.latest_version}`
+                    : 'Nincs újabb elérhető verzió.';
+                await loadUpdateStatus();
+            } catch (err) {
+                updateActionFeedback.textContent = 'Hiba: ' + err.message;
+                updateActionFeedback.className = 'modal-feedback error';
+            } finally {
+                updateCheckNowBtn.disabled = false;
+            }
+        });
+    }
+
+    if (updateInstallNowBtn) {
+        updateInstallNowBtn.addEventListener('click', async () => {
+            if (!confirm('Biztosan elindítod a frissítést? Az alkalmazás a telepítés idejére karbantartási módba kerül.')) {
+                return;
+            }
+            updateActionFeedback.textContent = 'Frissítés indítása...';
+            updateActionFeedback.className = 'modal-feedback';
+            updateInstallNowBtn.disabled = true;
+            try {
+                const res = await fetch('/api/update-install.php', { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok || data.error) throw new Error(data.error || 'ismeretlen hiba');
+                updateActionFeedback.textContent = 'A frissítés elindult a háttérben — az állapot alább frissül.';
+                await loadUpdateStatus(true);
+            } catch (err) {
+                updateActionFeedback.textContent = 'Hiba: ' + err.message;
+                updateActionFeedback.className = 'modal-feedback error';
+                updateInstallNowBtn.disabled = false;
+            }
+        });
+    }
+
+    if (settingsSaveUpdateBtn) {
+        settingsSaveUpdateBtn.addEventListener('click', async () => {
+            settingsUpdateFeedback.textContent = 'Mentés...';
+            settingsUpdateFeedback.className = 'modal-feedback';
+            try {
+                const res = await fetch('/api/settings.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        update_auto_check_enabled: updateAutoCheckEnabled.classList.contains('on'),
+                        update_check_interval_hours: parseInt(updateCheckInterval.value, 10),
+                        update_auto_install_enabled: updateAutoInstallEnabled.classList.contains('on'),
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+                applySettings(data);
+                settingsUpdateFeedback.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;vertical-align:-1px;margin-right:4px;"><polyline points="20 6 9 17 4 12"></polyline></svg>Mentve';
+                settingsUpdateFeedback.classList.add('saved-flash');
+                setTimeout(() => settingsUpdateFeedback.classList.remove('saved-flash'), 1200);
+            } catch (err) {
+                settingsUpdateFeedback.textContent = 'Hiba: ' + err.message;
+                settingsUpdateFeedback.className = 'modal-feedback error';
+            }
+        });
+    }
+    if (updateAutoCheckEnabled) updateAutoCheckEnabled.addEventListener('click', () => updateAutoCheckEnabled.classList.toggle('on'));
+    if (updateAutoInstallEnabled) updateAutoInstallEnabled.addEventListener('click', () => updateAutoInstallEnabled.classList.toggle('on'));
+
+    loadUpdateStatus();
+    loadUpdateHistory();
 
     loadSettings();
     loadBackupList();

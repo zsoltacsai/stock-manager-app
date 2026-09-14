@@ -4,6 +4,20 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## [Unreleased]
+
+### Added
+- Önfrissítő rendszer — GitHub Release-alapú, ellenőrzött (manifest +
+  checksum + kereszt-ellenőrzött commit-SHA), biztonságos (SSRF-védett
+  letöltés, "Zip Slip"-védett kicsomagolás) frissítés, automatikus
+  biztonsági mentéssel, karbantartási móddal, hiba esetén teljes (kód +
+  adatbázis) visszaállítással. Lásd README "Önfrissítés" szakasza.
+- Beállítások → Frissítések: jelenlegi/elérhető verzió, ellenőrzés/
+  telepítés indítása, automatikus ellenőrzés/telepítés be- és
+  kikapcsolása, frissítési előzmények.
+- `tools/update-install-cli.php` — cron-indítható, felügyelet nélküli
+  automatikus telepítéshez (opcionális, alapból kikapcsolva).
+
 ## [1.0.0] — 2026-09-10
 
 FountainTrade 1.0 az első production kiadás, az 1.0 RC stabilizációs és

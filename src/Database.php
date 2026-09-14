@@ -1,8 +1,10 @@
 <?php
 
+require_once __DIR__ . '/AppVersion.php';
+
 class Database
 {
-    private const SCHEMA_VERSION = 20;
+    private const SCHEMA_VERSION = 21;
 
     private PDO $pdo;
     private string $driver;
@@ -128,6 +130,9 @@ class Database
             }
             if ($version < 20) {
                 $this->migrateV20IncomingInvoices();
+            }
+            if ($version < 21) {
+                $this->migrateV21Updates();
             }
         }
 
@@ -1035,6 +1040,233 @@ class Database
         try {
             $this->pdo->exec($sql);
         } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+    }
+
+    /**
+     * A FountainTrade önfrissítő rendszerének (UpdateService/UpdateInstaller)
+     * két tábláját hozza létre:
+     *  - `update_state`: EGYETLEN sorral (id=1) leírja a jelenlegi
+     *    állapotgép-státuszt (lásd UPDATE_STATES), a legutóbb ismert GitHub
+     *    Release adatait, ÉS a konkurrencia-védő zárat (lock_token/
+     *    lock_started_at/lock_hostname) — ugyanaz a "egyetlen garantált sor,
+     *    zárolás UPDATE...WHERE-rel" minta, mint az incoming_invoice_sync
+     *    táblánál (lásd claimIncomingInvoiceSync()), csak update-specifikus
+     *    mezőkkel. NEM külön tábla a zárnak — egy singleton-sornál a zár és
+     *    az állapot ugyanannak az "egyszerre csak egy fut" invariánsnak a
+     *    két oldala, külön táblában tartva csak versenyhelyzetet
+     *    kockáztatna a kettő szinkronban tartásával.
+     *  - `update_history`: minden ténylegesen megkísérelt (admin- vagy
+     *    cron-indított) frissítési folyamat tartós, utólag is vizsgálható
+     *    naplója — SOSE törlődik automatikusan.
+     */
+    private function migrateV21Updates(): void
+    {
+        $isMysql = $this->driver === 'mysql';
+        $pk = $isMysql ? 'INT UNSIGNED AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
+        $textCol = 'TEXT';
+        $ts = $isMysql ? 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' : "TEXT NOT NULL DEFAULT (datetime('now'))";
+        $tsNull = $isMysql ? 'DATETIME NULL' : 'TEXT';
+        $engine = $isMysql ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : '';
+
+        try {
+            $this->pdo->exec("CREATE TABLE IF NOT EXISTS update_state (
+                id INTEGER PRIMARY KEY,
+                state VARCHAR(32) NOT NULL DEFAULT 'idle',
+                current_version VARCHAR(32) NOT NULL,
+                latest_version VARCHAR(32),
+                latest_release_tag VARCHAR(64),
+                latest_commit_sha VARCHAR(64),
+                latest_release_notes $textCol,
+                latest_published_at $tsNull,
+                latest_checked_at $tsNull,
+                last_check_error $textCol,
+                last_successful_update_at $tsNull,
+                last_successful_update_version VARCHAR(32),
+                progress_message $textCol,
+                install_requested_by VARCHAR(191),
+                install_requested_at $tsNull,
+                lock_token VARCHAR(64),
+                lock_started_at $tsNull,
+                lock_hostname VARCHAR(191),
+                created_at $ts,
+                updated_at $ts
+            )$engine");
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        try {
+            $this->pdo->exec("CREATE TABLE IF NOT EXISTS update_history (
+                id $pk,
+                from_version VARCHAR(32) NOT NULL,
+                to_version VARCHAR(32) NOT NULL,
+                release_tag VARCHAR(64),
+                commit_sha VARCHAR(64),
+                trigger_source VARCHAR(16) NOT NULL,
+                actor VARCHAR(191),
+                started_at $ts,
+                finished_at $tsNull,
+                state VARCHAR(32) NOT NULL,
+                error $textCol,
+                backup_reference VARCHAR(255),
+                rollback_state VARCHAR(32),
+                created_at $ts
+            )$engine");
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        try {
+            $this->pdo->exec('CREATE INDEX idx_update_history_started_at ON update_history(started_at)');
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        // A singleton állapot-sor MINDIG legyen jelen, ugyanazért, amiért az
+        // incoming_invoice_sync sornál is (lásd ott a docblockot) — a hívónak
+        // (UpdateService/UpdateInstaller) sose kelljen "hozz létre, ha nincs"
+        // ágat futtatnia, ÉS egy megszakadt-majd-újrafuttatott migráció se
+        // hasaljon el egy el nem kapott UNIQUE-ütközésen.
+        $now = date('Y-m-d H:i:s');
+        $sql = $isMysql
+            ? "INSERT IGNORE INTO update_state (id, state, current_version, created_at, updated_at) VALUES (1, 'idle', ?, ?, ?)"
+            : "INSERT OR IGNORE INTO update_state (id, state, current_version, created_at, updated_at) VALUES (1, 'idle', ?, ?, ?)";
+        try {
+            $this->pdo->prepare($sql)->execute([AppVersion::CURRENT, $now, $now]);
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+    }
+
+    // ---- Önfrissítés (GitHub Release-alapú) ----
+
+    private const UPDATE_TERMINAL_STATES = ['idle', 'completed', 'failed', 'rolled_back', 'manual_recovery_required'];
+
+    public function getUpdateState(): array
+    {
+        $row = $this->pdo->query('SELECT * FROM update_state WHERE id = 1')->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            // Csak akkor fordulhat elő, ha valaki kézzel törölte a sort — a
+            // migráció mindig garantálja a meglétét. Helyben pótoljuk, hogy
+            // a hívó sose kapjon váratlan null-t.
+            $now = date('Y-m-d H:i:s');
+            $this->pdo->prepare('INSERT INTO update_state (id, state, current_version, created_at, updated_at) VALUES (1, ?, ?, ?, ?)')
+                ->execute(['idle', AppVersion::CURRENT, $now, $now]);
+            $row = $this->pdo->query('SELECT * FROM update_state WHERE id = 1')->fetch(PDO::FETCH_ASSOC);
+        }
+        return $row;
+    }
+
+    /** Tetszőleges részhalmazát frissíti az update_state sornak — a hívó felelőssége csak érvényes oszlopneveket adni (lásd $allowedFields). */
+    public function updateUpdateState(array $fields): void
+    {
+        $allowedFields = [
+            'state', 'current_version', 'latest_version', 'latest_release_tag', 'latest_commit_sha',
+            'latest_release_notes', 'latest_published_at', 'latest_checked_at', 'last_check_error',
+            'last_successful_update_at', 'last_successful_update_version', 'progress_message',
+            'install_requested_by', 'install_requested_at',
+        ];
+        $set = [];
+        $params = [];
+        foreach ($fields as $key => $value) {
+            if (!in_array($key, $allowedFields, true)) {
+                continue;
+            }
+            $set[] = "$key = ?";
+            $params[] = $value;
+        }
+        if (!$set) {
+            return;
+        }
+        $set[] = 'updated_at = ?';
+        $params[] = date('Y-m-d H:i:s');
+
+        $this->pdo->prepare('UPDATE update_state SET ' . implode(', ', $set) . ' WHERE id = 1')->execute($params);
+    }
+
+    /**
+     * Durable, atomikus zár-igénylés a frissítési folyamatra — ugyanaz a
+     * "UPDATE ... WHERE (nincs zár VAGY elavult a zár)" minta, mint
+     * claimIncomingInvoiceSync()-nál, csak egy KÜLÖN (lock_token/
+     * lock_started_at/lock_hostname), a state-től független mezőcsoporton.
+     * SZÁNDÉKOSAN nem magára a `state`-re támaszkodik a zár (egy 'idle'
+     * állapotú sor is lehetne zárolt, pl. checkNow() rövid ideig tartó
+     * ellenőrzés közben) — a zár és az állapotgép két külön, bár
+     * összefüggő invariáns.
+     *
+     * @return bool true, ha EZ a hívás szerezte meg a zárat.
+     */
+    public function claimUpdateLock(string $token, string $hostname, int $staleAfterSeconds = 3600): bool
+    {
+        $now = date('Y-m-d H:i:s');
+        $staleBefore = date('Y-m-d H:i:s', time() - $staleAfterSeconds);
+
+        $stmt = $this->pdo->prepare("
+            UPDATE update_state
+            SET lock_token = ?, lock_started_at = ?, lock_hostname = ?, updated_at = ?
+            WHERE id = 1 AND (lock_token IS NULL OR lock_started_at IS NULL OR lock_started_at < ?)
+        ");
+        $stmt->execute([$token, $now, $hostname, $now, $staleBefore]);
+        return $stmt->rowCount() > 0;
+    }
+
+    /** Csak a zár TÉNYLEGES birtokosa oldhatja fel — egy elavult, már mást ír le token nem szabadíthat fel egy azóta újra megszerzett zárat. */
+    public function releaseUpdateLock(string $token): void
+    {
+        $this->pdo->prepare("
+            UPDATE update_state
+            SET lock_token = NULL, lock_started_at = NULL, lock_hostname = NULL, updated_at = ?
+            WHERE id = 1 AND lock_token = ?
+        ")->execute([date('Y-m-d H:i:s'), $token]);
+    }
+
+    public function isUpdateLockHeld(int $staleAfterSeconds = 3600): bool
+    {
+        $state = $this->getUpdateState();
+        if (empty($state['lock_token']) || empty($state['lock_started_at'])) {
+            return false;
+        }
+        return strtotime($state['lock_started_at']) >= time() - $staleAfterSeconds;
+    }
+
+    public function insertUpdateHistory(array $entry): int
+    {
+        $now = date('Y-m-d H:i:s');
+        $this->pdo->prepare("
+            INSERT INTO update_history
+                (from_version, to_version, release_tag, commit_sha, trigger_source, actor, started_at, state, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ")->execute([
+            $entry['from_version'],
+            $entry['to_version'],
+            $entry['release_tag'] ?? null,
+            $entry['commit_sha'] ?? null,
+            $entry['trigger_source'],
+            $entry['actor'] ?? null,
+            $entry['started_at'] ?? $now,
+            $entry['state'] ?? 'checking',
+            $now,
+        ]);
+        return (int) $this->pdo->lastInsertId();
+    }
+
+    public function updateUpdateHistory(int $id, array $fields): void
+    {
+        $allowedFields = ['state', 'finished_at', 'error', 'backup_reference', 'rollback_state', 'to_version', 'commit_sha', 'release_tag'];
+        $set = [];
+        $params = [];
+        foreach ($fields as $key => $value) {
+            if (!in_array($key, $allowedFields, true)) {
+                continue;
+            }
+            $set[] = "$key = ?";
+            $params[] = $value;
+        }
+        if (!$set) {
+            return;
+        }
+        $params[] = $id;
+        $this->pdo->prepare('UPDATE update_history SET ' . implode(', ', $set) . ' WHERE id = ?')->execute($params);
+    }
+
+    public function listUpdateHistory(int $limit = 50): array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM update_history ORDER BY started_at DESC, id DESC LIMIT ?');
+        $stmt->bindValue(1, max(1, min(500, $limit)), PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     // ---- Beérkező (NAV) számlák ----

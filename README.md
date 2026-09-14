@@ -798,6 +798,170 @@ Egyszerre csak egy szolgáltató van használatban (amelyik ki van
 választva) — ez nem egyidejű, mindkettőre való tükrözésre lett
 tervezve.
 
+## Önfrissítés (GitHub Release-alapú)
+
+A FountainTrade a GitHub-ot (`zsoltacsai/stock-manager-app`, lásd
+`config/config.php` `update` szakasza) használja EGYETLEN hivatalos
+frissítés-forrásként. **SOSE a `main` branch aktuális állapotát** tölti le —
+kizárólag egy explicit, publikált (nem draft, nem prerelease) **GitHub
+Release**-t, annak `manifest.json` és `fountaintrade-{verzió}.zip`
+csatolmányain keresztül.
+
+### Verziókezelés
+
+- **`current_version`**: a ténylegesen telepített kód verziója —
+  `src/AppVersion.php::CURRENT`, EGYETLEN központi forrás (mindenhol ebből
+  olvasva: rendszerállapot oldal, frissítés-ellenőrzés stb.).
+- **`latest_version`**: a legutóbbi ellenőrzéskor talált, GitHub-on elérhető
+  verzió (`update_state` tábla).
+- **`channel`**: jelenleg csak `stable` létezik.
+- Verziószám: SemVer (`1.0.0`, `1.1.0`, `1.1.1`). **Downgrade blokkolva.**
+
+### Release készítése (fejlesztői/kiadási folyamat)
+
+1. Verzióemelés: `src/AppVersion.php::CURRENT` frissítése az új verzióra.
+2. Git tag létrehozása (`v1.1.0` formátumban) a kiadandó commit-on, majd
+   GitHub Release létrehozása ebből a tag-ből (NEM draft).
+3. Artifact összeállítása: a tag-elt commit tartalmának egy ZIP-je
+   (pontosan azok a fájlok/mappák, amiket a `git` verziókezel — lásd
+   `.gitignore` —, tehát a `data/`, `config/installer-generated.php`,
+   `invoices/`, feltöltött `webroot/assets/*` fájlok SOSE kerülnek bele),
+   `fountaintrade-1.1.0.zip` néven.
+4. `manifest.json` összeállítása és csatolása a Release-hez:
+   ```json
+   {
+     "product": "FountainTrade",
+     "channel": "stable",
+     "version": "1.1.0",
+     "commit": "<a tag-elt commit TELJES SHA-ja>",
+     "artifact": "fountaintrade-1.1.0.zip",
+     "sha256": "<a ZIP fájl SHA-256 hash-e>",
+     "min_upgradable_version": "1.0.0"
+   }
+   ```
+   A `sha256` a TÉNYLEGESEN feltöltött ZIP hash-e legyen (pl.
+   `sha256sum fountaintrade-1.1.0.zip`), a `commit` pedig a tag által
+   ténylegesen jelölt commit teljes SHA-ja — mindkettőt a kliens
+   FÜGGETLENÜL, a GitHub API-ból is leellenőrzi (lásd
+   `src/UpdateVerifier.php`), tehát egy elírt/elavult manifest-mező
+   egyszerűen elutasított frissítést eredményez, nem hibás telepítést.
+5. `min_upgradable_version`: ha az új release-re csak egy adott, minimum
+   telepített verzióról lehet közvetlenül frissíteni (pl. egy köztes
+   migráció miatt), itt kell megadni — egy régebbi verzióról induló
+   kliens a telepítés helyett egyértelmű hibaüzenetet kap.
+
+### Biztonság — mit ellenőriz a kliens, és mit SOSE fogad el vakon
+
+- A letöltés KIZÁRÓLAG a valódi GitHub-infrastruktúra (`github.com`,
+  `api.github.com`, `objects.githubusercontent.com`) felé engedélyezett —
+  sem a manifest, sem a release JSON semmilyen mezője nem befolyásolhatja
+  ezt (lásd `GitHubReleaseClient::isAllowedDownloadHost()`).
+- A manifest `version`-je a GitHub tag NEVÉVEL, a `commit`-ja a GitHub Git
+  Data API-ból FÜGGETLENÜL feloldott commit-SHA-val, a letöltött fájl
+  valódi SHA-256 hash-e a manifest `sha256` mezőjével kerül összevetésre —
+  a manifest ÖNMAGÁBAN sose tekinthető megbízhatónak.
+- A ZIP kicsomagolása előtt minden bejegyzés path traversal (`..`),
+  abszolút útvonal, Windows-meghajtóbetűjel és szimlink szempontjából
+  ellenőrzött ("Zip Slip" védelem) — egyetlen gyanús bejegyzés a TELJES
+  kicsomagolást megszakítja.
+- Downgrade és a `min_upgradable_version`-nél régebbi telepítésről indított
+  frissítés blokkolva.
+
+### Automatikus ellenőrzés (cron)
+
+Az ellenőrzés (SOSE a tényleges telepítés) egy olcsó, cron-hívott végpont:
+
+```
+*/30 * * * * curl -s -X GET https://kassza.pelda.hu/api/update-check-run.php \
+    -H "X-Cron-Token: <a Beállítások → Mentés alatt beállított cron_secret>"
+```
+
+A végpont maga dönti el, esedékes-e ténylegesen egy GitHub-lekérdezés a
+Beállítások → Frissítések alatt beállított időköz (6/12/24 óra/7 nap)
+alapján — a percenkénti/félóránkénti hívás ártalmatlan. Csak akkor fut,
+ha a "Automatikus ellenőrzés" be van kapcsolva (alapból KIKAPCSOLVA).
+
+### Automatikus (felügyelet nélküli) telepítés (cron, CLI)
+
+**Csak akkor állítsd be, ha kifejezetten felügyelet nélküli, éjszakai
+frissítést szeretnél** — a Beállítások → Frissítések "Automatikus
+telepítés" kapcsolója (alapból KIKAPCSOLVA) engedélyezi, a tényleges
+telepítést pedig egy KÜLÖN CLI-szkript végzi, SOSE egy HTTP-végpont (a
+telepítés percekig tarthat — HTTP-timeout-nak sose szabad kiszolgáltatva
+lennie):
+
+```
+0 4 * * * /usr/bin/php8.3 /var/www/stock-manager-app/tools/update-install-cli.php >> /var/log/fountaintrade-update.log 2>&1
+```
+
+Ez a szkript saját maga ellenőriz (nem kell külön `update-check-run.php`
+előtte), és csak akkor telepít, ha ténylegesen van újabb, érvényes release
+ÉS az automatikus telepítés be van kapcsolva.
+
+**Fontos, éles (nginx+php-fpm) telepítésen ellenőrizendő beállítás**:
+`config/config.php` `update.php_cli_binary` mezője — a tényleges
+migráció/egészség-ellenőrzés egy VALÓDI CLI PHP-folyamatban fut (lásd
+lentebb), amihez a rendszer CLI PHP-jának elérési útja kell (pl.
+`/usr/bin/php8.3`), NEM a php-fpm futtatható. Ha ez hibásan van
+beállítva, a telepítés az ELŐKÉSZÍTÉS-ellenőrzés (preflight) szakaszban,
+MIELŐTT bármi production-fájlhoz nyúlna, egyértelmű hibával leáll.
+
+### Manuális telepítés (Beállítások → Frissítések → "Frissítés most")
+
+Admin jogosultságot és a szokásos CSRF-védelmet igényli. A böngésző
+azonnal "elindítva" választ kap — a tényleges telepítés a php-fpm
+`fastcgi_finish_request()` mechanizmusával a válasz elküldése UTÁN,
+ugyanabban a szerver-oldali folyamatban folytatódik (nem HTTP-
+timeout-hoz kötött). A beépített PHP fejlesztői szerver (`php -S`, amin
+ez fejlesztés közben tesztelve is lett) nem ismeri ezt a mechanizmust —
+ott a kérés a telepítés végéig szinkron blokkol, ami fejlesztői
+környezetben elfogadható.
+
+### Mi történik telepítéskor (állapotgép)
+
+```
+idle → checking → update_available → downloading → verifying →
+backing_up → maintenance → installing → migrating → health_check →
+completed
+```
+
+Hiba esetén: `failed` (ha még semmi nem íródott ki production-útvonalra),
+vagy `rolling_back` → `rolled_back` (ha már íródtak ki fájlok, de a
+migráció/egészség-ellenőrzés elbukott — ilyenkor a fájlok ÉS a teljes
+adatbázis is visszaáll a telepítés ELŐTTI állapotra), vagy — ha maga a
+visszaállítás is elbukik — `manual_recovery_required` (ilyenkor a
+karbantartási mód SZÁNDÉKOSAN bekapcsolva marad, és SSH-s kézi
+beavatkozás szükséges: `data/update-rollback/` alatt megtalálható a
+telepítés előtti kódfa legutóbbi mentése, `data/backups/` alatt a
+telepítés előtti adatbázis-mentés).
+
+**Miért nem szimlinkes "releases/x.y.z + current" atomikus csere**: a
+dokumentált production telepítés (lásd lentebb, "Beüzemelés") nginx-et
+használ, aminek `root` direktívája közvetlenül a `webroot/` almappára
+mutat, nem egy szimlinkre — ennek átállítása egy külön, opcionális
+infrastruktúra-döntés lenne az üzemeltető részéről. Helyette a
+FountainTrade egy EGYENÉRTÉKŰ biztonsági garanciájú, másolás-alapú
+mechanizmust használ: a release teljes egészében egy staging könyvtárban
+validálódik, a jelenlegi élő kódfa (a data/config/invoices/feltöltött
+fájlok KIVÉTELÉVEL) egy rollback-mentésbe másolódik MIELŐTT bármi
+felülíródna, és bármilyen hiba esetén ebből a mentésből áll vissza minden.
+
+### Mit ŐRIZ MEG egy frissítés — konfiguráció-megőrzés
+
+Egy release-artifact KIZÁRÓLAG az alkalmazás kódját tartalmazza. Egy
+frissítés SOSE nyúl (nem is tartalmazza a letöltött csomag):
+`config/` (beleértve a telepítő által generált `installer-generated.php`-t
+is), `data/` (adatbázis, `settings.json`, mentések, NAV-token-cache stb.),
+`invoices/` (kiállított PDF-ek), és a `webroot/assets/` alatti FELTÖLTÖTT
+tartalom (logók, termékképek — a `.gitignore`-ban is védett minták).
+
+### Frissítési előzmények
+
+Beállítások → Frissítések → "Előzmények": minden ténylegesen megkísérelt
+(admin- vagy cron-indított) frissítés tartós naplója — dátum, forrás-
+és cél-verzió, indító (admin/cron), eredmény, backup-hivatkozás,
+visszaállítási állapot.
+
 ## Ismert korlátok / útközben eldöntendő dolgok
 
 - Az áfakulcs termékenként van tárolva (`vat_rate`, alapból a

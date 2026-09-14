@@ -498,4 +498,47 @@ CREATE TABLE IF NOT EXISTS incoming_invoice_sync (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_incoming_invoice_sync_provider ON incoming_invoice_sync(provider);
 INSERT INTO incoming_invoice_sync (provider, status) SELECT 'nav', 'idle' WHERE NOT EXISTS (SELECT 1 FROM incoming_invoice_sync WHERE provider = 'nav');
 
+-- FountainTrade önfrissítő rendszer — lásd Database::migrateV21Updates() docblockja.
+CREATE TABLE IF NOT EXISTS update_state (
+    id                              INTEGER PRIMARY KEY,
+    state                           TEXT NOT NULL DEFAULT 'idle',
+    current_version                 TEXT NOT NULL,
+    latest_version                  TEXT,
+    latest_release_tag              TEXT,
+    latest_commit_sha               TEXT,
+    latest_release_notes            TEXT,
+    latest_published_at             TEXT,
+    latest_checked_at               TEXT,
+    last_check_error                TEXT,
+    last_successful_update_at       TEXT,
+    last_successful_update_version  TEXT,
+    progress_message                TEXT,
+    install_requested_by            TEXT,
+    install_requested_at            TEXT,
+    lock_token                      TEXT,
+    lock_started_at                 TEXT,
+    lock_hostname                   TEXT,
+    created_at                      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at                      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO update_state (id, state, current_version) SELECT 1, 'idle', '1.0.0' WHERE NOT EXISTS (SELECT 1 FROM update_state WHERE id = 1);
+
+CREATE TABLE IF NOT EXISTS update_history (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_version       TEXT NOT NULL,
+    to_version         TEXT NOT NULL,
+    release_tag        TEXT,
+    commit_sha         TEXT,
+    trigger_source     TEXT NOT NULL,
+    actor              TEXT,
+    started_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at        TEXT,
+    state              TEXT NOT NULL,
+    error              TEXT,
+    backup_reference   TEXT,
+    rollback_state     TEXT,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_update_history_started_at ON update_history(started_at);
+
 INSERT INTO schema_version (version) SELECT 16 WHERE NOT EXISTS (SELECT 1 FROM schema_version);

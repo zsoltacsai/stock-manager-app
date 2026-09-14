@@ -259,6 +259,7 @@ porton, hanem a rendes 80/443-on):
     */15 * * * *  curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "https://kassza.pelda.hu/api/auto-backup-run.php" > /dev/null
     * * * * *     curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "https://kassza.pelda.hu/api/nav-queue-run.php" > /dev/null
     0 * * * *     curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "https://kassza.pelda.hu/api/nav-incoming-sync-run.php" > /dev/null
+    */30 * * * *  curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "https://kassza.pelda.hu/api/update-check-run.php" > /dev/null
 
 (A token a Beállítások → Mentés alatt beállítható cron titkos
 tokennel egyezzen — enélkül ezek a végpontok bejelentkezés nélkül
@@ -286,6 +287,24 @@ hiba nélkül "queued" állapotban maradnak, sose kerülnek ténylegesen
 beküldésre. Egy kimaradt cron-futás egyik NAV-végpontnál sem okoz
 adatvesztést — mindkettő onnan folytatja, ahol a legutóbbi sikeres
 futás abbahagyta.)
+
+Az update-check-run.php az önfrissítő rendszer OLCSÓ, csak-ellenőrző
+belépési pontja (lásd README "Önfrissítés" szakasza) — csak akkor
+kérdezi le ténylegesen a GitHub-ot, ha esedékes a Beállítások →
+Frissítések alatt beállított időköz alapján, és csak akkor, ha az
+"Automatikus ellenőrzés" be van kapcsolva (alapból KIKAPCSOLVA). Ez a
+sor SOSE telepít semmit — csak jelzi, ha van újabb elérhető verzió.
+
+Ha felügyelet nélküli, éjszakai AUTOMATIKUS TELEPÍTÉST is szeretnél
+(ez opcionális, alapból KIKAPCSOLVA — lásd README), egy KÜLÖN, CLI-alapú
+cron-bejegyzés is szükséges (ez NEM curl-lal hívott HTTP-végpont, mert a
+tényleges telepítés percekig tarthat):
+
+    0 4 * * *     www-data /usr/bin/php8.3 /var/www/stock-manager-app/tools/update-install-cli.php >> /var/log/fountaintrade-update.log 2>&1
+
+Ehhez a config/config.php "update" szakaszában a "php_cli_binary" mezőt
+a rendszer VALÓDI CLI PHP futtathatójára kell állítani (pl.
+"/usr/bin/php8.3") — a php-fpm futtatható NEM alkalmas erre, lásd README.
 
 
 ---------------------------------------------------------------

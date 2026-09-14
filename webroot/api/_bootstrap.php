@@ -75,7 +75,7 @@ $currentScript = basename($_SERVER['SCRIPT_NAME'] ?? '');
 // felhasználni, és fordítva. A token KIZÁRÓLAG az X-Cron-Token fejlécben
 // fogadott el — SOSE query-stringben —, mert egy URL-be írt titok
 // szerver-/proxy-naplókba, böngésző-előzményekbe kerülhet.
-$cronScripts = ['auto-backup-run.php', 'auto-sync-run.php', 'nav-queue-run.php', 'nav-incoming-sync-run.php'];
+$cronScripts = ['auto-backup-run.php', 'auto-sync-run.php', 'nav-queue-run.php', 'nav-incoming-sync-run.php', 'update-check-run.php'];
 $isCronScript = in_array($currentScript, $cronScripts, true);
 
 if ($isCronScript) {
@@ -144,6 +144,30 @@ if (!empty($appSettings['wc_webhook_secret'])) {
 }
 
 $db = new Database($config['db'], __DIR__ . '/../..');
+
+// Karbantartási mód (12. pont) — az UpdateInstaller kapcsolja be a
+// frissítés telepítési szakaszára (lásd src/UpdateInstaller.php
+// setMaintenanceMode()). Egy nem-admin (vagy be sem jelentkezett) kérés
+// minden nem-fehérlistás, nem-cron végpontra 503-at kap — a "recovery/
+// update admin funkciók megfelelő jogosultsággal maradjanak elérhetők"
+// előírás miatt egy TÉNYLEGES admin (vagy egy olyan telepítés, ahol
+// egyáltalán nincs dolgozói PIN-rendszer, tehát a bejelentkezés maga a
+// tulajdonosi szint — ugyanaz a feltétel, mint require_admin()-ben)
+// változatlanul mindent elér.
+if (!empty($appSettings['maintenance_mode_active']) && !$isCronScript) {
+    $maintenanceWhitelist = array_merge($authWhitelist, [
+        'update-status.php', 'update-check.php', 'update-install.php', 'update-history.php', 'settings.php',
+    ]);
+    $isEffectiveAdmin = !$db->listStaff(true) || $db->isStaffAdmin(Auth::currentStaffId());
+    if (!in_array($currentScript, $maintenanceWhitelist, true) && !$isEffectiveAdmin) {
+        http_response_code(503);
+        echo json_encode([
+            'error'       => $appSettings['maintenance_mode_message'] ?: 'A FountainTrade frissítése folyamatban van.',
+            'maintenance' => true,
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+}
 
 function json_input(): array
 {

@@ -239,7 +239,13 @@ amik ezt futtatják:
   NAV bejövő számla-szinkron (javasolt: óránként):
     curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "http://localhost:8000/api/nav-incoming-sync-run.php"
 
-Mind a négy végpont ugyanazt a hitelesítést használja: a token a
+  Önfrissítés-ellenőrzés (javasolt: 30 percenként — lásd README
+  "Önfrissítés" szakasza; ez a végpont SOSE telepít semmit, csak
+  ellenőriz, és csak akkor tesz bármit, ha a Beállítások → Frissítések
+  alatt az "Automatikus ellenőrzés" be van kapcsolva):
+    curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "http://localhost:8000/api/update-check-run.php"
+
+Mind az öt végpont ugyanazt a hitelesítést használja: a token a
 Beállítások → Mentés alatt beállítható cron titkos tokennel egyezzen
 — enélkül egyik végpont se futna le bejelentkezés nélkül (a
 Feladatütemező nem tud böngészőben bejelentkezni). A token KIZÁRÓLAG

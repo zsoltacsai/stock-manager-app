@@ -83,8 +83,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $update[$field] = $value;
     }
 
-    // Logikai (be/ki) mezők.
-    $boolFields = ['auto_sync_enabled', 'printer_enabled', 'backup_enabled', 'szamlazz_send_email', 'nav_test_mode', 'nav_queue_enabled', 'nav_incoming_sync_enabled', 'receipt_show_logo', 'loyalty_enabled', 'printer_auto_print_enabled', 'printer_qr_enabled'];
+    // Logikai (be/ki) mezők. FONTOS: 'maintenance_mode_active' SZÁNDÉKOSAN
+    // NINCS itt — azt kizárólag az UpdateInstaller állíthatja, lásd
+    // Settings::DEFAULTS docblockja.
+    $boolFields = ['auto_sync_enabled', 'printer_enabled', 'backup_enabled', 'szamlazz_send_email', 'nav_test_mode', 'nav_queue_enabled', 'nav_incoming_sync_enabled', 'receipt_show_logo', 'loyalty_enabled', 'printer_auto_print_enabled', 'printer_qr_enabled', 'update_auto_check_enabled', 'update_auto_install_enabled'];
     foreach ($boolFields as $field) {
         if (isset($input[$field])) {
             $update[$field] = (bool) $input[$field];
@@ -130,6 +132,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     if (isset($input['backup_time']) && preg_match('/^\d{2}:\d{2}$/', $input['backup_time'])) {
         $update['backup_time'] = $input['backup_time'];
+    }
+    if (isset($input['update_check_interval_hours']) && in_array((int) $input['update_check_interval_hours'], [6, 12, 24, 168], true)) {
+        $update['update_check_interval_hours'] = (int) $input['update_check_interval_hours'];
+    }
+    if (isset($input['update_channel']) && in_array($input['update_channel'], ['stable'], true)) {
+        $update['update_channel'] = $input['update_channel'];
     }
     if (isset($input['backup_retention_count'])) {
         $update['backup_retention_count'] = max(1, min(100, (int) $input['backup_retention_count']));

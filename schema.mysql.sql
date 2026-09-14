@@ -517,5 +517,49 @@ CREATE TABLE IF NOT EXISTS incoming_invoice_sync (
 INSERT INTO incoming_invoice_sync (provider, status)
 SELECT 'nav', 'idle' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM incoming_invoice_sync WHERE provider = 'nav');
 
+-- FountainTrade önfrissítő rendszer — lásd Database::migrateV21Updates() docblockja.
+CREATE TABLE IF NOT EXISTS update_state (
+    id                              INT UNSIGNED PRIMARY KEY,
+    state                           VARCHAR(32) NOT NULL DEFAULT 'idle',
+    current_version                 VARCHAR(32) NOT NULL,
+    latest_version                  VARCHAR(32),
+    latest_release_tag              VARCHAR(64),
+    latest_commit_sha               VARCHAR(64),
+    latest_release_notes            TEXT,
+    latest_published_at             DATETIME NULL,
+    latest_checked_at               DATETIME NULL,
+    last_check_error                TEXT,
+    last_successful_update_at       DATETIME NULL,
+    last_successful_update_version  VARCHAR(32),
+    progress_message                TEXT,
+    install_requested_by            VARCHAR(191),
+    install_requested_at            DATETIME NULL,
+    lock_token                      VARCHAR(64),
+    lock_started_at                 DATETIME NULL,
+    lock_hostname                   VARCHAR(191),
+    created_at                      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT INTO update_state (id, state, current_version)
+SELECT 1, 'idle', '1.0.0' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM update_state WHERE id = 1);
+
+CREATE TABLE IF NOT EXISTS update_history (
+    id                 INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    from_version       VARCHAR(32) NOT NULL,
+    to_version         VARCHAR(32) NOT NULL,
+    release_tag        VARCHAR(64),
+    commit_sha         VARCHAR(64),
+    trigger_source     VARCHAR(16) NOT NULL,
+    actor              VARCHAR(191),
+    started_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at        DATETIME NULL,
+    state              VARCHAR(32) NOT NULL,
+    error              TEXT,
+    backup_reference   VARCHAR(255),
+    rollback_state     VARCHAR(32),
+    created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_update_history_started_at (started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 INSERT INTO schema_version (version)
 SELECT 16 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM schema_version);

@@ -55,6 +55,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <button class="tab-btn" data-tab="tab-audit-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V19a2 2 0 0 1-2 2z"></path></svg>Tevékenységnapló</button>
             <button class="tab-btn" data-tab="tab-import-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>Importálás</button>
             <button class="tab-btn" data-tab="tab-security-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>Biztonság</button>
+            <button class="tab-btn" data-tab="tab-update-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>Frissítések</button>
         </div>
 
         <div id="tab-sync-settings" class="tab-panel active">
@@ -854,6 +855,79 @@ if (!Auth::isLoggedIn($appSettings)) {
                     a jelenlegi böngészőből szeretnél kijelentkezni, itt is megteheted.
                 </p>
                 <button id="security-logout-btn" class="btn btn-secondary" style="width:auto; padding:10px 18px;">Kijelentkezés</button>
+            </div>
+        </div>
+
+        <div id="tab-update-settings" class="tab-panel">
+            <div class="import-card" style="background:var(--panel-light); margin-bottom:16px;">
+                <div class="field-row" style="align-items:baseline;">
+                    <div>
+                        <p class="muted" style="margin:0;">Jelenlegi verzió</p>
+                        <p style="margin:2px 0 0; font-size:1.4em; font-weight:600;" id="update-current-version">—</p>
+                    </div>
+                    <div>
+                        <p class="muted" style="margin:0;">Elérhető verzió</p>
+                        <p style="margin:2px 0 0; font-size:1.4em; font-weight:600;" id="update-latest-version">—</p>
+                    </div>
+                </div>
+                <p style="margin:12px 0 0;" id="update-availability-badge"></p>
+            </div>
+
+            <p class="muted" id="update-status-line">Frissítés állapota: —</p>
+            <p class="muted" id="update-last-check-line">Utolsó ellenőrzés: —</p>
+            <p class="muted" id="update-last-success-line">Utolsó sikeres frissítés: —</p>
+            <p class="muted" id="update-progress-line" style="display:none;"></p>
+
+            <div class="modal-actions">
+                <button id="update-check-now-btn" class="btn btn-secondary" style="flex:1;">Frissítések keresése</button>
+                <button id="update-install-now-btn" class="btn btn-primary" style="flex:1;" disabled>Frissítés most</button>
+            </div>
+            <p id="update-action-feedback" class="modal-feedback"></p>
+
+            <div id="update-release-notes-box" style="display:none; border-top:1px solid var(--border); margin-top:16px; padding-top:16px;">
+                <strong>Release notes</strong>
+                <pre id="update-release-notes" style="white-space:pre-wrap; font-family:inherit; font-size:0.95em; margin-top:8px; max-height:220px; overflow:auto;"></pre>
+            </div>
+
+            <div style="border-top:1px solid var(--border); margin-top:24px; padding-top:16px;">
+                <div class="toggle-line">
+                    <span>Automatikus ellenőrzés bekapcsolva</span>
+                    <button type="button" class="toggle-switch" id="update-auto-check-enabled"></button>
+                </div>
+                <label for="update-check-interval">Ellenőrzési időköz</label>
+                <select id="update-check-interval">
+                    <option value="6">6 óránként</option>
+                    <option value="12">12 óránként</option>
+                    <option value="24" selected>24 óránként</option>
+                    <option value="168">7 naponta</option>
+                </select>
+                <p class="muted" style="margin-top:-6px;">
+                    Az automatikus ellenőrzéshez egy rendszer cron bejegyzés szükséges (lásd README),
+                    ami a fenti időköz alapján dönti el, esedékes-e egy tényleges GitHub-lekérdezés —
+                    csak ELLENŐRIZ, önmagában sose telepít semmit.
+                </p>
+
+                <div class="toggle-line">
+                    <span>Automatikus telepítés bekapcsolva</span>
+                    <button type="button" class="toggle-switch" id="update-auto-install-enabled"></button>
+                </div>
+                <p class="muted" style="margin-top:-6px;">
+                    <strong>Csak akkor kapcsold be, ha felügyelet nélküli, cron-indított
+                    frissítést szeretnél</strong> — a tényleges telepítést ilyenkor egy külön
+                    CLI-parancs végzi (lásd README "Önfrissítés" szakasza), sose egy
+                    böngészőben futó oldalbetöltés.
+                </p>
+
+                <button id="settings-save-update-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Mentés</button>
+                <p id="settings-update-feedback" class="modal-feedback"></p>
+            </div>
+
+            <div style="border-top:1px solid var(--border); margin-top:24px; padding-top:16px;">
+                <strong>Előzmények</strong>
+                <table class="sample-table" style="margin-top:10px;">
+                    <thead><tr><th>Dátum</th><th>Honnan</th><th>Mire</th><th>Indította</th><th>Eredmény</th></tr></thead>
+                    <tbody id="update-history-body"><tr><td colspan="5" class="muted">Betöltés...</td></tr></tbody>
+                </table>
             </div>
         </div>
 

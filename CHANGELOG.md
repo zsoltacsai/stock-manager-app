@@ -4,6 +4,16 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## [1.0.2] — 2026-09-14
+
+### Fixed
+- Az önfrissítő rendszer GitHub SSRF-fehérlistája kiegészítve a
+  `release-assets.githubusercontent.com` hoszttal — ez a GitHub
+  release-asset letöltések tényleges, valódi átirányítási célja (egy
+  élő 1.0.0 → 1.0.1 frissítési teszt közben derült ki; a korábbi
+  fehérlista a hibát biztonságosan, elutasítással kezelte, nem
+  bukott el nyitva).
+
 ## [1.0.1] — 2026-09-14
 
 ### Added

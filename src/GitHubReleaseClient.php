@@ -30,12 +30,21 @@ class GitHubReleaseClient
     private const USER_AGENT = 'FountainTrade-UpdateClient';
 
     /**
-     * A GitHub release-asset letöltés jellemzően a github.com
-     * /releases/download/... útvonalról egy aláírt, objects.githubusercontent.com
-     * alatti URL-re irányít át — mindkettő legitim, VALÓDI GitHub-
-     * infrastruktúra, semmi más nem engedélyezett.
+     * A GitHub release-asset letöltés a github.com/.../releases/download/...
+     * útvonalról egy aláírt (Azure Blob SAS + GitHub-JWT-vel ellátott) URL-re
+     * irányít át — ÉLŐ, valódi FountainTrade 1.0.1 GitHub Release-en
+     * keresztül ELLENŐRZÖTT módon `release-assets.githubusercontent.com`
+     * (2026-09-14, egy tényleges élő frissítés-teszt közben derült ki: az
+     * eredeti, csak `objects.githubusercontent.com`-ot tartalmazó lista a
+     * valódi átirányítást elutasította — ez a lista EZUTÁN, a hibát
+     * megfigyelve lett kiegészítve). Az `objects.githubusercontent.com`-ot
+     * is fenntartjuk — ez a GitHub egy másik, régebb óta ismert, szintén
+     * valódi tartalom-kiszolgáló hosztja —, de a jelenlegi (2026-os)
+     * release-asset letöltés ténylegesen a release-assets.githubusercontent.com-ot
+     * használja. Mindkettő VALÓDI GitHub-infrastruktúra, semmi más nem
+     * engedélyezett.
      */
-    private const ALLOWED_ASSET_HOSTS = ['github.com', 'objects.githubusercontent.com', 'api.github.com'];
+    private const ALLOWED_ASSET_HOSTS = ['github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com', 'api.github.com'];
 
     private string $owner;
     private string $repo;
@@ -138,8 +147,8 @@ class GitHubReleaseClient
      * Letölti $url tartalmát $destPath-ba — a hívó felelőssége, hogy
      * $destPath egy STAGING (SOSE production) útvonal legyen (lásd
      * UpdateVerifier/UpdateInstaller). Követi az átirányítást (a GitHub
-     * asset-letöltés jellemzően objects.githubusercontent.com-ra irányít
-     * át), DE mind a kezdeti, mind a ténylegesen elért végleges URL hosztját
+     * asset-letöltés a release-assets.githubusercontent.com-ra irányít át,
+     * lásd fent), DE mind a kezdeti, mind a ténylegesen elért végleges URL hosztját
      * az isAllowedDownloadHost() fehérlistájával ellenőrzi — csak HTTPS,
      * csak a valódi GitHub-infrastruktúra.
      */

@@ -118,6 +118,9 @@ final class GitHubReleaseClientTest extends TestCase
     {
         $this->assertTrue(GitHubReleaseClient::isAllowedDownloadHost('github.com'));
         $this->assertTrue(GitHubReleaseClient::isAllowedDownloadHost('objects.githubusercontent.com'));
+        // A ténylegesen megfigyelt átirányítási cél egy valódi FountainTrade
+        // GitHub Release-en keresztül (lásd az osztály docblockja).
+        $this->assertTrue(GitHubReleaseClient::isAllowedDownloadHost('release-assets.githubusercontent.com'));
         $this->assertTrue(GitHubReleaseClient::isAllowedDownloadHost('api.github.com'));
         $this->assertTrue(GitHubReleaseClient::isAllowedDownloadHost('GITHUB.COM')); // case-insensitive
     }

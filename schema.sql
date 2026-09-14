@@ -413,13 +413,39 @@ CREATE TABLE IF NOT EXISTS invoices (
     next_attempt_at TEXT,                               -- csak NAV — worker esedékesség-ellenőrzés
     locked_at       TEXT,                               -- feldolgozási foglalás, ugyanaz a minta, mint sales.invoice_claim_at
     last_error      TEXT,
-    payload_json    TEXT,                               -- csak NAV — a beütemezéskori kosár/vevő pillanatképe
+    payload_json    TEXT,                               -- kosár/vevő pillanatkép (NAV: beütemezéskor; Számlázz.hu: 1.1.0 óta a CREATE-kísérletkor — MODIFY/STORNO kontextus-rekonstrukcióhoz, lásd InvoiceService::buildStornoContext())
+    -- 1.1.0 MODIFY/STORNO adatmodell — lásd Database::migrateV22InvoiceOperationsBody() docblockja.
+    invoice_type        TEXT NOT NULL DEFAULT 'normal',  -- normal | modification | storno
+    original_invoice_id INTEGER REFERENCES invoices(id), -- NULL normal-nál; kötelező modification/storno-nál
+    operation_key        TEXT,                            -- egyedi, determinisztikus VAGY kísérlet-kulcsolt művelet-azonosító (UNIQUE lent)
+    modification_index   INTEGER,                          -- NAV modificationIndex — NULL normal-nál
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_sale_provider ON invoices(sale_id, provider);
+CREATE INDEX IF NOT EXISTS idx_invoices_sale_provider ON invoices(sale_id, provider);
 CREATE INDEX IF NOT EXISTS idx_invoices_status_next_attempt ON invoices(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_invoices_provider ON invoices(provider);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_operation_key ON invoices(operation_key);
+CREATE INDEX IF NOT EXISTS idx_invoices_original_invoice_id ON invoices(original_invoice_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_invoice_type ON invoices(invoice_type);
+
+-- 1.1.0 — provider-kulcsolt, atomikusan növelt számlaszám-sorozat (lásd
+-- Database::allocateInvoiceNumber() docblockja). Fresh installon a 'nav'
+-- sor 0-ról indul (nincs örökölt id-alapú szám, amit el kellene kerülni).
+CREATE TABLE IF NOT EXISTS invoice_sequences (
+    provider               TEXT PRIMARY KEY,
+    last_allocated_number  INTEGER NOT NULL DEFAULT 0,
+    updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 1.1.0 — eredeti-számlánként atomikusan növelt NAV modificationIndex
+-- (lásd Database::allocateModificationIndex() docblockja) — MODIFY és
+-- STORNO KÖZÖS, folyamatos sorszáma.
+CREATE TABLE IF NOT EXISTS invoice_modification_sequences (
+    original_invoice_id   INTEGER PRIMARY KEY REFERENCES invoices(id),
+    last_allocated_index  INTEGER NOT NULL DEFAULT 0,
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 -- Beérkező (más adózók által kiállított) NAV számlák — SZÁNDÉKOSAN KÜLÖN
 -- az `invoices` (kimenő) modelltől, lásd Database::migrateV20IncomingInvoices()

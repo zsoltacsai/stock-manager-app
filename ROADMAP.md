@@ -6,133 +6,56 @@ vagy mert a projekt jelenlegi mérete/célközönsége mellett a
 komplexitás/haszon arány rossz. Egy jövőbeli 1.1-es (vagy későbbi) körben
 érdemes újra megnézni őket, ha a körülmények változnak.
 
-## NAV Online Számla — production előtti nyitott döntési pont: számlaszám-generálás
+## NAV Online Számla — számlaszám-generálás — MEGOLDVA (1.1.0)
 
-**Ez a szakasz frissítve, mert a korábbi feltételezés ("csak akkor
-kellene, ha a Számlázz.hu integráció megszűnne") azóta elavult**: a
-közvetlen NAV Online Számla kiállítás Phase 5A/5B-ben ténylegesen
-elkészült (`src/NavClient.php`, `src/NavInvoiceProvider.php`,
-`src/NavInvoiceQueueWorker.php`) — valódi NAV sandbox környezetben,
-teljes tokenExchange → manageInvoice → queryTransactionStatus
-lánccal, tartós, race-safe, retry-képes queue-val bizonyítva.
-`invoice_provider='nav'` a Beállításokban ma is bekapcsolható és
-ténylegesen működik.
+**Ez a korábban nyitott döntési pont a FountainTrade 1.1.0 MODIFY/STORNO
+előkészítő körében (schema/numbering réteg) lezárult.** A korábbi,
+`invoices.id`-ból képzett ("SM-NAV-{év}-{id}") számlázás megszűnt — lásd
+a README "Számla-műveletek adatmodell (1.1.0)" szakaszát a teljes,
+jelenlegi tervezésért: `Database::allocateInvoiceNumber()` egy KÜLÖN,
+provider-kulcsolt, atomikusan növelt `invoice_sequences` táblából
+allokál, ami a Számlázz.hu-s sorok beszúrásaitól TELJESEN FÜGGETLEN. A
+meglévő (1.0.x-ben kiállított) számlaszámok VÁLTOZATLANOK maradtak — a
+migráció nem generálta újra őket (lásd `Database::migrateV22InvoiceOperationsBody()`
+docblockja) —, az ÚJ sorozat a migráció idején a legmagasabb korábbi NAV
+`invoices.id` fölött indult, hogy a régi és az új számok sose
+keveredhessenek/ütközhessenek.
 
-**Egyetlen, KIFEJEZETTEN production előtt eldöntendő, még NYITOTT
-pont maradt**: a NAV felé beküldött `invoiceNumber` (a ténylegesen
-kiállított számla jogi sorszáma, NEM egy belső/technikai azonosító —
-lásd `src/NavInvoiceXmlBuilder.php` és a NAV invoiceData.xsd
-`invoiceNumber` mezője) jelenleg a
-`Database::insertQueuedInvoice()`-ban `SM-NAV-{év}-{id}` formában
-képződik, ahol `{id}` az `invoices` tábla saját, AUTO_INCREMENT
-oszlopa — ez az id-szekvencia a Számlázz.hu-s sorokkal (provider=
-`szamlazz`) OSZTOTT, tehát a NAV-számlák sorszáma nem garantáltan
-folytonos/gapless, ha közben Számlázz.hu-s sor is beszúrásra kerül.
+## Számla MÓDOSÍTÁS és SZTORNÓ (NAV + Számlázz.hu) — MEGOLDVA (1.1.0)
 
-**Pontos kódnyomvonal** (ellenőrizhető, file:line hivatkozásokkal):
+**A 2026-09-09-i specifikáció (korábban "Phase 8", 1.1-re halasztva)
+implementálva és VALÓDI NAV sandbox lánccal (CREATE→MODIFY→STORNO,
+mindhárom DONE) igazolva.** A teljes tervezés/implementáció a README
+"Számla-műveletek adatmodell — MODIFY/STORNO előkészítés (1.1.0)" és
+"MODIFY/STORNO — tényleges NAV/Számlázz.hu beküldés (1.1.0)" szakaszaiban
+dokumentált. Röviden, a korábbi specifikáció pontjaihoz igazítva:
 
-1. **Hol képződik**: `Database::insertQueuedInvoice()`
-   (`src/Database.php:1513`) — `$invoiceNumber = sprintf('SM-NAV-%s-%06d',
-   date('Y'), $id);` — KÖZVETLENÜL az `invoices` sor sikeres `INSERT`-je
-   UTÁN, a friss auto-increment `$id`-ból, MÉG A NAV-HÍVÁS ELŐTT (a queue
-   worker csak ezután, később küldi be a `manageInvoice`-ot).
-2. **Milyen mezőbe kerül**: ugyanott egy közvetlen `UPDATE invoices SET
-   invoice_number = ? WHERE id = ?` írja a saját `invoices.invoice_number`
-   oszlopba (`src/Database.php:1514` körül).
-3. **Hol kerül bele a NAV requestbe**: `NavInvoiceXmlBuilder::build()`
-   (`src/NavInvoiceXmlBuilder.php:68`) — `$xw->writeElement('invoiceNumber',
-   (string) $params['invoice_number']);` — ez az `invoices.invoice_number`
-   értéke kerül szó szerint a `manageInvoice` kéréshez csatolt
-   `invoiceData` XML `<invoiceNumber>` elemébe (`NavInvoiceProvider::submit()`
-   adja át `$invoiceRow['invoice_number']`-ként).
-4. **Milyen adatbázis ID-ból származik**: az `invoices` tábla SAJÁT,
-   provider-független `id` oszlopából (NEM a `sales.id`-ból, NEM egy
-   NAV-only sorszámlálóból) — ez a lényegi, még eldöntendő pont.
-5. **Hogyan különül el a `provider_ref`/transactionId-tól**: teljesen
-   külön oszlop, külön életciklus. `invoice_number` **egyszer**, a
-   queue-ba kerüléskor (`insertQueuedInvoice()`-ban) képződik, MÉG A NAV
-   MEGKERESÉSE ELŐTT. `provider_ref` ezzel szemben **csak sikeres
-   `manageInvoice` UTÁN**, a NAV válaszából származó `transactionId`-val
-   töltődik ki, `Database::markInvoiceSubmitted()`-ben
-   (`src/Database.php:1618`, `SET ... provider_ref = ?`) — ez a NAV
-   beküldés technikai nyomon-követő azonosítója, SOSE számlaszám. A
-   "Kimenő számlák" UI részletnézete (`webroot/kimeno-szamlak.js`)
-   emiatt explicit külön címkével jeleníti meg: `invoice_number` mint
-   "Számlaszám", `provider_ref` mint **"NAV tranzakcióazonosító (NEM
-   számlaszám...)"**.
-
-Magyar ÁFA-törvényi elvárás a számlaszámozás folytonossága egy adott
-számlázási "tartományon" belül — emiatt **production bevezetés előtt
-külön meg kell vizsgálni és véglegesíteni** a NAV-only számlaszám-
-tartomány kérdését (pl. egy saját, csak NAV-provider sorokra vonatkozó
-sequence/counter bevezetése, vagy a könyvelővel egyeztetett más
-numbering-konvenció). Ezt a döntést a projekt tulajdonosa és/vagy a
-könyvelője hozza meg — technikai implementáció csak azután, hogy a
-konkrét séma eldőlt.
-
-**Trigger, ami miatt ezt production előtt véglegesen el KELL dönteni**:
-mielőtt `invoice_provider='nav'` valódi, éles (nem teszt-rendszerű)
-NAV-fiókkal, valódi vevőknek kiállított számlákra bekapcsolásra kerül.
-
-## Számla MÓDOSÍTÁS és SZTORNÓ (NAV + Számlázz.hu) — 1.1-re halasztva
-
-**2026-09-09-én egy részletes ("Phase 8") specifikáció érkezett** a kimenő
-számlák utólagos módosítására (módosító számla) és érvénytelenítésére
-(sztornó) — mind NAV Online Számla, mind Számlázz.hu felé. Mivel a
-projekt 2026-09-05 óta **1.0 RC feature freeze**-ben van (lásd
-CHANGELOG.md / a projekt szabálya: csak hibajavítás, új funkció csak
-kifejezett jóváhagyással), ez a kör **nem indult el** — a specifikáció
-lényegi pontjai itt kerülnek rögzítésre, hogy 1.1-ben újra elővehető
-legyen kódolás nélküli újratervezés nélkül.
-
-**Előfeltétel**: mielőtt ez a kör elindul, a fenti "NAV Online Számla —
-production előtti nyitott döntési pont: számlaszám-generálás" szakaszban
-leírt számlaszám-kérdést véglegesíteni kell — a módosító/sztornó számla
-is saját, önálló sorszámot kap, tehát a numbering-döntés közvetlenül
-befolyásolja a MODIFY/STORNO implementációt.
-
-**A specifikáció fő pontjai** (rövidítve, a teljes szöveg a
-2026-09-09-i beszélgetésben található):
-
-- **Architektúra**: a meglévő `InvoiceService` rétegen KERESZTÜL, nem
-  megkerülve; provider-specifikus logika NEM kerülhet `sale.php`-ba —
-  `NavInvoiceProvider` és `SzamlazzInvoiceProvider` kapja a tényleges
-  MODIFY/STORNO műveletet, a meglévő Számlázz.hu-kliens/architektúra
-  újrahasználásával (nem egy második, párhuzamos rendszer).
-- **NAV MODIFY/STORNO**: a hivatalos NAV Online Számla API szerinti
-  módosítás/sztornó-művelet, a `manageInvoice` meglévő mintájára — az
-  eredeti számla SOSE íródik felül, a kapcsolat (`original_invoice_id`
-  vagy ezzel egyenértékű explicit FK, NEM számlaszám-string-parszolás)
-  az adatbázisban tárolandó.
-- **Adatmodell**: a számla ÉLETCIKLUS-állapota (queued/submitted/
-  processing/done/failed/uncertain/dead_letter) és az ÜZLETI TÍPUSA
-  (normal/modification/storno) két KÜLÖN mező — nem szabad egy
-  státuszmezőbe összemosni.
-- **Idempotencia**: dupla kattintás a "Sztornó"-ra vagy egy timeout
-  utáni retry NEM hozhat létre két sztornó/módosító számlát — stabil
-  művelet-azonosító szükséges, ugyanaz az elv, mint a meglévő
-  NAV-queue race-safe claim-mechanizmusánál.
-- **Jogosultság**: MODIFY/STORNO csak admin jogosultsággal, minden
-  állapotváltó végpont POST + auth + CSRF, GET mutation tilos — a
-  meglévő `require_admin()` mintára.
-- **UI**: a "Kimenő számlák" részletnézetében "Módosító számla" /
-  "Sztornó számla" gombok, csak akkor látszanak, ha az adott
-  számla/provider/állapot mellett érvényes a művelet, megerősítő
-  dialógussal (visszafordíthatatlan pénzügyi művelet SOHA egyetlen
-  véletlen kattintásra ne történjen meg).
-- **NAV uncertain-recovery kiterjesztése**: a meglévő tranzakció-
-  helyreállítási logikának úgy kell bővülnie, hogy egy MODIFY/STORNO
-  timeout utáni helyreállítás SOSE hozzon létre tévedésből egy
-  CREATE-et (vagy fordítva).
-- **Tesztelés**: valódi NAV sandbox teszt normál/módosító/sztornó
-  számlára, a meglévő 300+ tesztes reguressziós szvit háromszori
-  lefuttatása, konkurrencia-teszt két egyidejű sztornó-kérésre.
-
-**Trigger, ami miatt érdemes lenne elővenni**: ha a napi üzletmenetben
-ténylegesen felmerül a kiállított (NAV-nak beküldött vagy Számlázz.hu-n
-kiállított) számla utólagos javításának/érvénytelenítésének igénye —
-enélkül ez ma tisztán elméleti, a jelenlegi 1.0 kiadásban nincs éles
-NAV-fiókon kiállított, javítandó számla.
+- **Architektúra**: a meglévő `InvoiceService`/`InvoiceProviderInterface`
+  rétegen keresztül, `NavInvoiceProvider`/`SzamlazzInvoiceProvider`
+  bővítve — NEM párhuzamos rendszer.
+- **NAV MODIFY/STORNO**: `manageInvoice` `invoiceOperation`
+  CREATE/MODIFY/STORNO envelope + `invoiceReference`/
+  `lineModificationReference` XML-blokkok — HÁROM, kizárólag valódi NAV
+  sandbox hívással feltárható kötelező részlettel (lásd README), amiket
+  a séma-dokumentáció önmagában NEM tárt fel.
+- **Adatmodell**: `invoice_type` (normal/modification/storno) a `status`
+  (technikai életciklus) mezőtől elválasztva — lásd az előző ROADMAP-
+  szakasz + README.
+- **Idempotencia**: `operation_key` (attempt-kulcsolt MODIFY-hoz,
+  determinisztikus STORNO-hoz) — valódi, 16-folyamatos konkurrencia-
+  teszttel igazolva mindkét esetre.
+- **Jogosultság**: `require_admin()` + CSRF minden állapotváltó
+  végponton (`invoice-modify.php`, `invoice-storno.php`,
+  `szamlazz-operation-retry.php`).
+- **UI**: backend-vezérelt gomb-láthatóság (a frontend sose dönt
+  pénzügyi jogosultságról), megerősítő dialógus, kapcsolódó számla-lánc
+  navigáció.
+- **NAV uncertain-recovery**: változatlan, generikus mechanizmus —
+  sose esik vissza implicit CREATE-re (a `checkStatus()`/
+  `recoverUncertain()` `provider_ref`/`invoice_number` alapján dönt,
+  `invoice_type`-tól függetlenül).
+- **Tesztelés**: valódi NAV sandbox lánc, ~90 új/bővített teszt, 2 új
+  valódi 16-folyamatos konkurrencia-teszt, 3x tiszta regresszió.
 
 ## NAV Online Számla — Beérkezett számlák: ismert korlátok / jövőbeli bővítés
 

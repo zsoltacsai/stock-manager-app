@@ -84,7 +84,7 @@ final class MigrationAtomicityTest extends TestCase
         $db2 = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $path]], dirname(__DIR__));
 
         $pdo2 = new PDO('sqlite:' . $path);
-        $this->assertSame('21', (string) $pdo2->query('SELECT version FROM schema_version')->fetchColumn());
+        $this->assertSame('22', (string) $pdo2->query('SELECT version FROM schema_version')->fetchColumn());
         $this->assertSame(1, (int) $pdo2->query('SELECT COUNT(*) FROM incoming_invoice_sync')->fetchColumn(), 'Nem duplikálódhat a seed-sor.');
         $row = $pdo2->query("SELECT * FROM incoming_invoice_sync WHERE provider = 'nav'")->fetch(PDO::FETCH_ASSOC);
         $this->assertSame('idle', $row['status']);
@@ -120,7 +120,7 @@ final class MigrationAtomicityTest extends TestCase
         $db2 = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $path]], dirname(__DIR__));
 
         $pdo2 = new PDO('sqlite:' . $path);
-        $this->assertSame('21', (string) $pdo2->query('SELECT version FROM schema_version')->fetchColumn());
+        $this->assertSame('22', (string) $pdo2->query('SELECT version FROM schema_version')->fetchColumn());
         foreach (['incoming_invoices', 'incoming_invoice_items', 'incoming_invoice_sync'] as $table) {
             $pdo2->query("SELECT 1 FROM $table LIMIT 1"); // dob, ha nem létezik -- a teszt maga a bizonyíték
         }
@@ -243,7 +243,7 @@ final class MigrationAtomicityTest extends TestCase
         $this->assertSame($processCount, $okCount, 'Egyetlen folyamat SEM hibázhat a konkurrens migráció miatt: ' . implode(' | ', $errorLines));
 
         $verifyPdo = new PDO('sqlite:' . $path);
-        $this->assertSame('21', (string) $verifyPdo->query('SELECT version FROM schema_version')->fetchColumn());
+        $this->assertSame('22', (string) $verifyPdo->query('SELECT version FROM schema_version')->fetchColumn());
         foreach (['incoming_invoices', 'incoming_invoice_items', 'incoming_invoice_sync'] as $table) {
             $verifyPdo->query("SELECT 1 FROM $table LIMIT 1");
         }

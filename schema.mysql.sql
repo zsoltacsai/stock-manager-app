@@ -431,12 +431,39 @@ CREATE TABLE IF NOT EXISTS invoices (
     locked_at       DATETIME NULL,
     last_error      TEXT,
     payload_json    TEXT,
+    -- 1.1.0 MODIFY/STORNO adatmodell — lásd Database::migrateV22InvoiceOperationsBody() docblockja.
+    invoice_type        VARCHAR(16) NOT NULL DEFAULT 'normal',
+    original_invoice_id INT UNSIGNED NULL,
+    operation_key        VARCHAR(191),
+    modification_index   INT UNSIGNED NULL,
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_invoices_sale_provider (sale_id, provider),
+    KEY idx_invoices_sale_provider (sale_id, provider),
     KEY idx_invoices_status_next_attempt (status, next_attempt_at),
     KEY idx_invoices_provider (provider),
-    CONSTRAINT fk_invoices_sale FOREIGN KEY (sale_id) REFERENCES sales(id)
+    UNIQUE KEY uq_invoices_operation_key (operation_key),
+    KEY idx_invoices_original_invoice_id (original_invoice_id),
+    KEY idx_invoices_invoice_type (invoice_type),
+    CONSTRAINT fk_invoices_sale FOREIGN KEY (sale_id) REFERENCES sales(id),
+    CONSTRAINT fk_invoices_original FOREIGN KEY (original_invoice_id) REFERENCES invoices(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 1.1.0 — provider-kulcsolt, atomikusan növelt számlaszám-sorozat (lásd
+-- Database::allocateInvoiceNumber() docblockja).
+CREATE TABLE IF NOT EXISTS invoice_sequences (
+    provider               VARCHAR(16) PRIMARY KEY,
+    last_allocated_number  INT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 1.1.0 — eredeti-számlánként atomikusan növelt NAV modificationIndex
+-- (lásd Database::allocateModificationIndex() docblockja) — MODIFY és
+-- STORNO KÖZÖS, folyamatos sorszáma.
+CREATE TABLE IF NOT EXISTS invoice_modification_sequences (
+    original_invoice_id   INT UNSIGNED PRIMARY KEY,
+    last_allocated_index  INT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_invoice_mod_seq_original FOREIGN KEY (original_invoice_id) REFERENCES invoices(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Beérkező (más adózók által kiállított) NAV számlák — SZÁNDÉKOSAN KÜLÖN

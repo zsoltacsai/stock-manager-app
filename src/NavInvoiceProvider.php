@@ -87,6 +87,128 @@ class NavInvoiceProvider implements InvoiceProviderInterface
     }
 
     /**
+     * A NAV mindkét kiterjesztett műveletet (MODIFY, STORNO) támogatja —
+     * ugyanazon manageInvoice/invoiceReference mechanizmuson keresztül,
+     * amit a submit() invoice_type szerinti elágazása épít fel.
+     */
+    public function supportsOperation(string $operation): bool
+    {
+        return in_array($operation, ['modify', 'storno'], true);
+    }
+
+    public function requestModification(Database $db, array $original, array $context): array
+    {
+        if (empty($context['operation_uuid'])) {
+            throw new InvalidArgumentException('A módosítás indításához stabil operation_uuid szükséges (attempt-szintű idempotencia, lásd InvoiceService).');
+        }
+        return $this->enqueueOperation($db, $original, $context, 'modification', 'modify:' . $original['id'] . ':' . $context['operation_uuid']);
+    }
+
+    public function requestStorno(Database $db, array $original, array $context): array
+    {
+        // A storno operation_key SZÁNDÉKOSAN NEM tartalmaz uuid-t (lásd
+        // Database::createInvoiceOperation() docblockja és a kör auditja)
+        // — ez teszi a sztornót STRUKTURÁLISAN egyszerivé egy adott
+        // eredeti számlára nézve, a DB UNIQUE(operation_key) indexen
+        // keresztül, PHP-szintű versenyhelyzet-ablak nélkül.
+        return $this->enqueueOperation($db, $original, $context, 'storno', 'storno:' . $original['id']);
+    }
+
+    /**
+     * Közös implementáció requestModification()/requestStorno() alatt —
+     * csak a tartós queue-bejegyzést hozza létre (Database::createInvoiceOperation()),
+     * a tényleges NAV-hívást a meglévő NavInvoiceQueueWorker/submit() végzi
+     * KÉSŐBB, invoice_type szerint elágazva — NINCS külön MODIFY/STORNO
+     * queue-mechanizmus (lásd a kör 8. pontja).
+     *
+     * $context várt kulcsai UGYANAZOK, mint enqueue()-nál (buyer, items,
+     * payment_method, totals) — az InvoiceService felelőssége ezeket MÁR
+     * validáltan/előkészítve átadni (STORNO esetén jellemzően az eredeti
+     * számla tételeinek előjel-fordított reprodukciója, lásd
+     * InvoiceService::buildStornoContext()).
+     */
+    private function enqueueOperation(Database $db, array $original, array $context, string $invoiceType, string $operationKey): array
+    {
+        $totals = $context['totals'] ?? [];
+        $payload = [
+            'buyer' => $context['buyer'],
+            'items' => $context['items'],
+            'payment_method' => $context['payment_method'] ?? null,
+            'supplier' => $this->supplierConfig,
+            'original_invoice_number' => (string) $original['invoice_number'],
+            // Valódi NAV sandbox hívással igazolt igény (lásd
+            // NavInvoiceXmlBuilder::writeLineModificationReference()
+            // docblockja) — a lineNumberReference a TELJES lánc kumulatív
+            // tételszámát folytatja, NEM ennek a dokumentumnak a saját
+            // számozását. Itt, a művelet LÉTREHOZÁSAKOR számoljuk ki (az
+            // EKKOR már létező eredeti + korábbi műveletek tétel-száma
+            // alapján) és MENTJÜK a payloadba — submit() ezt már készen,
+            // DB-hozzáférés nélkül olvassa (lásd a metódus docblockja: a
+            // submit() SOSE ír az `invoices` táblába, csak dönt).
+            'line_number_offset' => $this->computeLineNumberOffset($db, $original),
+        ];
+
+        try {
+            $row = $db->createInvoiceOperation([
+                'sale_id' => (int) $original['sale_id'],
+                'provider' => 'nav',
+                'invoice_type' => $invoiceType,
+                'original_invoice_id' => (int) $original['id'],
+                'operation_key' => $operationKey,
+                'net_total' => (float) ($totals['net'] ?? 0.0),
+                'vat_total' => (float) ($totals['vat'] ?? 0.0),
+                'gross_total' => (float) ($totals['gross'] ?? 0.0),
+                'currency' => (string) ($totals['currency'] ?? $original['currency'] ?? 'HUF'),
+                'payload' => $payload,
+            ]);
+        } catch (RuntimeException $e) {
+            // Ugyanaz a megkülönböztetés, mint SzamlazzInvoiceProvider::performOperation()-nél
+            // — egy konkurrens kérés (dupla kattintás/másik admin) már
+            // foglalta ezt a MŰVELETET (operation_key ütközés), NEM egy
+            // NAV-hiba — sose buborékolhat kifelé kivételként, a hívó egy
+            // normalizált, graceful eredményt vár (lásd InvoiceProviderInterface).
+            return ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => $e->getMessage(), 'already_in_progress' => true, 'pending' => false];
+        }
+
+        return ['success' => false, 'invoice_number' => $row['invoice_number'], 'pdf_path' => null, 'error' => null, 'pending' => true];
+    }
+
+    /**
+     * A TELJES számlalánc (eredeti + minden EDDIG LÉTEZŐ módosítás/sztornó
+     * sor) tételeinek összesített darabszáma — ez adja a lineNumberReference
+     * kezdő eltolását egy ÚJ dokumentumhoz (lásd enqueueOperation() és
+     * NavInvoiceXmlBuilder::writeLineModificationReference() docblockja).
+     *
+     * ISMERT KORLÁTOZÁS: két, VALÓDI konkurrens (nem operation_key által
+     * már kizárt) módosítási kísérlet elméletileg ugyanazt az offsetet
+     * olvashatná ki, mielőtt bármelyik ténylegesen létrejönne — mivel
+     * modificationIndex allokáció (lásd Database::allocateModificationIndex())
+     * MÁR biztosítja, hogy a két kísérlet más-más modificationIndex-et és
+     * SORRENDET kapjon, ez csak a lineNumberReference ÉRTÉKÉT érintheti
+     * (nem az egyediségét — a NAV-oldali ellenőrzés ettől függetlenül a
+     * modificationIndex-re és a dokumentum saját, belső sorszámozására
+     * épül elsősorban) — ez a kör hatóköre a 16-konkurrens teszteknél
+     * kifejezetten a modificationIndex/operation_key-atomicitást
+     * bizonyítja, NEM a lineNumberReference kiszámításának konkurrencia-
+     * biztonságát, ami egy jövőbeli, ténylegesen egyidejű MODIFY-MODIFY
+     * forgatókönyv esetén finomítást igényelhet.
+     */
+    private function computeLineNumberOffset(Database $db, array $original): int
+    {
+        $offset = self::countPayloadItems($original);
+        foreach ($db->getInvoiceOperationsForOriginal((int) $original['id']) as $operation) {
+            $offset += self::countPayloadItems($operation);
+        }
+        return $offset;
+    }
+
+    private static function countPayloadItems(array $invoiceRow): int
+    {
+        $payload = json_decode((string) ($invoiceRow['payload_json'] ?? ''), true) ?: [];
+        return count($payload['items'] ?? []);
+    }
+
+    /**
      * Csak a tartós queue-bejegyzést hozza létre — SOSE hív NAV API-t.
      * Race-safe és idempotens: lásd Database::insertQueuedInvoice()
      * docblockja (UNIQUE(sale_id, provider) + INSERT OR IGNORE/IGNORE).
@@ -136,15 +258,44 @@ class NavInvoiceProvider implements InvoiceProviderInterface
     {
         $payload = json_decode((string) $invoiceRow['payload_json'], true) ?: [];
 
+        // 1.1.0: invoice_type szerinti elágazás — normal → CREATE
+        // (változatlan viselkedés), modification/storno → MODIFY/STORNO,
+        // az invoiceData-ba beépített <invoiceReference> blokkal (lásd
+        // NavInvoiceXmlBuilder). UGYANEZEN a queue-n keresztül fut, NINCS
+        // külön MODIFY/STORNO queue (lásd enqueueOperation() docblockja).
+        $invoiceType = (string) ($invoiceRow['invoice_type'] ?? 'normal');
+        $operation = match ($invoiceType) {
+            'modification' => 'MODIFY',
+            'storno' => 'STORNO',
+            default => 'CREATE',
+        };
+
+        $xmlParams = [
+            'invoice_number' => $invoiceRow['invoice_number'],
+            'currency' => $invoiceRow['currency'],
+            'supplier' => $payload['supplier'] ?? [],
+            'buyer' => $payload['buyer'] ?? [],
+            'items' => $payload['items'] ?? [],
+            'payment_method' => $payload['payment_method'] ?? null,
+        ];
+        if ($operation !== 'CREATE') {
+            if (empty($payload['original_invoice_number']) || $invoiceRow['modification_index'] === null) {
+                // Ez csak akkor fordulhatna elő, ha a sor NEM
+                // enqueueOperation()-en keresztül jött létre — defenzív
+                // védelem, hogy egy hiányos payload SOSE menjen ki a
+                // NAV felé hamis/hiányzó invoiceReference-szel.
+                return ['outcome' => 'permanent', 'error' => 'A módosító/sztornó számla payloadja hiányos (nincs eredeti számlaszám vagy modificationIndex).'];
+            }
+            $xmlParams['invoice_reference'] = [
+                'original_invoice_number' => (string) $payload['original_invoice_number'],
+                'modification_index' => (int) $invoiceRow['modification_index'],
+                'modify_without_master' => false,
+                'line_number_offset' => (int) ($payload['line_number_offset'] ?? 0),
+            ];
+        }
+
         try {
-            $xml = NavInvoiceXmlBuilder::build([
-                'invoice_number' => $invoiceRow['invoice_number'],
-                'currency' => $invoiceRow['currency'],
-                'supplier' => $payload['supplier'] ?? [],
-                'buyer' => $payload['buyer'] ?? [],
-                'items' => $payload['items'] ?? [],
-                'payment_method' => $payload['payment_method'] ?? null,
-            ]);
+            $xml = NavInvoiceXmlBuilder::build($xmlParams);
         } catch (Throwable $e) {
             // Az XML-építés maga soha nem NAV-hálózati kérdés — ha itt
             // hibázik (pl. hiányos payload), az a payload/konfiguráció
@@ -159,7 +310,7 @@ class NavInvoiceProvider implements InvoiceProviderInterface
             return $this->classifyFailure($tokenResult, allowUncertain: false);
         }
 
-        $manageResult = $client->manageInvoiceCreate($tokenResult['token'], $xml, 1);
+        $manageResult = $client->manageInvoiceOperation($tokenResult['token'], $operation, $xml, 1);
         if ($manageResult['success']) {
             return ['outcome' => 'submitted', 'transaction_id' => $manageResult['transaction_id']];
         }

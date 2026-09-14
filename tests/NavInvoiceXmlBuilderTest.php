@@ -167,4 +167,126 @@ final class NavInvoiceXmlBuilderTest extends TestCase
         $doc = simplexml_load_string($xml);
         $this->assertNotFalse($doc, 'A generált invoiceData XML-nek jólformáltnak kell lennie.');
     }
+
+    // ---- invoiceReference (MODIFY/STORNO, 1.1.0) ----
+
+    public function testCreateHasNoInvoiceReferenceBlock(): void
+    {
+        $doc = $this->parse(NavInvoiceXmlBuilder::build($this->sampleParams()));
+        $this->assertCount(0, $doc->xpath('//d:invoiceReference'), 'CREATE-nél (invoice_reference nélkül) TILOS invoiceReference blokkot írni.');
+    }
+
+    public function testModifyInvoiceReferenceFieldsPresent(): void
+    {
+        $doc = $this->parse(NavInvoiceXmlBuilder::build($this->sampleParams([
+            'invoice_reference' => [
+                'original_invoice_number' => 'FT-NAV-2026-000001',
+                'modification_index' => 2,
+            ],
+        ])));
+
+        $this->assertSame('FT-NAV-2026-000001', $this->xpathValue($doc, '//d:invoiceReference/d:originalInvoiceNumber'));
+        $this->assertSame('false', $this->xpathValue($doc, '//d:invoiceReference/d:modifyWithoutMaster'), 'modifyWithoutMaster alapértelmezetten false (a Stock Manager sose hivatkozik NAV-nál ismeretlen eredetire).');
+        $this->assertSame('2', $this->xpathValue($doc, '//d:invoiceReference/d:modificationIndex'));
+    }
+
+    public function testModifyWithoutMasterCanBeExplicitlyTrue(): void
+    {
+        $doc = $this->parse(NavInvoiceXmlBuilder::build($this->sampleParams([
+            'invoice_reference' => [
+                'original_invoice_number' => 'FT-NAV-2026-000001',
+                'modification_index' => 1,
+                'modify_without_master' => true,
+            ],
+        ])));
+
+        $this->assertSame('true', $this->xpathValue($doc, '//d:invoiceReference/d:modifyWithoutMaster'));
+    }
+
+    /**
+     * invoiceData.xsd InvoiceType xs:sequence — az invoiceReference az
+     * invoice ELSŐ gyermeke, MEGELŐZI az invoiceHead-et (lásd
+     * NavInvoiceXmlBuilder::writeInvoiceReference() docblockja). Ezt a
+     * konkrét sorrendet a document-order alapú xpath-index ellenőrzi.
+     */
+    public function testInvoiceReferencePrecedesInvoiceHeadInDocumentOrder(): void
+    {
+        $xml = NavInvoiceXmlBuilder::build($this->sampleParams([
+            'invoice_reference' => ['original_invoice_number' => 'FT-NAV-2026-000001', 'modification_index' => 1],
+        ]));
+
+        $referencePos = strpos($xml, '<invoiceReference>');
+        $headPos = strpos($xml, '<invoiceHead>');
+
+        $this->assertNotFalse($referencePos);
+        $this->assertNotFalse($headPos);
+        $this->assertLessThan($headPos, $referencePos, 'Az invoiceReference-nek MEG KELL előznie az invoiceHead-et a dokumentumban.');
+    }
+
+    /**
+     * VALÓDI NAV sandbox hívással igazolt kötelező mező (lásd
+     * NavInvoiceXmlBuilder::writeLineModificationReference() docblockja)
+     * — enélkül a NAV "Tételsort tartalmazó módosító okirat esetén a
+     * tételsor módosítás jellegének megadása kötelező" hibával utasítja
+     * el a kérést.
+     */
+    public function testModifyLinesIncludeLineModificationReferenceWithCreateOperation(): void
+    {
+        $doc = $this->parse(NavInvoiceXmlBuilder::build($this->sampleParams([
+            'invoice_reference' => ['original_invoice_number' => 'FT-NAV-2026-000001', 'modification_index' => 1, 'line_number_offset' => 1],
+        ])));
+
+        $this->assertSame('2', $this->xpathValue($doc, '//d:line/d:lineModificationReference/d:lineNumberReference'), 'lineNumberReference = offset(1) + a dokumentum saját lineNumber-e(1) = 2.');
+        // A NAV MÁSODIK sandbox-körben konkrétan ABORTED-del utasította el
+        // a 'MODIFY' lineOperation-t — kizárólag 'CREATE' fogadható el.
+        $this->assertSame('CREATE', $this->xpathValue($doc, '//d:line/d:lineModificationReference/d:lineOperation'));
+    }
+
+    public function testCreateLinesHaveNoLineModificationReference(): void
+    {
+        $doc = $this->parse(NavInvoiceXmlBuilder::build($this->sampleParams()));
+        $this->assertCount(0, $doc->xpath('//d:lineModificationReference'), 'CREATE-nél (invoice_reference nélkül) TILOS lineModificationReference-t írni.');
+    }
+
+    public function testLineModificationReferenceImmediatelyFollowsLineNumber(): void
+    {
+        $xml = NavInvoiceXmlBuilder::build($this->sampleParams([
+            'invoice_reference' => ['original_invoice_number' => 'FT-NAV-2026-000001', 'modification_index' => 1, 'line_number_offset' => 0],
+        ]));
+        $lineNumberPos = strpos($xml, '<lineNumber>');
+        $refPos = strpos($xml, '<lineModificationReference>');
+        $exprPos = strpos($xml, '<lineExpressionIndicator>');
+        $this->assertNotFalse($refPos);
+        $this->assertLessThan($refPos, $lineNumberPos);
+        $this->assertLessThan($exprPos, $refPos, 'A LineType xs:sequence szerint a lineModificationReference közvetlenül a lineNumber UTÁN, a lineExpressionIndicator ELŐTT áll.');
+    }
+
+    public function testLineNumberOffsetAppliesPerLineForMultipleItems(): void
+    {
+        $doc = $this->parse(NavInvoiceXmlBuilder::build($this->sampleParams([
+            'items' => [
+                ['name' => 'Termék A', 'qty' => 1, 'unit_price_gross' => 1270.0, 'vat_rate' => '27'],
+                ['name' => 'Termék B', 'qty' => 1, 'unit_price_gross' => 500.0, 'vat_rate' => '27'],
+            ],
+            'invoice_reference' => ['original_invoice_number' => 'FT-NAV-2026-000001', 'modification_index' => 1, 'line_number_offset' => 3],
+        ])));
+
+        $refs = $doc->xpath('//d:line/d:lineModificationReference/d:lineNumberReference');
+        $this->assertSame(['4', '5'], array_map('strval', $refs));
+    }
+
+    public function testStornoUsesSameInvoiceReferenceStructureAsModify(): void
+    {
+        // A kör 7. pontja szerint a STORNO invoiceReference-blokkja
+        // strukturálisan AZONOS a MODIFY-éval — a builder maga nem tesz
+        // különbséget MODIFY/STORNO között (az envelope-szintű
+        // invoiceOperation dönti el, lásd NavClient::manageInvoiceOperation()),
+        // ezt a builder-szintű egyenértékűséget rögzíti ez a teszt.
+        $doc = $this->parse(NavInvoiceXmlBuilder::build($this->sampleParams([
+            'invoice_reference' => ['original_invoice_number' => 'FT-NAV-2026-000042', 'modification_index' => 3],
+        ])));
+
+        $this->assertSame('FT-NAV-2026-000042', $this->xpathValue($doc, '//d:invoiceReference/d:originalInvoiceNumber'));
+        $this->assertSame('3', $this->xpathValue($doc, '//d:invoiceReference/d:modificationIndex'));
+    }
 }

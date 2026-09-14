@@ -17,7 +17,96 @@ class SzamlazzClient
         file_put_contents($tmpXmlFile, $xml);
 
         try {
-            [$headers, $body] = $this->postXml($tmpXmlFile);
+            [$headers, $body] = $this->postXml($tmpXmlFile, 'action-xmlagentxmlfile');
+        } finally {
+            @unlink($tmpXmlFile);
+        }
+
+        return $this->handleResponse($headers, $body);
+    }
+
+    /**
+     * Helyesbítő (módosító) számla — UGYANAZT az Agent XML endpointot
+     * (action-xmlagentxmlfile) használja, mint createInvoice(), a
+     * `helyesbitoszamla`/`helyesbitettSzamlaszam` mezőkkel kiegészítve
+     * (lásd buildInvoiceXml() docblockja a pontos mezősorrendért). Az
+     * eredeti számlaszám KIZÁRÓLAG a hívó (SzamlazzInvoiceProvider,
+     * ami InvoiceService-től kapja) által, az `original_invoice_id`
+     * adatbázis-kapcsolaton keresztül feloldott értékből származhat.
+     */
+    public function modifyInvoice(array $buyer, array $items, string $originalInvoiceNumber, string $externalId = '', ?string $languageOverride = null, ?string $paymentMethodOverride = null): array
+    {
+        $xml = $this->buildInvoiceXml($buyer, $items, $externalId, $languageOverride, $paymentMethodOverride, $originalInvoiceNumber);
+
+        $tmpXmlFile = tempnam(sys_get_temp_dir(), 'szamla_mod_') . '.xml';
+        file_put_contents($tmpXmlFile, $xml);
+
+        try {
+            [$headers, $body] = $this->postXml($tmpXmlFile, 'action-xmlagentxmlfile');
+        } finally {
+            @unlink($tmpXmlFile);
+        }
+
+        return $this->handleResponse($headers, $body);
+    }
+
+    /**
+     * Valódi Számlázz.hu STORNO (érvénytelenítés) — KÜLÖN sémájú kérés
+     * (`xmlszamlast` gyökérelem), KÜLÖN POST mezőnéven (`action-szamla_agent_st`),
+     * NEM a createInvoice()-nál használt `xmlszamla`/`action-xmlagentxmlfile`
+     * kérés (ellentétben a korábbi createCreditNote()-tal, ami tudatosan
+     * NEM valódi sztornó, lásd annak docblockja) — a hivatalos Számlázz.hu
+     * Agent-dokumentáció szerinti struktúra: beallitasok (szamlaagentkulcs/
+     * eszamla/szamlaLetoltes/valaszVerzio/szamlaKulsoAzon) → fejlec
+     * (szamlaszam=az érvénytelenítendő EREDETI számla száma, kötelező;
+     * keltDatum, opcionális) → opcionális elado/vevo blokkok (itt nem
+     * használt — a Stock Manager a meglévő eladó/vevő adatokra hagyatkozik,
+     * amiket a Számlázz.hu már ismer az eredeti számláról).
+     *
+     * FONTOS, dokumentált korlátozás (lásd a kör 25. pontja): ez az
+     * implementáció a hivatalos Agent-dokumentáció alapján készült, DE
+     * valódi sandbox-válasszal még NINCS lezártan validálva — lásd
+     * tests/SzamlazzClientStornoTest.php és a NAV/Számlázz sandbox teszt
+     * záró jelentése.
+     */
+    public function stornoInvoice(string $originalInvoiceNumber, string $externalId = ''): array
+    {
+        $cfg = $this->cfg;
+        $today = date('Y-m-d');
+
+        $xw = new XMLWriter();
+        $xw->openMemory();
+        $xw->startDocument('1.0', 'UTF-8');
+
+        $xw->startElementNs(null, 'xmlszamlast', 'http://www.szamlazz.hu/xmlszamlast');
+        $xw->writeAttributeNs('xmlns', 'xsi', null, 'http://www.w3.org/2001/XMLSchema-instance');
+        $xw->writeAttribute(
+            'xsi:schemaLocation',
+            'http://www.szamlazz.hu/xmlszamlast https://www.szamlazz.hu/szamla/docs/xsds/agentst/xmlszamlast.xsd'
+        );
+
+        $xw->startElement('beallitasok');
+        $xw->writeElement('szamlaagentkulcs', $cfg['agent_key']);
+        $xw->writeElement('eszamla', $cfg['e_invoice'] ? 'true' : 'false');
+        $xw->writeElement('szamlaLetoltes', $cfg['download_pdf'] ? 'true' : 'false');
+        $xw->writeElement('valaszVerzio', '1');
+        $xw->writeElement('szamlaKulsoAzon', $externalId);
+        $xw->endElement(); // beallitasok
+
+        $xw->startElement('fejlec');
+        $xw->writeElement('szamlaszam', $originalInvoiceNumber);
+        $xw->writeElement('keltDatum', $today);
+        $xw->endElement(); // fejlec
+
+        $xw->endElement(); // xmlszamlast
+        $xw->endDocument();
+        $xml = $xw->outputMemory();
+
+        $tmpXmlFile = tempnam(sys_get_temp_dir(), 'szamla_st_') . '.xml';
+        file_put_contents($tmpXmlFile, $xml);
+
+        try {
+            [$headers, $body] = $this->postXml($tmpXmlFile, 'action-szamla_agent_st');
         } finally {
             @unlink($tmpXmlFile);
         }
@@ -51,7 +140,16 @@ class SzamlazzClient
         return $this->createInvoice($buyer, $negatedItems, $externalId);
     }
 
-    private function buildInvoiceXml(array $buyer, array $items, string $externalId, ?string $languageOverride = null, ?string $paymentMethodOverride = null): string
+    /**
+     * $modifyOriginalInvoiceNumber: null CREATE-nél (a fejléc byte-azonos
+     * marad a korábbi, kizárólag-CREATE viselkedéssel); nem-null esetén a
+     * `helyesbitoszamla` mező 'true'-ra vált és közvetlenül utána egy
+     * `helyesbitettSzamlaszam` elem íródik ki — a hivatalos Számlázz.hu
+     * Agent XSD `fejlec` szekvenciájában ez a két mező egymás mellett,
+     * ebben a sorrendben szerepel (a meglévő `helyesbitoszamla` mező már
+     * eddig is itt állt, csak mindig 'false' értékkel).
+     */
+    private function buildInvoiceXml(array $buyer, array $items, string $externalId, ?string $languageOverride = null, ?string $paymentMethodOverride = null, ?string $modifyOriginalInvoiceNumber = null): string
     {
         $cfg = $this->cfg;
         $today = date('Y-m-d');
@@ -86,7 +184,10 @@ class SzamlazzClient
         $xw->writeElement('rendelesSzam', $externalId);
         $xw->writeElement('elolegszamla', 'false');
         $xw->writeElement('vegszamla', 'false');
-        $xw->writeElement('helyesbitoszamla', 'false');
+        $xw->writeElement('helyesbitoszamla', $modifyOriginalInvoiceNumber !== null ? 'true' : 'false');
+        if ($modifyOriginalInvoiceNumber !== null) {
+            $xw->writeElement('helyesbitettSzamlaszam', $modifyOriginalInvoiceNumber);
+        }
         $xw->writeElement('dijbekero', 'false');
         $xw->endElement();
 
@@ -145,7 +246,16 @@ class SzamlazzClient
         return $xw->outputMemory();
     }
 
-    private function postXml(string $xmlFilePath): array
+    /**
+     * $postFieldName: a Számlázz.hu Agent API KÜLÖN POST mezőnéven
+     * különbözteti meg a kérés típusát ugyanazon az endpointon —
+     * 'action-xmlagentxmlfile' a createInvoice()/modifyInvoice() (xmlszamla
+     * séma) kérésekhez, 'action-szamla_agent_st' a stornoInvoice()
+     * (xmlszamlast séma) kéréshez. A fájl tartalma (és a hozzá tartozó
+     * XSD-séma) dönti el, melyik mezőnév a helyes — ezt MINDIG a hívó adja
+     * meg explicit, ez a metódus maga nem dönt semmiről.
+     */
+    private function postXml(string $xmlFilePath, string $postFieldName): array
     {
         $ch = curl_init($this->cfg['endpoint']);
         curl_setopt_array($ch, [
@@ -153,7 +263,7 @@ class SzamlazzClient
             CURLOPT_HEADER         => true,
             CURLOPT_POST           => true,
             CURLOPT_POSTFIELDS     => [
-                'action-xmlagentxmlfile' => new CURLFile($xmlFilePath, 'text/xml', 'invoice.xml'),
+                $postFieldName => new CURLFile($xmlFilePath, 'text/xml', 'invoice.xml'),
             ],
             CURLOPT_TIMEOUT        => 30,
         ]);

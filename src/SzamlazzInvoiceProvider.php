@@ -30,6 +30,118 @@ class SzamlazzInvoiceProvider implements InvoiceProviderInterface
     }
 
     /**
+     * A Számlázz.hu mindkét kiterjesztett műveletet (MODIFY, STORNO)
+     * támogatja — lásd SzamlazzClient::modifyInvoice()/stornoInvoice().
+     */
+    public function supportsOperation(string $operation): bool
+    {
+        return in_array($operation, ['modify', 'storno'], true);
+    }
+
+    /**
+     * SZINKRON (issueSync()-hez hasonló) flow: a claim (Database::createInvoiceOperation(),
+     * ami az UNIQUE(operation_key) indexen keresztül atomikus) UTÁN azonnal
+     * meghívja a Számlázz.hu-t, és a VÉGEREDMÉNNYEL tér vissza — nincs
+     * külön queue/worker (ellentétben a NAV-val), lásd InvoiceProviderInterface
+     * docblockja.
+     */
+    public function requestModification(Database $db, array $original, array $context): array
+    {
+        return $this->performOperation($db, $original, $context, 'modification');
+    }
+
+    public function requestStorno(Database $db, array $original, array $context): array
+    {
+        return $this->performOperation($db, $original, $context, 'storno');
+    }
+
+    private function performOperation(Database $db, array $original, array $context, string $invoiceType): array
+    {
+        $operationKey = $invoiceType === 'storno'
+            ? 'storno:' . $original['id']
+            : 'modify:' . $original['id'] . ':' . (string) ($context['operation_uuid'] ?? '');
+
+        if ($invoiceType === 'modification' && empty($context['operation_uuid'])) {
+            throw new InvalidArgumentException('A módosítás indításához stabil operation_uuid szükséges (attempt-szintű idempotencia, lásd InvoiceService).');
+        }
+
+        $totals = $context['totals'] ?? [];
+        $payload = [
+            'buyer' => $context['buyer'],
+            'items' => $context['items'],
+            'payment_method' => $context['payment_method'] ?? null,
+            'original_invoice_number' => (string) $original['invoice_number'],
+        ];
+
+        try {
+            $row = $db->createInvoiceOperation([
+                'sale_id' => (int) $original['sale_id'],
+                'provider' => 'szamlazz',
+                'invoice_type' => $invoiceType,
+                'original_invoice_id' => (int) $original['id'],
+                'operation_key' => $operationKey,
+                'net_total' => (float) ($totals['net'] ?? 0.0),
+                'vat_total' => (float) ($totals['vat'] ?? 0.0),
+                'gross_total' => (float) ($totals['gross'] ?? 0.0),
+                'currency' => (string) ($totals['currency'] ?? $original['currency'] ?? 'HUF'),
+                'payload' => $payload,
+            ]);
+        } catch (RuntimeException $e) {
+            // Ugyanaz a megkülönböztetés, mint issueSync()-nél a
+            // tryClaimInvoiceIssuance()-hívásnál — egy másik kérés (dupla
+            // kattintás/konkurrens admin) már foglalta ezt a MŰVELETET
+            // (operation_key ütközés), NEM egy Számlázz.hu-s hiba.
+            return ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => $e->getMessage(), 'already_in_progress' => true, 'pending' => false];
+        }
+
+        return $this->executeAndRecordOperation($db, (int) $row['id'], $invoiceType, $payload);
+    }
+
+    /**
+     * A TÉNYLEGES Számlázz.hu hívás + eredmény-visszaírás — közös
+     * requestModification()/requestStorno() (friss claim UTÁN) ÉS a
+     * webroot/api/szamlazz-operation-retry.php admin-kezdeményezett kézi
+     * újrapróbálkozás (egy MEGLÉVŐ, resetInvoiceForManualRetry()-vel
+     * 'queued'-ra visszaállított sor) számára is — lásd
+     * InvoiceService::retrySzamlazzOperation().
+     */
+    public function executeAndRecordOperation(Database $db, int $invoiceId, string $invoiceType, array $payload): array
+    {
+        try {
+            $result = $invoiceType === 'storno'
+                ? $this->client()->stornoInvoice((string) $payload['original_invoice_number'], (string) $invoiceId)
+                : $this->client()->modifyInvoice($payload['buyer'], $payload['items'], (string) $payload['original_invoice_number'], (string) $invoiceId, null, $payload['payment_method'] ?? null);
+        } catch (Throwable $e) {
+            // Lásd issueSync() docblockja a P1-5 megkülönböztetésért —
+            // ugyanaz az elv: a SzamlazzClient KIZÁRÓLAG akkor dob, ha a
+            // HTTP-válasz teljesen elveszett (transport-hiba), tehát NEM
+            // TUDJUK, a Számlázz.hu megkapta-e a kérést. STORNO esetén ez
+            // KÜLÖNÖSEN fontos, mert az operation_key ('storno:{id}')
+            // determinisztikus — admin kézi feloldás szükséges (lásd
+            // InvoiceService::retrySzamlazzOperation()), SOSE automatikus
+            // vak újraküldés.
+            $db->updateInvoiceOperationResult($invoiceId, false, null, null, $e->getMessage(), 'uncertain_manual');
+            return ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => $e->getMessage(), 'uncertain' => true, 'pending' => false];
+        }
+
+        $db->updateInvoiceOperationResult(
+            $invoiceId,
+            (bool) $result['success'],
+            $result['invoice_number'] ?? null,
+            $result['pdf_path'] ?? null,
+            $result['error'] ?? null
+        );
+
+        $result['pending'] = false;
+        return $result;
+    }
+
+    private function client(): SzamlazzClient
+    {
+        return new SzamlazzClient($this->config);
+    }
+
+    /**
      * Várt $context kulcsok: db (Database), sale_id (int), buyer
      * (tömb), items (tömb — name/qty/unit_price_gross/vat_rate),
      * language (?string), payment_method (?string), totals (tömb —
@@ -102,7 +214,8 @@ class SzamlazzInvoiceProvider implements InvoiceProviderInterface
                     $saleId, 'szamlazz', false, null, null, $e->getMessage(),
                     (float) ($totals['net'] ?? 0.0), (float) ($totals['vat'] ?? 0.0),
                     (float) ($totals['gross'] ?? 0.0), (string) ($totals['currency'] ?? 'HUF'),
-                    'uncertain_manual'
+                    'uncertain_manual',
+                    ['buyer' => $context['buyer'], 'items' => $context['items'], 'payment_method' => $context['payment_method'] ?? null]
                 );
             } catch (Throwable $mirrorError) {
                 // Lásd lent — a tükör-bejegyzés írási hibája sose írhatja
@@ -137,7 +250,9 @@ class SzamlazzInvoiceProvider implements InvoiceProviderInterface
                 (float) ($totals['net'] ?? 0.0),
                 (float) ($totals['vat'] ?? 0.0),
                 (float) ($totals['gross'] ?? 0.0),
-                (string) ($totals['currency'] ?? 'HUF')
+                (string) ($totals['currency'] ?? 'HUF'),
+                null,
+                ['buyer' => $context['buyer'], 'items' => $context['items'], 'payment_method' => $context['payment_method'] ?? null]
             );
         } catch (Throwable $e) {
             // A tükör-bejegyzés írása SOSE hiúsíthatja meg / módosíthatja a

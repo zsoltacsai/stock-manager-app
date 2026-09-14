@@ -176,20 +176,37 @@ class NavClient
     }
 
     /**
-     * POST /manageInvoice, egyetlen CREATE művelettel. $invoiceDataXml a
-     * NAV invoiceData.xsd szerinti, MÁR KÉSZ XML (lásd NavInvoiceXmlBuilder)
-     * — ez a metódus csak base64-kódolja, becsomagolja és a manageInvoice-
-     * specifikus képlettel aláírja a kérést. A NAV feldolgozás ASZINKRON —
-     * a sikeres válasz CSAK egy transactionId-t ad, nem jelenti azt, hogy a
-     * számla ténylegesen elfogadásra került (lásd queryTransactionStatus()).
+     * POST /manageInvoice, egyetlen CREATE művelettel — vékony, VÁLTOZATLAN
+     * viselkedésű wrapper manageInvoiceOperation() fölött (lásd ott), hogy a
+     * meglévő hívók/tesztek byte-azonosan működjenek tovább.
      */
     public function manageInvoiceCreate(string $exchangeToken, string $invoiceDataXml, int $index = 1): array
+    {
+        return $this->manageInvoiceOperation($exchangeToken, 'CREATE', $invoiceDataXml, $index);
+    }
+
+    /**
+     * POST /manageInvoice, egyetlen invoiceOperation-nel — $operation ∈
+     * {'CREATE','MODIFY','STORNO'} (ManageInvoiceOperationType, invoiceApi.xsd).
+     * $invoiceDataXml a NAV invoiceData.xsd szerinti, MÁR KÉSZ XML (lásd
+     * NavInvoiceXmlBuilder — MODIFY/STORNO esetén a benne lévő
+     * <invoiceReference> blokk hordozza az eredeti számlára hivatkozást,
+     * ez a metódus maga NEM tud/dönt semmit az eredeti számláról, csak
+     * base64-kódolja, becsomagolja és a manageInvoice-specifikus képlettel
+     * (ami az AKTUÁLIS $operation literált hashálja bele, lásd
+     * manageInvoiceSignature()) aláírja a kérést. A NAV feldolgozás
+     * ASZINKRON — a sikeres válasz CSAK egy transactionId-t ad, nem
+     * jelenti azt, hogy a számla ténylegesen elfogadásra került (lásd
+     * queryTransactionStatus()) — ez MODIFY/STORNO esetén is így van,
+     * ugyanazon a queue-mechanizmuson keresztül (lásd NavInvoiceProvider).
+     */
+    public function manageInvoiceOperation(string $exchangeToken, string $operation, string $invoiceDataXml, int $index = 1): array
     {
         [$requestId, $timestamp, $tsForSig] = $this->buildHeader();
         $passwordHash = strtoupper(hash('sha512', $this->password));
         $dataBase64 = base64_encode($invoiceDataXml);
         $signature = $this->manageInvoiceSignature($requestId, $tsForSig, [
-            ['operation' => 'CREATE', 'data_base64' => $dataBase64],
+            ['operation' => $operation, 'data_base64' => $dataBase64],
         ]);
 
         $xml = '<?xml version="1.0" encoding="UTF-8"?>'
@@ -202,7 +219,7 @@ class NavClient
             . '<compressedContent>false</compressedContent>'
             . '<invoiceOperation>'
             . '<index>' . $index . '</index>'
-            . '<invoiceOperation>CREATE</invoiceOperation>'
+            . '<invoiceOperation>' . htmlspecialchars($operation, ENT_XML1) . '</invoiceOperation>'
             . '<invoiceData>' . $dataBase64 . '</invoiceData>'
             . '</invoiceOperation>'
             . '</invoiceOperations>'

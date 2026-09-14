@@ -337,6 +337,151 @@ final class InvoiceEndpointsHttpTest extends TestCase
     }
 
     // -----------------------------------------------------------------
+    // 1.1.0: MODIFY/STORNO jogosultsági jelzők (can_modify/can_storno)
+    // -----------------------------------------------------------------
+
+    private function insertRawInvoice(array $overrides = []): int
+    {
+        $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => self::$root . '/data/stock.sqlite']], self::$root);
+        $saleId = $db->insertSale(1270.0, 'Készpénz');
+        $row = array_merge([
+            'sale_id' => $saleId,
+            'provider' => 'szamlazz',
+            'status' => 'done',
+            'invoice_type' => 'normal',
+            'original_invoice_id' => null,
+            'operation_key' => 'create:' . $saleId . ':szamlazz',
+            'invoice_number' => 'SZ-OP-TEST-' . $saleId,
+            'net_total' => 1000, 'vat_total' => 270, 'gross_total' => 1270, 'currency' => 'HUF',
+        ], $overrides);
+
+        $db->pdo()->prepare("
+            INSERT INTO invoices (sale_id, provider, status, invoice_type, original_invoice_id, operation_key, invoice_number, net_total, vat_total, gross_total, currency, issued_at, created_at, updated_at)
+            VALUES (:sale_id, :provider, :status, :invoice_type, :original_invoice_id, :operation_key, :invoice_number, :net_total, :vat_total, :gross_total, :currency, datetime('now'), datetime('now'), datetime('now'))
+        ")->execute($row);
+
+        return (int) $db->pdo()->lastInsertId();
+    }
+
+    public function testDetailCanModifyAndCanStornoTrueForEligibleOriginal(): void
+    {
+        $id = $this->insertRawInvoice();
+        $res = self::request('GET', '/api/invoice-detail.php?id=' . $id, null, [], self::$loggedInJar);
+        $this->assertSame(200, $res['status']);
+        $this->assertTrue($res['json']['can_modify']);
+        $this->assertTrue($res['json']['can_storno']);
+    }
+
+    /**
+     * Regressziós teszt egy valódi böngésző-ellenőrzés során talált
+     * hibára: a can_modify/can_storno korábban a GYÖKÉR eredeti
+     * jogosultságát adta vissza FÜGGETLENÜL attól, hogy éppen MELYIK
+     * számlát nézi a felhasználó — egy már létrehozott módosítás sor
+     * saját részletnézetén is (tévesen) megjelentek a MODIFY/STORNO
+     * gombok. A gomboknak KIZÁRÓLAG a gyökér eredeti saját nézetén szabad
+     * megjelenniük.
+     */
+    public function testDetailCanModifyFalseWhenViewingDerivedModificationRow(): void
+    {
+        $originalId = $this->insertRawInvoice();
+        $modificationId = $this->insertRawInvoice([
+            'invoice_type' => 'modification',
+            'original_invoice_id' => $originalId,
+            'operation_key' => 'modify:' . $originalId . ':http-test-uuid',
+            'status' => 'failed',
+        ]);
+
+        $originalRes = self::request('GET', '/api/invoice-detail.php?id=' . $originalId, null, [], self::$loggedInJar);
+        $this->assertTrue($originalRes['json']['can_modify'], 'A gyökér eredetin a gomboknak meg kell jelenniük.');
+
+        $modificationRes = self::request('GET', '/api/invoice-detail.php?id=' . $modificationId, null, [], self::$loggedInJar);
+        $this->assertFalse($modificationRes['json']['can_modify'], 'A SZÁRMAZTATOTT módosítás sor saját nézetén a gomboknak TILOS megjelenniük.');
+        $this->assertFalse($modificationRes['json']['can_storno']);
+        // De a lánc-navigáció (original/operations) ettől függetlenül elérhető.
+        $this->assertSame($originalId, (int) $modificationRes['json']['original']['id']);
+        $this->assertCount(1, $modificationRes['json']['operations']);
+    }
+
+    public function testDetailCanOperateFalseWhenBlockingStornoAlreadyExists(): void
+    {
+        $originalId = $this->insertRawInvoice();
+        $this->insertRawInvoice([
+            'invoice_type' => 'storno',
+            'original_invoice_id' => $originalId,
+            'operation_key' => 'storno:' . $originalId,
+            'status' => 'done',
+        ]);
+
+        $res = self::request('GET', '/api/invoice-detail.php?id=' . $originalId, null, [], self::$loggedInJar);
+        $this->assertFalse($res['json']['can_modify'], 'Egy már lezárt (sztornózott) eredetin nem indítható újabb módosítás.');
+        $this->assertFalse($res['json']['can_storno']);
+    }
+
+    // -----------------------------------------------------------------
+    // 1.1.0: invoice-modify.php / invoice-storno.php — auth/routing
+    // -----------------------------------------------------------------
+
+    private function freshCsrf(): string
+    {
+        $status = self::request('GET', '/api/auth-status.php', null, [], self::$loggedInJar);
+        return $status['json']['csrf_token'];
+    }
+
+    public function testModifyEndpointRequiresLogin(): void
+    {
+        $freshJar = self::cookieJar('fresh-modify');
+        $res = self::request('POST', '/api/invoice-modify.php', ['original_invoice_id' => 1], [], $freshJar);
+        $this->assertSame(401, $res['status']);
+    }
+
+    public function testStornoEndpointRequiresLogin(): void
+    {
+        $freshJar = self::cookieJar('fresh-storno');
+        $res = self::request('POST', '/api/invoice-storno.php', ['original_invoice_id' => 1], [], $freshJar);
+        $this->assertSame(401, $res['status']);
+    }
+
+    public function testModifyEndpointRejectsGet(): void
+    {
+        $res = self::request('GET', '/api/invoice-modify.php', null, [], self::$loggedInJar);
+        $this->assertSame(405, $res['status']);
+    }
+
+    public function testModifyEndpointRejectsMissingCsrf(): void
+    {
+        // A _bootstrap.php CSRF-ellenőrzése MINDEN POST-ra vonatkozik,
+        // az invoice-modify.php sincs a csrfWhitelist-en — a self::request()
+        // itt SZÁNDÉKOSAN nem kap X-CSRF-Token fejlécet.
+        $res = self::request('POST', '/api/invoice-modify.php', ['original_invoice_id' => 1], [], self::$loggedInJar);
+        $this->assertSame(403, $res['status']);
+    }
+
+    public function testModifyEndpointRejectsMissingItems(): void
+    {
+        $id = $this->insertRawInvoice();
+        $res = self::request('POST', '/api/invoice-modify.php', ['original_invoice_id' => $id, 'buyer' => ['nev' => 'x']], ['X-CSRF-Token' => $this->freshCsrf()], self::$loggedInJar);
+        $this->assertSame(400, $res['status']);
+    }
+
+    public function testModifyEndpointRejectsOverlongOperationUuid(): void
+    {
+        $id = $this->insertRawInvoice();
+        $res = self::request('POST', '/api/invoice-modify.php', [
+            'original_invoice_id' => $id,
+            'items' => [['name' => 'x', 'qty' => 1, 'unit_price_gross' => 100, 'vat_rate' => '27']],
+            'buyer' => ['nev' => 'x', 'irsz' => '0000', 'telepules' => 'x', 'cim' => 'x'],
+            'operation_uuid' => str_repeat('a', 200),
+        ], ['X-CSRF-Token' => $this->freshCsrf()], self::$loggedInJar);
+        $this->assertSame(400, $res['status']);
+    }
+
+    public function testStornoEndpointRejectsInvalidOriginalId(): void
+    {
+        $res = self::request('POST', '/api/invoice-storno.php', ['original_invoice_id' => 0], ['X-CSRF-Token' => $this->freshCsrf()], self::$loggedInJar);
+        $this->assertSame(400, $res['status']);
+    }
+
+    // -----------------------------------------------------------------
     // PDF — path traversal védelem
     // -----------------------------------------------------------------
 

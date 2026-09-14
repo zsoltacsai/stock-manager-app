@@ -9,12 +9,19 @@
 /data/.install-token
 /data/.backup-encryption-key
 /data/settings.json
+/data/settings.json.lock
+/data/settings.json.before-restore-*
 /data/geoip-cache.json
 /data/nav-token-cache.json
 /data/imports/*
 !/data/imports/.gitkeep
 /data/backups/*
 !/data/backups/.gitkeep
+/data/update-rollback/*
+!/data/update-rollback/.gitkeep
+
+# Ez a Claude Code munkakönyvtára — helyi eszköz-állapot, sose verziókezelt.
+/.claude/
 
 # Feltöltött, valós számlák (PDF)
 /invoices/*

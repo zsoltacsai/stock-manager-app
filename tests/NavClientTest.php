@@ -185,6 +185,75 @@ final class NavClientTest extends TestCase
         $this->assertNull($result['transaction_id']);
     }
 
+    // ---- manageInvoiceOperation (MODIFY/STORNO, 1.1.0) ----
+
+    /**
+     * A NAV specifikáció worked example-ét (lásd
+     * testManageInvoiceRequestSignatureMatchesNavSpecWorkedExample())
+     * mindhárom operation-re (CREATE/MODIFY/STORNO) ismétli meg, egy
+     * egyszerű foreach-fel (nem PHPUnit dataProvider-rel).
+     */
+    public function testManageInvoiceOperationSignatureUsesActualOperationLiteral(): void
+    {
+        foreach (['CREATE', 'MODIFY', 'STORNO'] as $operation) {
+            $capturedXml = null;
+            $client = new NavClient(
+                $this->fakeCfg(['nav_signer_key' => 'ce-8f5e-215119fa7dd621DLMRHRLH2S']),
+                function (string $url, string $xml) use (&$capturedXml) {
+                    $capturedXml = $xml;
+                    return ['status' => 200, 'body' => $this->xmlResponse('OK', ['transactionId' => 'TXN123'])];
+                }
+            );
+
+            $client->manageInvoiceOperation('decoded-token', $operation, 'invoice-xml-payload', 1);
+
+            preg_match('/<common:requestId>(.*?)<\/common:requestId>/', $capturedXml, $reqIdM);
+            preg_match('/<common:timestamp>(.*?)<\/common:timestamp>/', $capturedXml, $tsM);
+            preg_match('/cryptoType="SHA3-512">(.*?)<\/common:requestSignature>/', $capturedXml, $sigM);
+
+            $tsForSig = preg_replace('/[-:T.Z]/', '', substr($tsM[1], 0, 19));
+            $dataBase64 = base64_encode('invoice-xml-payload');
+            // A KRITIKUS pont: az index hash az AKTUÁLIS $operation
+            // literált hashálja, NEM mindig 'CREATE'-et — egy MODIFY/STORNO
+            // hívás signature-je emiatt SOSE egyezhetne egy CREATE-ével,
+            // még azonos requestId/timestamp/payload mellett sem.
+            $indexHash = strtoupper(hash('sha3-512', $operation . $dataBase64));
+            $expectedBase = $reqIdM[1] . $tsForSig . 'ce-8f5e-215119fa7dd621DLMRHRLH2S' . $indexHash;
+            $expectedSignature = strtoupper(hash('sha3-512', $expectedBase));
+
+            $this->assertSame($expectedSignature, $sigM[1], "Signature mismatch a(z) $operation műveletnél.");
+            $this->assertStringContainsString("<invoiceOperation>$operation</invoiceOperation>", $capturedXml, "Az envelope invoiceOperation elemének $operation-t kell tartalmaznia.");
+        }
+    }
+
+    public function testManageInvoiceCreateDelegatesToManageInvoiceOperationUnchanged(): void
+    {
+        // manageInvoiceCreate() VÁLTOZATLAN viselkedésének regressziós
+        // bizonyítéka — byte-azonos envelope-tartalom, mint 1.0.x-ben.
+        $capturedXml = null;
+        $client = new NavClient($this->fakeCfg(), function (string $url, string $xml) use (&$capturedXml) {
+            $capturedXml = $xml;
+            return ['status' => 200, 'body' => $this->xmlResponse('OK', ['transactionId' => 'TXN123'])];
+        });
+
+        $result = $client->manageInvoiceCreate('token', 'xml-payload', 1);
+
+        $this->assertTrue($result['success']);
+        $this->assertStringContainsString('<invoiceOperation>CREATE</invoiceOperation>', $capturedXml);
+    }
+
+    public function testManageInvoiceOperationSuccessReturnsTransactionId(): void
+    {
+        $client = new NavClient($this->fakeCfg(), function () {
+            return ['status' => 200, 'body' => $this->xmlResponse('OK', ['transactionId' => 'TXN-MOD-1'])];
+        });
+
+        $result = $client->manageInvoiceOperation('token', 'MODIFY', 'xml', 1);
+
+        $this->assertTrue($result['success']);
+        $this->assertSame('TXN-MOD-1', $result['transaction_id']);
+    }
+
     // ---- queryTransactionStatus ----
 
     public function testQueryTransactionStatusProcessing(): void

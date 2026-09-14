@@ -369,4 +369,217 @@ PHP);
         $mirror = $db->findInvoiceBySaleAndProvider($saleId, 'szamlazz');
         $this->assertSame('done', $mirror['status']);
     }
+
+    // ------------------------------------------------------------------
+    // 1.1.0: requestModification()/requestStorno() — a KÖZPONTI validáció
+    // ------------------------------------------------------------------
+
+    private function doneOriginalInvoice(Database $db, string $provider = 'szamlazz'): array
+    {
+        $saleId = $db->insertSale(1270.0, 'Készpénz');
+        // A payload_json (buyer/items) ITT is átadva — pontosan úgy, ahogy
+        // egy VALÓDI Számlázz.hu CREATE (SzamlazzInvoiceProvider::issueSync())
+        // 1.1.0 óta eltárolja — enélkül buildStornoContext() üres
+        // tételsorral térne vissza (lásd testRequestStornoUsesOriginalItemsReversedNotUserInput()).
+        $db->upsertInvoiceMirror($saleId, $provider, true, 'SZ-ORIG-1', null, null, 1000.0, 270.0, 1270.0, 'HUF', null, [
+            'buyer' => ['nev' => 'Eredeti Vevő', 'irsz' => '1111', 'telepules' => 'Budapest', 'cim' => 'Fő utca 1.', 'adoszam' => null],
+            'items' => [['name' => 'Eredeti tétel', 'qty' => 2, 'unit_price_gross' => 635.0, 'vat_rate' => '27']],
+            'payment_method' => 'Készpénz',
+        ]);
+        return $db->findInvoiceBySaleAndProvider($saleId, $provider);
+    }
+
+    private function sampleModifyItems(): array
+    {
+        return [['name' => 'Javított tétel', 'qty' => 1, 'unit_price_gross' => 1270.0, 'vat_rate' => '27']];
+    }
+
+    public function testRequestModificationRejectedWithoutAdmin(): void
+    {
+        $db = tests_new_database();
+        $original = $this->doneOriginalInvoice($db);
+        $service = new InvoiceService(['szamlazz' => $this->stubSzamlazzConfig('success')], ['invoice_provider' => 'szamlazz']);
+
+        $result = $service->requestModification($db, (int) $original['id'], $this->sampleModifyItems(), ['nev' => 'x', 'irsz' => '0000', 'telepules' => 'x', 'cim' => 'x'], 'Készpénz', null, false);
+
+        $this->assertFalse($result['success']);
+        $this->assertStringContainsString('adminisztrátori', $result['error']);
+    }
+
+    public function testRequestModificationRejectedForNonexistentInvoice(): void
+    {
+        $db = tests_new_database();
+        $service = new InvoiceService(['szamlazz' => $this->stubSzamlazzConfig('success')], ['invoice_provider' => 'szamlazz']);
+
+        $result = $service->requestModification($db, 999999, $this->sampleModifyItems(), [], null, null, true);
+
+        $this->assertFalse($result['success']);
+        $this->assertStringContainsString('nem található', $result['error']);
+    }
+
+    public function testRequestModificationRejectedWhenOriginalIsNotDoneYet(): void
+    {
+        $db = tests_new_database();
+        $saleId = $db->insertSale(1270.0, 'Készpénz');
+        $db->upsertInvoiceMirror($saleId, 'szamlazz', false, null, null, 'x hiba', 1000.0, 270.0, 1270.0, 'HUF');
+        $original = $db->findInvoiceBySaleAndProvider($saleId, 'szamlazz');
+        $service = new InvoiceService(['szamlazz' => $this->stubSzamlazzConfig('success')], ['invoice_provider' => 'szamlazz']);
+
+        $result = $service->requestModification($db, (int) $original['id'], $this->sampleModifyItems(), [], null, null, true);
+
+        $this->assertFalse($result['success']);
+        $this->assertStringContainsString('status=done', $result['error']);
+    }
+
+    public function testRequestModificationRejectedWhenTargetingAlreadyDerivedRow(): void
+    {
+        $db = tests_new_database();
+        $original = $this->doneOriginalInvoice($db);
+        $service = new InvoiceService(['szamlazz' => $this->stubSzamlazzConfig('success')], ['invoice_provider' => 'szamlazz']);
+
+        $first = $service->requestModification($db, (int) $original['id'], $this->sampleModifyItems(), ['nev' => 'x', 'irsz' => '0000', 'telepules' => 'x', 'cim' => 'x'], 'Készpénz', 'attempt-1', true);
+        $this->assertTrue($first['success']);
+        $modifiedRow = $db->getInvoiceOperationsForOriginal((int) $original['id'])[0];
+
+        // A módosító sorra hivatkozva (mint "eredeti") a MODIFY/STORNO
+        // TILOS — a lánc mindig a gyökér eredetihez kötődik.
+        $result = $service->requestModification($db, (int) $modifiedRow['id'], $this->sampleModifyItems(), [], null, null, true);
+
+        $this->assertFalse($result['success']);
+        $this->assertStringContainsString('EREDETI', $result['error']);
+    }
+
+    public function testRequestModificationEndToEndSuccessViaStub(): void
+    {
+        $db = tests_new_database();
+        $original = $this->doneOriginalInvoice($db);
+        $service = new InvoiceService(['szamlazz' => $this->stubSzamlazzConfig('success')], ['invoice_provider' => 'szamlazz']);
+
+        $result = $service->requestModification(
+            $db,
+            (int) $original['id'],
+            $this->sampleModifyItems(),
+            ['nev' => 'Javított Vevő', 'irsz' => '2222', 'telepules' => 'Debrecen', 'cim' => 'Fő tér 2.'],
+            'Kártya',
+            null,
+            true
+        );
+
+        $this->assertTrue($result['success']);
+        $this->assertSame('SZ-STUB-INVOICE-1', $result['invoice_number']);
+
+        $ops = $db->getInvoiceOperationsForOriginal((int) $original['id']);
+        $this->assertCount(1, $ops);
+        $this->assertSame('modification', $ops[0]['invoice_type']);
+        $this->assertSame((int) $original['id'], (int) $ops[0]['original_invoice_id']);
+    }
+
+    public function testRequestStornoUsesOriginalItemsReversedNotUserInput(): void
+    {
+        $db = tests_new_database();
+        $original = $this->doneOriginalInvoice($db);
+        $service = new InvoiceService(['szamlazz' => $this->stubSzamlazzConfig('success')], ['invoice_provider' => 'szamlazz']);
+
+        $result = $service->requestStorno($db, (int) $original['id'], true);
+
+        $this->assertTrue($result['success']);
+        $ops = $db->getInvoiceOperationsForOriginal((int) $original['id']);
+        $this->assertSame('storno', $ops[0]['invoice_type']);
+        $this->assertLessThan(0, (float) $ops[0]['net_total'], 'A sztornó net_total-jának negatívnak kell lennie (teljes visszavonás).');
+
+        // A payload_json-ban ténylegesen az EREDETI (upsertInvoiceMirror()-nél
+        // eltárolt) tétel jelenik meg, NEGÁLT mennyiséggel — ez bizonyítja,
+        // hogy buildStornoContext() a valódi eredeti adatból dolgozik, NEM
+        // üres/hiányzó payloadból (lásd upsertInvoiceMirror() 1.1.0 payload
+        // paramétere és annak indoklása).
+        $payload = json_decode($ops[0]['payload_json'], true);
+        $this->assertSame('Eredeti tétel', $payload['items'][0]['name']);
+        $this->assertSame(-2.0, (float) $payload['items'][0]['qty']);
+        $this->assertSame('Eredeti Vevő', $payload['buyer']['nev']);
+    }
+
+    public function testRequestModificationAndStornoBlockedAfterStornoAlreadyDone(): void
+    {
+        $db = tests_new_database();
+        $original = $this->doneOriginalInvoice($db);
+        $service = new InvoiceService(['szamlazz' => $this->stubSzamlazzConfig('success')], ['invoice_provider' => 'szamlazz']);
+
+        $storno = $service->requestStorno($db, (int) $original['id'], true);
+        $this->assertTrue($storno['success']);
+
+        $furtherModify = $service->requestModification($db, (int) $original['id'], $this->sampleModifyItems(), [], null, null, true);
+        $this->assertFalse($furtherModify['success']);
+        $this->assertStringContainsString('sztornó', $furtherModify['error']);
+
+        $furtherStorno = $service->requestStorno($db, (int) $original['id'], true);
+        $this->assertFalse($furtherStorno['success']);
+        $this->assertStringContainsString('sztornó', $furtherStorno['error']);
+    }
+
+    /**
+     * VALÓDI NAV sandbox hívással feltárt hiba regressziós tesztje: egy
+     * sztornónak a LÁNC AKTUÁLIS (legutóbbi sikeres módosítás utáni)
+     * állapotát kell visszavonnia, NEM mindig az eredeti számla tartalmát
+     * — lásd InvoiceService::buildStornoContext() docblockja.
+     */
+    public function testStornoAfterSuccessfulModificationReversesLatestStateNotOriginal(): void
+    {
+        $db = tests_new_database();
+        $original = $this->doneOriginalInvoice($db); // 'Eredeti tétel', qty 2, 635 Ft/db (lásd doneOriginalInvoice())
+        $service = new InvoiceService(['szamlazz' => $this->stubSzamlazzConfig('success')], ['invoice_provider' => 'szamlazz']);
+
+        $modifiedItems = [['name' => 'Javított tétel', 'qty' => 3, 'unit_price_gross' => 1000.0, 'vat_rate' => '27']];
+        $modifyResult = $service->requestModification(
+            $db, (int) $original['id'], $modifiedItems,
+            ['nev' => 'x', 'irsz' => '0000', 'telepules' => 'x', 'cim' => 'x'], null, 'uuid-latest-1', true
+        );
+        $this->assertTrue($modifyResult['success']);
+
+        $stornoResult = $service->requestStorno($db, (int) $original['id'], true);
+        $this->assertTrue($stornoResult['success']);
+
+        $ops = $db->getInvoiceOperationsForOriginal((int) $original['id']);
+        $stornoRow = end($ops);
+        $this->assertSame('storno', $stornoRow['invoice_type']);
+
+        $payload = json_decode($stornoRow['payload_json'], true);
+        $this->assertSame('Javított tétel', $payload['items'][0]['name'], 'A sztornónak a LEGUTÓBBI módosítás tételét kell visszavonnia, nem az eredetit.');
+        $this->assertSame(-3.0, (float) $payload['items'][0]['qty']);
+        $this->assertSame(1000.0, (float) $payload['items'][0]['unit_price_gross']);
+    }
+
+    public function testMultipleModificationsAllowedBeforeStorno(): void
+    {
+        // A kör explicit példája: MODIFY→1, MODIFY→2, STORNO→3 mind
+        // engedélyezett ugyanarra az eredetire, amíg sztornó még nem történt.
+        $db = tests_new_database();
+        $original = $this->doneOriginalInvoice($db);
+        $service = new InvoiceService(['szamlazz' => $this->stubSzamlazzConfig('success')], ['invoice_provider' => 'szamlazz']);
+
+        $m1 = $service->requestModification($db, (int) $original['id'], $this->sampleModifyItems(), ['nev' => 'x', 'irsz' => '0000', 'telepules' => 'x', 'cim' => 'x'], null, 'uuid-1', true);
+        $m2 = $service->requestModification($db, (int) $original['id'], $this->sampleModifyItems(), ['nev' => 'x', 'irsz' => '0000', 'telepules' => 'x', 'cim' => 'x'], null, 'uuid-2', true);
+        $storno = $service->requestStorno($db, (int) $original['id'], true);
+
+        $this->assertTrue($m1['success']);
+        $this->assertTrue($m2['success']);
+        $this->assertTrue($storno['success']);
+
+        $ops = $db->getInvoiceOperationsForOriginal((int) $original['id']);
+        $this->assertCount(3, $ops);
+        $this->assertSame([1, 2, 3], array_map(static fn (array $r) => (int) $r['modification_index'], $ops));
+    }
+
+    public function testRetrySzamlazzOperationRejectedWhenNotQueued(): void
+    {
+        $db = tests_new_database();
+        $original = $this->doneOriginalInvoice($db);
+        $service = new InvoiceService(['szamlazz' => $this->stubSzamlazzConfig('success')], ['invoice_provider' => 'szamlazz']);
+        $service->requestStorno($db, (int) $original['id'], true);
+        $doneOp = $db->getInvoiceOperationsForOriginal((int) $original['id'])[0];
+
+        $result = $service->retrySzamlazzOperation($db, (int) $doneOp['id']);
+
+        $this->assertFalse($result['success']);
+        $this->assertStringContainsString('queued', $result['error']);
+    }
 }

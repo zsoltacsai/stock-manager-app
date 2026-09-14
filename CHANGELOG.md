@@ -4,6 +4,65 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## [1.1.0] — 2026-09-14 (helyesbítő/sztornó számla)
+
+**A MODIFY/STORNO adatmodell ÉS a tényleges NAV/Számlázz.hu kérés-
+összeállítás/beküldés is bekötve — valódi NAV sandbox lánccal
+(CREATE→MODIFY→STORNO, mindhárom DONE) igazolva. Lásd README
+"Számla-műveletek adatmodell" és "MODIFY/STORNO — tényleges NAV/
+Számlázz.hu beküldés" szakaszai.**
+
+### Added
+- `invoices.invoice_type` (normal/modification/storno), `original_invoice_id`
+  (explicit FK, sose string-parszolás), `operation_key` (egységes,
+  determinisztikus/kísérlet-kulcsolt duplikálás-védelem), `modification_index`.
+- `invoice_sequences` — provider-kulcsolt, atomikus, `invoices.id`-től
+  független NAV számlaszám-sorozat (`Database::allocateInvoiceNumber()`).
+- `invoice_modification_sequences` — eredeti-számlánkénti, MODIFY+STORNO
+  közös, atomikus `modificationIndex`-számláló
+  (`Database::allocateModificationIndex()`).
+- `Database::createInvoiceOperation()` — a módosító/sztornó `invoices`-sorok
+  létrehozásának validált belépési pontja.
+- `src/InvoiceNumbering.php` — a számlaszám-formátum egyetlen, központi helye.
+- `InvoiceProviderInterface::supportsOperation()`/`requestModification()`/
+  `requestStorno()` — mindkét provider (`NavInvoiceProvider`,
+  `SzamlazzInvoiceProvider`) implementálja.
+- `NavClient::manageInvoiceOperation()` — CREATE/MODIFY/STORNO envelope;
+  `NavInvoiceXmlBuilder` `invoiceReference`/`lineModificationReference`
+  támogatás (valódi NAV sandbox hívással igazolt kötelező mezők, lásd
+  README).
+- `SzamlazzClient::modifyInvoice()`/`stornoInvoice()` — helyesbítő számla
+  (meglévő `xmlszamla` endpoint, `helyesbitoszamla`/`helyesbitettSzamlaszam`)
+  és valódi sztornó (KÜLÖN `xmlszamlast` séma/`action-szamla_agent_st`
+  endpoint, NEM a korábbi, tudatosan nem-valódi `createCreditNote()`).
+- `InvoiceService::requestModification()`/`requestStorno()`/
+  `retrySzamlazzOperation()` — a MODIFY/STORNO egyetlen, központilag
+  validáló belépési pontja.
+- `webroot/api/invoice-modify.php`, `invoice-storno.php`,
+  `szamlazz-operation-retry.php` — új API-végpontok (admin+CSRF).
+- Kimenő számlák UI: "Módosító számla"/"Sztornó számla" gombok
+  (backend-vezérelt láthatóság), tételszerkesztő modal, kapcsolódó
+  számla-lánc navigáció (`kimeno-szamlak.js`/`.php`).
+- 32 új teszt a schema/numbering rétegből (3 valódi, 16-folyamatos
+  konkurrencia-teszt), PLUSZ ~55 új teszt a tényleges beküldési rétegből
+  (NAV XML/signature/queue-branching, Számlázz.hu XML/field-order/POST-
+  mezőnév, InvoiceService központi validáció, HTTP-végpont auth/CSRF,
+  2 új valódi 16-folyamatos konkurrencia-teszt MODIFY/STORNO dupla-
+  kattintásra).
+
+### Changed
+- A korábbi `UNIQUE(sale_id, provider)` megszűnt (MODIFY/STORNO
+  strukturális előfeltétele volt) — helyette `UNIQUE(operation_key)` adja
+  ugyanazt (és annál finomabb) a duplikálás-védelmet, teljes visszafelé
+  kompatibilitással a normál CREATE-folyamatra.
+- A NAV számlaszám többé NEM `invoices.id`-ból képződik — lásd fent.
+  A meglévő (1.0.x-ben kiállított) számlaszámok VÁLTOZATLANOK.
+- `Database::upsertInvoiceMirror()` mostantól a Számlázz.hu CREATE
+  buyer/items payloadját is eltárolja (`payload_json`, ugyanaz az alak,
+  mint a NAV oldalon) — enélkül egy Számlázz.hu-s eredeti számla
+  STORNO-kontextusa nem lenne rekonstruálható (a `sales` tábla csak
+  `buyer_name`-et tárol, strukturált vevő-adatot nem).
+
 ## [1.0.2] — 2026-09-14
 
 ### Fixed

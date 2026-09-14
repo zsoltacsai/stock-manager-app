@@ -1,10 +1,11 @@
 <?php
 
 require_once __DIR__ . '/AppVersion.php';
+require_once __DIR__ . '/InvoiceNumbering.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 21;
+    private const SCHEMA_VERSION = 22;
 
     private PDO $pdo;
     private string $driver;
@@ -133,6 +134,9 @@ class Database
             }
             if ($version < 21) {
                 $this->migrateV21Updates();
+            }
+            if ($version < 22) {
+                $this->migrateV22InvoiceOperations();
             }
         }
 
@@ -1128,6 +1132,199 @@ class Database
         try {
             $this->pdo->prepare($sql)->execute([AppVersion::CURRENT, $now, $now]);
         } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+    }
+
+    /**
+     * A FountainTrade 1.1.0 MODIFY/STORNO előkészítő rétege — KIZÁRÓLAG az
+     * adatmodellt (invoice_type/original_invoice_id/operation_key/
+     * modification_index + a két sequence-tábla) vezeti be. A tényleges
+     * NAV/Számlázz.hu MODIFY/STORNO kérés-összeállítás EBBEN a körben
+     * SZÁNDÉKOSAN nincs implementálva (lásd a kör explicit stop-feltétele).
+     *
+     * KRITIKUS DÖNTÉS — a `UNIQUE(sale_id, provider)` megszüntetése:
+     * ez a régi constraint pontosan EGY invoice-sort engedett
+     * sale_id+provider kombinációnként — ez a MODIFY/STORNO
+     * bevezetésének strukturális akadálya volt (egy módosító/sztornó sor
+     * UGYANAZT a sale_id+provider-t viszi, mint az eredeti). A pótlás NEM
+     * egy `UNIQUE(sale_id, provider, invoice_type)` lett (ami blokkolná a
+     * SZÁNDÉKOSAN engedélyezett normal→modification→modification láncot,
+     * lásd migrateV22 docblockjának lentebbi része), hanem egyetlen,
+     * egységes `operation_key` oszlop UNIQUE indexe, amit MINDHÁROM
+     * típusú beszúrás (create/modify/storno) kitölt, csak MÁS-MÁS
+     * KÉPZÉSI SZABÁLLYAL:
+     *   - normal (a MEGLÉVŐ insertQueuedInvoice()/upsertInvoiceMirror()
+     *     útvonalak): 'create:{sale_id}:{provider}' — DETERMINISZTIKUS,
+     *     tehát PONTOSAN ugyanazt a "legfeljebb egy eredeti számla
+     *     sale_id+provider-enként" garanciát adja, mint a régi
+     *     UNIQUE(sale_id,provider) — a meglévő CREATE-folyamat emiatt
+     *     VÁLTOZATLANUL, visszafelé kompatibilisen működik.
+     *   - storno: 'storno:{original_invoice_id}' — SZINTÉN
+     *     determinisztikus (a művelethez NINCS köze semmilyen kliens-
+     *     oldali UUID-nek) — ez teszi a sztornót SZERKEZETILEG
+     *     terminálissá: akárhány konkurrens sztornó-kísérlet érkezik
+     *     ugyanarra az eredeti számlára, MINDEGYIK ugyanazt az
+     *     operation_key-t próbálná beszúrni, a UNIQUE index emiatt
+     *     PONTOSAN egyet enged át — ÖNMAGÁBAN, PHP-szintű "van-e már
+     *     aktív sztornó" ellenőrzés NÉLKÜL is race-safe.
+     *   - modification: 'modify:{original_invoice_id}:{kliens-generált
+     *     UUID}' — a UUID-t a hívó (egy KÉSŐBBI körben megépítendő
+     *     UI/endpoint) generálja EGYETLEN alkalommal egy adott módosítási
+     *     SZÁNDÉK indításakor, és UGYANAZT küldi újra egy dupla
+     *     kattintás/hálózati retry esetén — ez véd az EGY adott kísérlet
+     *     duplikálása ellen, miközben KÉT, ténylegesen KÜLÖNBÖZŐ,
+     *     egymást követő módosítás (más UUID) mindkettő sikeresen
+     *     létrejöhet — pontosan a kérés 9. pontjának példája
+     *     (MODIFY→1, MODIFY→2, STORNO→3).
+     *
+     * A régi 2-oszlopos UNIQUE index emiatt EGYSZERŰEN TÖRLÉSRE kerül (nem
+     * lecserélve egy másik többoszloposra), és egy sima, NEM-unique
+     * `(sale_id, provider)` index pótolja a lekérdezési sebességet (lásd
+     * findInvoiceBySaleAndProvider()) — az uniqueness-t innentől KIZÁRÓLAG
+     * az operation_key adja.
+     *
+     * MEGLÉVŐ SOROK: a migráció maga tölti fel az operation_key-t minden
+     * MÁR LÉTEZŐ (értelemszerűen invoice_type='normal') sorra pontosan a
+     * fenti 'create:{sale_id}:{provider}' képlettel — ez BIZTONSÁGOS,
+     * mert ezek a sorok a RÉGI UNIQUE(sale_id,provider) alatt már eleve
+     * egyediek voltak sale_id+provider szerint, tehát a visszamenőleges
+     * kitöltés nem hozhat létre új ütközést.
+     *
+     * `original_invoice_id`: ÖNMAGÁRA és MODIFICATION/STORNO sorra
+     * SOSE mutathat (lásd Database::createInvoiceOperation() explicit
+     * ellenőrzése — ez egy CHECK constraint-tal portable módon, MySQL-en
+     * is, nem fejezhető ki, ezért alkalmazás-szintű védelem, a
+     * concurrency-safe operation_key-UNIQUE mellett második védelmi
+     * rétegként).
+     *
+     * NAV számlaszám-szekvencia (`invoice_sequences`): egyetlen közös,
+     * provider-kulcsolt, atomikusan növelt számláló — lásd
+     * Database::allocateInvoiceNumber() docblockja a konkurrencia-
+     * biztonságért. A Számlázz.hu-hoz tartozó sor is előre látra kerül
+     * (kiterjeszthetőség), DE a Számlázz.hu tényleges számlaszámát
+     * TOVÁBBRA IS a Számlázz.hu maga adja vissza (lásd
+     * SzamlazzClient::handleResponse() szlahu_szamlaszam fejléce) — ezt a
+     * sort a jelenlegi kód SOSE fogja ténylegesen inkrementálni, ez
+     * SZÁNDÉKOS, dokumentált döntés, nem hiányosság.
+     *
+     * A NAV sorozat KEZDŐÉRTÉKE (migráció alatt, EGYSZERI művelet — nem
+     * tévesztendő össze a tiltott "MAX()+1 minden allokáláskor" mintával)
+     * a jelenlegi legmagasabb NAV invoices.id-ra van állítva, hogy az ÚJ
+     * sorozat garantáltan a régi, id-alapú számok FÖLÖTT folytatódjon —
+     * lásd a kör lezáró jelentésének "NAV numbering" szakaszát.
+     *
+     * `invoice_modification_sequences`: külön, `original_invoice_id`-
+     * kulcsolt számláló a `modificationIndex`-hez — lásd
+     * Database::allocateModificationIndex() docblockja.
+     */
+    private function migrateV22InvoiceOperations(): void
+    {
+        $isMysql = $this->driver === 'mysql';
+        $pk = $isMysql ? 'INT UNSIGNED AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
+        $ts = $isMysql ? 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' : "TEXT NOT NULL DEFAULT (datetime('now'))";
+        $engine = $isMysql ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : '';
+
+        $wasInTransaction = $this->pdo->inTransaction();
+        if (!$wasInTransaction) {
+            $this->pdo->beginTransaction();
+        }
+        try {
+            $this->migrateV22InvoiceOperationsBody($isMysql, $pk, $ts, $engine);
+            if (!$wasInTransaction) {
+                $this->pdo->commit();
+            }
+        } catch (Throwable $e) {
+            if (!$wasInTransaction && $this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    private function migrateV22InvoiceOperationsBody(bool $isMysql, string $pk, string $ts, string $engine): void
+    {
+        $this->migrateColumns('invoices', [
+            'invoice_type'         => "VARCHAR(16) NOT NULL DEFAULT 'normal'",
+            'original_invoice_id'  => $isMysql ? 'INT UNSIGNED NULL' : 'INTEGER NULL REFERENCES invoices(id)',
+            'operation_key'        => 'VARCHAR(191) NULL',
+            'modification_index'   => 'INT UNSIGNED NULL',
+        ]);
+
+        // A régi, KÉT oszlopos UNIQUE megszüntetése — lásd a metódus
+        // előtti docblock. Motorfüggő szintaxis, "nincs ilyen index" hibát
+        // is elnyelve (idempotens újrafuttatás — ha egy korábbi próbálkozás
+        // már törölte, ez itt ártalmatlan no-op).
+        try {
+            $this->pdo->exec($isMysql
+                ? 'ALTER TABLE invoices DROP INDEX uq_invoices_sale_provider'
+                : 'DROP INDEX IF EXISTS idx_invoices_sale_provider');
+        } catch (PDOException $e) { if (!$this->isBenignDropError($e)) { throw $e; } }
+
+        foreach ([
+            'CREATE INDEX idx_invoices_sale_provider ON invoices(sale_id, provider)',
+            $isMysql
+                ? 'ALTER TABLE invoices ADD UNIQUE KEY uq_invoices_operation_key (operation_key)'
+                : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_operation_key ON invoices(operation_key)',
+            'CREATE INDEX idx_invoices_original_invoice_id ON invoices(original_invoice_id)',
+            'CREATE INDEX idx_invoices_invoice_type ON invoices(invoice_type)',
+        ] as $sql) {
+            try {
+                $this->pdo->exec($sql);
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+        }
+
+        // Visszamenőleges kitöltés — lásd a metódus előtti docblock
+        // "MEGLÉVŐ SOROK" szakasza: BIZTONSÁGOS, mert ezek a sorok a régi
+        // UNIQUE(sale_id,provider) alatt már eleve egyediek voltak.
+        $concat = $isMysql ? "CONCAT('create:', sale_id, ':', provider)" : "'create:' || sale_id || ':' || provider";
+        try {
+            $this->pdo->exec("UPDATE invoices SET operation_key = $concat WHERE operation_key IS NULL AND invoice_type = 'normal'");
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        try {
+            $this->pdo->exec("CREATE TABLE IF NOT EXISTS invoice_sequences (
+                provider VARCHAR(16) NOT NULL PRIMARY KEY,
+                last_allocated_number INT UNSIGNED NOT NULL DEFAULT 0,
+                updated_at $ts
+            )$engine");
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        try {
+            $this->pdo->exec("CREATE TABLE IF NOT EXISTS invoice_modification_sequences (
+                original_invoice_id INT UNSIGNED NOT NULL PRIMARY KEY,
+                last_allocated_index INT UNSIGNED NOT NULL DEFAULT 0,
+                updated_at $ts
+                " . ($isMysql ? ', CONSTRAINT fk_invoice_mod_seq_original FOREIGN KEY (original_invoice_id) REFERENCES invoices(id)' : '') . "
+            )$engine");
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        // Egyszeri (NEM ongoing-allokálási!) magszám: a NAV sorozat a
+        // jelenlegi legmagasabb NAV invoices.id fölött folytatódik, hogy a
+        // régi, id-alapú számokkal SOSE keveredhessen — lásd a metódus
+        // előtti docblock. Ez a MAX() itt, EGYETLEN alkalommal, a
+        // migráció alatt fut, nem az allocateInvoiceNumber() ongoing
+        // logikájának része (ami TILOS lenne MAX()+1-et használni, lásd
+        // ott).
+        $maxNavId = (int) ($this->pdo->query("SELECT COALESCE(MAX(id), 0) FROM invoices WHERE provider = 'nav'")->fetchColumn() ?: 0);
+        $sql = $isMysql
+            ? 'INSERT IGNORE INTO invoice_sequences (provider, last_allocated_number, updated_at) VALUES (?, ?, ?)'
+            : 'INSERT OR IGNORE INTO invoice_sequences (provider, last_allocated_number, updated_at) VALUES (?, ?, ?)';
+        $now = date('Y-m-d H:i:s');
+        try {
+            $this->pdo->prepare($sql)->execute(['nav', $maxNavId, $now]);
+            // A Számlázz.hu sor előre látra kerül (kiterjeszthetőség) — lásd
+            // a metódus előtti docblock, miért NEM használja ezt a
+            // jelenlegi kód ténylegesen.
+            $this->pdo->prepare($sql)->execute(['szamlazz', 0, $now]);
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+    }
+
+    /** @see migrateV22InvoiceOperationsBody() — "nincs ilyen index/kulcs" hibák felismerése DROP-oknál (nem CREATE-eknél, lásd isBenignSchemaError()). */
+    private function isBenignDropError(PDOException $e): bool
+    {
+        $message = strtolower($e->getMessage());
+        return str_contains($message, 'no such index')
+            || str_contains($message, "check that column/key exists")
+            || str_contains($message, '1091'); // MySQL: can't DROP; check that column/key exists
     }
 
     // ---- Önfrissítés (GitHub Release-alapú) ----
@@ -2189,7 +2386,8 @@ class Database
         float $vatTotal,
         float $grossTotal,
         string $currency,
-        ?string $statusOverride = null
+        ?string $statusOverride = null,
+        ?array $payload = null
     ): void {
         // $statusOverride (P1-5): bizonytalan kimenetelű (transport-hiba
         // utáni) kísérletnél sem 'done', sem sima 'failed' nem pontos — az
@@ -2201,10 +2399,18 @@ class Database
         $status = $statusOverride ?? ($success ? 'done' : 'failed');
         $now = date('Y-m-d H:i:s');
         $issuedAt = $success ? $now : null;
+        // Lásd migrateV22InvoiceOperationsBody() docblockja: ez a
+        // DETERMINISZTIKUS operation_key adja ma is (mint korábban a
+        // törölt UNIQUE(sale_id,provider)) az "legfeljebb egy EREDETI
+        // számla ehhez a sale_id+provider-hez" garanciát — ez a metódus
+        // KIZÁRÓLAG invoice_type='normal' (az oszlop DEFAULT-ja) sorokhoz
+        // való, változatlanul.
+        $operationKey = 'create:' . $saleId . ':' . $provider;
 
         $params = [
             ':sale_id' => $saleId,
             ':provider' => $provider,
+            ':operation_key' => $operationKey,
             ':status' => $status,
             ':invoice_number' => $invoiceNumber,
             ':net_total' => $netTotal,
@@ -2214,29 +2420,38 @@ class Database
             ':issued_at' => $issuedAt,
             ':pdf_path' => $pdfPath,
             ':last_error' => $error,
+            // 1.1.0: buyer/items (ugyanaz az alak, mint NAV insertQueuedInvoice()-nél)
+            // — enélkül egy Számlázz.hu-s eredeti számla MODIFY/STORNO
+            // kontextusa (lásd InvoiceService::buildStornoContext()) nem
+            // lenne rekonstruálható, mert a `sales` tábla csak buyer_name-et
+            // tárol, strukturált nev/irsz/telepules/cim/adoszam-ot nem. $payload
+            // NULL esetén (a hívó nem adott meg) a MEGLÉVŐ értéket megőrizzük
+            // (lásd COALESCE lent) — egy retry sose törölhet ki egy korábban
+            // már eltárolt payloadot.
+            ':payload_json' => $payload !== null ? json_encode($payload, JSON_UNESCAPED_UNICODE) : null,
             ':now' => $now,
         ];
 
         if ($this->driver === 'mysql') {
             $sql = "INSERT INTO invoices
-                    (sale_id, provider, status, invoice_number, net_total, vat_total, gross_total, currency, issued_at, pdf_path, last_error, created_at, updated_at)
+                    (sale_id, provider, operation_key, status, invoice_number, net_total, vat_total, gross_total, currency, issued_at, pdf_path, last_error, payload_json, created_at, updated_at)
                 VALUES
-                    (:sale_id, :provider, :status, :invoice_number, :net_total, :vat_total, :gross_total, :currency, :issued_at, :pdf_path, :last_error, :now, :now)
+                    (:sale_id, :provider, :operation_key, :status, :invoice_number, :net_total, :vat_total, :gross_total, :currency, :issued_at, :pdf_path, :last_error, :payload_json, :now, :now)
                 ON DUPLICATE KEY UPDATE
                     status = VALUES(status), invoice_number = VALUES(invoice_number),
                     net_total = VALUES(net_total), vat_total = VALUES(vat_total), gross_total = VALUES(gross_total),
                     currency = VALUES(currency), issued_at = VALUES(issued_at), pdf_path = VALUES(pdf_path),
-                    last_error = VALUES(last_error), updated_at = VALUES(updated_at)";
+                    last_error = VALUES(last_error), payload_json = COALESCE(VALUES(payload_json), payload_json), updated_at = VALUES(updated_at)";
         } else {
             $sql = "INSERT INTO invoices
-                    (sale_id, provider, status, invoice_number, net_total, vat_total, gross_total, currency, issued_at, pdf_path, last_error, created_at, updated_at)
+                    (sale_id, provider, operation_key, status, invoice_number, net_total, vat_total, gross_total, currency, issued_at, pdf_path, last_error, payload_json, created_at, updated_at)
                 VALUES
-                    (:sale_id, :provider, :status, :invoice_number, :net_total, :vat_total, :gross_total, :currency, :issued_at, :pdf_path, :last_error, :now, :now)
-                ON CONFLICT(sale_id, provider) DO UPDATE SET
+                    (:sale_id, :provider, :operation_key, :status, :invoice_number, :net_total, :vat_total, :gross_total, :currency, :issued_at, :pdf_path, :last_error, :payload_json, :now, :now)
+                ON CONFLICT(operation_key) DO UPDATE SET
                     status = excluded.status, invoice_number = excluded.invoice_number,
                     net_total = excluded.net_total, vat_total = excluded.vat_total, gross_total = excluded.gross_total,
                     currency = excluded.currency, issued_at = excluded.issued_at, pdf_path = excluded.pdf_path,
-                    last_error = excluded.last_error, updated_at = excluded.updated_at";
+                    last_error = excluded.last_error, payload_json = COALESCE(excluded.payload_json, invoices.payload_json), updated_at = excluded.updated_at";
         }
 
         $this->pdo->prepare($sql)->execute($params);
@@ -2256,6 +2471,302 @@ class Database
         $stmt->execute([$id]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
+    }
+
+    // ---- Számla-műveletek (MODIFY/STORNO) — 1.1.0 numbering/schema réteg ----
+    //
+    // FONTOS: ez a szakasz KIZÁRÓLAG az adatmodellt (sorszám-allokáció,
+    // modificationIndex-allokáció, a módosító/sztornó invoices-sor
+    // létrehozása) szolgáltatja — a TÉNYLEGES NAV/Számlázz.hu kérés
+    // összeállítása/beküldése egy KÉSŐBBI kör feladata (lásd
+    // migrateV22InvoiceOperationsBody() docblockja a pontos hatókörért).
+
+    /**
+     * Atomikusan lefoglal egy ÚJ, egyedi, monoton növekvő sorszámot egy
+     * adott providerhez — lásd migrateV22InvoiceOperationsBody() docblockja
+     * a teljes indoklásért (miért NEM invoices.id/sales.id/MAX()+1 alapú).
+     *
+     * KONKURRENCIA-BIZTONSÁG (mindkét motoron AZONOS mintával): egy
+     * tranzakción BELÜL az UPDATE (ami sor-zárat szerez — SQLite-on a
+     * teljes írás-zárat, MySQL/InnoDB-n a konkrét sor zárát) UTÁN a SELECT
+     * MINDIG a SAJÁT, MÉG COMMIT ELŐTTI írását olvassa vissza — egy másik,
+     * egyidejű hívás UGYANARRA a providerre a commit-ig BLOKKOLÓDIK, tehát
+     * két hívás SOSE kaphatja ugyanazt az értéket. Ugyanaz az elv, mint a
+     * projekt már bevált "UPDATE ... WHERE" claim-mintáinál (pl.
+     * claimUpdateLock()) — csak itt a cél nem zár megszerzése, hanem
+     * garantáltan egyedi sorszám kiosztása.
+     *
+     * @return int a frissen lefoglalt, NYERS (formázatlan) sorszám — lásd
+     *   InvoiceNumbering::format() a végleges string-alakért; ez a metódus
+     *   SOSE ad vissza kész számlaszámot, hogy a formázási logika
+     *   egyetlen helyen éljen.
+     */
+    public function allocateInvoiceNumber(string $provider): int
+    {
+        $wasInTransaction = $this->pdo->inTransaction();
+        if (!$wasInTransaction) {
+            $this->pdo->beginTransaction();
+        }
+        try {
+            $now = date('Y-m-d H:i:s');
+            $insertSql = $this->driver === 'mysql'
+                ? 'INSERT IGNORE INTO invoice_sequences (provider, last_allocated_number, updated_at) VALUES (?, 0, ?)'
+                : 'INSERT OR IGNORE INTO invoice_sequences (provider, last_allocated_number, updated_at) VALUES (?, 0, ?)';
+            $this->pdo->prepare($insertSql)->execute([$provider, $now]);
+
+            $this->pdo->prepare('UPDATE invoice_sequences SET last_allocated_number = last_allocated_number + 1, updated_at = ? WHERE provider = ?')
+                ->execute([$now, $provider]);
+
+            $stmt = $this->pdo->prepare('SELECT last_allocated_number FROM invoice_sequences WHERE provider = ?');
+            $stmt->execute([$provider]);
+            $number = (int) $stmt->fetchColumn();
+
+            if (!$wasInTransaction) {
+                $this->pdo->commit();
+            }
+            return $number;
+        } catch (Throwable $e) {
+            if (!$wasInTransaction && $this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    /**
+     * Atomikusan lefoglal egy ÚJ, az adott EREDETI számlára vonatkozó,
+     * 1-től induló, monoton növekvő `modificationIndex`-et — lásd a NAV
+     * `InvoiceReferenceType.modificationIndex` mezőjének hivatalos
+     * dokumentációja (github.com/nav-gov-hu/Online-Invoice): "1-től induló,
+     * az EREDETI számlára vonatkozó módosítások/sztornók KÖZÖS,
+     * folyamatos sorszáma" — tehát MODIFY és STORNO UGYANABBÓL a
+     * számlálóból merít (lásd a kör 9. pontjának példája: MODIFY→1,
+     * MODIFY→2, STORNO→3), NEM külön-külön műveletenkénti számlálóból.
+     *
+     * Ugyanaz az atomicitási minta, mint allocateInvoiceNumber()-nél —
+     * lásd ott a docblockot a konkurrencia-bizonyítékért.
+     *
+     * @throws RuntimeException ha $originalInvoiceId nem létező invoices-
+     *   sorra mutat, vagy nem invoice_type='normal' sorra (lásd
+     *   createInvoiceOperation() — a modificationIndex-lánc MINDIG a
+     *   VALÓDI eredeti számlához kötődik, sose egy közbenső
+     *   módosításhoz/sztornóhoz, lásd a kör 9. pontjának ábrája).
+     */
+    public function allocateModificationIndex(int $originalInvoiceId): int
+    {
+        $original = $this->getInvoiceById($originalInvoiceId);
+        if ($original === null) {
+            throw new RuntimeException("A hivatkozott eredeti számla (id=$originalInvoiceId) nem létezik — modificationIndex nem allokálható.");
+        }
+        if ((string) $original['invoice_type'] !== 'normal') {
+            throw new RuntimeException("A modificationIndex kizárólag EREDETI (invoice_type='normal') számlához allokálható, nem egy másik módosításhoz/sztornóhoz (id=$originalInvoiceId, típus: {$original['invoice_type']}).");
+        }
+
+        $wasInTransaction = $this->pdo->inTransaction();
+        if (!$wasInTransaction) {
+            $this->pdo->beginTransaction();
+        }
+        try {
+            $now = date('Y-m-d H:i:s');
+            $insertSql = $this->driver === 'mysql'
+                ? 'INSERT IGNORE INTO invoice_modification_sequences (original_invoice_id, last_allocated_index, updated_at) VALUES (?, 0, ?)'
+                : 'INSERT OR IGNORE INTO invoice_modification_sequences (original_invoice_id, last_allocated_index, updated_at) VALUES (?, 0, ?)';
+            $this->pdo->prepare($insertSql)->execute([$originalInvoiceId, $now]);
+
+            $this->pdo->prepare('UPDATE invoice_modification_sequences SET last_allocated_index = last_allocated_index + 1, updated_at = ? WHERE original_invoice_id = ?')
+                ->execute([$now, $originalInvoiceId]);
+
+            $stmt = $this->pdo->prepare('SELECT last_allocated_index FROM invoice_modification_sequences WHERE original_invoice_id = ?');
+            $stmt->execute([$originalInvoiceId]);
+            $index = (int) $stmt->fetchColumn();
+
+            if (!$wasInTransaction) {
+                $this->pdo->commit();
+            }
+            return $index;
+        } catch (Throwable $e) {
+            if (!$wasInTransaction && $this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    /**
+     * Létrehoz egy ÚJ, `modification` VAGY `storno` típusú invoices-sort,
+     * a hozzá tartozó modificationIndex ÉS (NAV esetén) számlaszám
+     * allokálásával együtt. A TÉNYLEGES NAV/Számlázz.hu kérés-
+     * összeállítás/beküldés NEM ennek a metódusnak a feladata (lásd a
+     * szakasz eleji docblock) — ez a sor `status='queued'`-ként jön létre,
+     * pontosan úgy, mint egy normál NAV CREATE queue-bejegyzés
+     * (insertQueuedInvoice()), hogy a MEGLÉVŐ NavInvoiceQueueWorker/claim-
+     * mechanika egy KÉSŐBBI körben változtatás nélkül fel tudja dolgozni.
+     *
+     * VALIDÁCIÓ (lásd a kör 15. pontja):
+     *   - $invoiceType KIZÁRÓLAG 'modification'/'storno' lehet (a 'normal'
+     *     típusú sorokat továbbra is insertQueuedInvoice()/
+     *     upsertInvoiceMirror() hozza létre, változatlanul);
+     *   - $originalInvoiceId KÖTELEZŐEN egy LÉTEZŐ, invoice_type='normal'
+     *     sorra mutat — SOSE egy másik módosításra/sztornóra (lásd a kör
+     *     9. pontjának ábrája: a lánc MINDIG a gyökér eredetihez kötődik);
+     *   - önhivatkozás elleni védelem (a beszúrás UTÁN, lásd lent) —
+     *     ELMÉLETILEG nem fordulhat elő ezen a hívási úton (mindig egy
+     *     MÁR LÉTEZŐ eredeti sorra hivatkozunk egy ÚJ sor beszúrásakor),
+     *     de védelmi mélységként explicit ellenőrizve marad.
+     *
+     * IDEMPOTENCIA/EGYEDISÉG: az `operation_key` UNIQUE indexe (lásd
+     * migrateV22InvoiceOperationsBody() docblockja) a VALÓDI, konkurrencia-
+     * biztos védelem — ez a metódus ELŐSZÖR egy olvasható hibaüzenettel
+     * jelzi, ha a beszúrás emiatt ütközik (nem hagyja a hívót egy nyers
+     * PDO-kivétellel/SQL-hibaüzenettel szembesülni).
+     *
+     * @param array $params {
+     *   sale_id: int, provider: string ('nav'|'szamlazz'),
+     *   invoice_type: string ('modification'|'storno'),
+     *   original_invoice_id: int, operation_key: string,
+     *   net_total?: float, vat_total?: float, gross_total?: float, currency?: string,
+     *   payload?: array,
+     * }
+     * @return array a frissen létrehozott invoices-sor.
+     */
+    public function createInvoiceOperation(array $params): array
+    {
+        $invoiceType = (string) ($params['invoice_type'] ?? '');
+        if (!in_array($invoiceType, ['modification', 'storno'], true)) {
+            throw new InvalidArgumentException("createInvoiceOperation() kizárólag 'modification'/'storno' típusra való, kapott: '$invoiceType'.");
+        }
+
+        $originalInvoiceId = (int) ($params['original_invoice_id'] ?? 0);
+        $operationKey = (string) ($params['operation_key'] ?? '');
+        if ($operationKey === '') {
+            throw new InvalidArgumentException('createInvoiceOperation() operation_key nélkül nem hívható.');
+        }
+
+        // allocateModificationIndex() maga is elvégzi az eredeti számla
+        // létezés-/típus-ellenőrzését — itt NEM ismételjük meg, hogy a
+        // hibaüzenet egyetlen, konzisztens helyről származzon.
+        $modificationIndex = $this->allocateModificationIndex($originalInvoiceId);
+
+        $now = date('Y-m-d H:i:s');
+        $sql = 'INSERT INTO invoices
+                (sale_id, provider, status, invoice_type, original_invoice_id, operation_key, modification_index,
+                 net_total, vat_total, gross_total, currency, payload_json, attempts, created_at, updated_at)
+            VALUES (?, ?, \'queued\', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)';
+        try {
+            $this->pdo->prepare($sql)->execute([
+                (int) $params['sale_id'],
+                (string) $params['provider'],
+                $invoiceType,
+                $originalInvoiceId,
+                $operationKey,
+                $modificationIndex,
+                (float) ($params['net_total'] ?? 0.0),
+                (float) ($params['vat_total'] ?? 0.0),
+                (float) ($params['gross_total'] ?? 0.0),
+                (string) ($params['currency'] ?? 'HUF'),
+                json_encode($params['payload'] ?? [], JSON_UNESCAPED_UNICODE),
+                $now,
+                $now,
+            ]);
+        } catch (PDOException $e) {
+            if ($this->isUniqueConstraintViolation($e)) {
+                throw new RuntimeException("Ez a művelet (operation_key: $operationKey) már létrehozott egy invoice-rekordot — a duplikálás megakadályozva.", 0, $e);
+            }
+            throw $e;
+        }
+
+        $id = (int) $this->pdo->lastInsertId();
+
+        if ($id === $originalInvoiceId) {
+            // Lásd a metódus docblockja — elméletileg elérhetetlen ág,
+            // védelmi mélységként mégis explicit visszavonva.
+            $this->pdo->prepare('DELETE FROM invoices WHERE id = ?')->execute([$id]);
+            throw new RuntimeException('Egy számla nem hivatkozhat önmagára mint eredeti számla.');
+        }
+
+        if ((string) $params['provider'] === 'nav') {
+            $number = $this->allocateInvoiceNumber('nav');
+            $invoiceNumber = InvoiceNumbering::format('nav', $number);
+            $this->pdo->prepare('UPDATE invoices SET invoice_number = ? WHERE id = ?')->execute([$invoiceNumber, $id]);
+        }
+        // Számlázz.hu esetén az invoice_number NULL marad — a Számlázz.hu
+        // adja vissza a TÉNYLEGES, saját maga generálta helyesbítő/
+        // sztornó számlaszámot (lásd a kör auditjának "Számlázz.hu MODIFY/
+        // STORNO protokoll" szakasza), ugyanúgy, mint a normál CREATE-nél.
+
+        return $this->getInvoiceById($id);
+    }
+
+    /** SQLSTATE 23000 — mindkét motoron ("integrity constraint violation") ez jelez UNIQUE/PRIMARY KEY-ütközést. */
+    private function isUniqueConstraintViolation(PDOException $e): bool
+    {
+        return ($e->getCode() === '23000') || str_starts_with((string) $e->getCode(), '23');
+    }
+
+    /**
+     * SZINKRON szolgáltató (Számlázz.hu) MODIFY/STORNO eredményének
+     * beírása egy MÁR LÉTEZŐ (createInvoiceOperation() által létrehozott)
+     * sorba — SZÁNDÉKOSAN egyszerű, id-alapú UPDATE, NEM upsertInvoiceMirror()
+     * (ami operation_key='create:...'-re épülő UPSERT, KIZÁRÓLAG a normál
+     * CREATE-flow-hoz — egy modify/storno sorra hívva összekeverné/felül-
+     * írná az EREDETI számla tükör-bejegyzését, mert mindkettő ugyanahhoz
+     * a sale_id+providerhez tartozna operation_key szinten, ha véletlenül
+     * a 'create:' kulcsot használnánk). Aszinkron szolgáltatónál (NAV) NEM
+     * használt — ott a meglévő markInvoiceSubmitted()/markInvoiceDone()/
+     * markInvoiceFailed() sor a queue-worker-en keresztül, változatlanul.
+     */
+    public function updateInvoiceOperationResult(
+        int $id,
+        bool $success,
+        ?string $invoiceNumber,
+        ?string $pdfPath,
+        ?string $error,
+        ?string $statusOverride = null
+    ): void {
+        $status = $statusOverride ?? ($success ? 'done' : 'failed');
+        $now = date('Y-m-d H:i:s');
+        $this->pdo->prepare('
+            UPDATE invoices
+            SET status = ?, invoice_number = COALESCE(?, invoice_number), pdf_path = ?, last_error = ?,
+                issued_at = ?, next_attempt_at = NULL, locked_at = NULL, updated_at = ?
+            WHERE id = ?
+        ')->execute([$status, $invoiceNumber, $pdfPath, $error, $success ? $now : null, $now, $id]);
+    }
+
+    /**
+     * A "Kimenő számlák" számla-kapcsolat navigációhoz (lásd a kör 20.
+     * pontja) — az EREDETI (normal) számlához tartozó ÖSSZES módosító/
+     * sztornó műveletet adja vissza, modification_index szerint rendezve
+     * (a NAV-nál is ez a kanonikus, MODIFY-STORNO közös sorrend, lásd
+     * allocateModificationIndex() docblockja).
+     */
+    public function getInvoiceOperationsForOriginal(int $originalInvoiceId): array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM invoices WHERE original_invoice_id = ? ORDER BY modification_index ASC, id ASC');
+        $stmt->execute([$originalInvoiceId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Üzleti szabály (lásd a kör 16. pontja, "conflicting active operation"):
+     * ha egy EREDETI számlához MÁR létezik olyan STORNO-művelet, ami NEM
+     * véglegesen (failed/dead_letter) hiúsult meg — tehát vagy már sikeres
+     * (done), vagy még aktívan folyamatban van (queued/processing/submitted/
+     * uncertain/uncertain_manual, azaz elvben MÉG sikeres lehet) — akkor
+     * SEM újabb MODIFY, SEM újabb STORNO nem indítható ugyanarra az
+     * eredetire: a sztornó STRUKTURÁLISAN lezárja a számla életciklusát.
+     * Csak egy VÉGLEGESEN meghiúsult (failed/dead_letter) sztornó-kísérlet
+     * UTÁN engedélyezett új próbálkozás.
+     */
+    public function invoiceHasBlockingStorno(int $originalInvoiceId): bool
+    {
+        $stmt = $this->pdo->prepare("
+            SELECT 1 FROM invoices
+            WHERE original_invoice_id = ? AND invoice_type = 'storno' AND status NOT IN ('failed', 'dead_letter')
+            LIMIT 1
+        ");
+        $stmt->execute([$originalInvoiceId]);
+        return $stmt->fetchColumn() !== false;
     }
 
     /**
@@ -2327,24 +2838,31 @@ class Database
      * Aszinkron szolgáltató (jelenleg: NAV) számára hozza létre a tartós
      * queue-bejegyzést — magát az `invoices` sort, `status='queued'`-del,
      * még a tényleges NAV-hívás ELŐTT. Race-safe: az `INSERT OR IGNORE` /
-     * `INSERT IGNORE` a `UNIQUE(sale_id, provider)` indexre támaszkodik,
-     * ugyanúgy, mint upsertInvoiceMirror() — két egyidejű kérés közül csak
-     * az egyik ténylegesen szúr be új sort, a másik `rowCount()===0`-t lát
-     * és `null`-lal tér vissza, ahelyett hogy egy második, duplikált
+     * `INSERT IGNORE` a (migrateV22InvoiceOperationsBody() óta)
+     * `UNIQUE(operation_key)` indexre támaszkodik — az itt képzett
+     * `operation_key` ('create:{sale_id}:{provider}') DETERMINISZTIKUS,
+     * tehát pontosan ugyanazt a garanciát adja, mint korábban a törölt
+     * `UNIQUE(sale_id, provider)`: két egyidejű kérés közül csak az egyik
+     * ténylegesen szúr be új sort, a másik `rowCount()===0`-t lát és
+     * `null`-lal tér vissza, ahelyett hogy egy második, duplikált
      * számlázási feladatot hozna létre ugyanahhoz az eladáshoz.
      *
      * A `invoice_number`-t SZÁNDÉKOSAN két lépésben állítja elő (előbb
-     * beszúrás invoice_number NÉLKÜL, utána egy UPDATE a friss auto-
-     * increment id-ból képzett értékkel) — a NAV-nak stabil, a beküldés
-     * előtt ismert sorszám kell, de ez csak a sikeres INSERT UTÁN, a
-     * tényleges id ismeretében képezhető.
+     * beszúrás invoice_number NÉLKÜL, utána egy UPDATE) — a NAV-nak
+     * stabil, a beküldés előtt ismert sorszám kell, de a tényleges
+     * allokálás (lásd Database::allocateInvoiceNumber()) csak a sikeres
+     * INSERT UTÁN, a duplikálás-ellenőrzés lezárultával történik, hogy egy
+     * idempotens no-op (fenti `rowCount()===0` ág) SOSE égessen el
+     * feleslegesen egy sorszámot.
      *
-     * KORLÁT (dokumentált, nem production-kész számozási séma): a
-     * "SM-NAV-{év}-{id}" séma az `invoices` tábla saját, PROVIDERTŐL
-     * FÜGGETLEN auto-increment id-jára épül, ami a Számlázz.hu-s sorokkal
-     * osztott — emiatt a NAV-számlák sorszáma nem feltétlenül folytonos,
-     * ha közben Számlázz.hu-s sor is beszúrásra kerül. Éles, jogilag
-     * folytonos NAV-only sorszámtartomány egy külön, jövőbeli döntés.
+     * KORÁBBI KORLÁT MEGSZŰNT (1.1.0): a számlaszám 1.0.x-ben az
+     * `invoices` tábla saját, providerek között OSZTOTT auto-increment
+     * id-jára épült ("SM-NAV-{év}-{id}") — ez a metódus 1.1.0 óta a
+     * KÜLÖN, provider-kulcsolt `invoice_sequences` táblából (lásd
+     * allocateInvoiceNumber()) allokál, ami a Számlázz.hu-s sorok
+     * beszúrásaitól TELJESEN FÜGGETLEN, folyamatos NAV-only sorozat — lásd
+     * migrateV22InvoiceOperationsBody() docblockja a teljes indoklásért és
+     * a meglévő (1.0.x-ben allokált) számok kezeléséért.
      */
     public function insertQueuedInvoice(
         int $saleId,
@@ -2356,24 +2874,26 @@ class Database
         array $payload
     ): ?array {
         $now = date('Y-m-d H:i:s');
+        $operationKey = 'create:' . $saleId . ':' . $provider;
         $sql = $this->driver === 'mysql'
-            ? "INSERT IGNORE INTO invoices (sale_id, provider, status, net_total, vat_total, gross_total, currency, payload_json, attempts, created_at, updated_at)
-               VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, 0, ?, ?)"
-            : "INSERT OR IGNORE INTO invoices (sale_id, provider, status, net_total, vat_total, gross_total, currency, payload_json, attempts, created_at, updated_at)
-               VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, 0, ?, ?)";
+            ? "INSERT IGNORE INTO invoices (sale_id, provider, operation_key, status, net_total, vat_total, gross_total, currency, payload_json, attempts, created_at, updated_at)
+               VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, 0, ?, ?)"
+            : "INSERT OR IGNORE INTO invoices (sale_id, provider, operation_key, status, net_total, vat_total, gross_total, currency, payload_json, attempts, created_at, updated_at)
+               VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, 0, ?, ?)";
         $stmt = $this->pdo->prepare($sql);
-        $stmt->execute([$saleId, $provider, $netTotal, $vatTotal, $grossTotal, $currency, json_encode($payload, JSON_UNESCAPED_UNICODE), $now, $now]);
+        $stmt->execute([$saleId, $provider, $operationKey, $netTotal, $vatTotal, $grossTotal, $currency, json_encode($payload, JSON_UNESCAPED_UNICODE), $now, $now]);
 
         if ($stmt->rowCount() === 0) {
-            // A UNIQUE(sale_id, provider) ütközés miatt nem szúrt be új
-            // sort — vagy egy konkurens hívás nyerte a versenyt, vagy már
+            // A UNIQUE(operation_key) ütközés miatt nem szúrt be új sort —
+            // vagy egy konkurens hívás nyerte a versenyt, vagy már
             // korábban létrejött ehhez a sale_id+provider-hez tartozó
             // queue-bejegyzés. Mindkét esetben idempotens no-op.
             return null;
         }
 
         $id = (int) $this->pdo->lastInsertId();
-        $invoiceNumber = sprintf('SM-NAV-%s-%06d', date('Y'), $id);
+        $number = $this->allocateInvoiceNumber($provider);
+        $invoiceNumber = InvoiceNumbering::format($provider, $number);
         $this->pdo->prepare('UPDATE invoices SET invoice_number = ? WHERE id = ?')->execute([$invoiceNumber, $id]);
 
         return $this->getInvoiceById($id);

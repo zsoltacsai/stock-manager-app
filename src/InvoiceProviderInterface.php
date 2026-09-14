@@ -47,4 +47,44 @@ interface InvoiceProviderInterface
      * blokkolódik a külső hívásra várva.
      */
     public function enqueue(Database $db, int $saleId, array $context): void;
+
+    /**
+     * Igaz, ha ez a szolgáltató ténylegesen támogatja a megadott üzleti
+     * műveletet — $operation ∈ {'modify','storno'} ('create' mindig
+     * implicit támogatott, nem ezen a metóduson keresztül kérdezhető).
+     * Az InvoiceService ezt hívja meg VALIDÁCIÓKÉNT, mielőtt egyáltalán
+     * megpróbálná a requestModification()/requestStorno()-t meghívni —
+     * a frontend SOSE dönthet erről saját maga (lásd a kör 18. pontja).
+     */
+    public function supportsOperation(string $operation): bool;
+
+    /**
+     * Egy MEGLÉVŐ, 'normal' típusú $original számlához tartozó helyesbítő
+     * (módosító) számla indítása. $context ugyanazokat a kulcsokat várja,
+     * mint issueSync()/enqueue() (db, sale_id, buyer, items, totals,
+     * payment_method, language), PLUSZ egy 'operation_uuid' kulcsot — a
+     * hívó (InvoiceService) felelőssége ezt egyszer, az adott módosítási
+     * KÍSÉRLET indításakor legenerálni, és minden retry/dupla-kattintás
+     * esetén UGYANAZT visszaadni (lásd Database::createInvoiceOperation()
+     * 'modify:{original_invoice_id}:{uuid}' operation_key mintája —
+     * ez adja az attempt-szintű idempotenciát).
+     *
+     * Szinkron szolgáltatónál (Számlázz.hu) a végleges eredménnyel tér
+     * vissza (ugyanaz az alak, mint issueSync()); aszinkron szolgáltatónál
+     * (NAV) csak a tartós queue-bejegyzést hozza létre és
+     * ['success'=>false,'pending'=>true,...]-t ad, a tényleges NAV-kérést a
+     * meglévő queue-worker küldi be KÉSŐBB (lásd NavInvoiceProvider::submit()
+     * invoice_type szerinti elágazása) — NINCS külön MODIFY/STORNO queue.
+     */
+    public function requestModification(Database $db, array $original, array $context): array;
+
+    /**
+     * Egy MEGLÉVŐ, 'normal' típusú $original számla sztornózása (érvénytelenítése)
+     * új, önálló pénzügyi bizonylat formájában. Ugyanaz az elv, mint
+     * requestModification()-nél — lásd ott a $context/visszatérési alak
+     * részletezését. STORNO esetén $context['items']/'buyer' jellemzően az
+     * eredeti számla adataiból származik (a hívó, InvoiceService tölti fel),
+     * NEM a felhasználó szabad bevitele.
+     */
+    public function requestStorno(Database $db, array $original, array $context): array;
 }

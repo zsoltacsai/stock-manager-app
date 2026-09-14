@@ -42,6 +42,13 @@ class NavInvoiceXmlBuilder
      *     supplier: array{tax_number:string, name:string, zip:string, city:string, address:string, bank_account?:?string},
      *     buyer: array{nev:string, irsz:string, telepules:string, cim:string, adoszam?:?string},
      *     items: array<array{name:string, qty:float, unit_price_gross:float, vat_rate:string}>,
+     *     invoice_reference?: array{
+     *         original_invoice_number: string,
+     *         modification_index: int,
+     *         modify_without_master?: bool (alapértelmezett: false — lásd writeInvoiceReference()),
+     *     } (CREATE-nél kihagyandó; MODIFY/STORNO esetén KÖTELEZŐ — az
+     *       XML-builder maga NEM dönt arról, hogy melyik művelethez kell,
+     *       csak akkor írja ki, ha a hívó átadta, lásd NavInvoiceProvider),
      * }
      */
     public static function build(array $params): string
@@ -54,6 +61,7 @@ class NavInvoiceXmlBuilder
         $supplier = $params['supplier'];
         $buyer = $params['buyer'];
         $items = $params['items'];
+        $invoiceReference = $params['invoice_reference'] ?? null;
 
         $xw = new XMLWriter();
         $xw->openMemory();
@@ -71,6 +79,10 @@ class NavInvoiceXmlBuilder
 
         $xw->startElement('invoiceMain');
         $xw->startElement('invoice');
+
+        if ($invoiceReference !== null) {
+            self::writeInvoiceReference($xw, $invoiceReference);
+        }
 
         $xw->startElement('invoiceHead');
         self::writeSupplierInfo($xw, $supplier);
@@ -117,6 +129,16 @@ class NavInvoiceXmlBuilder
 
             $xw->startElement('line');
             $xw->writeElement('lineNumber', (string) $lineNumber);
+            if ($invoiceReference !== null) {
+                // lineNumberReference a TELJES számlalánc (eredeti + minden
+                // korábbi módosítás/sztornó) kumulatív tételszámozását
+                // folytatja, NEM ennek a dokumentumnak a saját lineNumber-ét
+                // — lásd writeLineModificationReference() docblockja (valódi
+                // NAV sandbox hívással igazolva: "A megadott sorszámmal már
+                // létezik tétel a számlaláncban" hiba nélkül).
+                $lineNumberOffset = (int) ($invoiceReference['line_number_offset'] ?? 0);
+                self::writeLineModificationReference($xw, $lineNumberOffset + $lineNumber);
+            }
             $xw->writeElement('lineExpressionIndicator', 'true');
             $xw->writeElement('lineNatureIndicator', 'PRODUCT');
             $xw->writeElement('lineDescription', (string) $item['name']);
@@ -196,6 +218,73 @@ class NavInvoiceXmlBuilder
         $xw->endDocument();
 
         return $xw->outputMemory();
+    }
+
+    /**
+     * <invoiceReference> — invoiceData.xsd InvoiceReferenceType, az
+     * <invoice> ELSŐ gyermeke, MEGELŐZI az <invoiceHead>-et (xs:sequence
+     * sorrend, a NAV auditban igazolt séma szerint). MODIFY/STORNO esetén
+     * kötelező, CREATE-nél nem íródik ki (lásd build()).
+     *
+     * modifyWithoutMaster=false (alapértelmezett): a "normál" eset, amikor
+     * a hivatkozott eredeti számla MAGA a NAV rendszerében is ismert (ezt
+     * a Stock Manager mindig biztosítani tudja, mert az eredeti CREATE-et
+     * is ez az app küldte be) — a true érték a specifikáció szerint azt az
+     * esetet fedi, amikor az eredeti dokumentum a NAV-nál NEM elérhető
+     * (pl. papíralapú, NAV előtti számla utólagos helyesbítése) — ez a
+     * Stock Manager használati esetei közül NEM fordulhat elő, ezért ezt a
+     * körön a hívó (NavInvoiceProvider) sose kéri true-val.
+     */
+    private static function writeInvoiceReference(XMLWriter $xw, array $invoiceReference): void
+    {
+        $xw->startElement('invoiceReference');
+        $xw->writeElement('originalInvoiceNumber', (string) $invoiceReference['original_invoice_number']);
+        $xw->writeElement('modifyWithoutMaster', !empty($invoiceReference['modify_without_master']) ? 'true' : 'false');
+        $xw->writeElement('modificationIndex', (string) (int) $invoiceReference['modification_index']);
+        $xw->endElement(); // invoiceReference
+    }
+
+    /**
+     * <lineModificationReference> — invoiceData.xsd LineModificationReferenceType,
+     * a <line> MÁSODIK gyermeke (közvetlenül a lineNumber UTÁN, a
+     * hivatalos XSD LineType szekvenciája szerint, byte-pontosan
+     * leellenőrizve a nav-gov-hu/Online-Invoice forrásból) — KÖTELEZŐ,
+     * ha a dokumentum invoiceReference-t (tehát MODIFY/STORNO-t) hordoz
+     * ÉS van legalább egy tétele. VALÓDI NAV sandbox hívással igazolt:
+     * enélkül a NAV ABORTED-del elutasítja, "Tételsort tartalmazó
+     * módosító okirat esetén a tételsor módosítás jellegének megadása
+     * kötelező" üzenettel — ez volt a kör 7/25. pontjának explicit
+     * "nem bizonyított tény" figyelmeztetése, AZÓTA sandbox-szal lezárva.
+     *
+     * lineOperation ∈ {CREATE, MODIFY} a séma szerint — DE éles NAV
+     * sandbox hívással MÁSODSZOR is igazolt, a séma-dokumentációtól
+     * ELTÉRŐ üzleti szabály: "Módosító vagy érvénytelenítő számláról
+     * beküldött adatszolgáltatásban a lineOperation elem értékének
+     * MINDEN ESETBEN „CREATE"-nek kell lennie." — tehát a NAV Online
+     * Számla ADATSZOLGÁLTATÁSI modellje szerint egy MODIFY/STORNO
+     * dokumentum tételei sose "módosítanak" egy meglévő NAV-oldali
+     * sort, hanem mindig ÚJ, önálló tényként jelentődnek — ezért ez az
+     * implementáció MINDIG 'CREATE'-et küld, lineNumberReference =
+     * a SAJÁT lineNumber-e (a dokumentum saját, önálló sorszámozása).
+     * Az első, 'MODIFY'-t feltételező próbálkozást a NAV konkrétan
+     * ABORTED-del utasította el — ez volt a kör 7/25. pontjának
+     * "nem bizonyított tény" figyelmeztetése, HÁROM valódi sandbox-
+     * körrel lezárva (2. kör: lineOperation=CREATE bizonyítva; 3. kör:
+     * lineNumberReference a LÁNC kumulatív számozását igényli, lásd
+     * lent — "A megadott sorszámmal már létezik tétel a számlaláncban"
+     * hiba nélkül a MÁSODIK dokumentum 1-től újraszámozott tételeivel).
+     *
+     * $lineNumberReference a HÍVÓ (build()) által már kiszámolt, a
+     * TELJES lánc (eredeti + minden korábbi módosítás/sztornó) kumulatív
+     * tételszáma alapján eltolt érték — lásd NavInvoiceProvider
+     * enqueueOperation()-jének 'line_number_offset' payload-mezője.
+     */
+    private static function writeLineModificationReference(XMLWriter $xw, int $lineNumberReference): void
+    {
+        $xw->startElement('lineModificationReference');
+        $xw->writeElement('lineNumberReference', (string) $lineNumberReference);
+        $xw->writeElement('lineOperation', 'CREATE');
+        $xw->endElement(); // lineModificationReference
     }
 
     private static function writeSupplierInfo(XMLWriter $xw, array $supplier): void

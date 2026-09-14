@@ -110,6 +110,19 @@ if (!Auth::isLoggedIn($appSettings)) {
     </div>
 </div>
 
+<div class="modal-overlay" id="modify-modal">
+    <div class="modal-card" style="max-width:640px;">
+        <h2>Helyesbítő (módosító) számla</h2>
+        <p class="muted">A javított adatokkal ÚJ, helyesbítő számla jön létre — az eredeti számla változatlanul megmarad.</p>
+        <div id="modify-content"></div>
+        <div class="modal-actions" style="margin-top:20px;">
+            <button class="btn btn-secondary" id="modify-modal-cancel" style="flex:1;">Mégse</button>
+            <button class="btn btn-primary" id="modify-modal-submit" style="flex:1;">Helyesbítő számla kiállítása</button>
+        </div>
+        <p id="modify-modal-feedback" class="modal-feedback"></p>
+    </div>
+</div>
+
 <script src="topbar.js"></script>
 <script src="kimeno-szamlak.js"></script>
 </body>

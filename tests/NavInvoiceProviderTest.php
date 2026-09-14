@@ -192,6 +192,213 @@ final class NavInvoiceProviderTest extends TestCase
         $this->assertNotSame('retry', $result['outcome']);
     }
 
+    // ---- supportsOperation() / requestModification() / requestStorno() (1.1.0) ----
+
+    private function createOriginalInvoiceRow(Database $db): array
+    {
+        $saleId = $db->insertSale(1270.0, 'Készpénz');
+        return $db->insertQueuedInvoice($saleId, 'nav', 1000.0, 270.0, 1270.0, 'HUF', [
+            'buyer' => $this->sampleContext()['buyer'],
+            'items' => $this->sampleContext()['items'],
+            'payment_method' => 'Készpénz',
+            'supplier' => $this->fakeSupplierConfig(),
+        ]);
+    }
+
+    public function testSupportsOperationTrueForModifyAndStorno(): void
+    {
+        $provider = new NavInvoiceProvider($this->fakeNavConfig(), $this->fakeSupplierConfig(), $this->tempTokenCache());
+        $this->assertTrue($provider->supportsOperation('modify'));
+        $this->assertTrue($provider->supportsOperation('storno'));
+        $this->assertFalse($provider->supportsOperation('teleport'));
+    }
+
+    public function testRequestModificationWithoutOperationUuidThrows(): void
+    {
+        $db = tests_new_database();
+        $original = $this->createOriginalInvoiceRow($db);
+        $provider = new NavInvoiceProvider($this->fakeNavConfig(), $this->fakeSupplierConfig(), $this->tempTokenCache());
+
+        $this->expectException(InvalidArgumentException::class);
+        $provider->requestModification($db, $original, $this->sampleContext());
+    }
+
+    public function testRequestModificationCreatesQueuedOperationRow(): void
+    {
+        $db = tests_new_database();
+        $original = $this->createOriginalInvoiceRow($db);
+        $provider = new NavInvoiceProvider($this->fakeNavConfig(), $this->fakeSupplierConfig(), $this->tempTokenCache());
+
+        $context = $this->sampleContext();
+        $context['operation_uuid'] = 'attempt-uuid-1';
+        $result = $provider->requestModification($db, $original, $context);
+
+        $this->assertFalse($result['success']);
+        $this->assertTrue($result['pending']);
+        $this->assertNotEmpty($result['invoice_number']);
+
+        $ops = $db->getInvoiceOperationsForOriginal((int) $original['id']);
+        $this->assertCount(1, $ops);
+        $this->assertSame('modification', $ops[0]['invoice_type']);
+        $this->assertSame('queued', $ops[0]['status']);
+        $this->assertSame(1, (int) $ops[0]['modification_index']);
+        $this->assertSame('modify:' . $original['id'] . ':attempt-uuid-1', $ops[0]['operation_key']);
+
+        $payload = json_decode($ops[0]['payload_json'], true);
+        $this->assertSame((string) $original['invoice_number'], $payload['original_invoice_number']);
+    }
+
+    public function testRequestStornoCreatesQueuedOperationRowWithDeterministicKey(): void
+    {
+        $db = tests_new_database();
+        $original = $this->createOriginalInvoiceRow($db);
+        $provider = new NavInvoiceProvider($this->fakeNavConfig(), $this->fakeSupplierConfig(), $this->tempTokenCache());
+
+        $context = $this->sampleContext();
+        $result = $provider->requestStorno($db, $original, $context);
+
+        $this->assertTrue($result['pending']);
+        $ops = $db->getInvoiceOperationsForOriginal((int) $original['id']);
+        $this->assertCount(1, $ops);
+        $this->assertSame('storno', $ops[0]['invoice_type']);
+        $this->assertSame('storno:' . $original['id'], $ops[0]['operation_key']);
+
+        // A második STORNO-kísérlet UGYANAZT az operation_key-t próbálná —
+        // a DB UNIQUE indexe ezt elutasítja, DE ez graceful eredményként
+        // (already_in_progress), NEM kivételként érkezik vissza a hívóhoz
+        // (lásd enqueueOperation() docblockja — konkurrens kérés, nem hiba).
+        $second = $provider->requestStorno($db, $original, $context);
+        $this->assertFalse($second['success']);
+        $this->assertTrue($second['already_in_progress'] ?? false);
+
+        $ops = $db->getInvoiceOperationsForOriginal((int) $original['id']);
+        $this->assertCount(1, $ops, 'Pontosan EGY sztornó-sor jöhet létre, a második kísérlet nem duplikálhat.');
+    }
+
+    // ---- submit() invoice_type szerinti elágazása (MODIFY/STORNO XML) ----
+
+    public function testSubmitForModificationBuildsInvoiceReferenceAndSendsModifyOperation(): void
+    {
+        $capturedXml = null;
+        $tokenBody = $this->tokenExchangeSuccessBody();
+        $transport = function (string $url, string $xml) use (&$capturedXml, $tokenBody) {
+            if (str_contains($url, 'tokenExchange')) {
+                return ['status' => 200, 'body' => $tokenBody];
+            }
+            $capturedXml = $xml;
+            return ['status' => 200, 'body' => $this->envelopeBody('OK', ['transactionId' => 'TXN-MOD'])];
+        };
+        $clientFactory = fn () => new NavClient($this->fakeNavConfig(), $transport);
+        $provider = new NavInvoiceProvider($this->fakeNavConfig(), $this->fakeSupplierConfig(), $this->tempTokenCache(), $clientFactory);
+
+        $row = [
+            'payload_json' => json_encode([
+                'buyer' => $this->sampleContext()['buyer'],
+                'items' => $this->sampleContext()['items'],
+                'payment_method' => 'Készpénz',
+                'supplier' => $this->fakeSupplierConfig(),
+                'original_invoice_number' => 'FT-NAV-2026-000001',
+            ]),
+            'invoice_number' => 'FT-NAV-2026-000002',
+            'currency' => 'HUF',
+            'invoice_type' => 'modification',
+            'modification_index' => 1,
+        ];
+
+        $result = $provider->submit($row);
+
+        $this->assertSame('submitted', $result['outcome']);
+        $this->assertSame('TXN-MOD', $result['transaction_id']);
+        $this->assertStringContainsString('<invoiceOperation>MODIFY</invoiceOperation>', $capturedXml);
+        // A base64-be csomagolt invoiceData belsejét külön dekódolva
+        // ellenőrizzük az invoiceReference blokkot.
+        preg_match('/<invoiceData>(.*?)<\/invoiceData>/', $capturedXml, $m);
+        $invoiceDataXml = base64_decode($m[1]);
+        $this->assertStringContainsString('<invoiceReference>', $invoiceDataXml);
+        $this->assertStringContainsString('<originalInvoiceNumber>FT-NAV-2026-000001</originalInvoiceNumber>', $invoiceDataXml);
+        $this->assertStringContainsString('<modificationIndex>1</modificationIndex>', $invoiceDataXml);
+    }
+
+    public function testSubmitForStornoSendsStornoOperation(): void
+    {
+        $capturedXml = null;
+        $tokenBody = $this->tokenExchangeSuccessBody();
+        $transport = function (string $url, string $xml) use (&$capturedXml, $tokenBody) {
+            if (str_contains($url, 'tokenExchange')) {
+                return ['status' => 200, 'body' => $tokenBody];
+            }
+            $capturedXml = $xml;
+            return ['status' => 200, 'body' => $this->envelopeBody('OK', ['transactionId' => 'TXN-ST'])];
+        };
+        $clientFactory = fn () => new NavClient($this->fakeNavConfig(), $transport);
+        $provider = new NavInvoiceProvider($this->fakeNavConfig(), $this->fakeSupplierConfig(), $this->tempTokenCache(), $clientFactory);
+
+        $row = [
+            'payload_json' => json_encode([
+                'buyer' => $this->sampleContext()['buyer'],
+                'items' => [['name' => 'Termék', 'qty' => -1, 'unit_price_gross' => 1270.0, 'vat_rate' => '27']],
+                'payment_method' => 'Készpénz',
+                'supplier' => $this->fakeSupplierConfig(),
+                'original_invoice_number' => 'FT-NAV-2026-000001',
+            ]),
+            'invoice_number' => 'FT-NAV-2026-000003',
+            'currency' => 'HUF',
+            'invoice_type' => 'storno',
+            'modification_index' => 2,
+        ];
+
+        $result = $provider->submit($row);
+
+        $this->assertSame('submitted', $result['outcome']);
+        $this->assertStringContainsString('<invoiceOperation>STORNO</invoiceOperation>', $capturedXml);
+    }
+
+    /**
+     * VALÓDI NAV sandbox hívással feltárt igény: a lineNumberReference a
+     * TELJES lánc kumulatív tételszámát folytatja — ez a teszt a
+     * requestModification()/requestStorno() TELJES láncán (nem csak a
+     * builderen) keresztül bizonyítja, hogy a 'line_number_offset' helyesen
+     * számolódik (eredeti 1 tétele -> modify offset=1 -> modify 1 tétele
+     * hozzáadódik -> storno offset=2).
+     */
+    public function testLineNumberOffsetAccumulatesAcrossChainViaFullEnqueueFlow(): void
+    {
+        $db = tests_new_database();
+        $original = $this->createOriginalInvoiceRow($db); // 1 tétel
+        $provider = new NavInvoiceProvider($this->fakeNavConfig(), $this->fakeSupplierConfig(), $this->tempTokenCache());
+
+        $modifyContext = $this->sampleContext();
+        $modifyContext['operation_uuid'] = 'offset-test-1';
+        $provider->requestModification($db, $original, $modifyContext); // szintén 1 tétel
+
+        $stornoResult = $provider->requestStorno($db, $original, $this->sampleContext());
+        $this->assertTrue($stornoResult['pending']);
+
+        $ops = $db->getInvoiceOperationsForOriginal((int) $original['id']);
+        $modifyPayload = json_decode($ops[0]['payload_json'], true);
+        $stornoPayload = json_decode($ops[1]['payload_json'], true);
+
+        $this->assertSame(1, $modifyPayload['line_number_offset'], 'A modify offsetje az EREDETI 1 tétele után 1.');
+        $this->assertSame(2, $stornoPayload['line_number_offset'], 'A storno offsetje az eredeti(1) + a modify(1) tétele után 2.');
+    }
+
+    public function testSubmitForModificationWithMissingOriginalInvoiceNumberInPayloadIsPermanent(): void
+    {
+        $provider = new NavInvoiceProvider($this->fakeNavConfig(), $this->fakeSupplierConfig(), $this->tempTokenCache());
+
+        $row = [
+            'payload_json' => json_encode(['buyer' => [], 'items' => [], 'supplier' => []]),
+            'invoice_number' => 'FT-NAV-2026-000002',
+            'currency' => 'HUF',
+            'invoice_type' => 'modification',
+            'modification_index' => 1,
+        ];
+
+        $result = $provider->submit($row);
+
+        $this->assertSame('permanent', $result['outcome']);
+    }
+
     // ---- checkStatus() ----
 
     public function testCheckStatusDone(): void
@@ -213,6 +420,23 @@ final class NavInvoiceProviderTest extends TestCase
         $provider = $this->providerWithScriptedResponses([['status' => 200, 'body' => $this->envelopeBody('OK', ['invoiceStatus' => 'PROCESSING'])]]);
         $result = $provider->checkStatus(['provider_ref' => 'TXN123']);
         $this->assertSame('pending', $result['outcome']);
+    }
+
+    /**
+     * A kör 9. pontja: egy MODIFY/STORNO sor timeout utáni egyeztetése
+     * (checkStatus()/recoverUncertain()) SOSE eshet vissza implicit
+     * CREATE-re. Mindkét metódus KIZÁRÓLAG provider_ref/invoice_number
+     * alapján dönt, invoice_type-tól FÜGGETLENÜL — ez a teszt egy explicit
+     * invoice_type='modification' sorral bizonyítja, hogy a viselkedés
+     * byte-azonos egy 'normal' sorral (nincs rejtett CREATE-newal-küldés
+     * elágazás sehol a checkStatus()/recoverUncertain() kódútján).
+     */
+    public function testCheckStatusForModificationRowBehavesIdenticallyNeverImplicitCreate(): void
+    {
+        $provider = $this->providerWithScriptedResponses([['status' => 200, 'body' => $this->envelopeBody('OK', ['invoiceStatus' => 'DONE'])]]);
+        $result = $provider->checkStatus(['provider_ref' => 'TXN123', 'invoice_type' => 'modification', 'invoice_number' => 'FT-NAV-2026-000002']);
+        $this->assertSame('done', $result['outcome']);
+        $this->assertArrayNotHasKey('transaction_id', $result, 'checkStatus() sose ad vissza új transactionId-t — nincs implicit új manageInvoice-hívás.');
     }
 
     public function testCheckStatusNetworkFailureIsRetryNotUncertain(): void

@@ -143,6 +143,23 @@ final class UpdateInstallerTest extends TestCase
         file_put_contents($path, $content);
     }
 
+    /**
+     * A tesztekben "a célverzió, amire frissítünk" MINDIG a TÉNYLEGESEN
+     * futó AppVersion::CURRENT fölötti, dinamikusan számolt patch-verzió
+     * — SOSE egy hardcodolt literál (pl. korábban '1.1.0'), mert az a
+     * valós AppVersion::CURRENT-tel egy jövőbeli kiadáskor előbb-utóbb
+     * ÖSSZEÜTKÖZIK (from_version === to_version törné a teszt
+     * alapfeltevését — pontosan ez történt, amikor a projekt ténylegesen
+     * elérte az 1.1.0-t). Ugyanaz a minta, mint
+     * testBelowMinimumUpgradableVersionIsBlocked() már meglévő,
+     * dinamikus AppVersion::parse()-alapú számítása.
+     */
+    private function nextVersion(): string
+    {
+        [$major, $minor, $patch] = AppVersion::parse(AppVersion::CURRENT);
+        return "$major.$minor." . ($patch + 1);
+    }
+
     /** Egy minimális, de VALÓDI (a projekt tényleges forrásfájljaiból másolt) "élő app-gyökér" fixture. */
     private function buildLiveAppRoot(string $version, string $sqlitePath): string
     {
@@ -244,9 +261,10 @@ final class UpdateInstallerTest extends TestCase
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
         $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
-        [$zipPath, $manifestPath] = $this->buildReleaseZip('1.1.0');
+        $target = $this->nextVersion();
+        [$zipPath, $manifestPath] = $this->buildReleaseZip($target);
 
-        $github = new FakeGitHubReleaseClient($this->fakeRelease('v1.1.0', $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
+        $github = new FakeGitHubReleaseClient($this->fakeRelease('v' . $target, $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
         $settingsStore = new Settings($appRoot . '/data/settings.json');
         $config = ['db' => ['driver' => 'sqlite', 'sqlite' => ['path' => $sqlitePath]], 'update' => ['php_cli_binary' => PHP_BINARY]];
         $backupManager = new BackupManager($config['db'], $appRoot . '/data/backups');
@@ -256,22 +274,22 @@ final class UpdateInstallerTest extends TestCase
 
         $this->assertTrue($result['ok'] ?? false, 'install() sikertelen: ' . ($result['error'] ?? 'ismeretlen'));
         $this->assertSame(AppVersion::CURRENT, $result['from_version']);
-        $this->assertSame('1.1.0', $result['to_version']);
+        $this->assertSame($target, $result['to_version']);
 
         // A LIVE AppVersion.php ténylegesen az új verziót tartalmazza a lemezen.
-        $this->assertStringContainsString("CURRENT = '1.1.0'", file_get_contents($appRoot . '/src/AppVersion.php'));
+        $this->assertStringContainsString("CURRENT = '$target'", file_get_contents($appRoot . '/src/AppVersion.php'));
 
         $state = $db->getUpdateState();
         $this->assertSame('completed', $state['state']);
-        $this->assertSame('1.1.0', $state['current_version']);
-        $this->assertSame('1.1.0', $state['last_successful_update_version']);
+        $this->assertSame($target, $state['current_version']);
+        $this->assertSame($target, $state['last_successful_update_version']);
         $this->assertNotEmpty($state['last_successful_update_at']);
 
         $history = $db->listUpdateHistory(10);
         $this->assertCount(1, $history);
         $this->assertSame('completed', $history[0]['state']);
         $this->assertSame(AppVersion::CURRENT, $history[0]['from_version']);
-        $this->assertSame('1.1.0', $history[0]['to_version']);
+        $this->assertSame($target, $history[0]['to_version']);
         $this->assertNotEmpty($history[0]['backup_reference']);
 
         // Karbantartási mód a sikeres futás VÉGÉRE ki van kapcsolva.
@@ -367,11 +385,12 @@ final class UpdateInstallerTest extends TestCase
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
         $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
-        [$zipPath, $manifestPath, $manifest] = $this->buildReleaseZip('1.1.0');
+        $target = $this->nextVersion();
+        [$zipPath, $manifestPath, $manifest] = $this->buildReleaseZip($target);
         $manifest['product'] = 'SomeOtherApp';
         file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_UNICODE));
 
-        $github = new FakeGitHubReleaseClient($this->fakeRelease('v1.1.0', $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
+        $github = new FakeGitHubReleaseClient($this->fakeRelease('v' . $target, $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
         $settingsStore = new Settings($appRoot . '/data/settings.json');
         $config = ['db' => ['driver' => 'sqlite', 'sqlite' => ['path' => $sqlitePath]], 'update' => ['php_cli_binary' => PHP_BINARY]];
 
@@ -386,11 +405,12 @@ final class UpdateInstallerTest extends TestCase
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
         $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
-        [$zipPath, $manifestPath] = $this->buildReleaseZip('1.1.0');
+        $target = $this->nextVersion();
+        [$zipPath, $manifestPath] = $this->buildReleaseZip($target);
 
         // A GitHub-tól "függetlenül feloldott" commit MÁS, mint amit a manifest állít.
         $differentCommit = str_repeat('f', 40);
-        $github = new FakeGitHubReleaseClient($this->fakeRelease('v1.1.0', $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $differentCommit);
+        $github = new FakeGitHubReleaseClient($this->fakeRelease('v' . $target, $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $differentCommit);
         $settingsStore = new Settings($appRoot . '/data/settings.json');
         $config = ['db' => ['driver' => 'sqlite', 'sqlite' => ['path' => $sqlitePath]], 'update' => ['php_cli_binary' => PHP_BINARY]];
 
@@ -405,11 +425,12 @@ final class UpdateInstallerTest extends TestCase
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
         $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
-        [$zipPath, $manifestPath, $manifest] = $this->buildReleaseZip('1.1.0');
+        $target = $this->nextVersion();
+        [$zipPath, $manifestPath, $manifest] = $this->buildReleaseZip($target);
         $manifest['sha256'] = str_repeat('0', 64); // hamis checksum
         file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_UNICODE));
 
-        $github = new FakeGitHubReleaseClient($this->fakeRelease('v1.1.0', $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
+        $github = new FakeGitHubReleaseClient($this->fakeRelease('v' . $target, $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
         $settingsStore = new Settings($appRoot . '/data/settings.json');
         $config = ['db' => ['driver' => 'sqlite', 'sqlite' => ['path' => $sqlitePath]], 'update' => ['php_cli_binary' => PHP_BINARY]];
 
@@ -428,9 +449,10 @@ final class UpdateInstallerTest extends TestCase
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
         $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
-        [$zipPath, $manifestPath] = $this->buildReleaseZip('1.1.0');
+        $target = $this->nextVersion();
+        [$zipPath, $manifestPath] = $this->buildReleaseZip($target);
 
-        $github = new FakeGitHubReleaseClient($this->fakeRelease('v1.1.0', $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
+        $github = new FakeGitHubReleaseClient($this->fakeRelease('v' . $target, $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
         $settingsStore = new Settings($appRoot . '/data/settings.json');
         $config = ['db' => ['driver' => 'sqlite', 'sqlite' => ['path' => $sqlitePath]], 'update' => ['php_cli_binary' => PHP_BINARY]];
 
@@ -454,9 +476,10 @@ final class UpdateInstallerTest extends TestCase
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
         $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
-        [$zipPath, $manifestPath] = $this->buildReleaseZip('1.1.0', brokenHealthCheck: true);
+        $target = $this->nextVersion();
+        [$zipPath, $manifestPath] = $this->buildReleaseZip($target, brokenHealthCheck: true);
 
-        $github = new FakeGitHubReleaseClient($this->fakeRelease('v1.1.0', $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
+        $github = new FakeGitHubReleaseClient($this->fakeRelease('v' . $target, $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
         $settingsStore = new Settings($appRoot . '/data/settings.json');
         $config = ['db' => ['driver' => 'sqlite', 'sqlite' => ['path' => $sqlitePath]], 'update' => ['php_cli_binary' => PHP_BINARY]];
         $backupManager = new BackupManager($config['db'], $appRoot . '/data/backups');
@@ -486,9 +509,10 @@ final class UpdateInstallerTest extends TestCase
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
         $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
-        [$zipPath, $manifestPath] = $this->buildReleaseZip('1.1.0', brokenHealthCheck: true);
+        $target = $this->nextVersion();
+        [$zipPath, $manifestPath] = $this->buildReleaseZip($target, brokenHealthCheck: true);
 
-        $github = new FakeGitHubReleaseClient($this->fakeRelease('v1.1.0', $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
+        $github = new FakeGitHubReleaseClient($this->fakeRelease('v' . $target, $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
         $settingsStore = new Settings($appRoot . '/data/settings.json');
         $config = ['db' => ['driver' => 'sqlite', 'sqlite' => ['path' => $sqlitePath]], 'update' => ['php_cli_binary' => PHP_BINARY]];
         // A KEZDETI backup sikeres (run() valódi), de a rollback közbeni DB-visszaállítás szimuláltan elbukik.
@@ -517,13 +541,14 @@ final class UpdateInstallerTest extends TestCase
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
         $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
-        [$zipPath, $manifestPath] = $this->buildReleaseZip('1.1.0');
+        $target = $this->nextVersion();
+        [$zipPath, $manifestPath] = $this->buildReleaseZip($target);
 
         $configContentBefore = file_get_contents($appRoot . '/config/config.php');
         file_put_contents($appRoot . '/data/settings.json', json_encode(['custom_marker' => 'must-survive']));
         $settingsJsonBefore = file_get_contents($appRoot . '/data/settings.json');
 
-        $github = new FakeGitHubReleaseClient($this->fakeRelease('v1.1.0', $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
+        $github = new FakeGitHubReleaseClient($this->fakeRelease('v' . $target, $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
         $settingsStore = new Settings($appRoot . '/data/settings.json');
         $config = ['db' => ['driver' => 'sqlite', 'sqlite' => ['path' => $sqlitePath]], 'update' => ['php_cli_binary' => PHP_BINARY]];
         $backupManager = new BackupManager($config['db'], $appRoot . '/data/backups');
@@ -544,8 +569,9 @@ final class UpdateInstallerTest extends TestCase
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
         $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
-        [$zipPath, $manifestPath] = $this->buildReleaseZip('1.1.0');
-        $github = new FakeGitHubReleaseClient($this->fakeRelease('v1.1.0', $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
+        $target = $this->nextVersion();
+        [$zipPath, $manifestPath] = $this->buildReleaseZip($target);
+        $github = new FakeGitHubReleaseClient($this->fakeRelease('v' . $target, $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
         $settingsStore = new Settings($appRoot . '/data/settings.json');
         $config = ['db' => ['driver' => 'sqlite', 'sqlite' => ['path' => $sqlitePath]], 'update' => ['php_cli_binary' => PHP_BINARY]];
 

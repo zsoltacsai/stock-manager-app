@@ -417,6 +417,345 @@ lekérdezése) NEM használt — a lista-/részletnézet a digest-szintű
 `originalInvoiceNumber`/`modificationIndex` mezőkből épül fel, ami az
 egyszerű (egy-szintű) módosítási láncokat lefedi.
 
+## Számla-műveletek adatmodell — MODIFY/STORNO előkészítés (1.1.0)
+
+**Ez a szakasz a KIMENŐ számlák MÓDOSÍTÁSÁNAK/SZTORNÓZÁSÁNAK
+adatmodell-rétegét dokumentálja** — a számlaszám-generálás
+provider-függetlenítése, az üzleti típus (normal/modification/storno)
+bevezetése, az eredeti↔módosítás/sztornó kapcsolat, és mindkettő
+konkurrencia-biztos allokálása. **A tényleges NAV/Számlázz.hu MODIFY/
+STORNO kérés-összeállítás/beküldés a következő szakaszban
+("MODIFY/STORNO — tényleges NAV/Számlázz.hu beküldés (1.1.0)")
+dokumentált — MÁR bekötve, valódi NAV sandbox lánccal (CREATE→MODIFY→
+STORNO, mindhárom DONE) igazolva.**
+
+### Invoice_type — üzleti típus a technikai állapottól elválasztva
+
+Az `invoices` tábla `status` mezője (queued/processing/submitted/done/
+failed/...) a számla TECHNIKAI életciklusát írja le, változatlanul. Egy
+ÚJ, ettől teljesen független `invoice_type` mező (`normal` | `modification`
+| `storno`) írja le az ÜZLETI típust — egy módosító számla pl.
+`invoice_type='modification'` ÉS `status='queued'` egyszerre, pontosan
+úgy, mint egy eredeti számla induláskor.
+
+### original_invoice_id — explicit kapcsolat, sose string-parszolás
+
+Minden `modification`/`storno` sor `original_invoice_id` oszlopa (FK,
+`invoices(id)`-re hivatkozva) közvetlenül az EREDETI (`invoice_type='normal'`)
+számlára mutat — SOHA egy köztes módosításra (lásd lent, "modificationIndex").
+`normal` soroknál ez a mező NULL. A kapcsolat MINDIG explicit adatbázis-
+hivatkozás, sose `invoice_number` string alapján való keresés.
+
+### NAV számlaszám-sorozat — a korábbi, `invoices.id`-alapú séma megszűnt
+
+**Korábbi állapot (1.0.x)**: a NAV felé beküldött `invoiceNumber`
+`Database::insertQueuedInvoice()`-ban `SM-NAV-{év}-{id}` formában
+képződött, ahol `{id}` az `invoices` tábla Számlázz.hu-val OSZTOTT
+auto-increment oszlopa volt (lásd a korábbi ROADMAP-bejegyzés, most
+lezárva).
+
+**1.1.0 óta**: `Database::allocateInvoiceNumber(string $provider): int`
+egy KÜLÖN, `invoice_sequences` táblából (oszlopok: `provider`,
+`last_allocated_number`) allokál — konkurrencia-biztosan (egy
+tranzakción belüli atomikus `UPDATE ... SET last_allocated_number =
+last_allocated_number + 1` + visszaolvasás, ugyanaz az elv, mint a
+projekt más "UPDATE ... WHERE" claim-mintáinál, pl.
+`claimUpdateLock()`), SOSE `MAX(invoice_number)+1`-gyel. A végleges
+string-formátumot EGYETLEN helyen, `InvoiceNumbering::format()` adja —
+jelenleg `FT-NAV-{év}-{szám:06d}` (a `FT` a FountainTrade rebrand után).
+
+A migráció (`Database::migrateV22InvoiceOperationsBody()`) a MEGLÉVŐ
+(1.0.x-ben kiállított) `invoice_number` értékeket **nem generálja újra**
+— azok jogilag/technikailag változatlanok maradnak. Az ÚJ sorozat a
+migráció idején a **legmagasabb korábbi NAV `invoices.id` fölött**
+indul (egyszeri, migráció-időpontbeli `MAX()`-lekérdezés — ez NEM
+azonos a tiltott "minden allokáláskor `MAX()+1`" mintával), hogy a régi
+és az új számok sorrendje sose legyen félreérthető.
+
+A Számlázz.hu-hoz is létrejön egy `invoice_sequences` sor
+(kiterjeszthetőség), de a jelenlegi kód SOSE inkrementálja ténylegesen —
+a Számlázz.hu MINDIG a saját maga generálta, a válaszban visszakapott
+számlaszámot használja (`szlahu_szamlaszam`), változatlanul.
+
+### modificationIndex — eredeti-számlánkénti, MODIFY+STORNO közös számláló
+
+A NAV `InvoiceReferenceType.modificationIndex` mezője (hivatalos NAV
+dokumentáció, github.com/nav-gov-hu/Online-Invoice) 1-től induló,
+az EREDETI számlára vonatkozó ÖSSZES módosítás/sztornó KÖZÖS,
+folyamatos sorszáma — NEM külön-külön MODIFY-onkénti/STORNO-onkénti.
+Példa:
+
+```
+Eredeti számla
+ ├── MODIFY  → modificationIndex 1
+ ├── MODIFY  → modificationIndex 2
+ └── STORNO  → modificationIndex 3
+```
+
+`Database::allocateModificationIndex(int $originalInvoiceId): int` egy
+KÜLÖN, `invoice_modification_sequences` táblából (kulcs:
+`original_invoice_id`) allokál, ugyanazzal az atomikus mintával, mint
+`allocateInvoiceNumber()`.
+
+### operation_key — egységes duplikálás-védelem (uniqueness ÉS idempotency)
+
+Az `invoices.operation_key` (UNIQUE index) EGYETLEN mechanizmus, ami a
+kérés két, tudatosan elkülönített fogalmát is kiszolgálja, MÁS-MÁS
+képzési szabállyal:
+
+- **normal** (a meglévő `insertQueuedInvoice()`/`upsertInvoiceMirror()`
+  útvonalak): `create:{sale_id}:{provider}` — DETERMINISZTIKUS, tehát
+  pontosan azt a garanciát adja, mint a korábbi (1.1.0-ban törölt)
+  `UNIQUE(sale_id, provider)` — a normál CREATE-folyamat emiatt
+  változatlanul, visszafelé kompatibilisen működik.
+- **storno**: `storno:{original_invoice_id}` — SZINTÉN determinisztikus,
+  ezért STRUKTURÁLISAN terminális: akárhány konkurrens sztornó-kísérlet
+  érkezik ugyanarra az eredeti számlára, a UNIQUE index pontosan egyet
+  enged át (bizonyítva egy valódi, 16 párhuzamos OS-folyamatos teszttel,
+  lásd `tests/InvoiceOperationRelationTest.php`).
+- **modification**: `modify:{original_invoice_id}:{kliens-generált UUID}`
+  — a UUID-t a (későbbi körben megépítendő) kliens egyetlen alkalommal
+  generálja egy adott módosítási szándék indításakor, és ugyanazt küldi
+  újra egy dupla kattintás/hálózati retry esetén — ez véd az EGY adott
+  kísérlet duplikálása ellen, miközben KÉT, ténylegesen különböző
+  módosítás (más UUID) mindkettő sikeresen létrejöhet.
+
+Miért NEM `UNIQUE(sale_id, provider, invoice_type)`: ez blokkolná a
+fenti, szándékosan engedélyezett "MODIFY, majd MÉG egy MODIFY" láncot
+(mindkettő ugyanazt a sale_id+provider+'modification' hármast adná).
+
+### Validáció
+
+`Database::createInvoiceOperation()` (a `modification`/`storno` sorok
+létrehozásának egyetlen belépési pontja) ellenőrzi: az `invoice_type`
+kizárólag `modification`/`storno` lehet; `original_invoice_id` egy
+LÉTEZŐ, `invoice_type='normal'` sorra mutat (sose egy másik
+módosításra/sztornóra); önhivatkozás elleni védelem (a beszúrás után,
+védelmi mélységként). `normal` soroknál `original_invoice_id` és
+`modification_index` NULL marad, `modification`/`storno` soroknál
+mindkettő kitöltött — ez az invariáns minden létrehozási úton
+(`insertQueuedInvoice()`, `upsertInvoiceMirror()`, `createInvoiceOperation()`)
+érvényesül.
+
+### Indexek
+
+`idx_invoices_sale_provider` (nem-unique, a törölt régi UNIQUE helyett),
+`idx_invoices_operation_key` (UNIQUE), `idx_invoices_original_invoice_id`,
+`idx_invoices_invoice_type`, `idx_invoices_status_next_attempt`,
+`idx_invoices_provider` — lásd `Database::migrateV22InvoiceOperationsBody()`.
+
+## MODIFY/STORNO — tényleges NAV/Számlázz.hu beküldés (1.1.0)
+
+A fenti adatmodell-réteg felett ez a szakasz a TÉNYLEGES helyesbítő
+(módosító) és sztornó számla NAV/Számlázz.hu felé történő beküldését
+dokumentálja — mindkét provider támogatja mindkét műveletet, a meglévő
+`InvoiceService`/`InvoiceProviderInterface`/`NavInvoiceProvider`/
+`NavInvoiceQueueWorker`/`SzamlazzInvoiceProvider` architektúrát bővítve,
+NEM egy párhuzamos rendszerrel.
+
+### Architektúra
+
+```
+UI (Kimenő számlák részletnézet)
+ → webroot/api/invoice-modify.php / invoice-storno.php
+ → InvoiceService::requestModification()/requestStorno()   — KÖZPONTI validáció
+ → InvoiceProviderInterface::requestModification()/requestStorno()
+ → NavInvoiceProvider (aszinkron, queue-n át) / SzamlazzInvoiceProvider (szinkron)
+```
+
+Az `InvoiceService` a KIZÁRÓLAGOS belépési pont — validálja: admin
+jogosultság, az eredeti számla létezik és `invoice_type='normal'` és
+`status='done'`, nincs már lezáró (nem véglegesen sikertelen) sztornó
+(`Database::invoiceHasBlockingStorno()`), a provider ténylegesen
+támogatja a műveletet (`InvoiceProviderInterface::supportsOperation()`).
+A provider EZUTÁN csak már validált, előkészített payloadot kap — saját
+maga nem dönt üzleti szabályról.
+
+### NAV MODIFY/STORNO
+
+A NAV Online Számla ADATSZOLGÁLTATÁSI modell (nem dokumentum-kiállítás)
+— a `manageInvoice` `invoiceOperation` envelope-mezője CREATE/MODIFY/
+STORNO (`NavClient::manageInvoiceOperation()`, a korábbi
+`manageInvoiceCreate()` ennek vékony CREATE-wrappere), az invoiceData
+XML-be pedig egy `invoiceReference` blokk kerül (`NavInvoiceXmlBuilder`),
+az `invoice` ELSŐ gyermekeként, `invoiceHead` előtt:
+
+```xml
+<invoiceReference>
+  <originalInvoiceNumber>...</originalInvoiceNumber>
+  <modifyWithoutMaster>false</modifyWithoutMaster>
+  <modificationIndex>...</modificationIndex>
+</invoiceReference>
+```
+
+**Három, VALÓDI NAV sandbox hívással (nem csak séma-olvasással) feltárt,
+kötelező részlet** — mindegyiket egy éles CREATE→MODIFY→STORNO sandbox-
+lánc igazolta, a végleges implementáció mindhárom pontban a NAV tényleges
+válasza alapján készült:
+
+1. **`lineModificationReference` kötelező minden tételsoron**, ha a
+   dokumentum `invoiceReference`-t hordoz — ennek hiányában a NAV
+   ABORTED-del utasítja el ("Tételsort tartalmazó módosító okirat esetén
+   a tételsor módosítás jellegének megadása kötelező"). A `<line>`
+   MÁSODIK gyermeke, közvetlenül `lineNumber` után (invoiceData.xsd
+   `LineType` szekvencia).
+2. **`lineOperation` MINDIG `CREATE`**, sose `MODIFY` — bár a séma
+   mindkettőt engedi, a NAV üzleti szabálya explicit: "Módosító vagy
+   érvénytelenítő számláról beküldött adatszolgáltatásban a lineOperation
+   elem értékének minden esetben „CREATE"-nek kell lennie." (első
+   próbálkozás `MODIFY`-jal ABORTED lett).
+3. **`lineNumberReference` a TELJES lánc (eredeti + minden korábbi
+   módosítás/sztornó) kumulatív tételszámát folytatja**, NEM az adott
+   dokumentum saját, 1-től induló sorszámozását — enélkül "A megadott
+   sorszámmal már létezik tétel a számlaláncban" hibát ad. Ezt
+   `NavInvoiceProvider::computeLineNumberOffset()` számolja ki a művelet
+   LÉTREHOZÁSAKOR (az eredeti + minden addig létező kapcsolódó sor
+   `payload_json`-jának tétel-darabszámából), és menti a payload
+   `line_number_offset` mezőjébe — `submit()` ezt már készen olvassa,
+   DB-hozzáférés nélkül.
+
+**A queue-integráció NEM külön mechanizmus**: `NavInvoiceQueueWorker`
+változatlan — `claimQueuedInvoiceForSubmission()` provider-szűrt, NEM
+`invoice_type`-szűrt, tehát egy `createInvoiceOperation()`-nel létrehozott
+`modification`/`storno` sor UGYANÚGY `status='queued'`-del kerül be, és a
+meglévő worker automatikusan felveszi. `NavInvoiceProvider::submit()`
+`invoice_type` szerint ágazik el (normal→CREATE, modification→MODIFY,
+storno→STORNO XML-mel) — ez az EGYETLEN módosítás a submit()-ben, a
+`checkStatus()`/`recoverUncertain()`/`classifyFailure()` VÁLTOZATLAN
+(ezek a `provider_ref`/`invoice_number` alapján generikusan működnek,
+sose esnek vissza implicit CREATE-re timeout után).
+
+### Számlázz.hu MODIFY/STORNO
+
+- **MODIFY**: UGYANAZT az Agent XML endpointot (`action-xmlagentxmlfile`)
+  és `xmlszamla` sémát használja, mint a CREATE — a `fejlec` blokkban a
+  meglévő `helyesbitoszamla` mező (korábban mindig `'false'`) `'true'`-ra
+  vált, és közvetlenül utána egy ÚJ `helyesbitettSzamlaszam` (az eredeti
+  számla száma) elem íródik ki — a hivatalos Agent XSD `fejlec`
+  szekvenciáját követve (`SzamlazzClient::buildInvoiceXml()`,
+  `$modifyOriginalInvoiceNumber` paraméter).
+- **STORNO**: KÜLÖN sémájú kérés (`xmlszamlast` gyökérelem), KÜLÖN POST
+  mezőnéven (`action-szamla_agent_st`, NEM `action-xmlagentxmlfile`) —
+  `beallitasok` → `fejlec` (`szamlaszam`=az eredeti számla száma,
+  `keltDatum`) — `SzamlazzClient::stornoInvoice()`. Ez KÜLÖNBÖZIK a
+  korábbi, tudatosan NEM-valódi `createCreditNote()`-tól (ami egy sima,
+  negált mennyiségű ÚJ CREATE, lásd annak docblockja) — a MODIFY/STORNO
+  ténylegesen a Számlázz.hu saját helyesbítő/sztornó mechanizmusát
+  használja.
+- Szinkron flow (`SzamlazzInvoiceProvider::requestModification()`/
+  `requestStorno()`): a `Database::createInvoiceOperation()` claim UTÁN
+  AZONNAL hívja a Számlázz.hu-t, az eredményt `updateInvoiceOperationResult()`-tal
+  írja vissza — ez EGY MÁSIK metódus, mint a CREATE-flow
+  `upsertInvoiceMirror()`-je (ami `operation_key='create:...'`-re épülő
+  upsert, egy modify/storno sorra hívva összekeverte volna az eredeti
+  tükör-bejegyzést).
+- **Bizonytalan (transport-hiba utáni) kimenetel kézi feloldása**: mivel
+  a Számlázz.hu SZINKRON (nincs queue-worker, ami automatikusan
+  újrapróbálná), egy `uncertain_manual` állapotú modify/storno sor admin
+  kézi újraindítást igényel: `webroot/api/szamlazz-operation-retry.php`
+  — `Database::resetInvoiceForManualRetry()` (UGYANAZ, provider-agnosztikus
+  metódus, mint a NAV-nál) 'queued'-ra állítja a MEGLÉVŐ sort, majd
+  `InvoiceService::retrySzamlazzOperation()` ténylegesen újra elindítja
+  (`SzamlazzInvoiceProvider::executeAndRecordOperation()`).
+
+### Idempotencia / operation_key
+
+- **modify**: `modify:{original_invoice_id}:{operation_uuid}` — az
+  `operation_uuid`-t a HÍVÓ (UI: `crypto.randomUUID()` a modal
+  megnyitásakor, egyszer, retry/dupla-kattintásnál újraküldve) adja meg;
+  `InvoiceService` fallback-ként generál egyet, ha hiányzik (VÉDELEM, de
+  ekkor egy ténylegesen megismételt HTTP-kérés nem ismerhető fel
+  idempotensként).
+- **storno**: `storno:{original_invoice_id}` — determinisztikus, uuid
+  nélkül, STRUKTURÁLISAN egyszeri. Mindkét eset RuntimeException helyett
+  graceful `{success:false, already_in_progress:true}` eredményt ad egy
+  ütközésnél (mindkét provider konzisztensen, lásd
+  `NavInvoiceProvider::enqueueOperation()`/`SzamlazzInvoiceProvider::performOperation()`).
+- **Valódi, 16 különálló OS-folyamatos teszt** bizonyítja mindkét esetet
+  (`tests/InvoiceOperationConcurrencyTest.php`): 16 konkurrens MODIFY
+  UGYANAZZAL az uuid-vel → pontosan 1 sikeres + 15 graceful elutasított;
+  ugyanez STORNO-ra (uuid nélkül).
+
+### STORNO tartalom — a lánc AKTUÁLIS állapotát vonja vissza
+
+`InvoiceService::buildStornoContext()` a tételeket/összegeket NEM MINDIG
+az eredeti számlából veszi — ha az eredetihez már tartozik legalább egy
+SIKERESEN (`status='done'`) kiállított módosítás, a LEGUTÓBBIT (legnagyobb
+`modification_index`) használja alapul. **Valódi NAV sandbox hívással
+feltárt indoklás**: a NAV a sztornó nettó/ÁFA összegét a lánc (eredeti +
+összes sikeres módosítás) összesítéséhez viszonyítva ellenőrzi — egy,
+kizárólag az eredetit visszavonó sztornó egy már módosított árú láncnál
+technikai figyelmeztető üzenetet kapott (nem nullázódó összesítés), még
+ha végül DONE is lett. A javítás UTÁN egy teljes sandbox-lánc (CREATE
+1270 Ft → MODIFY 1500 Ft-ra → STORNO) mindhárom lépésben tisztán DONE
+lett, figyelmeztetés nélkül.
+
+### UI — Kimenő számlák
+
+Az EREDETI számla részletnézetén (`kimeno-szamlak.js`) "Módosító számla"/
+"Sztornó számla" gomb jelenik meg — KIZÁRÓLAG akkor, ha a backend
+(`webroot/api/invoice-detail.php` `can_modify`/`can_storno` mezője,
+UGYANAZ a szabály, mint `InvoiceService::validateOperationRequest()`)
+engedélyezettnek jelzi; a frontend sose dönt pénzügyi jogosultságról
+saját maga, és a gombok egy MÁR LÉTREHOZOTT módosítás/sztornó sor SAJÁT
+nézetén SOSE jelennek meg (csak a gyökér eredetin). MODIFY előtt egy
+tételszerkesztő modal (`#modify-modal`) jelenik meg, a számla TÉNYLEGES
+(`payload_json`-ban tárolt) tartalmával előtöltve; STORNO egyetlen
+megerősítő kérdéssel indul ("Ez a művelet ÚJ, önálló pénzügyi bizonylatot
+hoz létre..."). Mindkét kapcsolódó számla-lánc (`getInvoiceOperationsForOriginal()`)
+megjelenik a részletnézetben, kattintható navigációval a lánc bármely
+tagjához.
+
+### API-végpontok
+
+| Endpoint | Módszer | Jogosultság |
+|---|---|---|
+| `webroot/api/invoice-modify.php` | POST | admin + CSRF |
+| `webroot/api/invoice-storno.php` | POST | admin + CSRF |
+| `webroot/api/szamlazz-operation-retry.php` | POST | admin + CSRF |
+| `webroot/api/invoice-detail.php` | GET | bejelentkezés (a `can_modify`/`can_storno`/`operations`/`original` mezőkkel bővítve) |
+
+### Audit napló
+
+`Database::logAudit()` rögzíti: `invoice_modify_request`,
+`invoice_storno_request`, `invoice_operation_manual_retry` — actor
+(staff_id), időbélyeg, entity_type='invoice', entity_id, eredmény
+(siker/hiba + invoice_number vagy hibaüzenet). Titok sose kerül a
+naplóba.
+
+### Valódi NAV sandbox eredmény
+
+Egy teljes CREATE→MODIFY→STORNO lánc (a TELJES production kódúton
+keresztül: `Database` → `NavInvoiceProvider::enqueue()`/
+`requestModification()`/`requestStorno()` → `submit()`/`checkStatus()`,
+UGYANÚGY, ahogy a `NavInvoiceQueueWorker` ténylegesen hívná) mindhárom
+lépésben `DONE` végállapotot ért el, a STORNO payloadja igazoltan a
+legutóbbi (módosított árú) állapotot vonta vissza. A folyamat során talált
+és javított három valódi hiba (fenti "Három, VALÓDI NAV sandbox hívással
+feltárt..." szakasz) mind bekerült a `tests/NavInvoiceXmlBuilderTest.php`/
+`tests/NavInvoiceProviderTest.php` regressziós tesztjeibe.
+
+### Ismert korlátozások
+
+- A `lineModificationReference`/`lineNumberReference` implementáció azzal
+  a feltételezéssel dolgozik, hogy egy MODIFY/STORNO dokumentum tételei
+  1:1, sorrendhelyes megfelelésben állnak a lánc korábbi tételeivel — ha
+  egy admin egy helyesbítéskor TÖBB/KEVESEBB tételt ad meg, mint az
+  eredeti/előző állapot, a `lineNumberReference`-számozás továbbra is
+  helyesen FOLYTATÓDIK (a kumulatív offset miatt), de a NAV-oldali
+  tétel-szintű "melyik tételt melyik módosítja" megfeleltetés ETTŐL
+  FÜGGETLENÜL nincs finomhangolva egy komplex, tételeket cserélő
+  módosításhoz — egyszerű esetekre (árváltoztatás, mennyiségi javítás,
+  teljes visszavonás) bizonyítottan működik.
+- Számlázz.hu STORNO valódi Agent-válasszal (nem csak a hivatalos
+  dokumentáció alapján) még nincs sandbox-szal lezárva (a Számlázz.hu-nak
+  nincs nyilvános, hitelesítő-adat nélküli teszt-végpontja, ellentétben a
+  NAV-val) — a `tests/SzamlazzClientTest.php` a kérés-struktúrát (mezőnév,
+  gyökérelem, mezősorrend) egy loopback stub-szerverrel bizonyítja, a
+  válasz-értelmezés a meglévő, már bevált `handleResponse()`-ra épül.
+- Egy komplex, tételszám-eltérő MODIFY (tétel hozzáadása/törlése) NAV-oldali
+  `lineOperation` finomítást igényelhet a jövőben (lásd fent).
+
 ## Adatbázis: SQLite vs MySQL
 
 Az app mindkettőn fut, a `config/config.php` → `db.driver` állítja be:

@@ -4,7 +4,7 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
-## [Unreleased]
+## [1.0.1] — 2026-09-14
 
 ### Added
 - Önfrissítő rendszer — GitHub Release-alapú, ellenőrzött (manifest +

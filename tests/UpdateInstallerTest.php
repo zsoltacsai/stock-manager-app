@@ -243,7 +243,7 @@ final class UpdateInstallerTest extends TestCase
     public function testSuccessfulCompleteUpdateDeploysNewCodeAndRecordsHistory(): void
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
-        $appRoot = $this->buildLiveAppRoot('1.0.0', $sqlitePath);
+        $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
         [$zipPath, $manifestPath] = $this->buildReleaseZip('1.1.0');
 
         $github = new FakeGitHubReleaseClient($this->fakeRelease('v1.1.0', $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
@@ -255,7 +255,7 @@ final class UpdateInstallerTest extends TestCase
         $result = $installer->install('admin', 'test-admin');
 
         $this->assertTrue($result['ok'] ?? false, 'install() sikertelen: ' . ($result['error'] ?? 'ismeretlen'));
-        $this->assertSame('1.0.0', $result['from_version']);
+        $this->assertSame(AppVersion::CURRENT, $result['from_version']);
         $this->assertSame('1.1.0', $result['to_version']);
 
         // A LIVE AppVersion.php ténylegesen az új verziót tartalmazza a lemezen.
@@ -270,7 +270,7 @@ final class UpdateInstallerTest extends TestCase
         $history = $db->listUpdateHistory(10);
         $this->assertCount(1, $history);
         $this->assertSame('completed', $history[0]['state']);
-        $this->assertSame('1.0.0', $history[0]['from_version']);
+        $this->assertSame(AppVersion::CURRENT, $history[0]['from_version']);
         $this->assertSame('1.1.0', $history[0]['to_version']);
         $this->assertNotEmpty($history[0]['backup_reference']);
 
@@ -366,7 +366,7 @@ final class UpdateInstallerTest extends TestCase
     public function testWrongProductInManifestIsRejected(): void
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
-        $appRoot = $this->buildLiveAppRoot('1.0.0', $sqlitePath);
+        $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
         [$zipPath, $manifestPath, $manifest] = $this->buildReleaseZip('1.1.0');
         $manifest['product'] = 'SomeOtherApp';
         file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_UNICODE));
@@ -385,7 +385,7 @@ final class UpdateInstallerTest extends TestCase
     public function testCommitMismatchBetweenManifestAndGitHubIsRejected(): void
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
-        $appRoot = $this->buildLiveAppRoot('1.0.0', $sqlitePath);
+        $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
         [$zipPath, $manifestPath] = $this->buildReleaseZip('1.1.0');
 
         // A GitHub-tól "függetlenül feloldott" commit MÁS, mint amit a manifest állít.
@@ -404,7 +404,7 @@ final class UpdateInstallerTest extends TestCase
     public function testChecksumMismatchIsRejectedBeforeAnyFileIsDeployed(): void
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
-        $appRoot = $this->buildLiveAppRoot('1.0.0', $sqlitePath);
+        $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
         [$zipPath, $manifestPath, $manifest] = $this->buildReleaseZip('1.1.0');
         $manifest['sha256'] = str_repeat('0', 64); // hamis checksum
         file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_UNICODE));
@@ -418,7 +418,7 @@ final class UpdateInstallerTest extends TestCase
 
         $this->assertFalse($result['ok'] ?? true);
         $this->assertStringContainsString('Checksum', $result['error']);
-        $this->assertStringContainsString("CURRENT = '1.0.0'", file_get_contents($appRoot . '/src/AppVersion.php'));
+        $this->assertStringContainsString("CURRENT = '" . AppVersion::CURRENT . "'", file_get_contents($appRoot . '/src/AppVersion.php'));
         $this->assertFalse((bool) $settingsStore->read()['maintenance_mode_active']);
     }
 
@@ -427,7 +427,7 @@ final class UpdateInstallerTest extends TestCase
     public function testBackupFailureAbortsBeforeMaintenanceModeOrAnyFileWrite(): void
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
-        $appRoot = $this->buildLiveAppRoot('1.0.0', $sqlitePath);
+        $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
         [$zipPath, $manifestPath] = $this->buildReleaseZip('1.1.0');
 
         $github = new FakeGitHubReleaseClient($this->fakeRelease('v1.1.0', $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
@@ -439,7 +439,7 @@ final class UpdateInstallerTest extends TestCase
 
         $this->assertFalse($result['ok'] ?? true);
         $this->assertStringContainsString('biztonsági mentési hiba', $result['error']);
-        $this->assertStringContainsString("CURRENT = '1.0.0'", file_get_contents($appRoot . '/src/AppVersion.php'));
+        $this->assertStringContainsString("CURRENT = '" . AppVersion::CURRENT . "'", file_get_contents($appRoot . '/src/AppVersion.php'));
         $this->assertFalse((bool) $settingsStore->read()['maintenance_mode_active'], 'A karbantartási mód SOSE kapcsolódhat be, ha a backup már elbukott.');
         $this->assertSame('failed', $db->getUpdateState()['state']);
 
@@ -453,7 +453,7 @@ final class UpdateInstallerTest extends TestCase
     public function testHealthCheckFailureTriggersFullRollback(): void
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
-        $appRoot = $this->buildLiveAppRoot('1.0.0', $sqlitePath);
+        $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
         [$zipPath, $manifestPath] = $this->buildReleaseZip('1.1.0', brokenHealthCheck: true);
 
         $github = new FakeGitHubReleaseClient($this->fakeRelease('v1.1.0', $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
@@ -468,7 +468,7 @@ final class UpdateInstallerTest extends TestCase
         $this->assertSame('success', $result['rollback_state']);
 
         // A LIVE kód VISSZA lett állítva a régi verzióra.
-        $this->assertStringContainsString("CURRENT = '1.0.0'", file_get_contents($appRoot . '/src/AppVersion.php'));
+        $this->assertStringContainsString("CURRENT = '" . AppVersion::CURRENT . "'", file_get_contents($appRoot . '/src/AppVersion.php'));
 
         $state = $db->getUpdateState();
         $this->assertSame('rolled_back', $state['state']);
@@ -485,7 +485,7 @@ final class UpdateInstallerTest extends TestCase
     public function testRollbackFailureLeadsToManualRecoveryRequiredAndKeepsMaintenanceModeOn(): void
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
-        $appRoot = $this->buildLiveAppRoot('1.0.0', $sqlitePath);
+        $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
         [$zipPath, $manifestPath] = $this->buildReleaseZip('1.1.0', brokenHealthCheck: true);
 
         $github = new FakeGitHubReleaseClient($this->fakeRelease('v1.1.0', $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
@@ -516,7 +516,7 @@ final class UpdateInstallerTest extends TestCase
     public function testConfigAndDataDirectoriesAreNeverTouchedByADeploy(): void
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
-        $appRoot = $this->buildLiveAppRoot('1.0.0', $sqlitePath);
+        $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
         [$zipPath, $manifestPath] = $this->buildReleaseZip('1.1.0');
 
         $configContentBefore = file_get_contents($appRoot . '/config/config.php');
@@ -543,7 +543,7 @@ final class UpdateInstallerTest extends TestCase
     public function testConcurrentInstallIsBlockedByTheDurableLock(): void
     {
         [$db, $sqlitePath] = $this->newTempDatabase();
-        $appRoot = $this->buildLiveAppRoot('1.0.0', $sqlitePath);
+        $appRoot = $this->buildLiveAppRoot(AppVersion::CURRENT, $sqlitePath);
         [$zipPath, $manifestPath] = $this->buildReleaseZip('1.1.0');
         $github = new FakeGitHubReleaseClient($this->fakeRelease('v1.1.0', $manifestPath, basename($zipPath)), $manifestPath, $zipPath, $this->fakeCommit);
         $settingsStore = new Settings($appRoot . '/data/settings.json');

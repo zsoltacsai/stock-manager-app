@@ -333,4 +333,40 @@ class Settings
             fclose($lockHandle);
         }
     }
+
+    /**
+     * A titkos/hitelesítő-adat mezők KÖZPONTI listája, amik SOSE mehetnek
+     * ki nyers szövegként egy API-válaszban — bárki, aki be van jelentkezve
+     * az appba (akár egy egyszerű pénztáros is), egyébként kiolvashatná a
+     * WooCommerce/Számlázz.hu/NAV/felhő hitelesítő adatait. Regresszió
+     * (1.3.1): korábban ez a lista/logika KÉTSZER, egymástól függetlenül
+     * volt megírva (settings.php GET/POST válasza ÉS
+     * security-settings-save.php válasza) — a második másolat lemaradt egy
+     * korábbi bővítésről, és emiatt minden security-settings-save.php
+     * hívás (pl. egy sima geo-blokkolás-váltás) az ÖSSZES titkot nyers
+     * szövegben visszaküldte. Egyetlen közös forrás, mindkét hívó ezt
+     * használja.
+     */
+    private const SECRET_RESPONSE_FIELDS = [
+        'dropbox_access_token', 'google_client_secret', 'google_refresh_token',
+        'szamlazz_agent_key', 'wc_consumer_key', 'wc_consumer_secret', 'wc_webhook_secret',
+        'nav_password', 'nav_signer_key', 'nav_exchange_key', 'cron_secret',
+        'low_stock_notify_webhook',
+        'smtp_password',
+    ];
+
+    /**
+     * @param array $data Egy Settings::save()/olvasás eredménye.
+     * @return array Ugyanaz az adat, a titkos mezők nyers értéke ''-re
+     *   cserélve, plusz egy "<mező>_set" boolean jelző, hogy a UI tudja:
+     *   van már elmentett érték, csak nem mutatja.
+     */
+    public static function maskSecretFields(array $data): array
+    {
+        foreach (self::SECRET_RESPONSE_FIELDS as $field) {
+            $data[$field . '_set'] = !empty($data[$field]);
+            $data[$field] = '';
+        }
+        return $data;
+    }
 }

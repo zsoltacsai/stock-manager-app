@@ -8,12 +8,7 @@ $id = (int) ($_GET['id'] ?? 0);
 
 $card = $code !== '' ? $db->findGiftCardByCode($code) : null;
 if (!$card && $id) {
-    foreach ($db->listGiftCards() as $c) {
-        if ($c['id'] === $id) {
-            $card = $c;
-            break;
-        }
-    }
+    $card = $db->findGiftCardById($id);
 }
 
 if (!$card) {

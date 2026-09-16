@@ -8,6 +8,9 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     send_json(['error' => 'POST only'], 405);
 }
 
+// Lásd logo-upload.php ugyanezen indoklását.
+require_admin($db);
+
 foreach (glob(__DIR__ . '/../assets/logo.*') as $old) {
     @unlink($old);
 }

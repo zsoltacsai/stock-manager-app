@@ -602,6 +602,98 @@ final class DatabaseTest extends TestCase
         $db->startStockTake(null, 'második, átfedő leltár');
     }
 
+    /**
+     * Regresszió (1.3.1): a testCompleteStockTakeRejectsSecondCompletion()
+     * csak a SZEKVENCIÁLIS (ugyanazon PHP-folyamaton belüli) dupla lezárást
+     * bizonyítja — az igazi kockázat a VALÓDI, két különálló folyamatból
+     * induló, majdnem egyidejű lezárás, amit a completeStockTake() korábban
+     * egy sima "SELECT completed_at, majd feltétel nélküli UPDATE"
+     * mintával kezelt (deferred SQLite tranzakción belül) — ez NEM
+     * garantálta, hogy a második folyamat írás-pillanatban lássa az első
+     * KÖZBEN commit-olt lezárását, tehát mindkettő alkalmazhatta volna a
+     * leltári korrekciót. A javítás ("UPDATE ... WHERE completed_at IS
+     * NULL" + rowCount()) pontosan a kódbázis más claim-mintáit követi —
+     * ez a teszt a `testNavInvoiceQueueClaimIsAtomicAcrossRealConcurrentProcesses()`
+     * pontos proc_open-mintáját alkalmazza rá.
+     */
+    public function testCompleteStockTakeAtomicGuardPreventsDoubleCorrectionAcrossRealConcurrentProcesses(): void
+    {
+        if (!function_exists('proc_open')) {
+            $this->markTestSkipped('proc_open nem elérhető — VALÓDI többfolyamatos konkurrencia-teszt itt nem futott le.');
+        }
+
+        $dbPath = sys_get_temp_dir() . '/sm_stocktake_concurrency_test_' . bin2hex(random_bytes(8)) . '.sqlite';
+        register_shutdown_function(static function () use ($dbPath) {
+            @unlink($dbPath);
+            @unlink($dbPath . '-shm');
+            @unlink($dbPath . '-wal');
+        });
+
+        $projectRoot = dirname(__DIR__);
+        $setupDb = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $dbPath]], $projectRoot);
+        $productId = $setupDb->saveProduct($this->sampleProduct());
+        $setupDb->incrementStock($productId, 100);
+        $takeId = $setupDb->startStockTake(null, 'konkurrencia teszt leltár');
+        // expected_qty=100, counted=90 -> delta = -10, EGYSZER alkalmazva.
+        $setupDb->updateStockTakeCount($takeId, $productId, 90);
+        unset($setupDb); // a PDO-kapcsolat elengedése, mielőtt külön folyamatok nyitnák meg ugyanazt a fájlt
+
+        $resultFile = sys_get_temp_dir() . '/sm_stocktake_concurrency_result_' . bin2hex(random_bytes(8)) . '.txt';
+        file_put_contents($resultFile, '');
+        register_shutdown_function(static function () use ($resultFile) {
+            @unlink($resultFile);
+        });
+
+        $childScriptPath = sys_get_temp_dir() . '/sm_stocktake_concurrency_child_' . bin2hex(random_bytes(6)) . '.php';
+        file_put_contents($childScriptPath, <<<'PHP'
+            <?php
+            require $argv[1] . '/src/Database.php';
+            $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $argv[2]]], $argv[1]);
+            try {
+                $db->completeStockTake((int) $argv[3], true);
+                file_put_contents($argv[4], "1\n", FILE_APPEND | LOCK_EX);
+            } catch (RuntimeException $e) {
+                // Várt: "Ez a leltár már le van zárva." — minden, az elsőn
+                // kívüli folyamatnak pontosan ezt kell kapnia.
+            }
+            PHP);
+        register_shutdown_function(static function () use ($childScriptPath) {
+            @unlink($childScriptPath);
+        });
+
+        $processCount = 12;
+        $handles = [];
+        $devNull = sys_get_temp_dir() . '/sm_stocktake_concurrency_out_' . bin2hex(random_bytes(4)) . '.log';
+        for ($i = 0; $i < $processCount; $i++) {
+            $handles[] = proc_open(
+                [PHP_BINARY, $childScriptPath, $projectRoot, $dbPath, (string) $takeId, $resultFile],
+                [1 => ['file', $devNull, 'a'], 2 => ['file', $devNull, 'a']],
+                $pipes
+            );
+        }
+        foreach ($handles as $handle) {
+            if (is_resource($handle)) {
+                proc_close($handle);
+            }
+        }
+        @unlink($devNull);
+
+        $successes = array_filter(explode("\n", trim((string) @file_get_contents($resultFile))));
+        $this->assertCount(
+            1,
+            $successes,
+            "Pontosan EGY folyamatnak kellett volna ténylegesen lezárnia a leltárt és alkalmaznia a korrekciót — egy ettől eltérő szám azt jelentené, hogy a lezárás nem atomikus (dupla korrekció-alkalmazás lehetséges)."
+        );
+
+        $verifyDb = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $dbPath]], $projectRoot);
+        $product = $verifyDb->findProductById($productId);
+        $this->assertSame(
+            90,
+            (int) $product['stock_qty'],
+            'A -10 eltérésnek PONTOSAN egyszer kellett alkalmazódnia (100 -> 90) — ha duplán alkalmazódott volna, ez 80 (vagy alacsonyabb) lenne.'
+        );
+    }
+
     public function testRecordPurchaseAppliesDiscountAndKeepsTotalsConsistentWithLineSum(): void
     {
         $db = tests_new_database();
@@ -1234,5 +1326,50 @@ final class DatabaseTest extends TestCase
         $finalState = $verifyDb->getIncomingInvoiceSyncState('nav');
         $this->assertSame('success', $finalState['status']);
         $this->assertNull($finalState['locked_at']);
+    }
+
+    private function sampleWebshopOrder(array $overrides = []): array
+    {
+        return array_merge([
+            'wc_order_id'    => 12345,
+            'order_number'   => '12345',
+            'wc_status'      => 'processing',
+            'customer_name'  => 'Teszt Vevő',
+            'customer_email' => 'vevo@example.com',
+            'billing'        => ['nev' => 'Teszt Vevő'],
+            'payment_method' => 'Bankkártya',
+            'currency'       => 'HUF',
+            'total'          => 1270.0,
+            'items'          => [['product_id' => null, 'name' => 'X', 'qty' => 1, 'unit_price' => 1270, 'vat_rate' => '27']],
+            'customer_note'  => '',
+        ], $overrides);
+    }
+
+    // Regresszió (1.3.1): insertWebshopOrderDraft() korábban MINDEN
+    // PDOException-t (nem csak a wc_order_id UNIQUE-ütközést) "már ismert
+    // rendelésként" nyelt el — webhook.php erre csendben 200 OK-t adott a
+    // WooCommerce-nek, ami emiatt sose próbálta újraküldeni a rendelést,
+    // véglegesen elveszítve azt egy átmeneti (pl. SQLITE_BUSY) hiba esetén.
+    public function testInsertWebshopOrderDraftDeduplicatesByWcOrderId(): void
+    {
+        $db = tests_new_database();
+        $first = $db->insertWebshopOrderDraft($this->sampleWebshopOrder());
+        $this->assertIsInt($first);
+
+        $duplicate = $db->insertWebshopOrderDraft($this->sampleWebshopOrder());
+        $this->assertNull($duplicate, 'Ugyanazzal a wc_order_id-vel érkező ismételt webhook csendben elnyelendő (valódi idempotencia), nem hibaállapot.');
+    }
+
+    public function testInsertWebshopOrderDraftPropagatesNonUniqueConstraintErrorsInsteadOfSilentlySwallowingThem(): void
+    {
+        $db = tests_new_database();
+        // Egy nem-UNIQUE jellegű DB-hiba szimulálása (a tábla eltávolítása)
+        // — ennek TOVÁBB kell terjednie, NEM "már ismert rendelésként"
+        // csendben elnyelődnie, különben webhook.php 200 OK-t adna a
+        // WooCommerce-nek egy ténylegesen elveszett rendelésre.
+        $db->pdo()->exec('DROP TABLE webshop_orders');
+
+        $this->expectException(PDOException::class);
+        $db->insertWebshopOrderDraft($this->sampleWebshopOrder());
     }
 }

@@ -26,16 +26,29 @@ try {
 
     $imported = 0;
     $skipped = 0;
-    $db->beginTransaction();
-    foreach ($products as $p) {
-        if (empty($p['barcode'])) {
-            $skipped++;
-            continue;
+    // Regresszió (1.3.1): lásd sync-pull.php ugyanezen javításának
+    // docblokkja — a teljes katalógust egyetlen tranzakcióban feldolgozó
+    // korábbi minta SQLite-on a teljes szinkron idejére fogva tartotta az
+    // író-zárat, blokkolva egy közben induló valódi eladást. Ez a végpont
+    // cronból, gyakran (akár percenként) fut, tehát ez a kockázat itt
+    // különösen releváns.
+    foreach (array_chunk($products, 200) as $chunk) {
+        $db->beginTransaction();
+        try {
+            foreach ($chunk as $p) {
+                if (empty($p['barcode'])) {
+                    $skipped++;
+                    continue;
+                }
+                $db->upsertProductFromWc($p);
+                $imported++;
+            }
+            $db->commit();
+        } catch (Throwable $e) {
+            $db->rollBack();
+            throw $e;
         }
-        $db->upsertProductFromWc($p);
-        $imported++;
     }
-    $db->commit();
 
     $summary = "$imported termék frissítve, $skipped kihagyva" . ($result['truncated'] ? ' — FIGYELEM: a katalógus nagyobb 5000 tételnél, nem lett mind feldolgozva' : '');
     $settings->save([

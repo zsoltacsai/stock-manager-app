@@ -21,17 +21,34 @@ try {
     $imported = 0;
     $skipped  = 0;
 
-    $db->beginTransaction();
-    foreach ($products as $p) {
-        if (empty($p['barcode'])) {
-            $skipped++;
-            $db->logSync('pull', null, "Skipped '{$p['name']}' (no barcode/SKU)");
-            continue;
+    // Regresszió (1.3.1): korábban a TELJES katalógus (akár 5000 tétel) egy
+    // EGYETLEN tranzakcióban futott le — SQLite-on ez a teljes szinkron
+    // időtartamára fogva tartja az író-zárat, így egy közben induló valódi
+    // eladás (sale.php, szintén write tranzakció) SQLITE_BUSY-ba
+    // ütközhetett, ha a busy_timeout-on belül nem szabadult fel. 200-as
+    // csomagokban commit-olva a zár csak rövid ideig tartós — egy
+    // közbeeső hiba esetén a már commit-olt csomagok NEM vesznek el (a
+    // WooCommerce-behúzás önmagában idempotens, egy újrafuttatás ugyanoda
+    // konvergál), ami ELFOGADHATÓ tradeoff a checkout-blokkolás
+    // elkerüléséért.
+    foreach (array_chunk($products, 200) as $chunk) {
+        $db->beginTransaction();
+        try {
+            foreach ($chunk as $p) {
+                if (empty($p['barcode'])) {
+                    $skipped++;
+                    $db->logSync('pull', null, "Skipped '{$p['name']}' (no barcode/SKU)");
+                    continue;
+                }
+                $db->upsertProductFromWc($p);
+                $imported++;
+            }
+            $db->commit();
+        } catch (Throwable $e) {
+            $db->rollBack();
+            throw $e;
         }
-        $db->upsertProductFromWc($p);
-        $imported++;
     }
-    $db->commit();
 
     if ($result['truncated']) {
         $db->logSync('pull', null, 'FIGYELEM: a WooCommerce termékkatalógus nagyobb, mint 5000 tétel — a szinkron nem dolgozta fel a teljeset.');

@@ -6,6 +6,34 @@ vagy mert a projekt jelenlegi mérete/célközönsége mellett a
 komplexitás/haszon arány rossz. Egy jövőbeli 1.1-es (vagy későbbi) körben
 érdemes újra megnézni őket, ha a körülmények változnak.
 
+## 1.3.1 stabilizációs audit — tudatosan e körön kívül hagyott pontok
+
+A teljes körű 1.3.1 audit (kód, adatintegritás, security, teljesítmény,
+UX) néhány valódi, de alacsony kockázatú/alacsony prioritású pontot
+azonosított, amiket SZÁNDÉKOSAN nem javított ebben a körben — lásd
+`CHANGELOG.md` "[1.3.1]" szakaszának "Ismert, szándékosan e körön kívül
+hagyott pontok" részét a teljes listáért és indoklásért. Röviden:
+
+- Egységes `VatCalculator` segédosztály hiánya (a nettó↔bruttó átváltás
+  11+ helyen, egymástól függetlenül van megírva) — **trigger a
+  kiváltásra**: ha egy jövőbeli kör mindenképp hozzá kell nyúljon több
+  ilyen helyhez egyszerre (pl. egy új ÁFA-kulcs bevezetése), érdemes
+  akkor egy menetben kiváltani.
+- `returns.credit_invoice_number` — befejezetlenül hagyott, sose
+  kitöltött oszlop — **trigger**: vagy be kell kötni (helyesbítő számla
+  száma a visszáruhoz), vagy formálisan törölni egy migrációval.
+- `webroot/api/*.php` végpontok egy része saját, lokális `catch`
+  blokkban adja vissza `$e->getMessage()`-t a globális generikus
+  hibaüzenet helyett — **trigger**: ha egy jövőbeli audit ezek közül
+  valamelyikben ténylegesen érzékeny adatot talál a hibaüzenetben,
+  azonnal javítandó; addig alacsony prioritású egységesítés.
+- SQLite/MySQL kolláció-eltérés a legtöbb UNIQUE szöveges oszlopnál —
+  **trigger**: ha valaha élő MySQL-telepítés lenne (jelenleg nincs).
+- A migráció-lánccal felépített DB séma-egyezősége a friss
+  `schema.sql`-lel telepítettel szemben ma csak részben tesztelt —
+  **trigger**: érdemes egy dedikált tesztet írni rá a következő körben,
+  függetlenül attól, hogy talált-e ténylegesen eltérést.
+
 ## Beszerzési döntéstámogatás, árrés, készletérték-mutatók — MEGOLDVA (1.3.0)
 
 Az 1.2.0 Dashboard/riportok/forecast alapjára építve: a rendszer mostantól KONKRÉT beszerzési döntést is támogat (biztonsági készlet, rendelési pont, javasolt mennyiség, sürgősség, indoklás — lásd README "FountainTrade 1.3.0" szakasza), plusz termékszintű és riport-szintű árrés-számítás és készletérték-mutatók (nettó beszerzési ÉS eladási áron). Minden számítás a MEGLÉVŐ adatmodellből (purchase_items, products.net_price/.purchase_price_net) és a MEGLÉVŐ forecast-logikából (getStockForecastBulk) épül — nincs új adatbázistábla, nincs új migráció.

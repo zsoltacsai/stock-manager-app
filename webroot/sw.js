@@ -1,4 +1,4 @@
-const CACHE_NAME = 'stock-manager-shell-v1';
+const CACHE_NAME = 'fountaintrade-shell-v1';
 
 const SHELL_FILES = [
     'index.php', 'beszerzes.php', 'beszerzesek.php', 'termekek.php',

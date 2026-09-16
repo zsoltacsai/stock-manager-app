@@ -4,6 +4,122 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## [1.3.1] — 2026-09-16 (Stabilizáció — audit és hibajavítás)
+
+**Stabilitási release — NEM új funkciófejlesztés.** Teljes körű kód-,
+adatintegritás-, security-, teljesítmény- és UX-audit alapján, a
+ténylegesen feltárt és javított hibák. A meglévő működés szándékosan
+NEM változott azokon a pontokon, ahol nem volt valódi hiba.
+
+### Fixed
+
+- **`getStockMovements()` — a `product_id` szűrő minden forrás-ágban
+  (eladás/beszerzés/visszáru/leltár/telephely-mozgatás) érvénytelen SQL-t
+  eredményezett** (a szűrő az `ORDER BY`/`LIMIT` UTÁN lett hozzáfűzve a
+  WHERE-tag helyett) — emiatt a termék mini-dashboard "Készletmozgások"
+  füle és a Készletmozgások riport termék-szűrője MINDIG SQL-hibával
+  (500) bukott el. Mind az 5 forrás-ág javítva, regressziós teszttel.
+- **Biztonsági mentés visszaállítása korrumpálhatta az élő adatbázis-
+  kapcsolatot** — a `restoreFromFile()` a live SQLite fájlt nyers
+  fájlmásolással írja felül, de a bootstrap által már megnyitott `$db`
+  kapcsolat nem lett előtte lezárva/utána újranyitva (ugyanaz a
+  hibaosztály, amit az updater 1.1.1-ben már megoldott a saját
+  migráció-visszaállítási útján — ez az útvonal kimaradt belőle).
+- **Leltár lezárása nem volt versenyhelyzet-biztos** — két, majdnem
+  egyidejű lezárási kérés (dupla kattintás, hálózati újrapróbálkozás)
+  mindkettő alkalmazhatta volna a leltári korrekciót, duplázva a
+  stock_qty-eltérést. Atomikus `UPDATE ... WHERE completed_at IS NULL`
+  védelem, valódi 12-folyamatos konkurrencia-teszttel bizonyítva.
+- **WooCommerce webhook csendben elveszíthetett rendeléseket** — az
+  `insertWebshopOrderDraft()` MINDEN adatbázis-hibát (nem csak a valódi
+  `wc_order_id` UNIQUE-ütközést) "már ismert rendelésként" nyelt el; a
+  webhook erre 200 OK-t adott a WooCommerce-nek, ami emiatt sose próbálta
+  újraküldeni egy átmeneti (pl. lock-) hiba esetén ténylegesen elveszett
+  rendelést. Mostantól csak a valódi UNIQUE-ütközés nyelődik el, minden
+  más hiba 5xx-et ad (WooCommerce-újraküldést kiváltva).
+- **Nyomtató-írás csonka lehetett észrevétlenül** — az ESC/POS
+  socket-írás nem ellenőrizte a ténylegesen kiírt bájtok számát; egy
+  lassú/túlterhelt hálózati nyomtatónál egy csonka nyugta is
+  "sikeresként" térhetett vissza. Ciklusban írunk, időtúllépés/hiba
+  esetén explicit kivétellel.
+- **`security-settings-save.php` minden hívása nyers szövegben küldte
+  vissza az ÖSSZES konfigurált titkot** (cron_secret, WooCommerce/
+  Számlázz.hu/NAV/felhő hitelesítő adatok) — a `settings.php`-nál már
+  meglévő maszkolás erre a végpontra korábban nem lett átvezetve. A
+  maszkolás egyetlen közös helyre került (`Settings::maskSecretFields()`),
+  mindkét végpont ezt használja.
+- **7 infrastruktúra-szintű/érzékeny végpont require_admin() nélkül**
+  (tevékenységnapló, vásárlók tömeges PII-exportja, telephely mentés,
+  bolt-logó és nyomtatási logó feltöltése/törlése) — bármelyik
+  bejelentkezett dolgozó (akár egy sima pénztáros is) elérte őket. Mind a
+  7 admin-jogszinthez kötve, HTTP-szintű regressziós teszttel.
+- Kisebb N+1 lekérdezés-minták: leltár indítása (per-termék INSERT egy
+  `INSERT...SELECT` helyett), leltár lezárása (redundáns SELECT UPDATE
+  után), és a WooCommerce teljes-katalógus behúzás (egyetlen, a teljes
+  szinkron idejére az író-zárat lefoglaló tranzakció helyett 200-as
+  csomagokban commit-olva — ez volt az egyetlen ténylegesen komoly
+  (P0-osztályú) teljesítményprobléma: nagy katalógusnál blokkolhatta a
+  kasszás eladást).
+- `gift-card-detail.php` a teljes ajándékutalvány-listát töltötte be és
+  PHP-ban szűrt egyetlen rekordra `id` alapján — direkt `findGiftCardById()`.
+- SQLite/MySQL séma-eltérés: `sale_items`/`purchase_items` FK-jai
+  eltérő `ON DELETE` viselkedéssel (MySQL: CASCADE, SQLite: RESTRICT) —
+  most mindkét motor RESTRICT (a biztonságosabb alapértelmezés egy
+  pénzügyi előzményhez, sose töröljön csendben tételeket).
+- Holt kód eltávolítva (`isWebhookOrderProcessed()`/
+  `markWebhookOrderProcessed()` — a webhook-dedup azóta a
+  `webshop_orders.wc_order_id` UNIQUE indexére épül).
+- README dokumentáció-javítás: a NAV számlaszám-generálás és a kimenő
+  MODIFY/STORNO státusza tévesen "még nyitott"/"jövőbeli feladat"-ként
+  volt leírva, holott mindkettő 1.1.0-ban lezárult; a GitHub-letöltés
+  engedélyezett host-listája hiányos volt (`release-assets.githubusercontent.com`).
+- Rebrand-maradványok eltávolítva (`[stock-manager]` log-előtag →
+  `[fountaintrade]`, a service worker cache-neve).
+
+### Ismert, szándékosan e körön kívül hagyott pontok
+
+- **CSV/JutaSoft import + WooCommerce/NAV/Számlázz.hu/SMTP hibatűrés,
+  security (auth/CSRF/XSS/SQLi/SSRF/Zip-Slip/updater-tamper), IDOR
+  audit**: teljes körűen átvizsgálva, konkrét hibát NEM talált (a
+  meglévő védelem — pl. `UrlSafety`, a Zip-extrakció szimlink-ellenőrzése,
+  a `csv_safe()` formula-injekció elleni védelem — a tényleges kód
+  nyomon követésével igazoltan helyesen működik).
+- Több `webroot/api/*.php` végpont saját, lokális `catch` blokkban
+  `$e->getMessage()`-t ad vissza a kliensnek 500 esetén (a globális,
+  bootstrap-szintű generikus hibaüzenet helyett) — alacsony súlyú
+  inkonzisztencia, a hibaüzenetek eddig vizsgálva sose tartalmaztak
+  titkot/elérési utat, csak PHP/DB-szintű technikai szöveget. Nem
+  javítva ebben a körben (sok, egyenként triviális helyet érintene, a
+  kockázat/haszon alacsony egy stabilizációs körben) — jövőbeli
+  körben érdemes egységesíteni.
+- A VAT/nettó↔bruttó átváltás számítása 11+ helyen, egymástól
+  függetlenül van megírva (nincs egy közös `VatCalculator` segédosztály)
+  — valódi duplikáció, de a kiváltásuk (11+ hívási hely, finom
+  kerekítési eltérésekkel) érdemi regressziós kockázatot hordozna egy
+  stabilizációs release-ben csak a de-riskelés kedvéért. Dokumentált,
+  jövőbeli refaktor-jelölt.
+- `returns.credit_invoice_number` oszlop és a hozzá tartozó (holt)
+  `setReturnCreditInvoice()` — egy korábbi kör befejezetlenül hagyott
+  funkciója (az oszlopot semmi nem tölti ki élesben). Nem törölve (a
+  törlés migrációt igényelne, ami önmagában nem indokolt egy
+  stabilizációs körben) — vagy be kell kötni egy jövőbeli körben, vagy
+  formálisan törölni.
+- SQLite/MySQL kolláció-eltérés (`utf8mb4_unicode_ci` vs. alapértelmezett
+  BINARY) a legtöbb UNIQUE szöveges oszlopnál — a gyakorlatban érintett
+  esetek (kupon-/ajándékutalvány-kód) már alkalmazás-szinten
+  `strtoupper()`-elve vannak, a maradék kitettség (pl. `products.barcode`)
+  alacsony kockázatú. Nem módosítva.
+- Migráció-lánccal (V1→V25) felépített, ÉS friss `schema.sql`-lel
+  telepített adatbázis séma-egyezőségét ma csak részben fedi teszt
+  (`SchemaDriftTest.php` a két FRISS-telepítési fájlt hasonlítja össze,
+  nem a migráció-lánc végeredményét a frissel) — ismert tesztlefedettségi
+  rés, konkrét eltérés NEM került elő a mintavételes ellenőrzés során.
+
+### Database
+
+- Nincs új tábla, nincs új oszlop, nincs migráció.
+  `Database::SCHEMA_VERSION` változatlanul 25.
+
 ## [1.3.0] — 2026-09-16 (Beszerzés, árrés és készletintelligencia)
 
 **Feature release — az 1.2.0 Dashboard/riportok/forecast alapjára építve

@@ -73,7 +73,20 @@ if ($db->listStaff(true)) {
 }
 
 try {
-    $result = $manager->restoreFromFile($sourcePath);
+    // KRITIKUS: lásd Database::closeForExternalFileReplacement() docblokkja
+    // (UpdateInstaller::install() ugyanezt a mintát használja a migráció
+    // előtti DB-mentés visszaállításánál) — a restoreFromFile() a live
+    // SQLite fájlt egy NYERS fájlmásolással írja felül; ha eközben ez a
+    // (a bootstrap által már megnyitott) $db-kapcsolat nyitva marad, VALÓS
+    // fájlsérülést okozhat, amit egy utólagos reconnect() már nem tudna
+    // orvosolni. A kapcsolatot ezért a másolás KÖRÜL kell le- majd
+    // újranyitni, nem csak utána lecserélni.
+    $db->closeForExternalFileReplacement();
+    try {
+        $result = $manager->restoreFromFile($sourcePath);
+    } finally {
+        $db->reconnect();
+    }
 
     $summary = 'Visszaállítva innen: ' . basename($sourcePath) . '. Biztonsági mentés a visszaállítás előtti állapotról: ' . $result['safety_backup'];
     $settings->save(['last_backup_summary' => $summary]);

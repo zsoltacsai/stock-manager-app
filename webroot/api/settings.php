@@ -225,17 +225,6 @@ unset($data['app_password_hash']); // a hash sose menjen ki a klienshez, semmily
 // (akár egy egyszerű pénztáros is), egyébként egy sima GET /api/settings.php
 // hívással kiolvashatná a WooCommerce/Számlázz.hu/NAV/felhő hitelesítő
 // adatait. A UI helyette egy "<mező>_set" jelzőt kap, hogy tudja: van már
-// elmentett érték, csak nem mutatja — lásd a fenti $secretFields listát is.
-$secretResponseFields = [
-    'dropbox_access_token', 'google_client_secret', 'google_refresh_token',
-    'szamlazz_agent_key', 'wc_consumer_key', 'wc_consumer_secret', 'wc_webhook_secret',
-    'nav_password', 'nav_signer_key', 'nav_exchange_key', 'cron_secret',
-    'low_stock_notify_webhook',
-    'smtp_password',
-];
-foreach ($secretResponseFields as $field) {
-    $data[$field . '_set'] = !empty($data[$field]);
-    $data[$field] = '';
-}
-
-send_json($data);
+// elmentett érték, csak nem mutatja — lásd Settings::maskSecretFields()
+// (a security-settings-save.php UGYANEZT a közös metódust használja).
+send_json(Settings::maskSecretFields($data));

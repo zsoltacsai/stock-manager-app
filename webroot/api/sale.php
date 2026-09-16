@@ -390,7 +390,7 @@ if ($buyer !== null) {
             ],
         ]);
     } catch (Throwable $e) {
-        error_log('[stock-manager] processInvoice() váratlan hiba sale #' . $saleId . '-nél: ' . $e->getMessage());
+        error_log('[fountaintrade] processInvoice() váratlan hiba sale #' . $saleId . '-nél: ' . $e->getMessage());
         $invoiceResult = ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => 'Váratlan hiba a számla feldolgozása közben — az eladás rögzítve van.'];
     }
 }

@@ -36,7 +36,7 @@ function send_generic_server_error(): void
 }
 
 set_exception_handler(function (Throwable $e): void {
-    error_log('[stock-manager] Uncaught ' . get_class($e) . ': ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+    error_log('[fountaintrade] Uncaught ' . get_class($e) . ': ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
     send_generic_server_error();
 });
 
@@ -47,7 +47,7 @@ register_shutdown_function(function (): void {
     // a shutdown-handleren) — ezek azok, amiket set_exception_handler() NEM
     // fog el (nem Throwable-ként megjelenő, klasszikus PHP fatal hibák).
     if ($error !== null && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
-        error_log('[stock-manager] Fatal error: ' . $error['message'] . ' in ' . $error['file'] . ':' . $error['line']);
+        error_log('[fountaintrade] Fatal error: ' . $error['message'] . ' in ' . $error['file'] . ':' . $error['line']);
         send_generic_server_error();
     }
 });
@@ -75,7 +75,7 @@ $config = require __DIR__ . '/../../config/config.php';
 try {
     $appSettings = (new Settings(__DIR__ . '/../../data/settings.json'))->read();
 } catch (Throwable $e) {
-    error_log('[stock-manager] Settings::read() failed: ' . $e->getMessage());
+    error_log('[fountaintrade] Settings::read() failed: ' . $e->getMessage());
     http_response_code(500);
     echo json_encode(['error' => 'A rendszer beállításai jelenleg nem olvashatók. Próbáld újra, vagy értesítsd az üzemeltetőt.'], JSON_UNESCAPED_UNICODE);
     exit;

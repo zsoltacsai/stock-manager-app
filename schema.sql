@@ -149,9 +149,11 @@ CREATE TABLE IF NOT EXISTS sync_log (
 );
 CREATE INDEX IF NOT EXISTS idx_sync_log_created_at ON sync_log(created_at);
 
--- Tracks which WooCommerce order IDs the webhook endpoint already acted on
--- (see api/webhook.php) — WooCommerce redelivers the same webhook on every
--- order save, so without this stock would be decremented again each time.
+-- Unused (1.3.1) — the webhook dedup this was built for now lives on
+-- webshop_orders.wc_order_id's UNIQUE index (see
+-- Database::insertWebshopOrderDraft()); kept only because dropping a table
+-- needs a migration, which isn't warranted on its own for a stability
+-- release. No code reads or writes this table.
 CREATE TABLE IF NOT EXISTS processed_webhook_orders (
     wc_order_id  INTEGER PRIMARY KEY,
     processed_at TEXT NOT NULL DEFAULT (datetime('now'))

@@ -8,6 +8,12 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     send_json(['error' => 'POST only'], 405);
 }
 
+// Regresszió (1.3.1): a bolt logója megosztott, minden dolgozó által
+// látott branding — ennek cseréje/törlése strukturális beállítás,
+// ugyanaz a "vezetői jogszint kell" szabály indokolt rá, mint a többi
+// infrastruktúra-szintű végpontnál.
+require_admin($db);
+
 if (empty($_FILES['logo']) || $_FILES['logo']['error'] !== UPLOAD_ERR_OK) {
     send_json(['error' => 'Nem érkezett feltöltött fájl.'], 400);
 }

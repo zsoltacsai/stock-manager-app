@@ -1,11 +1,13 @@
 # FountainTrade — Point of Sale & Inventory
 
-**Verzió: 1.0** (production release)
+**Verzió: 1.3.1** (production release — stabilizáció)
 
-FountainTrade 1.0 az első production kiadás, az 1.0 RC stabilizációs és
-biztonsági hardening ciklus lezárása után. A feature freeze innentől is
-érvényben marad az 1.1-es fejlesztési körig — új funkció (pl. számla
-MODIFY/STORNO, lásd ROADMAP.md) csak ott kerül bevezetésre.
+FountainTrade 1.0 volt az első production kiadás, az 1.0 RC
+stabilizációs és biztonsági hardening ciklus lezárása után. Azóta több
+feature release (1.1.0, 1.1.1, 1.2.0, 1.3.0 — lásd `CHANGELOG.md`)
+bővítette az alkalmazást; az 1.3.1 egy tiszta stabilizációs kör (audit +
+hibajavítás, új funkció nélkül) — lásd `CHANGELOG.md` "[1.3.1]"
+szakaszát.
 
 Egy önállóan üzemeltethető PHP alkalmazás egy kisbolt/webshop teljes napi
 üzemeltetéséhez: USB vonalkódolvasós kassza, beszerzés és leltár, több
@@ -300,17 +302,17 @@ tehát a KÖVETKEZŐ cron-futás (legfeljebb 10 perc múlva) automatikusan
 újra felveheti a sort — nincs szükség manuális beavatkozásra egy
 egyszerű folyamat-összeomlás után.
 
-**Ismert korlátok**: a NAV-számlaszám (`SM-NAV-{év}-{id}`) az `invoices`
-tábla saját, Számlázz.hu-val OSZTOTT auto-increment id-jára épül —
-**ez egy KIFEJEZETTEN production előtt eldöntendő, még nyitott pont**
-(a NAV felé beküldött `invoiceNumber` a ténylegesen kiállított számla
-jogi sorszáma, nem egy belső azonosító) — lásd `ROADMAP.md` "NAV Online
-Számla — production előtti nyitott döntési pont" szakaszát a részletes
-indoklásért. A KIMENŐ oldal `MODIFY`/`STORNO` (helyesbítés/sztornó)
-beküldése egy következő fejlesztési kör feladata (a "Kimenő számlák"
-listanézet — `kimeno-szamlak.php` — MÁR elérhető, csak `CREATE`
-beküldést támogat). A BEJÖVŐ oldal (más adózók által kiállított
-számlák NAV-szinkronja) lásd lent.
+**Dokumentáció-frissítés (1.3.1)**: az alábbi két pont korábban itt még
+nyitott/jövőbeli feladatként volt leírva — mindkettő azóta LEZÁRULT.
+A NAV-számlaszám ma `Database::allocateInvoiceNumber()`-rel, egy KÜLÖN,
+Számlázz.hu-tól teljesen független `invoice_sequences` táblából
+allokálódik (`FT-NAV-{év}-{szám:06d}` formátumban), NEM az `invoices`
+tábla osztott auto-increment id-jából — lásd lentebb a "Számla-műveletek
+adatmodell" szakaszt a teljes indoklásért. A KIMENŐ oldal `MODIFY`/
+`STORNO` (helyesbítés/sztornó) beküldése is elkészült, valódi NAV
+sandbox lánccal igazolva — lásd "MODIFY/STORNO — tényleges NAV/
+Számlázz.hu beküldés (1.1.0)" lentebb. A BEJÖVŐ oldal (más adózók által
+kiállított számlák NAV-szinkronja) lásd lent.
 
 ### NAV Online Számla — Beérkezett számlák (bejövő szinkron)
 
@@ -1192,9 +1194,14 @@ csatolmányain keresztül.
 ### Biztonság — mit ellenőriz a kliens, és mit SOSE fogad el vakon
 
 - A letöltés KIZÁRÓLAG a valódi GitHub-infrastruktúra (`github.com`,
-  `api.github.com`, `objects.githubusercontent.com`) felé engedélyezett —
-  sem a manifest, sem a release JSON semmilyen mezője nem befolyásolhatja
-  ezt (lásd `GitHubReleaseClient::isAllowedDownloadHost()`).
+  `api.github.com`, `objects.githubusercontent.com`,
+  `release-assets.githubusercontent.com` — ez utóbbi egy valódi
+  kiadás-letöltés során derült ki tényleges átirányítási célként, lásd
+  `GitHubReleaseClient::ALLOWED_ASSET_HOSTS` docblokkja) felé
+  engedélyezett — sem a manifest, sem a release JSON semmilyen mezője nem
+  befolyásolhatja ezt, és az ellenőrzés az ESETLEGES átirányítás UTÁNI
+  tényleges célt is újra ellenőrzi (lásd
+  `GitHubReleaseClient::downloadAsset()`).
 - A manifest `version`-je a GitHub tag NEVÉVEL, a `commit`-ja a GitHub Git
   Data API-ból FÜGGETLENÜL feloldott commit-SHA-val, a letöltött fájl
   valódi SHA-256 hash-e a manifest `sha256` mezőjével kerül összevetésre —

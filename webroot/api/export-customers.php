@@ -4,6 +4,12 @@ declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 require_once __DIR__ . '/../../src/SimpleXlsWriter.php';
 
+// Regresszió (1.3.1): ez a végpont a TELJES vásárló-törzsadatot (név,
+// telefon, email, cím, adószám) tömegesen exportálja — ugyanaz a
+// "vezetői jogszint kell" szabály indokolt rá, mint a customer-gdpr-
+// export.php-nél (ami MÁR eddig is védve volt egyetlen vásárlóra).
+require_admin($db);
+
 $format = ($_GET['format'] ?? 'csv') === 'xls' ? 'xls' : 'csv';
 $idsParam = trim((string) ($_GET['ids'] ?? ''));
 $ids = $idsParam !== '' ? array_values(array_unique(array_map('intval', explode(',', $idsParam)))) : [];

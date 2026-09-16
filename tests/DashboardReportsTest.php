@@ -289,6 +289,69 @@ final class DashboardReportsTest extends TestCase
         $this->assertNull($byType['sale']['before_qty'], 'A meglévő adatmodell nem biztosít historikus before/after pillanatképet — ezt NULL-ként, nem hamis értékkel kell jelezni.');
     }
 
+    // Regresszió (1.3.1): a getStockMovements() mind az 5 forrás-ágában a
+    // product_id szűrőt a $sql string végére (az ORDER BY/LIMIT UTÁN)
+    // fűzte hozzá WHERE-tag helyett, ami érvénytelen SQL-t eredményezett és
+    // MINDIG SQL-hibát dobott, amint valaki product_id-t adott meg — vagyis
+    // a termék mini-dashboard "Készletmozgások" füle (product-stock-movements.php,
+    // ami MINDIG product_id-t küld) és a Készletmozgások riport termék-szűrője
+    // 100%-ban törött volt. Ez a teszt mind az 5 típust lefedi, ÉS egy
+    // második terméket is felvesz, hogy a szűrés ténylegesen szűkít, nem
+    // csak "nem dob hibát".
+    public function testStockMovementsFiltersByProductIdAcrossAllSourceTypesWithoutSqlError(): void
+    {
+        $db = tests_new_database();
+        $today = date('Y-m-d');
+
+        $productId = $db->saveProduct($this->sampleProduct());
+        $db->incrementStock($productId, 100);
+
+        $saleId = $db->insertSale(1270.0, 'Készpénz');
+        $itemId = $this->insertSaleItemAndGetId($db, $saleId, $productId, 2, 1270, '27');
+        $db->decrementStock($productId, 2);
+        $this->backdate($db, 'sales', $saleId, $today . ' 08:00:00');
+
+        $purchase = $db->recordPurchase(
+            ['payment_method' => 'készpénz', 'currency' => 'HUF'],
+            [['product_id' => $productId, 'name' => 'X', 'qty' => 10, 'vat_rate' => '27', 'unit_cost_net' => 800, 'unit_cost_gross' => 1016]]
+        );
+        $this->backdate($db, 'purchases', $purchase['purchase_id'], $today . ' 09:00:00');
+
+        $returnId = $db->processReturn($saleId, [
+            ['sale_item_id' => $itemId, 'product_id' => $productId, 'name' => 'X', 'qty' => 1, 'unit_price' => 1270],
+        ], 'teszt', null, 1270.0, []);
+        $this->backdate($db, 'returns', $returnId, $today . ' 10:00:00');
+
+        $takeId = $db->startStockTake(null, 'teszt leltár');
+        $currentStock = (int) $db->findProductById($productId)['stock_qty'];
+        $db->updateStockTakeCount($takeId, $productId, $currentStock + 5);
+        $db->completeStockTake($takeId, true);
+        $this->backdate($db, 'stock_takes', $takeId, $today . ' 11:00:00');
+
+        $locationId = $db->saveLocation(['name' => 'Raktár', 'is_default' => true]);
+        $db->transferStock($productId, null, $locationId, 20, null);
+        $this->backdate($db, 'stock_transfers', (int) $db->pdo()->query('SELECT id FROM stock_transfers ORDER BY id DESC LIMIT 1')->fetchColumn(), $today . ' 12:00:00');
+
+        // Egy MÁSIK termék eladása — ennek NEM szabad megjelennie a szűrt eredményben.
+        // (Eltérő névvel, hogy a P1-3 dedup-védelem — findRecentlyCreatedIdenticalProduct() —
+        // ne vonja össze ugyanazzal a termékkel.)
+        $otherProductId = $db->saveProduct($this->sampleProduct(['name' => 'Másik termék']));
+        $db->incrementStock($otherProductId, 50);
+        $otherSaleId = $db->insertSale(1270.0, 'Készpénz');
+        $db->insertSaleItem($otherSaleId, ['product_id' => $otherProductId, 'name' => 'Y', 'qty' => 3, 'unit_price' => 1270, 'vat_rate' => '27']);
+        $this->backdate($db, 'sales', $otherSaleId, $today . ' 08:30:00');
+
+        $result = $db->getStockMovements(['date_from' => $today, 'date_to' => $today, 'product_id' => $productId, 'type' => null], 100, 0);
+
+        $types = array_column($result['movements'], 'type');
+        sort($types);
+        $this->assertSame(['purchase', 'return', 'sale', 'stock_take', 'transfer'], $types, 'A product_id szűrő mellett is minden forrástípusnak szerepelnie kell EBBEN a termékben.');
+
+        foreach ($result['movements'] as $m) {
+            $this->assertSame($productId, $m['product_id'], 'A product_id szűrő ne engedjen át más termékre vonatkozó sort.');
+        }
+    }
+
     public function testStockMovementsPaginationReportsHasMoreCorrectly(): void
     {
         $db = tests_new_database();

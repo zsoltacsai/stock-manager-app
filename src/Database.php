@@ -3998,24 +3998,6 @@ class Database
         $stmt->execute([$direction, $productId, $message, date('Y-m-d H:i:s')]);
     }
 
-    public function isWebhookOrderProcessed(int $wcOrderId): bool
-    {
-        $stmt = $this->pdo->prepare('SELECT 1 FROM processed_webhook_orders WHERE wc_order_id = ?');
-        $stmt->execute([$wcOrderId]);
-        return (bool) $stmt->fetchColumn();
-    }
-
-    public function markWebhookOrderProcessed(int $wcOrderId): bool
-    {
-        try {
-            $stmt = $this->pdo->prepare('INSERT INTO processed_webhook_orders (wc_order_id, processed_at) VALUES (?, ?)');
-            $stmt->execute([$wcOrderId, date('Y-m-d H:i:s')]);
-            return true;
-        } catch (PDOException $e) {
-            return false;
-        }
-    }
-
     // ---------------------------------------------------------------
     // Beérkező webshop-rendelések (WooCommerce webhook → piszkozat → leadás)
     // ---------------------------------------------------------------
@@ -4053,8 +4035,19 @@ class Database
             return (int) $this->pdo->lastInsertId();
         } catch (PDOException $e) {
             // UNIQUE constraint ütközés = már ismert rendelés — ez a webhook
-            // idempotenciájának alapja, nem hibaállapot.
-            return null;
+            // idempotenciájának alapja, nem hibaállapot. Regresszió (1.3.1):
+            // korábban EZ a catch MINDEN PDOException-t (pl. SQLITE_BUSY egy
+            // egyidejű eladással/NAV-workerrel, vagy egy lemez-megtelt hiba)
+            // is csendben "már ismert rendelésként" kezelt — a hívó
+            // (webhook.php) erre 200 OK-t adott a WooCommerce-nek, ami így
+            // sose próbálta újraküldeni, a rendelés pedig véglegesen
+            // elveszett. Most csak a TÉNYLEGES UNIQUE-ütközést nyeljük el,
+            // minden más hiba továbbterjed, hogy webhook.php 5xx-et adjon és
+            // a WooCommerce újraküldje.
+            if ($this->isUniqueConstraintViolation($e)) {
+                return null;
+            }
+            throw $e;
         }
     }
 
@@ -4600,6 +4593,14 @@ class Database
         return $row ?: null;
     }
 
+    public function findGiftCardById(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM gift_cards WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
     public function issueGiftCard(string $code, float $balance, ?string $expiryDate, ?string $notes): int
     {
         $now = date('Y-m-d H:i:s');
@@ -5005,12 +5006,15 @@ class Database
         $stmt->execute([$staffId, $notes, date('Y-m-d H:i:s')]);
         $takeId = (int) $this->pdo->lastInsertId();
 
-        $products = $this->pdo->query('SELECT id, stock_qty FROM products WHERE is_deleted = 0')->fetchAll(PDO::FETCH_ASSOC);
-        $itemStmt = $this->pdo->prepare('INSERT INTO stock_take_items (stock_take_id, product_id, expected_qty, created_at) VALUES (?, ?, ?, ?)');
+        // Regresszió (1.3.1): korábban ez egy PHP-hurokban, termékenként
+        // KÜLÖN INSERT-tel töltötte fel a stock_take_items-et (egy 2000
+        // cikkes katalógusnál 2000 külön kör-utazás) — egyetlen "INSERT ...
+        // SELECT" ugyanezt egy DB-hívásban végzi el.
         $now = date('Y-m-d H:i:s');
-        foreach ($products as $p) {
-            $itemStmt->execute([$takeId, $p['id'], $p['stock_qty'], $now]);
-        }
+        $this->pdo->prepare('
+            INSERT INTO stock_take_items (stock_take_id, product_id, expected_qty, created_at)
+            SELECT ?, id, stock_qty, ? FROM products WHERE is_deleted = 0
+        ')->execute([$takeId, $now]);
 
         return $takeId;
     }
@@ -5089,33 +5093,70 @@ class Database
                 // eltérés-könyvelés is működik.
                 $stmt = $this->pdo->prepare('SELECT product_id, expected_qty, counted_qty FROM stock_take_items WHERE stock_take_id = ? AND counted_qty IS NOT NULL');
                 $stmt->execute([$id]);
-                $now = date('c');
-                $updateStmt = $this->pdo->prepare('UPDATE products SET stock_qty = stock_qty + :delta, updated_at = :now, wc_synced_at = :now WHERE id = :id');
-                $selectStmt = $this->pdo->prepare('SELECT id, stock_qty, wc_product_id, sync_to_woocommerce, name FROM products WHERE id = ?');
+                $deltasByProductId = [];
                 foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
                     $delta = (int) $row['counted_qty'] - (int) $row['expected_qty'];
-                    if ($delta === 0) {
-                        continue; // nincs eltérés — nincs mit korrigálni/kiküldeni
+                    if ($delta !== 0) {
+                        $deltasByProductId[(int) $row['product_id']] = $delta;
                     }
-                    $updateStmt->execute([':delta' => $delta, ':now' => $now, ':id' => $row['product_id']]);
-                    $selectStmt->execute([$row['product_id']]);
-                    $product = $selectStmt->fetch(PDO::FETCH_ASSOC);
-                    if ($product && $product['wc_product_id'] && !empty($product['sync_to_woocommerce'])) {
-                        $updated[] = [
-                            'id' => (int) $product['id'],
-                            'stock_qty' => (int) $product['stock_qty'],
-                            'wc_product_id' => (int) $product['wc_product_id'],
-                            'sync_to_woocommerce' => (int) $product['sync_to_woocommerce'],
-                            'name' => $product['name'],
-                        ];
-                        // A WooCommerce-push beütemezése UGYANEBBEN a
-                        // tranzakcióban — lásd migrateV24WcPushQueue()
-                        // docblockja / recordPurchase() ugyanezen mintája.
-                        $this->enqueueWcPush((int) $product['id'], (int) $product['wc_product_id'], 'stock_take', $id);
+                }
+
+                // Regresszió (1.3.1): korábban minden eltérő terméknél egy
+                // UPDATE UTÁN külön SELECT-tel olvastuk vissza a frissített
+                // sort (2 kör-utazás/termék) — az UPDATE ELŐTTI állapotot
+                // (stock_qty/wc_product_id/sync_to_woocommerce/name) EGY
+                // bulk lekérdezéssel is megkaphatjuk, a frissített
+                // stock_qty pedig egyszerűen oldStock+delta, PHP-ban
+                // számolva — nincs szükség az újra-SELECT-re.
+                $now = date('c');
+                if ($deltasByProductId) {
+                    $placeholders = implode(',', array_fill(0, count($deltasByProductId), '?'));
+                    $productsStmt = $this->pdo->prepare("SELECT id, stock_qty, wc_product_id, sync_to_woocommerce, name FROM products WHERE id IN ($placeholders)");
+                    $productsStmt->execute(array_keys($deltasByProductId));
+                    $productsById = [];
+                    foreach ($productsStmt->fetchAll(PDO::FETCH_ASSOC) as $p) {
+                        $productsById[(int) $p['id']] = $p;
+                    }
+
+                    $updateStmt = $this->pdo->prepare('UPDATE products SET stock_qty = stock_qty + :delta, updated_at = :now, wc_synced_at = :now WHERE id = :id');
+                    foreach ($deltasByProductId as $productId => $delta) {
+                        $updateStmt->execute([':delta' => $delta, ':now' => $now, ':id' => $productId]);
+                        $product = $productsById[$productId] ?? null;
+                        if ($product && $product['wc_product_id'] && !empty($product['sync_to_woocommerce'])) {
+                            $updated[] = [
+                                'id' => $productId,
+                                'stock_qty' => (int) $product['stock_qty'] + $delta,
+                                'wc_product_id' => (int) $product['wc_product_id'],
+                                'sync_to_woocommerce' => (int) $product['sync_to_woocommerce'],
+                                'name' => $product['name'],
+                            ];
+                            // A WooCommerce-push beütemezése UGYANEBBEN a
+                            // tranzakcióban — lásd migrateV24WcPushQueue()
+                            // docblockja / recordPurchase() ugyanezen mintája.
+                            $this->enqueueWcPush($productId, (int) $product['wc_product_id'], 'stock_take', $id);
+                        }
                     }
                 }
             }
-            $this->pdo->prepare('UPDATE stock_takes SET completed_at = ? WHERE id = ?')->execute([date('Y-m-d H:i:s'), $id]);
+            // Regresszió (1.3.1): a fenti PHP-szintű completed_at-ellenőrzés
+            // önmagában NEM elég a versenyhelyzet ellen — a beginTransaction()
+            // itt (a kódbázis más claim-mintáival, pl.
+            // claimQueuedInvoiceForSubmission()/tryDecrementLocationStock()-kal
+            // ellentétben) egy sima, deferred SQLite tranzakció, aminek az
+            // olvasása NEM garantáltan látja egy másik, KÖZBEN commit-olt
+            // lezárás hatását az itt lentebbi ÍRÁS pillanatában. Enélkül a
+            // WHERE-feltétel nélkül két, majdnem egyidejű lezárási kérés
+            // (dupla kattintás, hálózati újrapróbálkozás) mindkettő
+            // átmehetett a fenti ellenőrzésen, és MINDKETTŐ alkalmazhatta
+            // volna a leltári korrekciót — csendben duplázva a
+            // stock_qty-eltérést. Az atomikus "UPDATE ... WHERE
+            // completed_at IS NULL" + rowCount()-ellenőrzés ugyanaz a minta,
+            // mint a kódbázis többi claim-jénél.
+            $closeStmt = $this->pdo->prepare('UPDATE stock_takes SET completed_at = ? WHERE id = ? AND completed_at IS NULL');
+            $closeStmt->execute([date('Y-m-d H:i:s'), $id]);
+            if ($closeStmt->rowCount() === 0) {
+                throw new RuntimeException('Ez a leltár már le van zárva.');
+            }
             $this->commit();
         } catch (Throwable $e) {
             $this->rollBack();
@@ -5918,17 +5959,18 @@ class Database
         $movements = [];
 
         if ($type === null || $type === 'sale') {
+            $productFilter = $productId ? ' AND si.product_id = ?' : '';
             $sql = "
                 SELECT s.created_at AS date, si.product_id, p.name AS product_name,
                        -si.qty AS qty_change, s.id AS ref_id
                 FROM sale_items si
                 JOIN sales s ON s.id = si.sale_id
                 LEFT JOIN products p ON p.id = si.product_id
-                WHERE si.product_id IS NOT NULL AND s.created_at >= ? AND s.created_at < ?
+                WHERE si.product_id IS NOT NULL AND s.created_at >= ? AND s.created_at < ?" . $productFilter . "
                 ORDER BY s.created_at DESC LIMIT " . self::MAX_MOVEMENT_ROWS_PER_SOURCE . "
             ";
             $params = [$dateFrom . ' 00:00:00', $this->nextDay($dateTo)];
-            if ($productId) { $sql .= ' AND si.product_id = ?'; $params[] = $productId; }
+            if ($productId) { $params[] = $productId; }
             $stmt = $this->pdo->prepare($sql);
             $stmt->execute($params);
             foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
@@ -5937,17 +5979,18 @@ class Database
         }
 
         if ($type === null || $type === 'purchase') {
+            $productFilter = $productId ? ' AND pi.product_id = ?' : '';
             $sql = "
                 SELECT pu.created_at AS date, pi.product_id, p.name AS product_name,
                        pi.qty AS qty_change, pu.id AS ref_id
                 FROM purchase_items pi
                 JOIN purchases pu ON pu.id = pi.purchase_id
                 LEFT JOIN products p ON p.id = pi.product_id
-                WHERE pu.created_at >= ? AND pu.created_at < ?
+                WHERE pu.created_at >= ? AND pu.created_at < ?" . $productFilter . "
                 ORDER BY pu.created_at DESC LIMIT " . self::MAX_MOVEMENT_ROWS_PER_SOURCE . "
             ";
             $params = [$dateFrom . ' 00:00:00', $this->nextDay($dateTo)];
-            if ($productId) { $sql .= ' AND pi.product_id = ?'; $params[] = $productId; }
+            if ($productId) { $params[] = $productId; }
             $stmt = $this->pdo->prepare($sql);
             $stmt->execute($params);
             foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
@@ -5956,17 +5999,18 @@ class Database
         }
 
         if ($type === null || $type === 'return') {
+            $productFilter = $productId ? ' AND ri.product_id = ?' : '';
             $sql = "
                 SELECT r.created_at AS date, ri.product_id, p.name AS product_name,
                        ri.qty AS qty_change, r.id AS ref_id
                 FROM return_items ri
                 JOIN returns r ON r.id = ri.return_id
                 LEFT JOIN products p ON p.id = ri.product_id
-                WHERE ri.product_id IS NOT NULL AND r.created_at >= ? AND r.created_at < ?
+                WHERE ri.product_id IS NOT NULL AND r.created_at >= ? AND r.created_at < ?" . $productFilter . "
                 ORDER BY r.created_at DESC LIMIT " . self::MAX_MOVEMENT_ROWS_PER_SOURCE . "
             ";
             $params = [$dateFrom . ' 00:00:00', $this->nextDay($dateTo)];
-            if ($productId) { $sql .= ' AND ri.product_id = ?'; $params[] = $productId; }
+            if ($productId) { $params[] = $productId; }
             $stmt = $this->pdo->prepare($sql);
             $stmt->execute($params);
             foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
@@ -5975,6 +6019,7 @@ class Database
         }
 
         if ($type === null || $type === 'stock_take') {
+            $productFilter = $productId ? ' AND sti.product_id = ?' : '';
             $sql = "
                 SELECT st.completed_at AS date, sti.product_id, p.name AS product_name,
                        (sti.counted_qty - sti.expected_qty) AS qty_change, sti.stock_take_id AS ref_id
@@ -5983,11 +6028,11 @@ class Database
                 LEFT JOIN products p ON p.id = sti.product_id
                 WHERE st.completed_at IS NOT NULL AND sti.counted_qty IS NOT NULL
                   AND sti.counted_qty != sti.expected_qty
-                  AND st.completed_at >= ? AND st.completed_at < ?
+                  AND st.completed_at >= ? AND st.completed_at < ?" . $productFilter . "
                 ORDER BY st.completed_at DESC LIMIT " . self::MAX_MOVEMENT_ROWS_PER_SOURCE . "
             ";
             $params = [$dateFrom . ' 00:00:00', $this->nextDay($dateTo)];
-            if ($productId) { $sql .= ' AND sti.product_id = ?'; $params[] = $productId; }
+            if ($productId) { $params[] = $productId; }
             $stmt = $this->pdo->prepare($sql);
             $stmt->execute($params);
             foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
@@ -5996,15 +6041,16 @@ class Database
         }
 
         if ($type === null || $type === 'transfer') {
+            $productFilter = $productId ? ' AND st.product_id = ?' : '';
             $sql = "
                 SELECT st.created_at AS date, st.product_id, p.name AS product_name, st.qty AS qty_change, st.id AS ref_id
                 FROM stock_transfers st
                 LEFT JOIN products p ON p.id = st.product_id
-                WHERE st.from_location_id IS NULL AND st.created_at >= ? AND st.created_at < ?
+                WHERE st.from_location_id IS NULL AND st.created_at >= ? AND st.created_at < ?" . $productFilter . "
                 ORDER BY st.created_at DESC LIMIT " . self::MAX_MOVEMENT_ROWS_PER_SOURCE . "
             ";
             $params = [$dateFrom . ' 00:00:00', $this->nextDay($dateTo)];
-            if ($productId) { $sql .= ' AND st.product_id = ?'; $params[] = $productId; }
+            if ($productId) { $params[] = $productId; }
             $stmt = $this->pdo->prepare($sql);
             $stmt->execute($params);
             foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {

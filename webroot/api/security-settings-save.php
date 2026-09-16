@@ -109,4 +109,10 @@ if (isset($input['geo_block_enabled']) || isset($input['geo_block_countries']) |
 $data = $settings->save($update);
 unset($data['app_password_hash']); // a hash sose menjen vissza a kliensnek
 
-send_json($data);
+// Regresszió (1.3.1): korábban ez a végpont a settings->save() TELJES,
+// maszkolatlan eredményét küldte vissza — minden security-settings-save.php
+// hívás (pl. egy sima geo-blokkolás-váltás, amihez semmi köze egy
+// API-kulcsnak) az ÖSSZES konfigurált titkot (cron_secret, WooCommerce/
+// Számlázz.hu/NAV/felhő hitelesítő adatok) nyers szövegben visszaküldte.
+// Lásd Settings::maskSecretFields() — settings.php UGYANEZT használja.
+send_json(Settings::maskSecretFields($data));

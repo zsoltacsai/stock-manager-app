@@ -8,6 +8,9 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     send_json(['error' => 'POST only'], 405);
 }
 
+// Lásd logo-upload.php ugyanezen indoklását.
+require_admin($db);
+
 if (empty($_FILES['print_logo']) || $_FILES['print_logo']['error'] !== UPLOAD_ERR_OK) {
     send_json(['error' => 'Nem érkezett feltöltött fájl.'], 400);
 }

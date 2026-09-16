@@ -303,7 +303,27 @@ class EscPosPrinter
         // olvassa ki a socketet, a fwrite()-ot akár a PHP script-időkorlátig
         // (max_execution_time) is blokkolhatná, egy PHP worker-t lefoglalva.
         stream_set_timeout($socket, 5);
-        fwrite($socket, $data);
+        // Regresszió (1.3.1): egy sima fwrite() visszatérési értéke a
+        // ténylegesen kiírt bájtok száma lehet a $data teljes hosszánál
+        // KEVESEBB is (pl. egy lassú/túlterhelt Wi-Fi nyomtatónál) — ezt
+        // korábban nem ellenőriztük, így egy csonka/hibás nyomtatás is
+        // "sikeresként" tért vissza. Ciklusban írunk, amíg minden bájt ki
+        // nem ment, vagy a stream ténylegesen időtúllépést vagy hibát nem
+        // jelez.
+        $offset = 0;
+        $length = strlen($data);
+        while ($offset < $length) {
+            $written = fwrite($socket, substr($data, $offset));
+            if ($written === false || $written === 0) {
+                $meta = stream_get_meta_data($socket);
+                fclose($socket);
+                if (!empty($meta['timed_out'])) {
+                    throw new RuntimeException("Időtúllépés a nyomtatóra íráskor ({$this->ip}:{$this->port}) — a nyomtatás csonka lehet.");
+                }
+                throw new RuntimeException("Nem sikerült adatot írni a nyomtatóra ({$this->ip}:{$this->port}).");
+            }
+            $offset += $written;
+        }
         fclose($socket);
     }
 

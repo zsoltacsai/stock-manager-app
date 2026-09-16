@@ -592,6 +592,31 @@ final class HttpSecurityTest extends TestCase
         $this->assertSame(400, $disablePassword['status'], '"network" módban a jelszó nem kapcsolható ki.');
     }
 
+    // Regresszió (1.3.1): security-settings-save.php korábban a
+    // Settings::save() TELJES, maszkolatlan eredményét küldte vissza —
+    // egy, a titkokhoz semmilyen kapcsolatban nem álló mező mentése (itt:
+    // session_timeout_minutes) is nyers szövegben visszaadta az ÖSSZES
+    // konfigurált titkot, köztük a test20-ban beállított cron_secret-et.
+    public function test41_SecuritySettingsSaveResponseNeverLeaksRawSecrets(): void
+    {
+        $jar = self::cookieJar('login-success'); // már bejelentkezett session a 32-es tesztből
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        $res = self::request('POST', '/api/security-settings-save.php', [
+            'session_timeout_minutes' => 120,
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $res['status'], (string) $res['body']);
+
+        $this->assertStringNotContainsString(
+            'test-cron-secret-abc123',
+            $res['body'],
+            'A security-settings-save.php válasza SOSE tartalmazhatja a nyers cron_secret értéket, még akkor sem, ha a mentett mező ehhez semmilyen kapcsolatban nincs.'
+        );
+        $this->assertSame('', $res['json']['cron_secret'] ?? null, 'A cron_secret mezőnek üresen kell visszajönnie.');
+        $this->assertTrue($res['json']['cron_secret_set'] ?? false, 'A cron_secret_set jelzőnek igaznak kell lennie, jelezve, hogy VAN elmentett érték.');
+    }
+
     // -----------------------------------------------------------------
     // 7) sale.php — a hűségpont-jóváírás és az élettartam-elköltés
     //    frissítése MOSTANTÓL az eladás tranzakcióján BELÜL fut (C3
@@ -1159,6 +1184,42 @@ final class HttpSecurityTest extends TestCase
         $res = self::requestForm('/api/backup-restore.php', ['filename' => self::$lastTestBackupFilename, 'pin' => '13579'], ['X-CSRF-Token' => $csrf], $jar);
         $this->assertSame(200, $res['status'], 'Érvényes admin session + friss PIN esetén a visszaállításnak sikeresen le kell futnia: ' . $res['body']);
         $this->assertTrue($res['json']['success'] ?? false);
+    }
+
+    /**
+     * Regresszió (1.3.1): a security-audit során kiderült, hogy 7 végpont
+     * (tevékenységnapló, vásárlók tömeges exportja, telephely mentés, és a
+     * 2 logó feltöltő/törlő pár) korábban BÁRMELYIK bejelentkezett
+     * dolgozó számára elérhető volt, require_admin() nélkül — egy sima
+     * pénztáros láthatta a teljes tevékenységnaplót, letölthette az összes
+     * vásárló PII-adatát, vagy módosíthatta a boltban mindenki által
+     * látott branding-et. Ez a teszt mind a 7 végpontot lefedi, ugyanazzal
+     * a cashier-sessionnel, mint a 053-as teszt.
+     */
+    public function test56_PreviouslyUngatedAdminEndpointsNowRejectNonAdminStaff(): void
+    {
+        $jar = self::cookieJar('admin-gate-regression-cashier');
+        $login = self::request('POST', '/api/login.php', ['password' => 'nagyon-titkos-jelszo-123'], [], $jar);
+        $this->assertSame(200, $login['status']);
+
+        $staffLogin = self::request('POST', '/api/staff-login.php', ['pin' => '24680'], ['X-CSRF-Token' => $login['json']['csrf_token']], $jar);
+        $this->assertSame(200, $staffLogin['status'], 'A pénztáros PIN-bejelentkezésének sikeresnek kell lennie: ' . $staffLogin['body']);
+        $this->assertSame('cashier', $staffLogin['json']['staff']['role'] ?? null);
+
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        $getEndpoints = ['/api/audit-log.php', '/api/export-customers.php'];
+        foreach ($getEndpoints as $endpoint) {
+            $res = self::request('GET', $endpoint, null, [], $jar);
+            $this->assertSame(403, $res['status'], "$endpoint ne engedjen át egy nem-admin dolgozói sessiont.");
+        }
+
+        $postEndpoints = ['/api/location-save.php', '/api/logo-upload.php', '/api/logo-reset.php', '/api/print-logo-upload.php', '/api/print-logo-reset.php'];
+        foreach ($postEndpoints as $endpoint) {
+            $res = self::requestForm($endpoint, [], ['X-CSRF-Token' => $csrf], $jar);
+            $this->assertSame(403, $res['status'], "$endpoint ne engedjen át egy nem-admin dolgozói sessiont.");
+        }
     }
 
     // -----------------------------------------------------------------

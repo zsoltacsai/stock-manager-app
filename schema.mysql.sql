@@ -182,7 +182,14 @@ CREATE TABLE IF NOT EXISTS sale_items (
     vat_rate     VARCHAR(8) NOT NULL,
     KEY idx_sale_items_sale_id (sale_id),
     KEY idx_sale_items_product_id (product_id),
-    CONSTRAINT fk_sale_items_sale FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+    -- Regresszió (1.3.1): korábban ON DELETE CASCADE volt itt, DE a SQLite
+    -- oldal (schema.sql) NEM cascade-el — ez a két backend közti csendes
+    -- viselkedés-eltérés volt (a sale_id-t ma sehol nem törli az app, tehát
+    -- ma dormant, de egy jövőbeli "eladás törlése" funkció a két motoron
+    -- ELTÉRŐEN viselkedne). A RESTRICT (nincs ON DELETE) a biztonságosabb
+    -- alapértelmezés egy pénzügyi előzményhez — SOSE töröljön csendben
+    -- eladási tételeket egy szülő törlésekor.
+    CONSTRAINT fk_sale_items_sale FOREIGN KEY (sale_id) REFERENCES sales(id),
     CONSTRAINT fk_sale_items_product FOREIGN KEY (product_id) REFERENCES products(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -224,7 +231,8 @@ CREATE TABLE IF NOT EXISTS purchase_items (
     line_gross       DECIMAL(12,2) NOT NULL,
     KEY idx_purchase_items_purchase_id (purchase_id),
     KEY idx_purchase_items_product_id (product_id),
-    CONSTRAINT fk_purchase_items_purchase FOREIGN KEY (purchase_id) REFERENCES purchases(id) ON DELETE CASCADE,
+    -- Lásd fk_sale_items_sale fenti megjegyzését — ugyanaz az indoklás.
+    CONSTRAINT fk_purchase_items_purchase FOREIGN KEY (purchase_id) REFERENCES purchases(id),
     CONSTRAINT fk_purchase_items_product FOREIGN KEY (product_id) REFERENCES products(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -238,9 +246,11 @@ CREATE TABLE IF NOT EXISTS sync_log (
     KEY idx_sync_log_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Tracks which WooCommerce order IDs the webhook endpoint already acted on
--- (see api/webhook.php) — WooCommerce redelivers the same webhook on every
--- order save, so without this stock would be decremented again each time.
+-- Unused (1.3.1) — the webhook dedup this was built for now lives on
+-- webshop_orders.wc_order_id's UNIQUE index (see
+-- Database::insertWebshopOrderDraft()); kept only because dropping a table
+-- needs a migration, which isn't warranted on its own for a stability
+-- release. No code reads or writes this table.
 CREATE TABLE IF NOT EXISTS processed_webhook_orders (
     wc_order_id  INT UNSIGNED PRIMARY KEY,
     processed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP

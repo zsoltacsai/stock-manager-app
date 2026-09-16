@@ -4,10 +4,11 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
-## [Unreleased] — 1.3.0 fejlesztés alatt (Beszerzési döntéstámogatás és árrés)
+## [1.3.0] — 2026-09-16 (Beszerzés, árrés és készletintelligencia)
 
-**Fejlesztés alatt — NINCS kiadva, nincs verziószám-emelés, nincs GitHub
-Release/tag (lásd README "FountainTrade 1.3.0" szakasza a részletekért).**
+**Feature release — az 1.2.0 Dashboard/riportok/forecast alapjára építve
+konkrét beszerzési döntéstámogatás, árrés- és készletérték-számítás. Lásd
+README "FountainTrade 1.3.0" szakasza a teljes technikai leírásért.**
 
 ### Added
 
@@ -44,7 +45,24 @@ Release/tag (lásd README "FountainTrade 1.3.0" szakasza a részletekért).**
 
 - Nincs új tábla, nincs új oszlop, nincs migráció — minden a meglévő
   `purchase_items`/`products` adatokból és a meglévő forecast-logikából
-  épül.
+  épül. `Database::SCHEMA_VERSION` változatlanul 25 (ugyanaz, mint
+  1.2.0-ban).
+
+### Ismert korlátok (dokumentált, szándékos döntések)
+
+- **Nincs `Ordered → Partially received → Received` beszerzési workflow-
+  állapotgép.** A jelenlegi purchase-modell egyetlen, atomikus "a
+  készlet MOST megérkezett" eseményt ír le — nincs benne "megrendelve,
+  de még nem érkezett meg" fogalom. A lista helyette a MEGLÉVŐ adatokból
+  levezetett "Javasolt"/"Folyamatban" (volt-e rá beszerzés az elmúlt 3
+  napban) jelzést mutatja.
+- **A margin/current-cost számítás NEM historikus áron alapul** — a
+  termék JELENLEGI `net_price`/`purchase_price_net`/ÁFA-kulcs mezőit
+  használja minden (akár régebbi) eladásra is, nem egy FIFO/mozgóátlag
+  költségmodellt.
+- **A forecast fix, dokumentált coverage/lead-time feltételezésekkel
+  dolgozik** (`REVIEW_PERIOD_DAYS=7`, `TARGET_COVERAGE_DAYS=14`), mert a
+  `suppliers` tábla nem tárol tényleges szállítási időt.
 
 ## [1.2.0] — 2026-09-16 (Dashboard és üzleti riportok)
 

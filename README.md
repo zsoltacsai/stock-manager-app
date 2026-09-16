@@ -2424,16 +2424,15 @@ fontosabb, mint a válaszidő egy pár tized másodperces megtakarítása.
   (egybolti POS) megfelelő, nagyon nagy (több tízezer eladás/hónap)
   forgalomnál érdemes lehet később ezt is aggregált SQL-re váltani.
 
-## FountainTrade 1.3.0 — Beszerzési döntéstámogatás és árrés (fejlesztés alatt)
+## FountainTrade 1.3.0 — Beszerzési döntéstámogatás és árrés
 
-**Ez a szakasz egy folyamatban lévő fejlesztést dokumentál — a verziószám
-még 1.2.0, nincs kiadva, nincs GitHub Release/tag.** Az 1.2.0 Dashboard/
-riportok/forecast alapjára építve: a rendszer mostantól KONKRÉT beszerzési
-döntést támogat (nem csak megmutatja a készlet állapotát), plusz
-termékszintű és riport-szintű árrés-számítást és készletérték-mutatókat
-ad. Nincs új adatbázistábla/migráció — minden a MEGLÉVŐ adatmodellből
-(`purchase_items`, `products.net_price`/`.purchase_price_net`) és a
-MEGLÉVŐ forecast-logikából (`Database::getStockForecastBulk()`) épül.
+Az 1.2.0 Dashboard/riportok/forecast alapjára építve: a rendszer mostantól
+KONKRÉT beszerzési döntést támogat (nem csak megmutatja a készlet
+állapotát), plusz termékszintű és riport-szintű árrés-számítást és
+készletérték-mutatókat ad. Nincs új adatbázistábla/migráció — minden a
+MEGLÉVŐ adatmodellből (`purchase_items`, `products.net_price`/
+`.purchase_price_net`) és a MEGLÉVŐ forecast-logikából
+(`Database::getStockForecastBulk()`) épül.
 
 ### A döntési képletek — `src/PurchaseDecisionService.php`
 

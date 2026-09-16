@@ -129,11 +129,16 @@ if (!Auth::isLoggedIn($appSettings)) {
         <p class="muted">Itt adhatja meg a kiválasztott áruikk adatait.</p>
 
         <div class="tabs">
+            <button class="tab-btn" data-tab="tab-overview">Áttekintés</button>
             <button class="tab-btn active" data-tab="tab-main">Fő adatok</button>
             <button class="tab-btn" data-tab="tab-prices">Árak</button>
             <button class="tab-btn" data-tab="tab-other">Egyéb</button>
             <button class="tab-btn" data-tab="tab-media">Leírás és kép</button>
             <button class="tab-btn" data-tab="tab-movements">Készletmozgások</button>
+        </div>
+
+        <div id="tab-overview" class="tab-panel">
+            <div id="p-overview-content"><p class="muted">Előbb mentsd el a terméket, hogy elérhető legyen az áttekintés.</p></div>
         </div>
 
         <div id="tab-main" class="tab-panel active">

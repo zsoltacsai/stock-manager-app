@@ -2424,6 +2424,159 @@ fontosabb, mint a válaszidő egy pár tized másodperces megtakarítása.
   (egybolti POS) megfelelő, nagyon nagy (több tízezer eladás/hónap)
   forgalomnál érdemes lehet később ezt is aggregált SQL-re váltani.
 
+## FountainTrade 1.3.0 — Beszerzési döntéstámogatás és árrés (fejlesztés alatt)
+
+**Ez a szakasz egy folyamatban lévő fejlesztést dokumentál — a verziószám
+még 1.2.0, nincs kiadva, nincs GitHub Release/tag.** Az 1.2.0 Dashboard/
+riportok/forecast alapjára építve: a rendszer mostantól KONKRÉT beszerzési
+döntést támogat (nem csak megmutatja a készlet állapotát), plusz
+termékszintű és riport-szintű árrés-számítást és készletérték-mutatókat
+ad. Nincs új adatbázistábla/migráció — minden a MEGLÉVŐ adatmodellből
+(`purchase_items`, `products.net_price`/`.purchase_price_net`) és a
+MEGLÉVŐ forecast-logikából (`Database::getStockForecastBulk()`) épül.
+
+### A döntési képletek — `src/PurchaseDecisionService.php`
+
+Egyetlen, DB-független, önmagában unit-tesztelhető osztály adja MINDEN
+biztonsági készlet / rendelési pont / javasolt mennyiség / árrés
+számítást (lásd a fájl saját, részletes docblockját a teljes
+indoklásért) — nincs szétszórva az endpointok között.
+
+**Miért nem a klasszikus, statisztikai biztonsági-készlet-képlet?** A
+jelenlegi adatmodell nem tárol sem beszállítónkénti szállítási időt, sem
+kereslet-szórást — ezeket ÖNKÉNYESEN kitalálni tiltott (lásd a fejlesztési
+kör 1. pontja). Ehelyett:
+
+```text
+biztonsági készlet  = a termékhez beállított (vagy alapértelmezett) riasztási küszöb
+                       (a MEGLÉVŐ low_stock_threshold / low_stock_default_threshold —
+                       ez az EGYETLEN már létező, boltvezető-szándékot kifejező adat)
+
+rendelési pont       = biztonsági készlet + (napi fogyás × 7 nap)
+                       [REVIEW_PERIOD_DAYS — dokumentált, fix alapérték,
+                        mert nincs tárolt szállítási idő]
+
+javasolt mennyiség   = max(0, biztonsági készlet + (napi fogyás × 14 nap) − aktuális készlet)
+                       [TARGET_COVERAGE_DAYS — dokumentált, fix alapérték]
+```
+
+A napi fogyás forrása a MEGLÉVŐ `getStockForecastBulk()` — ha egy
+termékhez nincs elég eladási előzmény a megbízható becsléshez
+(`insufficient_data`/`zero_consumption`), a javasolt mennyiség a régebbi
+(1.1.1 óta bevált) "küszöb duplájára tölt fel" ökölszabályra esik vissza,
+a sürgősség pedig `"low"` marad (sose `"urgent"`/`"soon"` megbízhatatlan
+adatból).
+
+**Sürgősség:** `urgent` (készlet ≤ 0, VAGY a forecast szerint ≤3 napon
+belül kifogy), `soon` (forecast szerint ≤7 napon belül), `low` (a küszöb
+alatt van, de nincs megbízható előrejelzés vagy távolabbi a kifogyás).
+
+### Beszerzési javaslat lista (`beszerzesi-javaslat.php`)
+
+A korábbi (1.1.1/1.2.0-as), beszállító szerint csoportosított nézetet
+felváltja egy lapos, sürgősség szerint szűrhető lista (Sürgős/Hamarosan
+elfogy/Alacsony készlet/Minden), termékenként a fenti mezőkkel + emberi
+olvasható indoklással (`PurchaseDecisionService::buildReason()`, fix
+szövegsablonok, nincs szabad szöveg-generálás). Több termék kijelölhető
+és "Beszerzés indítása a kijelöltekkel" — ez a MEGLÉVŐ
+`sm_purchase_prefill` sessionStorage-mechanizmust használja újra (lásd
+`beszerzes.js`), nincs új beszerzési logika. Ha a kijelölt tételek mind
+ugyanahhoz a preferált beszállítóhoz tartoznak, az előre kitöltődik;
+vegyes beszállító esetén üresen marad, a felhasználó tölti ki.
+
+**Beszerzési workflow — dokumentált korlát:** a lista minden sora
+`"suggested"` vagy `"in_progress"` állapotot mutat — utóbbi azt jelzi,
+hogy az elmúlt 3 napban MÁR volt beszerzés erre a termékre (a MEGLÉVŐ
+`purchase_items`/`purchases` táblákból levezetve, nincs új "workflow
+status" oszlop/tábla). A "Megrendelve → Részben beérkezett → Beérkezett"
+teljes állapotgép NINCS implementálva — a jelenlegi purchase-modell
+egyetlen, atomikus "a készlet MOST megérkezett" eseményt ír le, nincs
+benne "megrendelve, de még nem érkezett meg" fogalom; ennek bevezetése a
+tételek szintjén rendelt-vs-beérkezett mennyiség külön követését
+igényelné, ami egy önálló architekturális bővítés, nem ennek a körnek a
+hatóköre (lásd ROADMAP.md).
+
+### Árrés
+
+```text
+Árrés Ft = nettó eladási ár − nettó beszerzési ár
+Árrés %  = Árrés Ft / nettó eladási ár × 100
+```
+
+A MEGLÉVŐ `products.net_price` (nettó eladási ár) és
+`products.purchase_price_net` (utolsó ismert nettó beszerzési ár) mezőket
+használja — nincs új, párhuzamos ár-értelmezés. **Megbízhatóság-ellenőrzés:**
+egy `purchase_price_net = 0` KÉTFÉLE dolgot jelenthet — "sose lett még
+beszerezve a termék" (megbízhatatlan, 100%-os hamis árrést mutatna) vagy
+"ténylegesen 0-ért lett beszerezve" (megbízható, ritka, de valós eset). A
+kettő megkülönböztetéséhez a rendszer bulk lekérdezéssel ellenőrzi, van-e
+EGYÁLTALÁN `purchase_items` sor a termékhez (`Database::productsHavePurchaseHistory()`)
+— csak akkor számol árrést, ha van. Ahol nincs, a felület explicit
+"nincs adat"-ot mutat, SOSE egy hamis 0 Ft-os vagy 100%-os árrést.
+
+A Forgalmi riport (`sales-report.php`) és a Top termékek lista
+termékenként és időszaki összesítésben is mutatja (lásd
+`Database::getSalesMarginSummary()`/a kiegészített `getTopProductsReport()`),
+és EXPLICIT jelzi, hány termékre nem számolható árrés. **Dokumentált
+egyszerűsítés:** a nettósításhoz a termék JELENLEGI ÁFA-kulcsát használja
+(nem az eladáskori `sale_items.vat_rate`-et), és a JELENLEGI
+`purchase_price_net`-et (nem historikus/FIFO költséget) — konzisztensen
+azzal, ahogy az 1.2.0 készletérték-számítás is a "jelenlegi állapot"
+elvet követi.
+
+### Készletérték-mutatók
+
+`inventory-report.php` — nettó beszerzési áron ÉS nettó eladási áron is
+megadja a teljes készlet értékét, plusz a potenciális árrés-értéket
+(`Database::getInventoryValuationSummary()`) — utóbbi kettő csak a
+megbízható költségű termékekre, a megbízhatatlanok számát explicit
+jelezve. A Dashboardon (a kör 7. pontja szerint) csak EGY KPI jelenik
+meg ("Készletérték (beszerzési áron)") — a teljes bontás a Készlet
+riportban érhető el.
+
+### Termék mini-dashboard (`termekek.php` → "Áttekintés" fül)
+
+Egy termék megnyitásakor (meglévő terméknél) az "Áttekintés" fül az
+alapértelmezett nézet — egyetlen backend-hívással
+(`Database::getProductInsights()` → `product-insights.php`, lásd a kör
+11. pontja: nincs 6-8 külön kérés) mutatja: állapot (készlet/érték/ár/
+árrés), 30/90 napos forgalom, forecast, legutóbbi beszerzések, beszerzési
+ártrend. Új termék létrehozásakor (nincs még mit áttekinteni) a "Fő
+adatok" fül marad az induló nézet, változatlanul.
+
+### Dashboard integráció
+
+A "Figyelmet igényel" blokk beszerzési fókuszú tételei (`"X sürgősen
+beszerzendő termék"`, `"Y termék N napon belül várhatóan elfogy"`) a
+MEGLÉVŐ `getPurchaseRecommendations()`-t használják — ez FELVÁLTOTTA az
+1.2.0-as, ad-hoc (zero_stock/forecast_low/low_stock) dashboard-only
+logikát, hogy egyetlen, központi helyen (`PurchaseDecisionService`)
+dőljön el, mi számít sürgősnek. Mindegyik tétel a Beszerzési javaslat
+oldalra mutat, a megfelelő sürgősségi fülre előszűrve
+(`?urgency=urgent`/`soon`/`low`).
+
+### API
+
+Új, kizárólag olvasó végpontok: `product-insights.php` (termék mini-
+dashboard). Bővült válasszal: `purchase-suggestions.php` (a régi,
+beszállító-csoportosított javaslat helyett a teljes döntéstámogató
+lista), `inventory-report.php` (`valuation` mező), `sales-report.php`
+(`margin` mező), `top-products-report.php` (margin mezők soronként —
+maga a `getTopProductsReport()` bővült). Egyetlen mutáló végpont sincs
+ebben a körben — a beszerzés tényleges rögzítése változatlanul a MEGLÉVŐ,
+admin/CSRF-védett `purchase-save.php`-n megy keresztül.
+
+### Ismert korlátok (1.3.0)
+
+- A "Megrendelve → Részben beérkezett → Beérkezett" beszerzési workflow
+  nincs implementálva (lásd fent — dokumentált, szándékos döntés).
+- A beszerzési/margin-képletek a JELENLEGI (nem historikus) árakat és
+  ÁFA-kulcsot használják — lásd fent.
+- `REVIEW_PERIOD_DAYS`/`TARGET_COVERAGE_DAYS` fix, dokumentált
+  konstansok (nem beszállítónkénti szállítási időből származtatva) — ha
+  a jövőben a `suppliers` tábla kapna egy `lead_time_days` mezőt, ez
+  lecserélhető lenne rá.
+
 ## Biztonság
 
 **A valódi védelem az, hogy minden adat és minden művelet kizárólag az

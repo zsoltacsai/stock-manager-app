@@ -445,19 +445,20 @@ final class DashboardReportsTest extends TestCase
     }
 
     // -----------------------------------------------------------------
-    // countLowRunwayProducts — Dashboard "Figyelmet igényel" blokk. NEM
-    // új forecast-képlet, csak egy küszöb szerinti összeszámolás a
-    // MEGLÉVŐ getLowStockReport()/getStockForecastBulk() eredményén.
+    // Dashboard "beszerzésre vár" jelzése — 1.3.0 óta a MEGLÉVŐ, központi
+    // getPurchaseRecommendations()-t használja (lásd
+    // tests/PurchaseDecisionDbTest.php a részletes urgency-teszteket).
+    // Ez a teszt csak azt bizonyítja, hogy a Dashboard-összesítés helyesen
+    // aggregálja az urgency-számokat egy 3 termékes, vegyes forgatókönyvön.
     // -----------------------------------------------------------------
 
-    public function testCountLowRunwayProductsOnlyCountsReliableForecastsUnderTheThreshold(): void
+    public function testPurchaseRecommendationsFeedTheDashboardAttentionCountsCorrectly(): void
     {
         $db = tests_new_database();
 
         // A: alacsony készletű (6 db, küszöb 20), a fogyás gyors és
         // megbízható (26 eladott db 26 különböző napon, 30 napos ablakban
-        // -> atlag ~0,867/nap -> 6 / 0,867 = 6 nap, tehát a 7 napos
-        // küszöb ALATT van) -> számítania kell.
+        // -> atlag ~0,867/nap -> 6 / 0,867 = 6 nap -> "soon" besorolás).
         $a = $db->saveProduct($this->sampleProduct(['name' => 'A', 'low_stock_threshold' => 20]));
         $db->incrementStock($a, 6);
         for ($i = 0; $i < 26; $i++) {
@@ -466,15 +467,22 @@ final class DashboardReportsTest extends TestCase
             $this->backdate($db, 'sales', $saleId, date('Y-m-d', strtotime('-' . ($i + 1) . ' days')) . ' 10:00:00');
         }
 
-        // B: alacsony készletű, de NEM fogy (zero_consumption) -> nem számít.
+        // B: alacsony készletű, de NEM fogy (zero_consumption) -> "low".
         $b = $db->saveProduct($this->sampleProduct(['name' => 'B', 'low_stock_threshold' => 20]));
         $db->incrementStock($b, 5);
 
-        // C: bőséges készlettel, magas fogyással -> nem alacsony készletű, ki sem kerül a jelöltek közé.
+        // C: bőséges készlettel, magas fogyással -> nem alacsony készletű, ki sem kerül a listába.
         $c = $db->saveProduct($this->sampleProduct(['name' => 'C', 'low_stock_threshold' => 5]));
         $db->incrementStock($c, 1000);
 
-        $count = $db->countLowRunwayProducts(5, 7);
-        $this->assertSame(1, $count, 'Csak az A terméknek kell számítania: alacsony készlet + megbízható, 7 napon belüli kifogyás.');
+        $recommendations = $db->getPurchaseRecommendations(5, 30);
+        $urgentCount = count(array_filter($recommendations, static fn ($r) => $r['urgency'] === 'urgent'));
+        $soonCount = count(array_filter($recommendations, static fn ($r) => $r['urgency'] === 'soon'));
+        $lowCount = count(array_filter($recommendations, static fn ($r) => $r['urgency'] === 'low'));
+
+        $this->assertSame(0, $urgentCount);
+        $this->assertSame(1, $soonCount, 'Csak az A terméknek kell "soon"-nak lennie: alacsony készlet + megbízható, 7 napon belüli kifogyás.');
+        $this->assertSame(1, $lowCount, 'A B terméknek "low"-nak kell lennie: alacsony készlet, de megbízhatóan nem fogy.');
+        $this->assertCount(2, $recommendations, 'A C termék (bőséges készlet) ki se kerüljön a listába.');
     }
 }

@@ -1,78 +1,151 @@
-const fmt = (n) => new Intl.NumberFormat('hu-HU').format(Math.round(n));
+// 1.3.0 — a korábbi, beszállító szerint csoportosított nézetet felváltja
+// egy lapos, sürgősség szerint szűrhető/rendezett lista, kijelöléssel és
+// "beszerzés indítása a kijelöltekkel" funkcióval (lásd a kör 2. pontja).
+// A meglévő beszerzes.php sessionStorage-alapú prefill-mechanizmusát
+// használja újra (lásd sm_purchase_prefill), nincs új beszerzési logika.
 
-// 1.2.0 — a kör 11. pontja: a MEGLÉVŐ javaslat-listát egy egyszerű
-// készlet-előrejelzéssel egészíti ki (lásd api/purchase-suggestions.php),
-// a javasolt-mennyiség logikát NEM módosítja.
-function forecastLabel(f) {
-    if (!f) return '<span class="muted">—</span>';
-    switch (f.status) {
-        case 'out_of_stock': return '<span class="stock-badge zero">Elfogyott</span>';
-        case 'insufficient_data': return '<span class="muted">Nincs elegendő adat</span>';
-        case 'zero_consumption': return '<span class="muted">Jelenleg nem fogy</span>';
-        case 'ok': return `<span>${f.estimated_days_remaining} nap múlva fogyhat el</span>`;
-        default: return '<span class="muted">—</span>';
-    }
+const URGENCY_LABELS = { urgent: 'Sürgős', soon: 'Hamarosan elfogy', low: 'Alacsony készlet' };
+const URGENCY_BADGE_CLASS = { urgent: 'negative', soon: 'warn', low: 'ok' };
+
+let currentUrgency = new URLSearchParams(location.search).get('urgency') || '';
+let currentRecommendations = [];
+const selected = new Map(); // product_id -> {product_id, qty, supplier_id}
+
+function fmtDays(days) {
+    if (days === null || days === undefined) return '—';
+    return days === 0 ? 'ma' : `${days} nap`;
 }
 
 async function loadSuggestions() {
-    const box = document.getElementById('suggestions-content');
+    const body = document.getElementById('bj-body');
+    body.innerHTML = '<tr><td colspan="7" class="muted" style="text-align:center; padding:16px;">Betöltés...</td></tr>';
     try {
-        const data = await fetchJson('/api/purchase-suggestions.php');
-        renderGroups(data.groups || []);
+        const q = currentUrgency ? `?urgency=${encodeURIComponent(currentUrgency)}` : '';
+        const data = await fetchJson(`/api/purchase-suggestions.php${q}`);
+        currentRecommendations = data.recommendations || [];
+        renderCounts(data.counts || {});
+        renderTable(currentRecommendations);
     } catch (err) {
-        box.innerHTML = `<p class="feedback error">A javaslatok betöltése sikertelen: ${escapeHtml(err.message)}</p>`;
+        body.innerHTML = `<tr><td colspan="7" class="feedback error">Hiba: ${escapeHtml(err.message)}</td></tr>`;
     }
 }
 
-function renderGroups(groups) {
-    const box = document.getElementById('suggestions-content');
+function renderCounts(counts) {
+    document.getElementById('bj-count-all').textContent = counts.all ?? 0;
+    document.getElementById('bj-count-urgent').textContent = counts.urgent ?? 0;
+    document.getElementById('bj-count-soon').textContent = counts.soon ?? 0;
+    document.getElementById('bj-count-low').textContent = counts.low ?? 0;
+}
 
-    if (!groups.length) {
-        box.innerHTML = '<p class="muted">Jelenleg nincs alacsony készletű termék.</p>';
+function renderTable(rows) {
+    const body = document.getElementById('bj-body');
+    if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="7" class="muted" style="text-align:center; padding:16px;">Jelenleg nincs ilyen javaslat.</td></tr>';
         return;
     }
-
-    box.innerHTML = groups.map((group, gi) => `
-        <div class="import-card" style="background:var(--panel-light); margin-bottom:14px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-                <h2 style="margin:0;">${escapeHtml(group.supplier_name)}</h2>
-                <button class="btn btn-primary start-purchase-btn" data-group="${gi}" style="width:auto; padding:10px 18px;">
-                    Beszerzés indítása ezzel a beszállítóval
-                </button>
-            </div>
-            <div class="sample-table-wrap">
-                <table class="sample-table">
-                    <thead><tr><th>Termék</th><th>Készlet</th><th>Küszöb</th><th>Javasolt mennyiség</th><th>Előrejelzés</th></tr></thead>
-                    <tbody>
-                        ${group.products.map((p, pi) => `
-                            <tr>
-                                <td>${escapeHtml(p.name)}${p.barcode ? ' <span class="muted">(' + escapeHtml(p.barcode) + ')</span>' : ''}</td>
-                                <td>${p.stock_qty} db</td>
-                                <td>${p.threshold} db</td>
-                                <td><input type="number" min="1" value="${p.suggested_qty}" data-group="${gi}" data-index="${pi}" class="suggested-qty-input" style="width:80px;"></td>
-                                <td>${forecastLabel(p.forecast)}</td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
-            </div>
-        </div>
+    body.innerHTML = rows.map(r => `
+        <tr>
+            <td><input type="checkbox" class="bj-row-check" data-id="${r.id}" ${selected.has(r.id) ? 'checked' : ''}></td>
+            <td>
+                <span class="stock-badge ${URGENCY_BADGE_CLASS[r.urgency] || 'ok'}" style="margin-right:8px;">${URGENCY_LABELS[r.urgency] || r.urgency}</span>
+                ${escapeHtml(r.name)}${r.barcode ? ' <span class="muted">(' + escapeHtml(r.barcode) + ')</span>' : ''}
+                ${r.workflow_status === 'in_progress' ? ' <span class="muted">— nemrég rendelve</span>' : ''}
+            </td>
+            <td>${r.stock_qty} db</td>
+            <td>${r.avg_daily_consumption !== null ? r.avg_daily_consumption + ' db/nap' : '—'}</td>
+            <td>${fmtDays(r.estimated_days_remaining)}</td>
+            <td><input type="number" min="0" value="${r.recommended_qty}" class="bj-qty-input" data-id="${r.id}" style="width:80px;"></td>
+            <td class="muted" style="font-size:12px;">${escapeHtml(r.reason)}</td>
+        </tr>
     `).join('');
 
-    box.querySelectorAll('.start-purchase-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const group = groups[Number(btn.dataset.group)];
-            const items = group.products.map((p, pi) => {
-                const input = box.querySelector(`.suggested-qty-input[data-group="${btn.dataset.group}"][data-index="${pi}"]`);
-                return { product_id: p.id, qty: parseInt(input.value, 10) || p.suggested_qty };
-            });
-            sessionStorage.setItem('sm_purchase_prefill', JSON.stringify({
-                supplier_id: group.supplier_id,
-                items,
-            }));
-            location.href = 'beszerzes.php';
+    body.querySelectorAll('.bj-row-check').forEach(cb => {
+        cb.addEventListener('change', () => onRowCheckChange(cb));
+    });
+    body.querySelectorAll('.bj-qty-input').forEach(input => {
+        input.addEventListener('input', () => {
+            const id = Number(input.dataset.id);
+            if (selected.has(id)) {
+                selected.get(id).qty = parseInt(input.value, 10) || 0;
+                updateSelectedButton();
+            }
         });
     });
+    syncSelectAllCheckbox();
+}
+
+function onRowCheckChange(checkbox) {
+    const id = Number(checkbox.dataset.id);
+    const row = currentRecommendations.find(r => r.id === id);
+    if (!row) return;
+    if (checkbox.checked) {
+        const qtyInput = document.querySelector(`.bj-qty-input[data-id="${id}"]`);
+        selected.set(id, { product_id: id, qty: parseInt(qtyInput.value, 10) || row.recommended_qty, supplier_id: row.supplier_id, name: row.name });
+    } else {
+        selected.delete(id);
+    }
+    updateSelectedButton();
+    syncSelectAllCheckbox();
+}
+
+function syncSelectAllCheckbox() {
+    const boxes = Array.from(document.querySelectorAll('.bj-row-check'));
+    const selectAll = document.getElementById('bj-select-all');
+    selectAll.checked = boxes.length > 0 && boxes.every(b => b.checked);
+    selectAll.indeterminate = boxes.some(b => b.checked) && !selectAll.checked;
+}
+
+function updateSelectedButton() {
+    const btn = document.getElementById('bj-start-purchase-btn');
+    document.getElementById('bj-selected-count').textContent = selected.size;
+    btn.disabled = selected.size === 0;
+}
+
+document.getElementById('bj-select-all').addEventListener('change', (e) => {
+    document.querySelectorAll('.bj-row-check').forEach(cb => {
+        cb.checked = e.target.checked;
+        onRowCheckChange(cb);
+    });
+});
+
+document.querySelectorAll('.bj-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.bj-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentUrgency = btn.dataset.urgency;
+        const url = new URL(location.href);
+        if (currentUrgency) url.searchParams.set('urgency', currentUrgency); else url.searchParams.delete('urgency');
+        history.replaceState(null, '', url);
+        loadSuggestions();
+    });
+});
+
+document.getElementById('bj-start-purchase-btn').addEventListener('click', () => {
+    const items = Array.from(selected.values());
+    if (!items.length) return;
+
+    // Ha a kijelölt tételek MIND ugyanahhoz a preferált beszállítóhoz
+    // tartoznak, azt előre kitöltjük (lásd beszerzes.js sm_purchase_prefill
+    // feldolgozása) — vegyes beszállító esetén üresen hagyjuk, a
+    // felhasználó a beszerzés oldalon választja ki/tölti ki kézzel.
+    const supplierIds = new Set(items.map(i => i.supplier_id).filter(id => id !== null && id !== undefined));
+    const prefill = {
+        items: items.map(i => ({ product_id: i.product_id, qty: i.qty })),
+    };
+    if (supplierIds.size === 1) {
+        prefill.supplier_id = [...supplierIds][0];
+    }
+    sessionStorage.setItem('sm_purchase_prefill', JSON.stringify(prefill));
+    location.href = 'beszerzes.php';
+});
+
+// Ha a tab-kezdőállapot a URL-ből (pl. Dashboard-linkről) jön, jelöljük ki a megfelelő fület.
+if (currentUrgency) {
+    const initialTab = document.querySelector(`.bj-tab[data-urgency="${currentUrgency}"]`);
+    if (initialTab) {
+        document.querySelectorAll('.bj-tab').forEach(b => b.classList.remove('active'));
+        initialTab.classList.add('active');
+    }
 }
 
 loadSuggestions();

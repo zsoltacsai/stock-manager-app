@@ -1436,7 +1436,7 @@ final class HttpSecurityTest extends TestCase
         $this->assertIsArray($json['today_payment_methods']);
     }
 
-    public function testDashNav2_AttentionBlockReflectsARealZeroStockProductAndLinksToInventoryReport(): void
+    public function testDashNav2_AttentionBlockReflectsARealZeroStockProductAndLinksToPurchaseSuggestions(): void
     {
         $jar = self::cookieJar('login-success');
         $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
@@ -1444,7 +1444,9 @@ final class HttpSecurityTest extends TestCase
 
         // Valódi, 0 készletű termék létrehozása — a "Figyelmet igényel"
         // blokknak ezt fel KELL vennie (nem fiktív állapot, lásd a kör
-        // 1. pontja).
+        // 1. pontja). 1.3.0 óta ez a MEGLÉVő getPurchaseRecommendations()-en
+        // (PurchaseDecisionService::classifyUrgency()) keresztül fut —
+        // egy 0 készletű termék mindig "urgent" besorolást kap.
         $product = self::request('POST', '/api/product-save.php', [
             'name' => 'Dashboard figyelmeztetés teszt termék', 'gross_price' => 100, 'vat_rate' => '27',
         ], ['X-CSRF-Token' => $csrf], $jar);
@@ -1452,16 +1454,16 @@ final class HttpSecurityTest extends TestCase
 
         $res = self::request('GET', '/api/dashboard-summary.php?period=today', null, [], $jar);
         $this->assertSame(200, $res['status']);
-        $zeroStockItem = null;
+        $urgentItem = null;
         foreach ($res['json']['attention'] as $item) {
-            if ($item['type'] === 'zero_stock') {
-                $zeroStockItem = $item;
+            if ($item['type'] === 'purchase_urgent') {
+                $urgentItem = $item;
                 break;
             }
         }
-        $this->assertNotNull($zeroStockItem, 'A frissen létrehozott 0 készletű terméknek meg kell jelennie a "Figyelmet igényel" blokkban.');
-        $this->assertGreaterThan(0, $zeroStockItem['count']);
-        $this->assertSame('inventory-report.php', $zeroStockItem['link']);
+        $this->assertNotNull($urgentItem, 'A frissen létrehozott 0 készletű terméknek meg kell jelennie a "Figyelmet igényel" blokkban.');
+        $this->assertGreaterThan(0, $urgentItem['count']);
+        $this->assertSame('beszerzesi-javaslat.php?urgency=urgent', $urgentItem['link']);
     }
 
     public function testDashNav3_NoExternalHttpDependencyForNameDayData(): void
@@ -1489,5 +1491,162 @@ final class HttpSecurityTest extends TestCase
         $explicitIndex = self::request('GET', '/index.php', null, [], $jar);
         $this->assertSame(200, $explicitIndex['status'], 'Az explicit /index.php-nek (pl. a sidebar "Kassza" linkjének) változatlanul a Kasszát kell megnyitnia, nem átirányítania.');
         $this->assertStringContainsString('Kassza', $explicitIndex['body']);
+    }
+
+    // -----------------------------------------------------------------
+    // 1.3.0 — Beszerzési döntéstámogatás / árrés / készletérték HTTP-
+    // szintű coverage (lásd a kör 12. pontja). A számítás-helyesség már
+    // bizonyítva van a PurchaseDecisionServiceTest.php/PurchaseDecisionDbTest.php-ban
+    // — itt kizárólag a HTTP-réteg (auth, validáció, státuszkódok, JSON-alak).
+    // -----------------------------------------------------------------
+
+    public function testPurchase1_NewEndpointsRequireAuthentication(): void
+    {
+        foreach ([
+            '/api/purchase-suggestions.php', '/api/product-insights.php?product_id=1',
+        ] as $path) {
+            $res = self::request('GET', $path);
+            $this->assertSame(401, $res['status'], "$path bejelentkezés nélkül 401-et kell adjon.");
+        }
+    }
+
+    public function testPurchase2_PurchaseSuggestionsRejectsInvalidUrgencyAndReturnsValidShape(): void
+    {
+        $jar = self::cookieJar('login-success');
+
+        $invalid = self::request('GET', '/api/purchase-suggestions.php?urgency=nemletezo', null, [], $jar);
+        $this->assertSame(400, $invalid['status']);
+
+        $res = self::request('GET', '/api/purchase-suggestions.php', null, [], $jar);
+        $this->assertSame(200, $res['status'], $res['body']);
+        $this->assertIsArray($res['json']['recommendations']);
+        foreach (['all', 'urgent', 'soon', 'low'] as $key) {
+            $this->assertArrayHasKey($key, $res['json']['counts']);
+        }
+        foreach ($res['json']['recommendations'] as $row) {
+            foreach (['id', 'name', 'stock_qty', 'avg_daily_consumption', 'estimated_days_remaining', 'safety_stock', 'reorder_point', 'recommended_qty', 'urgency', 'reason', 'workflow_status'] as $key) {
+                $this->assertArrayHasKey($key, $row, "Minden javaslat-sornak tartalmaznia kell a '$key' mezőt.");
+            }
+            $this->assertContains($row['urgency'], ['urgent', 'soon', 'low']);
+        }
+    }
+
+    public function testPurchase3_UrgencyFilterOnlyReturnsMatchingRows(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        // Valódi 0 készletű (urgent) termék.
+        $product = self::request('POST', '/api/product-save.php', [
+            'name' => 'Beszerzési teszt — sürgős termék', 'gross_price' => 100, 'vat_rate' => '27',
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $product['status'], $product['body']);
+
+        $res = self::request('GET', '/api/purchase-suggestions.php?urgency=urgent', null, [], $jar);
+        $this->assertSame(200, $res['status']);
+        foreach ($res['json']['recommendations'] as $row) {
+            $this->assertSame('urgent', $row['urgency']);
+        }
+        $this->assertGreaterThan(0, count($res['json']['recommendations']));
+
+        $resSoon = self::request('GET', '/api/purchase-suggestions.php?urgency=soon', null, [], $jar);
+        foreach ($resSoon['json']['recommendations'] as $row) {
+            $this->assertSame('soon', $row['urgency']);
+        }
+    }
+
+    public function testPurchase4_ProductInsightsReturns404ForNonexistentProductAndValidShapeForReal(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        $notFound = self::request('GET', '/api/product-insights.php?product_id=999999', null, [], $jar);
+        $this->assertSame(404, $notFound['status']);
+
+        $invalid = self::request('GET', '/api/product-insights.php?product_id=0', null, [], $jar);
+        $this->assertSame(400, $invalid['status']);
+
+        $product = self::request('POST', '/api/product-save.php', [
+            'name' => 'Insights teszt termék', 'gross_price' => 1270, 'vat_rate' => '27',
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $product['status'], $product['body']);
+        $productId = $product['json']['product']['id'];
+
+        $res = self::request('GET', '/api/product-insights.php?product_id=' . $productId, null, [], $jar);
+        $this->assertSame(200, $res['status'], $res['body']);
+        $json = $res['json'];
+        foreach (['stock_qty', 'stock_value_net', 'price', 'net_price', 'purchase_price_net', 'has_cost_history', 'margin_ft', 'margin_pct'] as $key) {
+            $this->assertArrayHasKey($key, $json['status'], "status.$key hiányzik.");
+        }
+        $this->assertArrayHasKey('last_30_days', $json['sales']);
+        $this->assertArrayHasKey('last_90_days', $json['sales']);
+        $this->assertIsArray($json['recent_purchases']);
+        $this->assertIsArray($json['price_trend']);
+        $this->assertNull($json['status']['margin_ft'], 'Frissen létrehozott, sose beszerzett termékhez NE legyen (hamis) árrés.');
+    }
+
+    public function testPurchase5_InventoryReportIncludesValuationSummary(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $res = self::request('GET', '/api/inventory-report.php', null, [], $jar);
+        $this->assertSame(200, $res['status']);
+        foreach (['cost_value_net', 'retail_value_net', 'potential_margin_value_net', 'products_with_reliable_cost', 'products_total'] as $key) {
+            $this->assertArrayHasKey($key, $res['json']['valuation'], "valuation.$key hiányzik.");
+        }
+    }
+
+    public function testPurchase6_SalesReportIncludesMarginSummary(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $res = self::request('GET', '/api/sales-report.php?period=today', null, [], $jar);
+        $this->assertSame(200, $res['status']);
+        foreach (['revenue_net', 'estimated_cost_net', 'margin_net', 'margin_pct', 'products_with_margin', 'products_without_margin'] as $key) {
+            $this->assertArrayHasKey($key, $res['json']['margin'], "margin.$key hiányzik.");
+        }
+    }
+
+    public function testPurchase7_TopProductsReportIncludesMarginFields(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $res = self::request('GET', '/api/top-products-report.php?period=last_30_days', null, [], $jar);
+        $this->assertSame(200, $res['status']);
+        foreach ($res['json']['products'] as $row) {
+            $this->assertArrayHasKey('margin_net', $row);
+            $this->assertArrayHasKey('margin_pct', $row);
+            $this->assertArrayHasKey('revenue_net', $row);
+        }
+    }
+
+    /**
+     * XSS-védelem: egy `<script>`-et tartalmazó terméknév a beszerzési
+     * javaslat JSON-válaszában NYERS szövegként kerül vissza (a védelem a
+     * frontend escapeHtml()-jénél van, lásd beszerzesi-javaslat.js), de a
+     * JSON-válasz maga sose tartalmazzon kiszökő, nem escapelt HTML-t
+     * (ami egy `Content-Type: application/json` válasznál amúgy sem
+     * futna le böngészőben, de a JSON encodingnak akkor is helyesnek
+     * kell lennie).
+     */
+    public function testPurchase8_ProductNameWithScriptTagIsSafelyJsonEncoded(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        $xssName = '<script>alert(1)</script>';
+        $product = self::request('POST', '/api/product-save.php', [
+            'name' => $xssName, 'gross_price' => 100, 'vat_rate' => '27',
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $product['status'], $product['body']);
+
+        $res = self::request('GET', '/api/purchase-suggestions.php', null, [], $jar);
+        $this->assertSame(200, $res['status']);
+        $found = null;
+        foreach ($res['json']['recommendations'] as $row) {
+            if ($row['name'] === $xssName) { $found = $row; break; }
+        }
+        $this->assertNotNull($found, 'A terméknek meg kell jelennie a javaslatlistában (0 készlet).');
+        $this->assertStringContainsString('application/json', $res['headers']['content-type'] ?? '');
     }
 }

@@ -31,9 +31,28 @@ async function loadOverview() {
                 <tr><td>${escapeHtml(p.name)}</td><td>${p.stock_qty} db</td><td>${fmtHuf(p.purchase_price_net)}</td><td>${fmtHuf(p.value)}</td></tr>
             `).join('')
             : '<tr><td colspan="4" class="muted" style="text-align:center; padding:16px;">Nincs adat.</td></tr>';
+
+        renderValuation(data.valuation);
     } catch (err) {
         statsBox.innerHTML = `<p class="feedback error">A készletriport betöltése sikertelen: ${escapeHtml(err.message)}</p>`;
     }
+}
+
+// 1.3.0 — a kör 7. pontja: készletérték nettó beszerzési ÉS eladási áron,
+// plusz a potenciális árrés-érték (lásd Database::getInventoryValuationSummary()
+// docblockja) — csak a megbízható beszerzési árú termékekből.
+function renderValuation(v) {
+    document.getElementById('ir-valuation-stats').innerHTML = [
+        `<div class="stat-box"><div class="value">${fmtHuf(v.cost_value_net)}</div><div class="label">Készletérték (nettó beszerzési áron)</div></div>`,
+        `<div class="stat-box"><div class="value">${fmtHuf(v.retail_value_net)}</div><div class="label">Készletérték (nettó eladási áron)</div></div>`,
+        `<div class="stat-box"><div class="value">${fmtHuf(v.potential_margin_value_net)}</div><div class="label">Potenciális árrés-érték</div></div>`,
+    ].join('');
+
+    const note = document.getElementById('ir-valuation-note');
+    const unreliable = v.products_total - v.products_with_reliable_cost;
+    note.textContent = unreliable > 0
+        ? `${unreliable} készleten lévő termékhez nincs megbízható beszerzési ár (sose lett még beszerezve) — a beszerzési áras érték és a potenciális árrés-érték CSAK a fennmaradó ${v.products_with_reliable_cost} termékre vonatkozik. Az eladási áras érték minden termékre számol.`
+        : '';
 }
 
 async function loadLowStock() {

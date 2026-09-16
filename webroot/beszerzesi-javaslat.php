@@ -38,16 +38,59 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:900px;">
+<div class="import-panel" style="max-width:1100px;">
+
     <div class="import-card">
-        <p class="muted" style="margin-top:0;">
-            Az alacsony készletű termékek listája, preferált beszállító szerint csoportosítva
-            (a beszállító a termék-szerkesztőben állítható be). A javasolt mennyiség egy egyszerű
-            becslés — a küszöb duplájára tölti fel a készletet —, nem valódi keresleti előrejelzés,
-            szabadon módosítható indulás előtt.
+        <p class="muted" style="margin-top:0; margin-bottom:14px;">
+            Az alacsony készletű termékek listája, a fogyási ütem alapján számolt sürgősséggel és
+            javasolt beszerzési mennyiséggel. A pontos képletek: <a href="#suggestion-legend">lásd lent</a>.
         </p>
-        <div id="suggestions-content">Betöltés...</div>
+        <div class="filter-grid">
+            <div class="pm-select" style="margin:0;">
+                <div id="bj-tabs" style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button type="button" class="toolbar-btn bj-tab active" data-urgency="">Minden (<span id="bj-count-all">0</span>)</button>
+                    <button type="button" class="toolbar-btn bj-tab" data-urgency="urgent">Sürgős (<span id="bj-count-urgent">0</span>)</button>
+                    <button type="button" class="toolbar-btn bj-tab" data-urgency="soon">Hamarosan elfogy (<span id="bj-count-soon">0</span>)</button>
+                    <button type="button" class="toolbar-btn bj-tab" data-urgency="low">Alacsony készlet (<span id="bj-count-low">0</span>)</button>
+                </div>
+            </div>
+            <button type="button" class="btn btn-primary" id="bj-start-purchase-btn" style="width:auto; padding:10px 18px;" disabled>
+                Beszerzés indítása a kijelöltekkel (<span id="bj-selected-count">0</span>)
+            </button>
+        </div>
     </div>
+
+    <div class="import-card">
+        <div class="sample-table-wrap">
+            <table class="sample-table">
+                <thead>
+                    <tr>
+                        <th><input type="checkbox" id="bj-select-all"></th>
+                        <th>Termék</th>
+                        <th>Készlet</th>
+                        <th>Napi fogyás</th>
+                        <th>Kifogyás</th>
+                        <th>Javasolt mennyiség</th>
+                        <th>Indok</th>
+                    </tr>
+                </thead>
+                <tbody id="bj-body"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="import-card" id="suggestion-legend">
+        <h2>Hogyan számolódik a javaslat?</h2>
+        <p class="muted" style="margin-top:0;">
+            <strong>Biztonsági készlet</strong> = a termékhez beállított (vagy alapértelmezett) riasztási küszöb.<br>
+            <strong>Rendelési pont</strong> = biztonsági készlet + (napi fogyás × 7 nap) — eddig a szintig lecsökkenve érdemes rendelni.<br>
+            <strong>Javasolt mennyiség</strong> = a biztonsági készlet + (napi fogyás × 14 nap) célszint és a jelenlegi készlet különbsége.<br>
+            Ha egy termékhez nincs elég eladási előzmény a napi fogyás megbízható becsléséhez, a javaslat a régebbi, egyszerű
+            "küszöb duplájára tölt fel" ökölszabályra esik vissza — ez a lista "Alacsony készlet" (nem "Sürgős"/"Hamarosan elfogy")
+            fülén jelenik meg, jelezve, hogy a becslés kevésbé pontos.
+        </p>
+    </div>
+
 </div>
 
 <script src="api.js"></script>

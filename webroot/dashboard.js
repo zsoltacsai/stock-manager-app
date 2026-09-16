@@ -41,6 +41,10 @@ function renderKpis(data) {
         statBoxWithChange(data.today.sales_count, 'Mai eladások száma', cmp.sales_count_change_pct),
         statBoxWithChange(fmtHuf(data.today.avg_sale_gross), 'Átlagos kosárérték', cmp.avg_sale_change_pct),
         statBox(fmtHuf(data.today.purchase_gross), 'Mai beszerzés'),
+        // 1.3.0 — a kör 7. pontja szerint LEGFELJEBB 1-2 készletérték-KPI
+        // fér el a Dashboardon (nincs teljes valuation-bontás itt, csak
+        // ez az egy szám — a részletek a Készlet riportban).
+        statBox(fmtHuf(data.inventory.stock_value_net), 'Készletérték (beszerzési áron)'),
     ].join('');
 }
 

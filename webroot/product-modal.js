@@ -48,6 +48,11 @@ window.ProductModal = (function () {
     // releváns) — a hiányzó elemek miatt minden itteni hivatkozás null-
     // ellenőrzött, hogy a JS ott is hiba nélkül fusson.
     const pMovementsList = document.getElementById('p-movements-list');
+    // 1.3.0 — "Áttekintés" (mini-dashboard) fül, lásd a kör 8. pontja.
+    // Ugyanaz a megosztott-markup korlát vonatkozik rá, mint a
+    // Készletmozgások fülre: beszerzes.php-n ez a fül nem létezik, ezért
+    // minden hivatkozása null-ellenőrzött.
+    const pOverviewContent = document.getElementById('p-overview-content');
     const pGenerateBarcodeBtn = document.getElementById('p-generate-barcode-btn');
     const pPrintLabelBtn = document.getElementById('p-print-label-btn');
 
@@ -148,6 +153,72 @@ window.ProductModal = (function () {
         } catch (e) {
             pPriceHistoryList.textContent = 'Az ártörténet betöltése sikertelen.';
         }
+    }
+
+    const OVERVIEW_URGENCY_LABELS = { urgent: 'Sürgős beszerzés javasolt', soon: 'Hamarosan elfogyhat', low: 'Alacsony készlet' };
+    const OVERVIEW_FORECAST_LABELS = {
+        out_of_stock: 'Elfogyott',
+        insufficient_data: 'Nincs elegendő adat az előrejelzéshez',
+        zero_consumption: 'Jelenleg nem fogy',
+    };
+
+    async function loadProductOverview(productId) {
+        if (!pOverviewContent) return;
+        if (!productId) {
+            pOverviewContent.innerHTML = '<p class="muted">Előbb mentsd el a terméket, hogy elérhető legyen az áttekintés.</p>';
+            return;
+        }
+        pOverviewContent.innerHTML = '<div class="spinner-row"><span class="spinner"></span>Betöltés...</div>';
+        try {
+            const res = await fetch('/api/product-insights.php?product_id=' + productId);
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+            renderProductOverview(data);
+        } catch (e) {
+            pOverviewContent.innerHTML = `<p class="feedback error">Az áttekintés betöltése sikertelen: ${escapeHtml(e.message)}</p>`;
+        }
+    }
+
+    function renderProductOverview(d) {
+        const s = d.status;
+        const forecastLine = (() => {
+            if (!d.forecast) return '<span class="muted">—</span>';
+            if (d.forecast.status === 'ok') return `${d.forecast.estimated_days_remaining} nap múlva fogyhat el (${d.forecast.avg_daily_consumption} db/nap átlagos fogyás alapján)`;
+            return OVERVIEW_FORECAST_LABELS[d.forecast.status] || d.forecast.status;
+        })();
+
+        pOverviewContent.innerHTML = `
+            ${d.urgency ? `<p><span class="stock-badge ${d.urgency === 'urgent' ? 'negative' : 'warn'}">${OVERVIEW_URGENCY_LABELS[d.urgency]}</span></p>` : ''}
+            <div class="stats-grid">
+                <div class="stat-box"><div class="value">${s.stock_qty} db</div><div class="label">Aktuális készlet</div></div>
+                <div class="stat-box"><div class="value">${fmtPrice(s.stock_value_net)}</div><div class="label">Készletérték (nettó besz. áron)</div></div>
+                <div class="stat-box"><div class="value">${fmtPrice(s.price)}</div><div class="label">Eladási ár (bruttó)</div></div>
+                <div class="stat-box"><div class="value">${s.has_cost_history ? fmtPrice(s.purchase_price_net) : '—'}</div><div class="label">Nettó beszerzési ár</div></div>
+                <div class="stat-box"><div class="value">${s.margin_ft !== null ? fmtPrice(s.margin_ft) : 'nincs adat'}</div><div class="label">Árrés</div></div>
+                <div class="stat-box"><div class="value">${s.margin_pct !== null ? s.margin_pct + '%' : 'nincs adat'}</div><div class="label">Árrés %</div></div>
+            </div>
+
+            <label style="margin-top:16px;">Forgalom</label>
+            <div class="stats-grid">
+                <div class="stat-box"><div class="value">${d.sales.last_30_days.qty} db</div><div class="label">Elmúlt 30 nap</div></div>
+                <div class="stat-box"><div class="value">${d.sales.last_90_days.qty} db</div><div class="label">Elmúlt 90 nap</div></div>
+            </div>
+
+            <label style="margin-top:16px;">Készlet-előrejelzés</label>
+            <p class="muted" style="margin-top:-4px;">${forecastLine}</p>
+
+            <label style="margin-top:16px;">Legutóbbi beszerzések</label>
+            ${d.recent_purchases.length ? `
+                <div class="sample-table-wrap">
+                    <table class="sample-table">
+                        <thead><tr><th>Dátum</th><th>Mennyiség</th><th>Nettó egységár</th><th>Beszállító</th></tr></thead>
+                        <tbody>${d.recent_purchases.map(p => `
+                            <tr><td>${p.created_at}</td><td>${p.qty} db</td><td>${fmtPrice(p.unit_cost_net)}</td><td>${escapeHtml(p.supplier_name || '—')}</td></tr>
+                        `).join('')}</tbody>
+                    </table>
+                </div>
+            ` : '<p class="muted">Ehhez a termékhez még nem volt rögzített beszerzés.</p>'}
+        `;
     }
 
     const TAB_MOVEMENT_TYPE_LABELS = { sale: 'Eladás', purchase: 'Beszerzés', return: 'Visszáru', stock_take: 'Leltár', transfer: 'Készlet hozzáadás' };
@@ -303,11 +374,16 @@ window.ProductModal = (function () {
         if (pImageFeedback) pImageFeedback.textContent = '';
         updateImagePreview(currentImageFilename ? 'assets/products/' + currentImageFilename : null);
 
-        modal.querySelector('.tab-btn[data-tab="tab-main"]').click();
+        // Meglévő termék szerkesztésekor az Áttekintés fül a leghasznosabb
+        // első nézet (lásd a kör 8. pontja); új termék létrehozásakor
+        // (nincs még mit áttekinteni) a Fő adatok fül marad az induló nézet.
+        const defaultTab = (existingProduct && pOverviewContent) ? 'tab-overview' : 'tab-main';
+        modal.querySelector(`.tab-btn[data-tab="${defaultTab}"]`).click();
         modal.classList.add('open');
-        pName.focus();
+        if (defaultTab === 'tab-main') pName.focus();
         loadPriceHistory(editingId);
         loadStockMovements(editingId);
+        loadProductOverview(editingId);
 
         ensureRichTextEditors().then(() => {
             const shortEditor = tinymce.get('p-short-desc');

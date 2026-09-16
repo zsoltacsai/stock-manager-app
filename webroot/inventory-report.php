@@ -46,6 +46,12 @@ if (!Auth::isLoggedIn($appSettings)) {
     </div>
 
     <div class="import-card">
+        <h2>Készletérték-mutatók</h2>
+        <div class="stats-grid" id="ir-valuation-stats"></div>
+        <p class="muted" id="ir-valuation-note" style="margin-bottom:0;"></p>
+    </div>
+
+    <div class="import-card">
         <h2>Legnagyobb készletértékű termékek</h2>
         <div class="sample-table-wrap">
             <table class="sample-table">

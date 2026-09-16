@@ -77,6 +77,12 @@ if (!Auth::isLoggedIn($appSettings)) {
     </div>
 
     <div class="import-card">
+        <h2>Árrés</h2>
+        <div class="stats-grid" id="sr-margin"></div>
+        <p class="muted" id="sr-margin-note" style="margin-bottom:0;"></p>
+    </div>
+
+    <div class="import-card">
         <h2>Fizetési mód szerinti bontás</h2>
         <div class="sample-table-wrap">
             <table class="sample-table">
@@ -113,7 +119,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         </div>
         <div class="sample-table-wrap" style="margin-top:12px;">
             <table class="sample-table">
-                <thead><tr><th>Termék</th><th>Csoport</th><th>Darabszám</th><th>Forgalom</th></tr></thead>
+                <thead><tr><th>Termék</th><th>Csoport</th><th>Darabszám</th><th>Forgalom</th><th>Árrés</th><th>Árrés %</th></tr></thead>
                 <tbody id="sr-top-body"></tbody>
             </table>
         </div>

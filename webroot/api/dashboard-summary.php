@@ -45,8 +45,15 @@ $invoiceProvider = (string) ($appSettings['invoice_provider'] ?? 'szamlazz');
 $draftWebshopOrders = $db->countDraftWebshopOrders();
 $syncFailures24h = $db->countRecentSyncFailures(24);
 $invoiceFailures7d = $db->countRecentInvoiceFailures(7);
-$lowRunwayCount = $db->countLowRunwayProducts($lowStockThreshold, 7);
 $closingToday = $db->getClosing($today);
+// 1.3.0 — a Dashboard "beszerzésre vár" jelzése a MEGLÉVŐ, központi
+// PurchaseDecisionService-en alapuló getPurchaseRecommendations()-t
+// használja (lásd a kör 9. pontja) — ez a WooCommerce-t/számlázást ÉRINTŐ
+// jelzésekkel ellentétben egyetlen bulk lekérdezés, nem termékenkénti.
+$purchaseRecommendations = $db->getPurchaseRecommendations($lowStockThreshold, 30);
+$urgentPurchaseCount = count(array_filter($purchaseRecommendations, static fn ($r) => $r['urgency'] === 'urgent'));
+$soonPurchaseCount = count(array_filter($purchaseRecommendations, static fn ($r) => $r['urgency'] === 'soon'));
+$otherLowPurchaseCount = count(array_filter($purchaseRecommendations, static fn ($r) => $r['urgency'] === 'low'));
 
 // Csak akkor számol %-os változást, ha a tegnapi bázis ténylegesen
 // rendelkezésre áll (nem 0) — 0-ból induló %-osítás hamis/értelmezhetetlen
@@ -63,25 +70,25 @@ function dashboard_pct_change(float $today, float $yesterday): ?float
 // "Figyelmet igényel" — csak ténylegesen fennálló (>0) tételek, mindegyik
 // egy már meglévő oldalra/riportra mutat. Sorrend: legsürgősebb elöl.
 $attention = [];
-if ($inventory['zero_stock'] > 0) {
+if ($urgentPurchaseCount > 0) {
     $attention[] = [
-        'type' => 'zero_stock', 'count' => $inventory['zero_stock'],
-        'label' => $inventory['zero_stock'] . ' termék elfogyott',
-        'link' => 'inventory-report.php',
+        'type' => 'purchase_urgent', 'count' => $urgentPurchaseCount,
+        'label' => $urgentPurchaseCount . ' sürgősen beszerzendő termék',
+        'link' => 'beszerzesi-javaslat.php?urgency=urgent',
     ];
 }
-if ($lowRunwayCount > 0) {
+if ($soonPurchaseCount > 0) {
     $attention[] = [
-        'type' => 'forecast_low', 'count' => $lowRunwayCount,
-        'label' => $lowRunwayCount . ' termék fogyhat el hamarosan (előrejelzés alapján)',
-        'link' => 'inventory-report.php',
+        'type' => 'purchase_soon', 'count' => $soonPurchaseCount,
+        'label' => $soonPurchaseCount . ' termék ' . PurchaseDecisionService::SOON_DAYS_THRESHOLD . ' napon belül várhatóan elfogy',
+        'link' => 'beszerzesi-javaslat.php?urgency=soon',
     ];
 }
-if ($inventory['low_stock'] > 0) {
+if ($otherLowPurchaseCount > 0) {
     $attention[] = [
-        'type' => 'low_stock', 'count' => $inventory['low_stock'],
-        'label' => $inventory['low_stock'] . ' termék alacsony készleten',
-        'link' => 'inventory-report.php',
+        'type' => 'purchase_low', 'count' => $otherLowPurchaseCount,
+        'label' => $otherLowPurchaseCount . ' további termék alacsony készleten',
+        'link' => 'beszerzesi-javaslat.php?urgency=low',
     ];
 }
 if ($draftWebshopOrders > 0) {

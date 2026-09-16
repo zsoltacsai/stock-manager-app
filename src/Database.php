@@ -3,6 +3,7 @@
 require_once __DIR__ . '/AppVersion.php';
 require_once __DIR__ . '/InvoiceNumbering.php';
 require_once __DIR__ . '/PriceValidator.php';
+require_once __DIR__ . '/PurchaseDecisionService.php';
 
 class Database
 {
@@ -5684,7 +5685,7 @@ class Database
     {
         $dateExpr = $this->driver === 'mysql' ? 'DATE(s.created_at)' : "substr(s.created_at, 1, 10)";
         $sql = "
-            SELECT si.product_id, p.name, p.barcode, p.group_name,
+            SELECT si.product_id, p.name, p.barcode, p.group_name, p.vat_rate, p.purchase_price_net,
                    SUM(si.qty) AS qty, SUM(si.unit_price * si.qty) AS revenue
             FROM sale_items si
             JOIN sales s ON s.id = si.sale_id
@@ -5700,15 +5701,45 @@ class Database
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($params);
 
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        // Egy bulk lekérdezéssel eldöntjük, mely termékekhez van egyáltalán
+        // valaha rögzített beszerzés — enélkül egy sose beszerzett termék
+        // alapértelmezett 0 purchase_price_net-je hamis (100%-os) árrést
+        // mutatna, lásd PurchaseDecisionService::computeMargin() docblockja.
+        $hasCostHistory = $rows ? $this->productsHavePurchaseHistory(array_column($rows, 'product_id')) : [];
+
         $byProduct = [];
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $byProduct[$row['product_id']] = [
-                'product_id' => (int) $row['product_id'],
-                'name'       => $row['name'],
-                'barcode'    => $row['barcode'],
-                'group_name' => $row['group_name'],
-                'qty'        => (int) $row['qty'],
-                'revenue'    => round((float) $row['revenue'], 2),
+        foreach ($rows as $row) {
+            $pid = (int) $row['product_id'];
+            $vatPct = is_numeric($row['vat_rate']) ? ((float) $row['vat_rate']) / 100 : 0.0;
+            $revenueGross = round((float) $row['revenue'], 2);
+            // Az árrés-számításhoz nettósítunk — a TERMÉK JELENLEGI áfakulcsával
+            // (nem az eladáskori sale_items.vat_rate-tel): dokumentált
+            // egyszerűsítés, konzisztensen a jelenlegi purchase_price_net
+            // ("utolsó ismert" költség) használatával — lásd README.
+            $revenueNet = is_numeric($row['vat_rate']) ? round($revenueGross / (1 + $vatPct), 2) : $revenueGross;
+            $margin = PurchaseDecisionService::computeMargin(
+                (float) $row['qty'] > 0 ? round($revenueNet / max(1, (int) $row['qty']), 4) : null,
+                (float) $row['purchase_price_net'],
+                !empty($hasCostHistory[$pid])
+            );
+            $unitNet = (int) $row['qty'] > 0 ? $revenueNet / (int) $row['qty'] : 0.0;
+            $byProduct[$pid] = [
+                'product_id'     => $pid,
+                'name'           => $row['name'],
+                'barcode'        => $row['barcode'],
+                'group_name'     => $row['group_name'],
+                'qty'            => (int) $row['qty'],
+                'revenue'        => $revenueGross,
+                'revenue_net'    => $revenueNet,
+                'cost_net_total' => $margin !== null ? round(((float) $row['purchase_price_net']) * (int) $row['qty'], 2) : null,
+                'margin_net'     => $margin !== null ? round($margin['margin_ft'] * (int) $row['qty'], 2) : null,
+                'margin_pct'     => $margin['margin_pct'] ?? null,
+                // Csak belső újraszámoláshoz (visszáru-nettósítás) — a
+                // hívó felé sose adjuk vissza, lásd a metódus végét.
+                '_unit_net'       => $unitNet,
+                '_unit_cost_net'  => $margin !== null ? (float) $row['purchase_price_net'] : null,
+                '_unit_margin'    => $margin['margin_ft'] ?? null,
             ];
         }
 
@@ -5728,7 +5759,21 @@ class Database
             }
             $byProduct[$pid]['qty'] -= (int) $row['qty'];
             $byProduct[$pid]['revenue'] = round($byProduct[$pid]['revenue'] - (float) $row['revenue'], 2);
+            // A nettó forgalmat/költséget/árrést az ÚJ (visszáruval csökkentett)
+            // darabszámból, az egységértékekből számoljuk újra — pontosan
+            // ugyanaz az elv, mint a bruttó forgalomnál, csak levezetve.
+            $adjQty = $byProduct[$pid]['qty'];
+            $byProduct[$pid]['revenue_net'] = round($byProduct[$pid]['_unit_net'] * $adjQty, 2);
+            if ($byProduct[$pid]['_unit_cost_net'] !== null) {
+                $byProduct[$pid]['cost_net_total'] = round($byProduct[$pid]['_unit_cost_net'] * $adjQty, 2);
+                $byProduct[$pid]['margin_net'] = round($byProduct[$pid]['_unit_margin'] * $adjQty, 2);
+            }
         }
+
+        foreach ($byProduct as $pid => &$row) {
+            unset($row['_unit_net'], $row['_unit_cost_net'], $row['_unit_margin']);
+        }
+        unset($row);
 
         $result = array_values(array_filter($byProduct, static fn ($r) => $r['qty'] >= $minQty));
         usort($result, static fn ($a, $b) => $b['qty'] <=> $a['qty']);
@@ -5822,6 +5867,7 @@ class Database
                 'group_name'     => $row['group_name'],
                 'stock_qty'      => (int) $row['stock_qty'],
                 'threshold'      => $threshold,
+                'supplier_id'    => $row['preferred_supplier_id'] !== null ? (int) $row['preferred_supplier_id'] : null,
                 'supplier_name'  => $row['supplier_name'],
                 'suggested_qty'  => max(1, ($threshold * 2) - (int) $row['stock_qty']),
             ];
@@ -6179,30 +6225,327 @@ class Database
         ];
     }
 
+    // =================================================================
+    // 1.3.0 — Beszerzési döntéstámogatás / árrés / készletérték
+    //
+    // A TÉNYLEGES döntési képletek (biztonsági készlet, rendelési pont,
+    // javasolt mennyiség, árrés) a src/PurchaseDecisionService.php-ban
+    // élnek (lásd ott a docblockot) — ez a szakasz KIZÁRÓLAG a MEGLÉVŐ
+    // (1.1.1/1.2.0-ban bevált) bulk-lekérdezési mintákat (getLowStockReport,
+    // getStockForecastBulk) komponálja össze, majd adja át a szolgáltatásnak.
+    // Nincs itt önálló üzleti szabály.
+    // =================================================================
+
     /**
-     * Dashboard "Figyelmet igényel" blokk — hány (már MOST is alacsony
-     * készletű) termék fogyhat el a megadott napszámon belül a MEGLÉVŐ
-     * getStockForecastBulk() előrejelzése szerint. NEM új üzleti logika —
-     * a forecast-képlet változatlan, ez csak egy küszöb szerinti
-     * összeszámolás a már meglévő getLowStockReport()/
-     * getStockForecastBulk() eredményén. Csak a status='ok' (megbízható
-     * előrejelzésű) sorokat számolja — 'insufficient_data'/'zero_consumption'
-     * termékekre nincs értelme "X nap múlva" állítást tenni, ezt a
-     * meglévő forecast-állapotgép már maga kezeli.
+     * Bulk ellenőrzés: mely termékekhez van EGYÁLTALÁN valaha rögzített
+     * beszerzés (purchase_items sor) — ez dönti el, hogy egy
+     * purchase_price_net = 0 "sose lett beszerezve" (megbízhatatlan
+     * költség) vagy "ténylegesen 0-ért lett beszerezve" (megbízható).
+     * Egyetlen lekérdezés, NEM termékenkénti (lásd a kör 11. pontja).
+     *
+     * @return array<int,bool> product_id => true (csak azok szerepelnek, amikhez van előzmény)
      */
-    public function countLowRunwayProducts(int $defaultThreshold, int $maxDaysRemaining = 7): int
+    public function productsHavePurchaseHistory(array $productIds): array
+    {
+        $productIds = array_values(array_unique(array_map('intval', $productIds)));
+        if (!$productIds) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($productIds), '?'));
+        $stmt = $this->pdo->prepare("SELECT DISTINCT product_id FROM purchase_items WHERE product_id IN ($placeholders)");
+        $stmt->execute($productIds);
+        $result = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $pid) {
+            $result[(int) $pid] = true;
+        }
+        return $result;
+    }
+
+    /**
+     * Beszerzési javaslat lista, TELJES döntéstámogató mezőkkel (lásd a
+     * kör 1-2. pontja) — a MEGLÉVŐ getLowStockReport()/getStockForecastBulk()
+     * bulk-eredményét adja át a PurchaseDecisionService-nek soronként.
+     * NINCS termékenkénti lekérdezés (lásd a kör 11. pontja): a teljes
+     * lista 3 bulk lekérdezésből épül fel (alacsony készlet, forecast,
+     * "nemrég volt-e rá beszerzés" — utóbbi a beszerzési workflow
+     * KIZÁRÓLAG a meglévő adatokból levezetett jelzéséhez, lásd a kör 3.
+     * pontja: nincs új "workflow status" oszlop/tábla).
+     */
+    public function getPurchaseRecommendations(int $defaultThreshold, int $windowDays = 30): array
     {
         $lowStock = $this->getLowStockReport($defaultThreshold, 'low');
         if (!$lowStock) {
-            return 0;
+            return [];
         }
-        $forecast = $this->getStockForecastBulk(array_column($lowStock, 'id'));
-        $count = 0;
-        foreach ($forecast as $f) {
-            if ($f['status'] === 'ok' && $f['estimated_days_remaining'] <= $maxDaysRemaining) {
-                $count++;
+        $ids = array_column($lowStock, 'id');
+        $forecast = $this->getStockForecastBulk($ids, $windowDays);
+
+        // "Folyamatban" jelzés — volt-e MÁR beszerzés erre a termékre az
+        // elmúlt RECENT_PURCHASE_WINDOW_DAYS napban. Ez KIZÁRÓLAG a
+        // meglévő purchase_items/purchases táblákból levezetett, olvasott
+        // jel — nem perzisztált "workflow állapot" (lásd a kör 10. pontja:
+        // "ne hozz létre új táblát csak kényelmi okból"). Ha a készlet
+        // ennek ellenére még mindig alacsony, az azt jelzi, hogy a
+        // korábbi beszerzés még nem (vagy nem eléggé) oldotta meg a
+        // hiányt — ettől még jogos, hogy a lista mutassa, csak más
+        // címkével ("Folyamatban", nem "Javasolt").
+        $recentPurchaseWindowDays = 3;
+        $recentSince = date('Y-m-d H:i:s', strtotime("-$recentPurchaseWindowDays days"));
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $recentStmt = $this->pdo->prepare("
+            SELECT DISTINCT pi.product_id
+            FROM purchase_items pi
+            JOIN purchases pu ON pu.id = pi.purchase_id
+            WHERE pi.product_id IN ($placeholders) AND pu.created_at >= ?
+        ");
+        $recentStmt->execute(array_merge($ids, [$recentSince]));
+        $recentlyOrdered = array_fill_keys(array_map('intval', $recentStmt->fetchAll(PDO::FETCH_COLUMN)), true);
+
+        $result = [];
+        foreach ($lowStock as $row) {
+            $pid = (int) $row['id'];
+            $f = $forecast[$pid] ?? null;
+            $threshold = (int) $row['threshold'];
+            $stock = (int) $row['stock_qty'];
+            $avgDaily = ($f !== null && $f['status'] === 'ok') ? (float) $f['avg_daily_consumption'] : null;
+
+            $safetyStock = PurchaseDecisionService::safetyStock($threshold);
+            $reorderPoint = PurchaseDecisionService::reorderPoint($safetyStock, $avgDaily);
+            $recommendedQty = PurchaseDecisionService::recommendedQuantity($safetyStock, $avgDaily, $stock);
+
+            $result[] = [
+                'id'                => $pid,
+                'name'              => $row['name'],
+                'barcode'           => $row['barcode'],
+                'group_name'        => $row['group_name'],
+                'stock_qty'         => $stock,
+                'avg_daily_consumption' => $avgDaily !== null ? round($avgDaily, 3) : null,
+                'forecast_status'   => $f['status'] ?? null,
+                'estimated_days_remaining' => $f['estimated_days_remaining'] ?? null,
+                'safety_stock'      => $safetyStock,
+                'reorder_point'     => $reorderPoint,
+                'recommended_qty'   => $recommendedQty,
+                'urgency'           => PurchaseDecisionService::classifyUrgency($f, $stock, $threshold),
+                'reason'            => PurchaseDecisionService::buildReason($f, $stock, $threshold),
+                'workflow_status'   => isset($recentlyOrdered[$pid]) ? 'in_progress' : 'suggested',
+                'supplier_id'       => $row['supplier_id'] ?? null,
+                'supplier_name'     => $row['supplier_name'],
+            ];
+        }
+
+        // Sürgősség szerint csökkenő (urgent -> soon -> low), azon belül
+        // a leghamarabb kifogyó elöl.
+        $urgencyOrder = ['urgent' => 0, 'soon' => 1, 'low' => 2];
+        usort($result, static function ($a, $b) use ($urgencyOrder) {
+            $cmp = $urgencyOrder[$a['urgency']] <=> $urgencyOrder[$b['urgency']];
+            if ($cmp !== 0) {
+                return $cmp;
+            }
+            return ($a['estimated_days_remaining'] ?? PHP_INT_MAX) <=> ($b['estimated_days_remaining'] ?? PHP_INT_MAX);
+        });
+        return $result;
+    }
+
+    /**
+     * Egy termék beszerzési előzménye — a MEGLÉVŐ purchase_items/purchases
+     * táblákból, dátum szerint csökkenő sorrendben (lásd a kör 4. pontja).
+     */
+    public function getProductPurchaseHistory(int $productId, int $limit = 50): array
+    {
+        $stmt = $this->pdo->prepare('
+            SELECT pi.qty, pi.unit_cost_net, pi.unit_cost_gross, pi.line_net, pi.line_gross,
+                   pu.id AS purchase_id, pu.created_at, pu.supplier_name, pu.supplier_id
+            FROM purchase_items pi
+            JOIN purchases pu ON pu.id = pi.purchase_id
+            WHERE pi.product_id = ?
+            ORDER BY pu.created_at DESC
+            LIMIT ?
+        ');
+        $stmt->bindValue(1, $productId, PDO::PARAM_INT);
+        $stmt->bindValue(2, $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Beszerzési ártrend — dátum + nettó egységár pontok (lásd a kör 4.
+     * pontja: "egyszerű beszerzési ártrend"). Ugyanabból a táblából, mint
+     * getProductPurchaseHistory(), csak a trendhez szükséges 2 mezőre
+     * szűkítve, időrendben NÖVEKVŐ sorrendben (grafikonhoz).
+     */
+    public function getProductPurchasePriceTrend(int $productId, int $limit = 24): array
+    {
+        $stmt = $this->pdo->prepare('
+            SELECT pu.created_at AS date, pi.unit_cost_net
+            FROM purchase_items pi
+            JOIN purchases pu ON pu.id = pi.purchase_id
+            WHERE pi.product_id = ?
+            ORDER BY pu.created_at DESC
+            LIMIT ?
+        ');
+        $stmt->bindValue(1, $productId, PDO::PARAM_INT);
+        $stmt->bindValue(2, $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        $rows = array_reverse($stmt->fetchAll(PDO::FETCH_ASSOC));
+        return array_map(static fn ($r) => ['date' => $r['date'], 'unit_cost_net' => round((float) $r['unit_cost_net'], 2)], $rows);
+    }
+
+    /**
+     * Egy termék eladási forgalma az utolsó N napban, visszáruval
+     * nettósítva — UGYANAZ az elv, mint getTopProductsReport()/
+     * getStockForecastBulk() (lásd ott a docblockot), csak egyetlen
+     * termékre szűkítve, a termék mini-dashboardhoz (lásd a kör 8. pontja).
+     */
+    public function getProductSalesSummary(int $productId, int $days): array
+    {
+        $since = date('Y-m-d H:i:s', strtotime("-$days days"));
+        $soldStmt = $this->pdo->prepare('
+            SELECT COALESCE(SUM(si.qty), 0) AS qty
+            FROM sale_items si JOIN sales s ON s.id = si.sale_id
+            WHERE si.product_id = ? AND s.created_at >= ?
+        ');
+        $soldStmt->execute([$productId, $since]);
+        $sold = (int) $soldStmt->fetchColumn();
+
+        $returnedStmt = $this->pdo->prepare('
+            SELECT COALESCE(SUM(ri.qty), 0) AS qty
+            FROM return_items ri JOIN returns r ON r.id = ri.return_id
+            WHERE ri.product_id = ? AND r.created_at >= ?
+        ');
+        $returnedStmt->execute([$productId, $since]);
+        $returned = (int) $returnedStmt->fetchColumn();
+
+        return ['days' => $days, 'qty' => max(0, $sold - $returned)];
+    }
+
+    /**
+     * Termék mini-dashboard — EGYETLEN hívásban minden adat, amire a
+     * termék-részletező "Áttekintés" fülének szüksége van (lásd a kör 8.
+     * pontja), hogy a modal megnyitása NE indítson 6-8 külön kérést
+     * (lásd a kör 11. pontja). Kizárólag MÁR MEGLÉVŐ metódusokat hív.
+     */
+    public function getProductInsights(int $productId, int $defaultThreshold): array
+    {
+        $product = $this->findProductById($productId);
+        if (!$product) {
+            return [];
+        }
+
+        $forecast = $this->getStockForecastBulk([$productId]);
+        $f = $forecast[$productId] ?? null;
+        $hasCost = $this->productsHavePurchaseHistory([$productId]);
+        $margin = PurchaseDecisionService::computeMargin(
+            (float) $product['net_price'],
+            (float) $product['purchase_price_net'],
+            !empty($hasCost[$productId])
+        );
+
+        $threshold = $product['low_stock_threshold'] !== null ? (int) $product['low_stock_threshold'] : $defaultThreshold;
+        $stock = (int) $product['stock_qty'];
+
+        return [
+            'product_id' => $productId,
+            'status' => [
+                'stock_qty'          => $stock,
+                'stock_value_net'    => round($stock * (float) $product['purchase_price_net'], 2),
+                'price'              => (float) $product['price'],
+                'net_price'          => (float) $product['net_price'],
+                'purchase_price_net' => (float) $product['purchase_price_net'],
+                'has_cost_history'   => !empty($hasCost[$productId]),
+                'margin_ft'          => $margin['margin_ft'] ?? null,
+                'margin_pct'         => $margin['margin_pct'] ?? null,
+            ],
+            'sales' => [
+                'last_30_days' => $this->getProductSalesSummary($productId, 30),
+                'last_90_days' => $this->getProductSalesSummary($productId, 90),
+            ],
+            'forecast' => $f,
+            'urgency' => $stock <= $threshold ? PurchaseDecisionService::classifyUrgency($f, $stock, $threshold) : null,
+            'recent_purchases' => $this->getProductPurchaseHistory($productId, 10),
+            'price_trend' => $this->getProductPurchasePriceTrend($productId, 12),
+        ];
+    }
+
+    /**
+     * Készletérték-mutatók (lásd a kör 7. pontja) — bulk SQL aggregáció,
+     * nem termékenkénti. Nettó beszerzési ÉS nettó eladási áron is
+     * megadja az értéket, plusz a potenciális árrés-értéket (csak azokra
+     * a termékekre, amikhez van megbízható beszerzési előzmény — a
+     * "sose beszerzett" termékek 0 purchase_price_net-je itt sem
+     * torzíthatja hamisan az árrés-értéket).
+     */
+    public function getInventoryValuationSummary(): array
+    {
+        $stmt = $this->pdo->query('
+            SELECT id, stock_qty, purchase_price_net, net_price
+            FROM products
+            WHERE is_deleted = 0 AND stock_qty > 0
+        ');
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if (!$rows) {
+            return ['cost_value_net' => 0.0, 'retail_value_net' => 0.0, 'potential_margin_value_net' => 0.0, 'products_with_reliable_cost' => 0, 'products_total' => 0];
+        }
+
+        $hasCost = $this->productsHavePurchaseHistory(array_column($rows, 'id'));
+
+        $costValue = 0.0;
+        $retailValue = 0.0;
+        $potentialMargin = 0.0;
+        $reliableCount = 0;
+        foreach ($rows as $row) {
+            $qty = (int) $row['stock_qty'];
+            $retailValue += $qty * (float) $row['net_price'];
+            if (!empty($hasCost[(int) $row['id']])) {
+                $costValue += $qty * (float) $row['purchase_price_net'];
+                $potentialMargin += $qty * ((float) $row['net_price'] - (float) $row['purchase_price_net']);
+                $reliableCount++;
             }
         }
-        return $count;
+
+        return [
+            'cost_value_net'              => round($costValue, 2),
+            'retail_value_net'            => round($retailValue, 2),
+            'potential_margin_value_net'  => round($potentialMargin, 2),
+            'products_with_reliable_cost' => $reliableCount,
+            'products_total'              => count($rows),
+        ];
+    }
+
+    /**
+     * Időszaki árrés-összesítő (lásd a kör 6. pontja) — a MEGLÉVŐ,
+     * termékenkénti getTopProductsReport() eredményét összegzi (nincs
+     * párhuzamos, harmadik implementáció ugyanarra a bruttó/nettó
+     * levezetésre). $limit nélkül (gyakorlatilag "az összes terméket")
+     * kéri le, hogy az összesítő ténylegesen teljes legyen, ne csak a
+     * top N termékre vonatkozzon.
+     */
+    public function getSalesMarginSummary(string $dateFrom, string $dateTo, ?string $paymentMethod = null): array
+    {
+        $products = $this->getTopProductsReport($dateFrom, $dateTo, null, 0, 100000);
+
+        $revenueNet = 0.0;
+        $costNet = 0.0;
+        $marginNet = 0.0;
+        $productsWithMargin = 0;
+        $productsWithoutMargin = 0;
+        foreach ($products as $p) {
+            $revenueNet += $p['revenue_net'];
+            if ($p['margin_net'] !== null) {
+                $costNet += $p['cost_net_total'];
+                $marginNet += $p['margin_net'];
+                $productsWithMargin++;
+            } else {
+                $productsWithoutMargin++;
+            }
+        }
+
+        return [
+            'revenue_net'             => round($revenueNet, 2),
+            'estimated_cost_net'      => round($costNet, 2),
+            'margin_net'              => round($marginNet, 2),
+            'margin_pct'              => $revenueNet > 0 ? round($marginNet / $revenueNet * 100, 1) : null,
+            'products_with_margin'    => $productsWithMargin,
+            'products_without_margin' => $productsWithoutMargin,
+        ];
     }
 }

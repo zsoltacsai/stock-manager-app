@@ -15,4 +15,8 @@ $paymentMethod = trim((string) ($_GET['payment_method'] ?? ''));
 
 send_json([
     'report' => $db->getSalesReportSummary($resolved['from'], $resolved['to'], $paymentMethod !== '' ? $paymentMethod : null),
+    // 1.3.0 — időszaki árrés-összesítő, lásd Database::getSalesMarginSummary()
+    // docblockja (a MEGLÉVŐ getTopProductsReport()-ot összegzi, nincs
+    // párhuzamos implementáció).
+    'margin' => $db->getSalesMarginSummary($resolved['from'], $resolved['to'], $paymentMethod !== '' ? $paymentMethod : null),
 ]);

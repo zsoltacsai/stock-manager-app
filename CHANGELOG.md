@@ -4,6 +4,48 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## [Unreleased] — 1.3.0 fejlesztés alatt (Beszerzési döntéstámogatás és árrés)
+
+**Fejlesztés alatt — NINCS kiadva, nincs verziószám-emelés, nincs GitHub
+Release/tag (lásd README "FountainTrade 1.3.0" szakasza a részletekért).**
+
+### Added
+
+- `src/PurchaseDecisionService.php` — központi, DB-független döntési
+  szolgáltatás: biztonsági készlet, rendelési pont, javasolt mennyiség,
+  sürgősségi besorolás, indoklás, árrés-számítás.
+- Beszerzési javaslat lista (`beszerzesi-javaslat.php`) teljesen
+  újratervezve: sürgősség szerint szűrhető (sürgős/hamarosan elfogy/
+  alacsony készlet/minden), több termék kijelölhető és egyben
+  beszerzésbe indítható (a meglévő prefill-mechanizmust újrahasznosítva).
+- Termék mini-dashboard (`termekek.php` → "Áttekintés" fül,
+  `product-insights.php`) — állapot/árrés, 30/90 napos forgalom,
+  forecast, beszerzési előzmény, ártrend, egyetlen API-hívásban.
+- Termékszintű és riport-szintű árrés (Ft és %) a Forgalmi riportban és a
+  Top termékek listában, megbízhatóság-ellenőrzéssel (sose fabrikált
+  árrés megbízhatatlan/hiányzó beszerzési árból).
+- Készletérték-mutatók (`inventory-report.php`): nettó beszerzési ÉS
+  eladási áron, plusz potenciális árrés-érték.
+- Dashboard "Figyelmet igényel" blokk beszerzési fókuszú tételei, a
+  Beszerzési javaslat oldalra mutatva (sürgősség szerint előszűrve).
+
+### Changed
+
+- `purchase-suggestions.php` válasza teljesen új alakú (a korábbi,
+  beszállító-csoportosított formátum helyett a teljes döntéstámogató
+  lista) — a fájlnév/URL változatlan.
+- `getTopProductsReport()` margin mezőkkel bővült.
+- A Dashboard "Figyelmet igényel" logikája a MEGLÉVŐ, központi
+  `getPurchaseRecommendations()`-t használja az 1.2.0-as ad-hoc
+  (zero_stock/forecast_low/low_stock) számítás helyett — a régóta nem
+  használt `countLowRunwayProducts()` eltávolítva.
+
+### Database
+
+- Nincs új tábla, nincs új oszlop, nincs migráció — minden a meglévő
+  `purchase_items`/`products` adatokból és a meglévő forecast-logikából
+  épül.
+
 ## [1.2.0] — 2026-09-16 (Dashboard és üzleti riportok)
 
 **Feature release — a meglévő sales/purchases/inventory/invoice/

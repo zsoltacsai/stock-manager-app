@@ -16,9 +16,11 @@
  * Szökőnap (február 29.): a forrás cikk egy archaikus, a "Mátyás
  * ugrása" nevű egyházi hagyományt ír le (a szökőnap utáni napok
  * szökőévben hátrébb tolódnak) — ezt egyetlen ma használt magyar
- * naptár/szoftver sem alkalmazza a gyakorlatban, ezért itt sem: egyszerű,
- * fix leképezés (1-28 változatlanul, 29. = Előd, a ma általánosan
- * elfogadott/nyomtatott naptárakban is szereplő szökőnapi név).
+ * naptár/szoftver sem alkalmazza a gyakorlatban, ezért itt sem
+ * alkalmazzuk. A forrás februári listája 1-28-ig szól, február 29-re
+ * NINCS benne hitelesen megállapítható bejegyzés — ugyanaz az elv, mint
+ * január 23-24-nél: NEM rendelünk hozzá saját döntés alapján kitalált
+ * nevet (pl. "Előd"), a getNameDay(2, 29) egyszerűen null-t ad vissza.
  */
 final class HungarianNameDays
 {
@@ -46,7 +48,7 @@ final class HungarianNameDays
             19 => 'Zsuzsanna, Eliza, Konrád', 20 => 'Aladár, Álmos, Leó', 21 => 'Eleonóra, Zelmira, Péter',
             22 => 'Gerzson, Margit, Zétény', 23 => 'Alfréd, Polikárp, Mirtill', 24 => 'Mátyás, Jázmin',
             25 => 'Géza, Cézár, Vanda', 26 => 'Viktor, Győző, Edina', 27 => 'Ákos, Bátor, Gábor',
-            28 => 'Elemér, Oszvald, Román', 29 => 'Előd',
+            28 => 'Elemér, Oszvald, Román', 29 => null,
         ],
         3 => [ // Március
             1 => 'Albin, Albina, Leonita', 2 => 'Lujza, Ágnes, Henrik, Magor', 3 => 'Kornélia, Kunigunda, Frigyes',

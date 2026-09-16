@@ -37,10 +37,23 @@ final class HungarianNameDaysTest extends TestCase
         $this->assertNull(HungarianNameDays::getNameDay(1, 24));
     }
 
-    public function testLeapDayFebruary29HasAFixedModernNameDay(): void
+    public function testLeapDayFebruary29HasNoAssignedNameDay(): void
     {
-        $this->assertSame('Előd', HungarianNameDays::getNameDay(2, 29));
+        // Ugyanaz az elv, mint január 23-24-nél: a forrásban erre a napra
+        // nincs hitelesen megállapítható bejegyzés, ezért NEM rendelünk
+        // hozzá saját döntés alapján kitalált nevet (pl. "Előd") — a
+        // Dashboard ilyenkor egyszerűen nem jelenít meg "Névnap:" sort
+        // (lásd dashboard.js renderHeader()).
+        $this->assertNull(HungarianNameDays::getNameDay(2, 29));
+        // A dátum-formázás (hét napja/hónap/nap) ettől FÜGGETLENÜL
+        // változatlanul működik szökőnapon is — ez nem igényel névnapot.
         $this->assertSame('Vasárnap, február 29.', HungarianNameDays::formatHungarianDate(strtotime('2032-02-29')));
+    }
+
+    public function testFebruary28AndMarch1AreUnaffectedByTheLeapDayNameDayChange(): void
+    {
+        $this->assertSame('Elemér, Oszvald, Román', HungarianNameDays::getNameDay(2, 28));
+        $this->assertSame('Albin, Albina, Leonita', HungarianNameDays::getNameDay(3, 1));
     }
 
     public function testEveryCalendarDayOfANonLeapYearHasAResolvableFormattedDate(): void
@@ -54,6 +67,25 @@ final class HungarianNameDaysTest extends TestCase
             $this->assertMatchesRegularExpression('/^[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]+, [a-záéíóöőúüű]+ \d{1,2}\.$/u', $formatted);
             $date = $date->modify('+1 day');
         }
+    }
+
+    public function testEveryCalendarDayOfALeapYearHasAResolvableFormattedDateIncludingFebruary29(): void
+    {
+        // 2032 szökőév (366 nap) — ugyanaz a lefedettség-bizonyíték, mint a
+        // nem szökőévi teszt, de itt KIFEJEZETTEN áthalad február 29-én is:
+        // formatHungarianDate()-nek szökőnapon is hiba nélkül kell futnia,
+        // annak ellenére, hogy getNameDay(2, 29) null-t ad.
+        $date = new DateTimeImmutable('2032-01-01');
+        $sawFeb29 = false;
+        for ($i = 0; $i < 366; $i++) {
+            if ((int) $date->format('n') === 2 && (int) $date->format('j') === 29) {
+                $sawFeb29 = true;
+            }
+            $formatted = HungarianNameDays::formatHungarianDate($date->getTimestamp());
+            $this->assertMatchesRegularExpression('/^[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]+, [a-záéíóöőúüű]+ \d{1,2}\.$/u', $formatted);
+            $date = $date->modify('+1 day');
+        }
+        $this->assertTrue($sawFeb29, 'A 366 napos huroknak ténylegesen át kellett haladnia február 29-én — ellenőrzés, hogy a teszt maga ne hamis pozitívot adjon.');
     }
 
     public function testGetNameDayReturnsNullForOutOfRangeDay(): void

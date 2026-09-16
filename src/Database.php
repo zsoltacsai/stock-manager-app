@@ -6178,4 +6178,31 @@ class Database
             'total_net'   => round((float) ($row['total_net'] ?? 0), 2),
         ];
     }
+
+    /**
+     * Dashboard "Figyelmet igényel" blokk — hány (már MOST is alacsony
+     * készletű) termék fogyhat el a megadott napszámon belül a MEGLÉVŐ
+     * getStockForecastBulk() előrejelzése szerint. NEM új üzleti logika —
+     * a forecast-képlet változatlan, ez csak egy küszöb szerinti
+     * összeszámolás a már meglévő getLowStockReport()/
+     * getStockForecastBulk() eredményén. Csak a status='ok' (megbízható
+     * előrejelzésű) sorokat számolja — 'insufficient_data'/'zero_consumption'
+     * termékekre nincs értelme "X nap múlva" állítást tenni, ezt a
+     * meglévő forecast-állapotgép már maga kezeli.
+     */
+    public function countLowRunwayProducts(int $defaultThreshold, int $maxDaysRemaining = 7): int
+    {
+        $lowStock = $this->getLowStockReport($defaultThreshold, 'low');
+        if (!$lowStock) {
+            return 0;
+        }
+        $forecast = $this->getStockForecastBulk(array_column($lowStock, 'id'));
+        $count = 0;
+        foreach ($forecast as $f) {
+            if ($f['status'] === 'ok' && $f['estimated_days_remaining'] <= $maxDaysRemaining) {
+                $count++;
+            }
+        }
+        return $count;
+    }
 }

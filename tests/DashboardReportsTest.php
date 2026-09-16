@@ -443,4 +443,38 @@ final class DashboardReportsTest extends TestCase
         $this->assertSame(1, $result['count']);
         $this->assertEqualsWithDelta(5 * 1270, $result['total_gross'], 0.01);
     }
+
+    // -----------------------------------------------------------------
+    // countLowRunwayProducts — Dashboard "Figyelmet igényel" blokk. NEM
+    // új forecast-képlet, csak egy küszöb szerinti összeszámolás a
+    // MEGLÉVŐ getLowStockReport()/getStockForecastBulk() eredményén.
+    // -----------------------------------------------------------------
+
+    public function testCountLowRunwayProductsOnlyCountsReliableForecastsUnderTheThreshold(): void
+    {
+        $db = tests_new_database();
+
+        // A: alacsony készletű (6 db, küszöb 20), a fogyás gyors és
+        // megbízható (26 eladott db 26 különböző napon, 30 napos ablakban
+        // -> atlag ~0,867/nap -> 6 / 0,867 = 6 nap, tehát a 7 napos
+        // küszöb ALATT van) -> számítania kell.
+        $a = $db->saveProduct($this->sampleProduct(['name' => 'A', 'low_stock_threshold' => 20]));
+        $db->incrementStock($a, 6);
+        for ($i = 0; $i < 26; $i++) {
+            $saleId = $db->insertSale(1270.0, 'Készpénz');
+            $db->insertSaleItem($saleId, ['product_id' => $a, 'name' => 'A', 'qty' => 1, 'unit_price' => 1270, 'vat_rate' => '27']);
+            $this->backdate($db, 'sales', $saleId, date('Y-m-d', strtotime('-' . ($i + 1) . ' days')) . ' 10:00:00');
+        }
+
+        // B: alacsony készletű, de NEM fogy (zero_consumption) -> nem számít.
+        $b = $db->saveProduct($this->sampleProduct(['name' => 'B', 'low_stock_threshold' => 20]));
+        $db->incrementStock($b, 5);
+
+        // C: bőséges készlettel, magas fogyással -> nem alacsony készletű, ki sem kerül a jelöltek közé.
+        $c = $db->saveProduct($this->sampleProduct(['name' => 'C', 'low_stock_threshold' => 5]));
+        $db->incrementStock($c, 1000);
+
+        $count = $db->countLowRunwayProducts(5, 7);
+        $this->assertSame(1, $count, 'Csak az A terméknek kell számítania: alacsony készlet + megbízható, 7 napon belüli kifogyás.');
+    }
 }

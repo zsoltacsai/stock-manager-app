@@ -28,6 +28,7 @@ require_once __DIR__ . '/../src/PriceValidator.php';
 require_once __DIR__ . '/../src/WooCommerceClient.php';
 require_once __DIR__ . '/../src/WcPushQueueWorker.php';
 require_once __DIR__ . '/../src/ReportPeriod.php';
+require_once __DIR__ . '/../src/HungarianNameDays.php';
 
 /**
  * Minden tesztfüggvény saját, egyszer használatos SQLite fájllal dolgozik

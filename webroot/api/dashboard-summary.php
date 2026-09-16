@@ -3,6 +3,7 @@
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 require_once __DIR__ . '/../../src/ReportPeriod.php';
+require_once __DIR__ . '/../../src/HungarianNameDays.php';
 
 // 1.2.0 — Dashboard fő KPI-összesítő. Két réteg kombinálódik:
 //  - "Mai" adatok MINDIG a naptári mai napra vonatkoznak (nem a period
@@ -13,6 +14,12 @@ require_once __DIR__ . '/../../src/ReportPeriod.php';
 //    alapján (lásd ReportPeriod::resolve() — backend-authoritative).
 // Csak azok a KPI-k szerepelnek, amikhez ténylegesen van megbízható adat
 // (lásd a kör 1. pontja) — nincs kitalált/becsült mező.
+//
+// A dashboard-újratervezés (kis UI/adat-kiegészítés, NEM önálló release —
+// lásd a hívó kör explicit "ne módosíts verziószámot" utasítását) minden
+// ÚJ mezője KIZÁRÓLAG már meglévő Database-metódusokból, egyszerű
+// összeszámolással/küszöb-összehasonlítással épül fel — nincs új
+// adatbázistábla, nincs új üzleti szabály.
 
 $period = (string) ($_GET['period'] ?? 'today');
 try {
@@ -22,7 +29,9 @@ try {
 }
 
 $today = date('Y-m-d');
+$yesterday = date('Y-m-d', strtotime('-1 day'));
 $todaySummary = $db->getSalesReportSummary($today, $today);
+$yesterdaySummary = $db->getSalesReportSummary($yesterday, $yesterday);
 $todayPurchase = $db->getPeriodPurchaseTotal($today, $today);
 
 $isToday = $resolved['from'] === $today && $resolved['to'] === $today;
@@ -32,8 +41,102 @@ $lowStockThreshold = (int) ($appSettings['low_stock_default_threshold'] ?? 5);
 $inventory = $db->getInventoryOverview($lowStockThreshold, 5);
 $wcQueue = $db->getWcQueueStatusSummary(5);
 $navQueue = $db->getInvoiceQueueStatusSummary('nav');
+$invoiceProvider = (string) ($appSettings['invoice_provider'] ?? 'szamlazz');
+$draftWebshopOrders = $db->countDraftWebshopOrders();
+$syncFailures24h = $db->countRecentSyncFailures(24);
+$invoiceFailures7d = $db->countRecentInvoiceFailures(7);
+$lowRunwayCount = $db->countLowRunwayProducts($lowStockThreshold, 7);
+$closingToday = $db->getClosing($today);
+
+// Csak akkor számol %-os változást, ha a tegnapi bázis ténylegesen
+// rendelkezésre áll (nem 0) — 0-ból induló %-osítás hamis/értelmezhetetlen
+// lenne (lásd a kör 2. pontja: "csak akkor jelenjen meg, ha az adat
+// valóban rendelkezésre áll").
+function dashboard_pct_change(float $today, float $yesterday): ?float
+{
+    if ($yesterday <= 0.0) {
+        return null;
+    }
+    return round((($today - $yesterday) / $yesterday) * 100, 1);
+}
+
+// "Figyelmet igényel" — csak ténylegesen fennálló (>0) tételek, mindegyik
+// egy már meglévő oldalra/riportra mutat. Sorrend: legsürgősebb elöl.
+$attention = [];
+if ($inventory['zero_stock'] > 0) {
+    $attention[] = [
+        'type' => 'zero_stock', 'count' => $inventory['zero_stock'],
+        'label' => $inventory['zero_stock'] . ' termék elfogyott',
+        'link' => 'inventory-report.php',
+    ];
+}
+if ($lowRunwayCount > 0) {
+    $attention[] = [
+        'type' => 'forecast_low', 'count' => $lowRunwayCount,
+        'label' => $lowRunwayCount . ' termék fogyhat el hamarosan (előrejelzés alapján)',
+        'link' => 'inventory-report.php',
+    ];
+}
+if ($inventory['low_stock'] > 0) {
+    $attention[] = [
+        'type' => 'low_stock', 'count' => $inventory['low_stock'],
+        'label' => $inventory['low_stock'] . ' termék alacsony készleten',
+        'link' => 'inventory-report.php',
+    ];
+}
+if ($draftWebshopOrders > 0) {
+    $attention[] = [
+        'type' => 'draft_webshop_orders', 'count' => $draftWebshopOrders,
+        'label' => $draftWebshopOrders . ' webshop rendelés várakozik',
+        'link' => 'beerkezo-eladasok.php',
+    ];
+}
+if ($invoiceProvider === 'nav' && $navQueue['buckets']['failed'] > 0) {
+    $attention[] = [
+        'type' => 'invoice_failed', 'count' => $navQueue['buckets']['failed'],
+        'label' => $navQueue['buckets']['failed'] . ' sikertelen NAV-számla',
+        'link' => 'kimeno-szamlak.php',
+    ];
+} elseif ($invoiceProvider !== 'nav' && $invoiceFailures7d > 0) {
+    $attention[] = [
+        'type' => 'invoice_failed', 'count' => $invoiceFailures7d,
+        'label' => $invoiceFailures7d . ' sikertelen számla (7 nap)',
+        'link' => 'eladasok.php',
+    ];
+}
+if ($wcQueue['counts']['failed'] + $wcQueue['counts']['dead_letter'] > 0) {
+    $wcFailedTotal = $wcQueue['counts']['failed'] + $wcQueue['counts']['dead_letter'];
+    $attention[] = [
+        'type' => 'wc_failed', 'count' => $wcFailedTotal,
+        'label' => $wcFailedTotal . ' sikertelen WooCommerce szinkron',
+        'link' => 'woocommerce-sync.php',
+    ];
+}
+
+// Rendszerállapot — KIZÁRÓLAG már meglévő, ténylegesen mért jelekből (lásd
+// a kör 1. pontja: "ne legyen fiktív állapot"). Sync-hiba (valódi
+// technikai hiba) piros; a többi (üzleti jellegű, önmagában nem a
+// rendszer működését veszélyeztető) figyelmeztetés csak sárga.
+if ($syncFailures24h > 0) {
+    $systemStatus = ['level' => 'error', 'label' => 'Hiba'];
+} elseif ($wcQueue['counts']['failed'] + $wcQueue['counts']['dead_letter'] > 0
+    || ($invoiceProvider === 'nav' ? $navQueue['buckets']['failed'] > 0 : $invoiceFailures7d > 0)
+) {
+    $systemStatus = ['level' => 'warning', 'label' => 'Figyelmet igényel'];
+} else {
+    $systemStatus = ['level' => 'ok', 'label' => 'Minden rendszer működik'];
+}
+
+$todayTopProducts = $db->getTopProductsReport($today, $today, null, 0, 5);
+$nowTs = time();
 
 send_json([
+    'date' => [
+        'iso'       => $today,
+        'formatted' => HungarianNameDays::formatHungarianDate($nowTs),
+        'name_day'  => HungarianNameDays::getNameDay((int) date('n', $nowTs), (int) date('j', $nowTs)),
+    ],
+    'system_status' => $systemStatus,
     'period' => $resolved,
     'today' => [
         'revenue_gross'   => $todaySummary['total_gross'],
@@ -42,6 +145,19 @@ send_json([
         'purchase_gross'  => $todayPurchase['total_gross'],
         'purchase_count'  => $todayPurchase['count'],
     ],
+    'today_vs_yesterday' => [
+        'revenue_change_pct'    => dashboard_pct_change($todaySummary['total_gross'], $yesterdaySummary['total_gross']),
+        'sales_count_change_pct' => dashboard_pct_change((float) $todaySummary['sales_count'], (float) $yesterdaySummary['sales_count']),
+        'avg_sale_change_pct'   => dashboard_pct_change($todaySummary['avg_sale_gross'], $yesterdaySummary['avg_sale_gross']),
+    ],
+    'attention' => $attention,
+    'today_status' => [
+        'closing_done'         => $closingToday !== null,
+        'webshop_draft_count'  => $draftWebshopOrders,
+        'invoice_failures_7d'  => $invoiceFailures7d,
+    ],
+    'today_top_products' => array_map(static fn ($p) => ['name' => $p['name'], 'qty' => $p['qty']], $todayTopProducts),
+    'today_payment_methods' => $todaySummary['by_payment_method'],
     'period_summary' => [
         'revenue_gross'   => $periodSummary['total_gross'],
         'revenue_net'     => $periodSummary['total_net'],
@@ -63,7 +179,7 @@ send_json([
     'nav_invoices' => [
         'pending'  => $navQueue['buckets']['pending'],
         'failed'   => $navQueue['buckets']['failed'],
-        'provider' => (string) ($appSettings['invoice_provider'] ?? 'szamlazz'),
+        'provider' => $invoiceProvider,
     ],
     'woocommerce_configured' => !empty($config['woocommerce']['store_url']) && !empty($config['woocommerce']['consumer_key']),
 ]);

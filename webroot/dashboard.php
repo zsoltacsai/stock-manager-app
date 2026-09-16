@@ -38,70 +38,53 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:1100px;">
+<div class="import-panel" style="max-width:1000px;">
 
-    <div class="import-card">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-            <h2 style="margin:0;">Időszak</h2>
-            <select id="dashboard-period-select" style="width:auto; margin-bottom:0;">
-                <option value="today" selected>Ma</option>
-                <option value="yesterday">Tegnap</option>
-                <option value="last_7_days">Utolsó 7 nap</option>
-                <option value="last_30_days">Utolsó 30 nap</option>
-                <option value="this_month">Aktuális hónap</option>
-                <option value="last_month">Előző hónap</option>
-                <option value="custom">Egyedi...</option>
-            </select>
-        </div>
-        <div id="dashboard-custom-range" class="filter-grid hidden" style="margin-top:12px;">
+    <!-- 1. Fejléc: mai dátum + névnap / rendszerállapot -->
+    <div class="import-card" id="dash-header-card">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:14px;">
             <div>
-                <label>Ettől</label>
-                <input type="date" id="dashboard-date-from">
+                <h2 id="dash-date" style="margin:0 0 4px;">Betöltés...</h2>
+                <p class="muted" id="dash-nameday" style="margin:0;"></p>
             </div>
-            <div>
-                <label>Eddig</label>
-                <input type="date" id="dashboard-date-to">
-            </div>
-            <button class="toolbar-btn" id="dashboard-custom-apply">Alkalmaz</button>
+            <div id="dash-system-status"></div>
         </div>
     </div>
 
+    <!-- 2. Mai KPI-k -->
     <div class="import-card">
         <h2>Ma</h2>
-        <div class="stats-grid" id="dashboard-today-stats"></div>
+        <div class="stats-grid" id="dash-kpi-stats"></div>
+    </div>
+
+    <!-- 3. Figyelmet igényel -->
+    <div class="import-card" id="dash-attention-card">
+        <h2>Figyelmet igényel</h2>
+        <div id="dash-attention-list"></div>
+    </div>
+
+    <!-- 4. Mai napi állapotok -->
+    <div class="import-card">
+        <h2>Napi állapotok</h2>
+        <div id="dash-today-status"></div>
+    </div>
+
+    <!-- 5. 7 napos forgalmi trend -->
+    <div class="import-card">
+        <h2>Forgalom — utolsó 7 nap</h2>
+        <div id="dash-revenue-chart"></div>
+    </div>
+
+    <!-- 6. Top termékek + fizetési módok -->
+    <div class="import-card">
+        <h2>Mai top termékek</h2>
+        <div id="dash-top-products"></div>
+        <p class="muted" style="margin:10px 0 0;"><a href="sales-report.php">Teljes forgalmi riport megtekintése</a></p>
     </div>
 
     <div class="import-card">
-        <h2 id="dashboard-period-title">Kiválasztott időszak</h2>
-        <div class="stats-grid" id="dashboard-period-stats"></div>
-    </div>
-
-    <div class="import-card">
-        <h2>Készlet</h2>
-        <div class="stats-grid" id="dashboard-inventory-stats"></div>
-        <p class="muted" style="margin-bottom:0;">
-            <a href="inventory-report.php">Készletriport megtekintése</a> ·
-            <a href="beszerzesi-javaslat.php">Beszerzési javaslat</a>
-        </p>
-    </div>
-
-    <div class="import-card">
-        <h2>WooCommerce szinkron</h2>
-        <div id="dashboard-wc-status"></div>
-        <p class="muted" style="margin-bottom:0;"><a href="woocommerce-sync.php">Részletes szinkron-nézet megtekintése</a></p>
-    </div>
-
-    <div class="import-card">
-        <h2>NAV számla queue</h2>
-        <div id="dashboard-nav-status"></div>
-        <p class="muted" style="margin-bottom:0;"><a href="kimeno-szamlak.php">Kimenő számlák megtekintése</a></p>
-    </div>
-
-    <div class="import-card">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-            <h2 style="margin:0;">Bevétel trend</h2>
-        </div>
-        <div id="dashboard-revenue-chart" style="margin-top:14px;"></div>
+        <h2>Mai fizetési módok</h2>
+        <div id="dash-payment-methods"></div>
     </div>
 
     <div class="import-card">
@@ -110,7 +93,9 @@ if (!Auth::isLoggedIn($appSettings)) {
             <a href="sales-report.php">Forgalmi riport</a> ·
             <a href="inventory-report.php">Készlet riport</a> ·
             <a href="stock-movements.php">Készletmozgások</a> ·
-            <a href="woocommerce-sync.php">WooCommerce szinkron</a>
+            <a href="beszerzesi-javaslat.php">Beszerzési javaslat</a> ·
+            <a href="woocommerce-sync.php">WooCommerce szinkron</a> ·
+            <a href="kimeno-szamlak.php">Kimenő számlák</a>
         </p>
     </div>
 

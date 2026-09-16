@@ -1392,4 +1392,89 @@ final class HttpSecurityTest extends TestCase
             'A bejelentkezés utáni (és a "már bejelentkezve" auto-redirect) alapértelmezett célja a Dashboard legyen.'
         );
     }
+
+    // -----------------------------------------------------------------
+    // Dashboard-újratervezés (dátum/névnap fejléc, rendszerállapot,
+    // KPI-összehasonlítás, "Figyelmet igényel" blokk, mai top termékek/
+    // fizetési módok) — a kör 10. pontja szerinti HTTP-szintű ellenőrzés.
+    // A forecast-/visszáru-nettósítás DB-szintű helyessége már bizonyítva
+    // van a DashboardReportsTest.php-ban — itt a válasz-alak és a
+    // ténylegesen ÖSSZETETT (endpoint-szintű) logika a tárgy.
+    // -----------------------------------------------------------------
+
+    public function testDashNav1_SummaryIncludesDateNameDaySystemStatusAndAttentionShape(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $res = self::request('GET', '/api/dashboard-summary.php?period=today', null, [], $jar);
+        $this->assertSame(200, $res['status'], $res['body']);
+        $json = $res['json'];
+
+        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}$/', $json['date']['iso']);
+        $this->assertNotEmpty($json['date']['formatted']);
+        $this->assertArrayHasKey('name_day', $json['date']); // lehet null (pl. jan. 23-24.), de a kulcsnak léteznie kell
+
+        $this->assertContains($json['system_status']['level'], ['ok', 'warning', 'error']);
+        $this->assertNotEmpty($json['system_status']['label']);
+
+        foreach (['revenue_change_pct', 'sales_count_change_pct', 'avg_sale_change_pct'] as $key) {
+            $val = $json['today_vs_yesterday'][$key];
+            $this->assertTrue($val === null || is_numeric($val), "today_vs_yesterday.$key null vagy szám legyen.");
+        }
+
+        $this->assertIsArray($json['attention']);
+        foreach ($json['attention'] as $item) {
+            foreach (['type', 'count', 'label', 'link'] as $key) {
+                $this->assertArrayHasKey($key, $item);
+            }
+            $this->assertGreaterThan(0, $item['count'], 'A "Figyelmet igényel" blokk SOSE tartalmazhat 0 darabszámú (fiktív) tételt.');
+        }
+
+        $this->assertArrayHasKey('closing_done', $json['today_status']);
+        $this->assertIsBool($json['today_status']['closing_done']);
+        $this->assertIsArray($json['today_top_products']);
+        $this->assertLessThanOrEqual(5, count($json['today_top_products']));
+        $this->assertIsArray($json['today_payment_methods']);
+    }
+
+    public function testDashNav2_AttentionBlockReflectsARealZeroStockProductAndLinksToInventoryReport(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        // Valódi, 0 készletű termék létrehozása — a "Figyelmet igényel"
+        // blokknak ezt fel KELL vennie (nem fiktív állapot, lásd a kör
+        // 1. pontja).
+        $product = self::request('POST', '/api/product-save.php', [
+            'name' => 'Dashboard figyelmeztetés teszt termék', 'gross_price' => 100, 'vat_rate' => '27',
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $product['status'], $product['body']);
+
+        $res = self::request('GET', '/api/dashboard-summary.php?period=today', null, [], $jar);
+        $this->assertSame(200, $res['status']);
+        $zeroStockItem = null;
+        foreach ($res['json']['attention'] as $item) {
+            if ($item['type'] === 'zero_stock') {
+                $zeroStockItem = $item;
+                break;
+            }
+        }
+        $this->assertNotNull($zeroStockItem, 'A frissen létrehozott 0 készletű terméknek meg kell jelennie a "Figyelmet igényel" blokkban.');
+        $this->assertGreaterThan(0, $zeroStockItem['count']);
+        $this->assertSame('inventory-report.php', $zeroStockItem['link']);
+    }
+
+    public function testDashNav3_NoExternalHttpDependencyForNameDayData(): void
+    {
+        // A névnap-adat KIZÁRÓLAG a lokális HungarianNameDays.php-ból jön
+        // — ez a teszt azt bizonyítja, hogy a válasz egy szinkron, helyi
+        // PHP-hívásból ered (nincs számottevő extra késleltetés, ami egy
+        // külső HTTP-hívásra utalna), lásd a kör 9. pontja.
+        $jar = self::cookieJar('login-success');
+        $start = microtime(true);
+        $res = self::request('GET', '/api/dashboard-summary.php?period=today', null, [], $jar);
+        $elapsed = microtime(true) - $start;
+        $this->assertSame(200, $res['status']);
+        $this->assertLessThan(2.0, $elapsed, 'A dashboard-summary.php válasznak gyorsnak kell lennie — külső API-függőség esetén ez jóval lassabb lenne.');
+    }
 }

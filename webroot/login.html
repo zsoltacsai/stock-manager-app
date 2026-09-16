@@ -157,7 +157,7 @@ function targetAfterLogin() {
     if (redirect && /^[a-zA-Z0-9_-]+\.(html|php)(\?.*)?$/.test(redirect)) {
         return redirect;
     }
-    return 'index.php';
+    return 'dashboard.php';
 }
 
 async function doLogin() {

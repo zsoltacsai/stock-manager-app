@@ -2,7 +2,7 @@
     "name": "FountainTrade",
     "short_name": "FountainTrade",
     "description": "Helyi kassza, beszerzés és készletkezelő",
-    "start_url": "index.php",
+    "start_url": "dashboard.php",
     "scope": ".",
     "display": "standalone",
     "orientation": "any",

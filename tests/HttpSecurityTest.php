@@ -1353,4 +1353,43 @@ final class HttpSecurityTest extends TestCase
         $this->assertTrue(mb_check_encoding($bodyWithoutBom, 'UTF-8'), 'A CSV tartalmának érvényes UTF-8-nak kell lennie.');
         $this->assertStringContainsString($accentedName, $csv['body'], 'Az ékezetes terméknévnek sérülés nélkül kell megjelennie a CSV-ben.');
     }
+
+    // -----------------------------------------------------------------
+    // Navigáció-fix (a Dashboard mostantól a kezdőoldal, nincs külön
+    // sidebar-menüpontja, a logó vezet rá) — kis UI-only változtatás egy
+    // KÉSŐBBI release-hez, lásd README/CHANGELOG "Nem kiadott módosítás"
+    // szakaszát. Valódi renderelt HTML-en ellenőriz, nem csak a PHP
+    // sablon forráskódján.
+    // -----------------------------------------------------------------
+
+    public function testNav1_SidebarHasNoDedicatedDashboardMenuItemButLogoLinksToIt(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $res = self::request('GET', '/index.php', null, [], $jar);
+        $this->assertSame(200, $res['status']);
+        $this->assertStringNotContainsString(
+            'title="Dashboard"><svg',
+            $res['body'],
+            'Ne legyen KÜLÖN, ikonos sidebar-menüpont "Dashboard" címkével.'
+        );
+        $this->assertMatchesRegularExpression(
+            '/<a href="dashboard\.php"[^>]*><img[^>]*id="sidebar-logo"/',
+            $res['body'],
+            'A logónak a Dashboardra kell mutatnia.'
+        );
+    }
+
+    public function testNav2_LoginDefaultRedirectTargetIsDashboard(): void
+    {
+        // login.html statikus fájl — a _bootstrap.php auth-kapuja csak az
+        // api/*.php végpontokra vonatkozik, ez a fájl közvetlenül
+        // kiszolgálva olvasható (ugyanaz, mint minden más statikus oldal).
+        $res = self::request('GET', '/login.html');
+        $this->assertSame(200, $res['status']);
+        $this->assertStringContainsString(
+            "return 'dashboard.php';",
+            $res['body'],
+            'A bejelentkezés utáni (és a "már bejelentkezve" auto-redirect) alapértelmezett célja a Dashboard legyen.'
+        );
+    }
 }

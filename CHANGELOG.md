@@ -13,10 +13,27 @@ a részletekért.**
 
 ### Added
 
-- Új Dashboard főoldal (`dashboard.php`) — KPI-k (mai/időszaki forgalom,
-  eladásszám, átlagos kosárérték, mai beszerzés, készletérték, alacsony/
-  nulla/negatív készlet, WooCommerce és NAV queue összesítő), egységes
-  backend-authoritative időszakválasztó (`src/ReportPeriod.php`).
+- **Dashboard** (`dashboard.php`) — az alkalmazás új alapértelmezett
+  kezdőoldala: bejelentkezés után és a csupasz gyökér-URL-en
+  (`http://.../`) is ez nyílik meg (a Kassza saját, explicit `index.php`
+  URL-je változatlan, a Kassza tartalma nem módosult). Gyors napi
+  áttekintő, nem egy újabb riport-oldal:
+  - dátum + magyar névnap fejléc (`src/HungarianNameDays.php` — lokális,
+    verziózott naptáradat, nincs külső API-hívás; ha egy napra nincs
+    hitelesen megállapítható névnap a forrásban — pl. január 23-24.,
+    február 29. —, egyszerűen nem jelenik meg "Névnap:" sor, nincs
+    kitalált név);
+  - rendszerállapot-jelző (🟢/🟠/🔴), kizárólag már meglévő, mért
+    jelekből (sync-hiba, WooCommerce/NAV-számla sikertelenségek);
+  - mai KPI-k tegnaphoz viszonyított %-os változással (csak ha van
+    érvényes tegnapi bázisadat);
+  - "Figyelmet igényel" blokk (elfogyott/alacsony készlet, előrejelzés
+    alapján hamarosan kifogyó termékek, függő webshop-rendelések,
+    sikertelen számlák/WooCommerce-szinkron) — mindegyik tétel a
+    megfelelő meglévő oldalra mutat;
+  - napi állapotok (napi zárás, webshop, számlázás), 7 napos
+    bevétel-trend, mai top termékek, mai fizetésimód-megoszlás.
+  - A sidebar-ban nincs külön Dashboard-menüpont — a logó vezet rá.
 - Forgalmi riport (`sales-report.php`) — napi bontás, fizetésimód szerinti
   bontás, Top termékek (csoport/minimum darabszám szűréssel,
   visszáruval nettósítva).
@@ -41,6 +58,11 @@ a részletekért.**
 - `purchase-suggestions.php` válasza additívan bővült egy `forecast`
   mezővel soronként — a meglévő javasolt-mennyiség logika és válasz-alak
   változatlan.
+- Bejelentkezés utáni (és a "már bejelentkezve" auto-redirect)
+  alapértelmezett cél `index.php`-ről `dashboard.php`-ra változott — a
+  `?redirect=...` deep-link célok (közvetlen URL-ről érkezéskor)
+  változatlanul elsőbbséget élveznek.
+- PWA `manifest.json` `start_url` mezője `dashboard.php`-ra változott.
 
 ### Database
 

@@ -2264,16 +2264,52 @@ vagy egyéb duplikált adattábla).
 
 ### Dashboard (`dashboard.php`)
 
-Új főoldali áttekintő nézet (sidebar: "Dashboard", első ikon) — "Kassza"
-marad az alapértelmezett bejelentkezés utáni oldal, a Dashboard önálló,
-opcionális új funkció. KPI-k: mai árbevétel/eladásszám/átlagos kosárérték/
-beszerzés, a kiválasztott időszak bruttó/nettó árbevétele és eladásszáma,
-készletérték és alacsony/nulla/negatív készletű termékek száma, WooCommerce
-push-queue és NAV számla-queue összesítő (csak akkor jelenik meg, ha az
-adott integráció ténylegesen be van állítva — lásd `dashboard-summary.php`).
-Az időszakválasztó (ma/tegnap/7 nap/30 nap/aktuális hónap/előző hónap/egyedi)
-minden riport-oldalon egységes, a dátumhatárokat KIZÁRÓLAG a backend számolja
-ki (`src/ReportPeriod.php`, `Europe/Budapest` időzóna, ugyanaz, mint a napi
+Az alkalmazás alapértelmezett kezdőoldala — bejelentkezés után és a
+csupasz gyökér-URL-en (`http://host/`) is ez nyílik meg. A "Kassza" oldal
+saját, explicit `index.php` URL-jén (pl. a sidebar-linkről) változatlanul
+elérhető, a Kassza tartalma nem módosult — csak a *bejelentkezés utáni
+alapértelmezett cél* és a *gyökér-URL viselkedése* változott. A sidebar-ban
+NINCS külön Dashboard-menüpont — a logó (bal felső sarok) vezet rá minden
+oldalról, minden nézetben (asztali/tablet/mobil).
+
+Szándékosan gyors, tömör napi áttekintő, nem egy újabb, szűrhető
+riport-oldal (azokhoz lásd lent a Forgalmi/Készlet riportot) — logikai
+sorrendben:
+
+1. **Fejléc** — mai dátum magyar formátumban + névnap
+   (`src/HungarianNameDays.php`: lokális, verziózott, teljes éves
+   naptáradat, NINCS runtime külső API-hívás; ha egy napra a forrásban
+   nincs hitelesen megállapítható névnap — jelenleg január 23-24. és
+   február 29. —, a mező egyszerűen `null`, a felület nem jelenít meg
+   "Névnap:" sort, sose kitalált nevet), és egy rendszerállapot-jelző
+   (🟢/🟠/🔴) — KIZÁRÓLAG már meglévő, ténylegesen mért jelekből (24 órás
+   sync-hiba, WooCommerce/NAV-számla sikertelenségek), sose fiktív állapot.
+2. **Mai KPI-k** — mai árbevétel/eladásszám/átlagos kosárérték/beszerzés,
+   ahol értelmezhető a tegnapi naphoz viszonyított %-os változással (csak
+   akkor jelenik meg, ha a tegnapi bázisadat ténylegesen nem nulla).
+3. **"Figyelmet igényel"** — elfogyott/alacsony készletű termékek, az
+   előrejelzés alapján 7 napon belül várhatóan kifogyó termékek (a
+   meglévő forecast-logikából, lásd lent), feldolgozás alatt lévő webshop-
+   rendelések, sikertelen számlák/WooCommerce-szinkron — csak a
+   ténylegesen fennálló (>0) tételek, mindegyik a megfelelő meglévő
+   oldalra/riportba mutat.
+4. **Napi állapotok** — napi zárás állapota, webshop-rendelések,
+   számlázási hibák (7 nap).
+5. **Bevétel — utolsó 7 nap** — a meglévő `revenue-trend.php`-t
+   újrahasznosítja (`?days=7`), nincs duplikált business logic.
+6. **Mai top termékek** / **Mai fizetési módok** — kompakt lista, link a
+   teljes Forgalmi riportra.
+
+Minden Dashboard-adat a MEGLÉVŐ Database-metódusokból épül fel
+(`dashboard-summary.php`) — egyetlen új, apró kiegészítés
+(`Database::countLowRunwayProducts()`), ami maga is csak a meglévő
+alacsony-készlet/előrejelzés-metódusokat komponálja össze, nem vezet be
+új üzleti szabályt.
+
+A riport-oldalak saját, szabadon állítható időszakválasztója
+(ma/tegnap/7 nap/30 nap/aktuális hónap/előző hónap/egyedi) minden
+riport-oldalon egységes, a dátumhatárokat KIZÁRÓLAG a backend számolja ki
+(`src/ReportPeriod.php`, `Europe/Budapest` időzóna, ugyanaz, mint a napi
 zárásnál) — a kliens csak egy kulcsszót küld.
 
 ### Forgalmi riport (`sales-report.php`)

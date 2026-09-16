@@ -58,7 +58,14 @@ try {
         'imported' => $imported, 'skipped' => $skipped, 'total_from_wc' => count($products),
         'truncated' => $result['truncated'],
     ]);
+} catch (RuntimeException $e) {
+    // A WooCommerceClient saját, biztonságosan felhasználó (admin) elé
+    // tárható hibaüzenete (pl. "WooCommerce request failed (timeout)")
+    // — verifikáltan sose tartalmaz hitelesítő adatot, valódi
+    // diagnosztikai értéke van a szinkron-hiba elhárításához.
+    $db->rollBack();
+    send_json(['error' => $e->getMessage()], 502);
 } catch (Throwable $e) {
     $db->rollBack();
-    send_json(['error' => $e->getMessage()], 500);
+    send_generic_error_response($e, 'sync-pull.php WooCommerce behúzás sikertelen');
 }

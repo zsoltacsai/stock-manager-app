@@ -48,7 +48,10 @@ if ($balance > 10000000) {
 try {
     $id = $db->issueGiftCard($code, $balance, $input['expiry_date'] ?? null, $input['notes'] ?? null);
 } catch (Throwable $e) {
-    send_json(['error' => 'Ez a kód már létezik, vagy hiba történt: ' . $e->getMessage()], 400);
+    // Lásd coupon-save.php ugyanezen indoklását — a nyers kivétel-üzenet
+    // csak a naplóba kerül, a kliens a hasznos, általános gyanút kapja.
+    error_log('[fountaintrade] gift-card-save.php: ' . get_class($e) . ': ' . $e->getMessage());
+    send_json(['error' => 'Ez a kód már létezik, vagy hiba történt a mentés közben.'], 400);
 }
 
 $db->logAudit(

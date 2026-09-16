@@ -1710,4 +1710,87 @@ final class HttpSecurityTest extends TestCase
         $this->assertNotNull($found, 'A terméknek meg kell jelennie a javaslatlistában (0 készlet).');
         $this->assertStringContainsString('application/json', $res['headers']['content-type'] ?? '');
     }
+
+    // -----------------------------------------------------------------
+    // 1.3.1 FINAL RELEASE GATE — a release-gate audit során kiderült,
+    // hogy több végpont a nyers $e->getMessage()-t adta vissza a
+    // kliensnek, ami konkrétan, reprodukálhatóan SQL/séma-töredéket
+    // tartalmazhatott (pl. "UNIQUE constraint failed: coupons.code").
+    // Ezek a tesztek bizonyítják: (a) a technikai részlet többé nem
+    // szivárog ki, (b) a valódi, hasznos üzleti hibaüzenetek (pl. "már
+    // le van zárva", "időközben már csak N db vihető vissza") VÁLTOZATLANUL
+    // eljutnak a felhasználóhoz — a javítás nem generikusította túl a
+    // legitim visszajelzéseket.
+    // -----------------------------------------------------------------
+
+    public function testGate1_DuplicateCouponCodeDoesNotLeakRawSqlFragment(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        $code = 'GATE-DUP-' . bin2hex(random_bytes(4));
+        $first = self::request('POST', '/api/coupon-save.php', [
+            'code' => $code, 'type' => 'fixed', 'value' => 10,
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $first['status'], $first['body']);
+
+        $duplicate = self::request('POST', '/api/coupon-save.php', [
+            'code' => $code, 'type' => 'fixed', 'value' => 20,
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(400, $duplicate['status']);
+        $this->assertStringContainsString('már létezik', $duplicate['json']['error'] ?? '', 'A hasznos, felhasználó-orientált gyanúnak meg kell maradnia.');
+        $this->assertStringNotContainsString('UNIQUE', $duplicate['body'], 'A nyers SQL/séma-töredék (UNIQUE constraint ...) nem szivároghat ki.');
+        $this->assertStringNotContainsString('coupons.code', $duplicate['body'], 'A tábla/oszlopnév nem szivároghat ki.');
+        $this->assertStringNotContainsString('SQLSTATE', $duplicate['body'], 'A nyers PDO-hibakód nem szivároghat ki.');
+    }
+
+    public function testGate2_DuplicateGiftCardCodeDoesNotLeakRawSqlFragment(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        $code = 'GATEDUP' . bin2hex(random_bytes(4));
+        $first = self::request('POST', '/api/gift-card-save.php', [
+            'code' => $code, 'balance' => 1000,
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $first['status'], $first['body']);
+
+        $duplicate = self::request('POST', '/api/gift-card-save.php', [
+            'code' => $code, 'balance' => 2000,
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(400, $duplicate['status']);
+        $this->assertStringContainsString('már létezik', $duplicate['json']['error'] ?? '', 'A hasznos, felhasználó-orientált gyanúnak meg kell maradnia.');
+        $this->assertStringNotContainsString('UNIQUE', $duplicate['body'], 'A nyers SQL/séma-töredék nem szivároghat ki.');
+        $this->assertStringNotContainsString('gift_cards.code', $duplicate['body'], 'A tábla/oszlopnév nem szivároghat ki.');
+        $this->assertStringNotContainsString('SQLSTATE', $duplicate['body'], 'A nyers PDO-hibakód nem szivároghat ki.');
+    }
+
+    public function testGate3_StockTakeDoubleCompletionStillShowsRealUserFacingMessageNotGenericError(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        $start = self::request('POST', '/api/stock-take-start.php', [], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $start['status'], $start['body']);
+        $takeId = $start['json']['id'] ?? $start['json']['stock_take_id'] ?? null;
+        $this->assertNotEmpty($takeId, 'A leltár indításának valódi id-t kell visszaadnia: ' . $start['body']);
+
+        $firstClose = self::request('POST', '/api/stock-take-complete.php', [
+            'id' => $takeId, 'apply_corrections' => false,
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $firstClose['status'], $firstClose['body']);
+
+        $secondClose = self::request('POST', '/api/stock-take-complete.php', [
+            'id' => $takeId, 'apply_corrections' => false,
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(409, $secondClose['status']);
+        $this->assertSame(
+            'Ez a leltár már le van zárva.',
+            $secondClose['json']['error'] ?? null,
+            'A JAVÍTÁS (RuntimeException külön catch-elése) UTÁN is a valódi, konkrét üzenetnek kell megjelennie — nem egy generikus "váratlan szerverhiba"-nak.'
+        );
+    }
 }

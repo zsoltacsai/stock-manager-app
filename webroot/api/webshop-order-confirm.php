@@ -92,7 +92,7 @@ try {
     $db->commit();
 } catch (Throwable $e) {
     $db->rollBack();
-    send_json(['error' => 'A rendelés leadása sikertelen: ' . $e->getMessage()], 500);
+    send_generic_error_response($e, 'webshop-order-confirm.php rendelés leadása sikertelen');
 }
 
 $db->logSync('webhook', null, "Beérkező rendelés #{$order['wc_order_id']} leadva (eladás #$saleId)");

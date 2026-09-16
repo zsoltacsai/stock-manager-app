@@ -120,6 +120,59 @@ NEM változott azokon a pontokon, ahol nem volt valódi hiba.
 - Nincs új tábla, nincs új oszlop, nincs migráció.
   `Database::SCHEMA_VERSION` változatlanul 25.
 
+### Kiegészítés — FINAL RELEASE GATE audit (második hullám, a `v1.3.1` tag UTÁN)
+
+**Fontos**: a `v1.3.1` git tag a `6192981` commitra mutat — az alábbi
+javítások EZUTÁN, egy formális release-gate ellenőrzés során kerültek
+elő, tehát egy KÉSŐBBI commitban vannak, amit a `v1.3.1` tag NEM fed le.
+Lásd a release-gate végső riportot a pontos indoklásért, hogy miért nem
+maradhatott a `v1.3.1` tag változatlanul a tényleges kiadási állapotra.
+
+- **SQL injection formális audit — LEZÁRVA**: a teljes kódbázis (`src/Database.php`
+  ~250+ query helye, minden `webroot/api/*.php`, import-réteg, migrációk)
+  átvizsgálva — nem került elő kihasználható SQL injection. Lásd a
+  release-gate riport "SQL Injection" szakaszát.
+- **Nyers kivétel-üzenetek formális felülvizsgálata**: a korábbi kör
+  "kb. 8 endpoint, sose tartalmazott titkot/elérési utat" állítása
+  RÉSZBEN pontatlan volt — a formális audit ténylegesen reprodukálható
+  SQL/séma-töredék szivárgást talált (pl. "UNIQUE constraint failed:
+  coupons.code" egy duplikált kuponkódnál) és lehetséges fájlrendszer-
+  elérési út szivárgást a mentés-visszaállítás hibaágán. A legszélesebb
+  elérésű és legkönnyebben reprodukálható helyeken (`sale.php`,
+  `webshop-order-confirm.php`, `coupon-save.php`, `gift-card-save.php`,
+  `purchase-save.php`, `import-commit.php`, `stock-transfer.php`,
+  `stock-take-complete.php`, `return-create.php`, `sync-pull.php`,
+  `auto-sync-run.php`) javítva — a technikai részlet mostantól csak a
+  szerver naplójába kerül, a kliens egy generikus üzenetet kap. A
+  VALÓDI, hasznos üzleti hibaüzenetek (pl. "Ez a leltár már le van
+  zárva.", "...tételből időközben már csak N db vihető vissza.")
+  TUDATOSAN megmaradtak — ezek nem technikai kivétel-részletek, hanem
+  a `Database.php` saját, kézzel írt, biztonságos visszajelzései.
+- **Tudatosan NEM javítva** (dokumentált döntés): a mentés-visszaállítás
+  (`backup-restore.php`/`backup-now.php`/`auto-backup-run.php`)
+  hibaágai továbbra is a `BackupManager` nyers kivétel-üzenetét adják
+  vissza, ami elvétve fájl-elérési utat tartalmazhat. Ez a MÁR eddig is
+  legszigorúbban védett végpont (vezetői jogszint + friss PIN-
+  ellenőrzés a visszaállításnál) — az elérhető információ (helyi
+  fájlnév a `data/backups/` alatt) alacsony kockázatú a már ennyire
+  megbízható felhasználó számára, és a javítás vagy a `BackupManager`
+  gondosan hangolt (és nemrég, a leltár/backup-kapcsolat javításakor
+  is módosított) üzeneteinek kockázatosabb átírását, vagy a hasznos
+  diagnosztikai részlet elvesztését jelentette volna egy valódi hiba
+  elhárításakor — a kockázat/haszon arány itt nem indokolta a
+  módosítást egy stabilizációs körben.
+- **Dokumentáció-javítás**: a README "Termék importálás" szakasza
+  tévesen azt állította, hogy .xls/.xlsx importhoz kézzel CSV-vé kell
+  menteni a fájlt — valójában a szerver natívan (LibreOffice nélkül)
+  olvassa be mindkét formátumot, az `install.txt` már eddig is helyesen
+  ezt írta le.
+- Teljes körű, valódi böngészős UX/security/adatintegritás-verifikáció
+  (desktop 1280px + mobil 375px minden fő oldalon, egy teljes
+  Beszerzési javaslat → előtöltés → mentés → készlet/árrés/
+  beszerzési-előzmény lánc valódi végigjátszása, CSRF/cron-token/
+  path-traversal/SQL-szerű input/XSS/open-redirect élő próba) — lásd a
+  release-gate végső riportot a teljes eredményért.
+
 ## [1.3.0] — 2026-09-16 (Beszerzés, árrés és készletintelligencia)
 
 **Feature release — az 1.2.0 Dashboard/riportok/forecast alapjára építve

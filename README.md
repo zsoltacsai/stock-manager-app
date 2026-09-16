@@ -124,9 +124,11 @@ Ha eddig más programban (pl. Axel Pro) vezetted a készletet, a
 átemeli a teljes termékkatalógust:
 
 1. Válaszd ki a forrásprogramot a legördülő listából.
-2. Töltsd fel az onnan exportált **CSV**-t (ha csak .xls/.xlsx van,
-   mentsd előbb CSV-ként Excelből vagy LibreOffice-ból — a szerver nem
-   tudja közvetlenül feldolgozni a bináris Excel fájlokat).
+2. Töltsd fel az onnan exportált **CSV**, **XLS** vagy **XLSX** fájlt —
+   a szerver mindhárom formátumot saját maga, külső program nélkül
+   olvassa be (lásd install.txt). Csak akkor van szükség kézi CSV-vé
+   mentésre, ha a feltöltött fájl sérült vagy nem szabványos formátumú,
+   és a beépített olvasó emiatt hibát ad.
 3. **Előnézet**: megmutatja, hány sorból lesz új termék, illetve hány
    frissít meglévőt vonalkód alapján, és jelzi a gyanús eseteket
    (hiányzó név, duplikált vonalkód a fájlban, egy várt oszlop, ami nem

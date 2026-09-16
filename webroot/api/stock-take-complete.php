@@ -26,8 +26,15 @@ if ($applyCorrections && $db->listStaff(true) && !$db->isStaffAdmin(Auth::curren
 
 try {
     $updatedProducts = $db->completeStockTake($id, $applyCorrections);
+} catch (RuntimeException $e) {
+    // A Database::completeStockTake() saját, kézzel írt, biztonságosan
+    // felhasználó elé tárható üzenete (pl. "A leltár nem található." /
+    // "Ez a leltár már le van zárva." — utóbbi az 1.3.1-ben javított
+    // atomikus versenyhelyzet-védelem visszajelzése) — valódi üzleti
+    // visszajelzés, nem technikai kivétel-részlet.
+    send_json(['error' => $e->getMessage()], 409);
 } catch (Throwable $e) {
-    send_json(['error' => 'A leltár lezárása sikertelen: ' . $e->getMessage()], 500);
+    send_generic_error_response($e, 'stock-take-complete.php leltár lezárása sikertelen');
 }
 
 // A WC-vel szinkronban lévő, eltéréssel érintett termékek push-a MÁR

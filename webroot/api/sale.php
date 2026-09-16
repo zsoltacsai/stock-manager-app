@@ -330,7 +330,7 @@ try {
             match_or_reject_idempotent_replay($db, $winner, $idempotencyFingerprint, $invoiceProviderKey); // sose tér vissza
         }
     }
-    send_json(['error' => 'Az eladás rögzítése sikertelen: ' . $e->getMessage()], 500);
+    send_generic_error_response($e, 'sale.php eladás rögzítése sikertelen');
 }
 
 if ($claimError !== null) {

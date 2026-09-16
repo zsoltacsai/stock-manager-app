@@ -85,7 +85,8 @@ try {
     $db->commit();
 } catch (Throwable $e) {
     $db->rollBack();
-    send_json(['error' => 'Import sikertelen, semmi nem került mentésre: ' . $e->getMessage()], 500);
+    error_log('[fountaintrade] import-commit.php: ' . get_class($e) . ': ' . $e->getMessage());
+    send_json(['error' => 'Import sikertelen, semmi nem került mentésre.'], 500);
 }
 
 $db->logAudit(

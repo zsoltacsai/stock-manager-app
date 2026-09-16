@@ -35,6 +35,23 @@ function send_generic_server_error(): void
     echo json_encode(['error' => 'Váratlan szerverhiba történt. Próbáld újra, vagy értesítsd az üzemeltetőt.'], JSON_UNESCAPED_UNICODE);
 }
 
+/**
+ * Ugyanaz a generikus üzenet, mint send_generic_server_error(), de egy
+ * VÉGPONT SAJÁT, lokális catch blokkjából hívva (nem a globális kivétel-
+ * kezelőből, ami az el nem kapott hibákat már eddig is így kezelte).
+ * Regresszió (1.3.1 release-gate audit): több végpont korábban közvetlenül
+ * $e->getMessage()-t adott vissza a kliensnek — ez konkrétan, reprodukálhatóan
+ * SQL/séma-töredéket (pl. "UNIQUE constraint failed: coupons.code") vagy
+ * szerver-oldali fájlrendszer-elérési utat (pl. mentés-fájlok elérési útja)
+ * tartalmazhatott. A valódi kivétel részlete MOST is bekerül a szerver
+ * naplójába (diagnosztikai célra), csak a kliens felé nem szivárog ki nyersen.
+ */
+function send_generic_error_response(Throwable $e, string $context, int $status = 500): void
+{
+    error_log('[fountaintrade] ' . $context . ': ' . get_class($e) . ': ' . $e->getMessage());
+    send_json(['error' => 'Váratlan szerverhiba történt. Próbáld újra, vagy értesítsd az üzemeltetőt.'], $status);
+}
+
 set_exception_handler(function (Throwable $e): void {
     error_log('[fountaintrade] Uncaught ' . get_class($e) . ': ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
     send_generic_server_error();

@@ -57,11 +57,23 @@ try {
     ]);
 
     send_json(['ran' => true, 'imported' => $imported, 'skipped' => $skipped]);
-} catch (Throwable $e) {
+} catch (RuntimeException $e) {
+    // A WooCommerceClient saját, biztonságosan felhasználó (admin, a
+    // Rendszerállapot oldalon a mentett last_auto_sync_summary-n
+    // keresztül) elé tárható hibaüzenete — lásd sync-pull.php ugyanezen
+    // indoklását.
     $db->rollBack();
     $settings->save([
         'last_auto_sync_at'      => date('c'),
         'last_auto_sync_summary' => 'Hiba: ' . $e->getMessage(),
     ]);
-    send_json(['ran' => true, 'error' => $e->getMessage()], 500);
+    send_json(['ran' => true, 'error' => $e->getMessage()], 502);
+} catch (Throwable $e) {
+    $db->rollBack();
+    error_log('[fountaintrade] auto-sync-run.php: ' . get_class($e) . ': ' . $e->getMessage());
+    $settings->save([
+        'last_auto_sync_at'      => date('c'),
+        'last_auto_sync_summary' => 'Váratlan szerverhiba történt — részletek a szerver naplójában.',
+    ]);
+    send_json(['ran' => true, 'error' => 'Váratlan szerverhiba történt.'], 500);
 }

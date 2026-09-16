@@ -82,8 +82,14 @@ $totalRefund = round($rawRefund * $discountRatio, 2);
 
 try {
     $returnId = $db->processReturn($saleId, $itemsToReturn, $reason, $staffId, $totalRefund, $sale);
+} catch (RuntimeException $e) {
+    // A Database::processReturn() saját, kézzel írt, biztonságosan
+    // felhasználó elé tárható üzenete (pl. "...tételből időközben már
+    // csak N db vihető vissza.") — valódi üzleti visszajelzés, nem
+    // technikai kivétel-részlet.
+    send_json(['error' => $e->getMessage()], 409);
 } catch (Throwable $e) {
-    send_json(['error' => 'A visszáru rögzítése sikertelen: ' . $e->getMessage()], 500);
+    send_generic_error_response($e, 'return-create.php visszáru rögzítése sikertelen');
 }
 
 send_json([

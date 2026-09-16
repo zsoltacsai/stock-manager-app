@@ -105,7 +105,7 @@ try {
             match_or_reject_idempotent_purchase_replay($db, $winner, $idempotencyFingerprint); // sose tér vissza
         }
     }
-    send_json(['error' => 'A beszerzés rögzítése sikertelen: ' . $e->getMessage()], 500);
+    send_generic_error_response($e, 'purchase-save.php beszerzés rögzítése sikertelen');
 }
 
 // A WooCommerce-push MÁR beütemezve a recordPurchase() saját tranzakciójában

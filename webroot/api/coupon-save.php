@@ -39,7 +39,12 @@ if ($db->listStaff(true) && !$db->isStaffAdmin($staffId)) {
 try {
     $id = $db->saveCoupon($input);
 } catch (Throwable $e) {
-    send_json(['error' => 'Ez a kuponkód már létezik, vagy hiba történt: ' . $e->getMessage()], 400);
+    // A nyers $e->getMessage() korábban SQL/séma-töredéket (pl. "UNIQUE
+    // constraint failed: coupons.code") adhatott vissza a kliensnek — a
+    // hasznos, felhasználó-orientált gyanú (duplikált kód) megmarad, a
+    // technikai részlet csak a szerver naplójába kerül.
+    error_log('[fountaintrade] coupon-save.php: ' . get_class($e) . ': ' . $e->getMessage());
+    send_json(['error' => 'Ez a kuponkód már létezik, vagy hiba történt a mentés közben.'], 400);
 }
 
 $db->logAudit(

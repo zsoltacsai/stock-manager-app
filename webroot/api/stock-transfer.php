@@ -35,8 +35,15 @@ if ($fromLocationId) {
 
 try {
     $db->transferStock($productId, $fromLocationId, $toLocationId, $qty, $staffId);
+} catch (RuntimeException $e) {
+    // A Database::transferStock() saját, kézzel írt, biztonságosan
+    // felhasználó elé tárható üzenete (pl. "A forrás telephelyen
+    // időközben már nincs elég készlet.") — ez EGY VALÓDI, hasznos
+    // üzleti visszajelzés, nem technikai kivétel-részlet, ezért itt
+    // szándékosan NEM a generikus üzenettel helyettesítjük.
+    send_json(['error' => $e->getMessage()], 409);
 } catch (Throwable $e) {
-    send_json(['error' => 'A készletmozgatás sikertelen: ' . $e->getMessage()], 500);
+    send_generic_error_response($e, 'stock-transfer.php készletmozgatás sikertelen');
 }
 
 send_json(['ok' => true]);

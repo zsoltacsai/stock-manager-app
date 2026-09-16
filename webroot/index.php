@@ -5,6 +5,18 @@ require_once __DIR__ . '/../src/Auth.php';
 $appSettings = (new Settings(__DIR__ . '/../data/settings.json'))->read();
 require_once __DIR__ . '/../src/GeoBlocker.php';
 GeoBlocker::enforce($appSettings);
+// A csupasz gyökér-URL ("http://.../" — nem az explicit "index.php") mostantól
+// a Dashboardra vezet, NEM a Kasszára — lásd dashboard.php docblockját. A
+// REQUEST_URI (nem a SCRIPT_NAME) a megbízható jel: a webszerver (a PHP
+// beépített fejlesztői szervere, Apache DirectoryIndex, nginx "index"
+// direktíva) mindhárom esetben ezt a fájlt futtatja le egy könyvtár-kérésre,
+// de a REQUEST_URI a kliens ÁLTAL TÉNYLEGESEN kért útvonalat őrzi meg — az
+// "index.php"-re mutató MEGLÉVŐ linkek (sidebarmenu.php "Kassza" ikonja stb.)
+// ettől függetlenül változatlanul a Kasszát nyitják meg.
+if (preg_match('#^/(?:\?.*)?$#', (string) ($_SERVER['REQUEST_URI'] ?? ''))) {
+    header('Location: dashboard.php');
+    exit;
+}
 if (!Auth::isLoggedIn($appSettings)) {
     header('Location: login.html?redirect=' . basename($_SERVER['SCRIPT_NAME']));
     exit;

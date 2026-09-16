@@ -1477,4 +1477,17 @@ final class HttpSecurityTest extends TestCase
         $this->assertSame(200, $res['status']);
         $this->assertLessThan(2.0, $elapsed, 'A dashboard-summary.php válasznak gyorsnak kell lennie — külső API-függőség esetén ez jóval lassabb lenne.');
     }
+
+    public function testDashNav4_BareRootRedirectsToDashboardButExplicitIndexPhpStillServesKassza(): void
+    {
+        $jar = self::cookieJar('login-success');
+
+        $root = self::request('GET', '/', null, [], $jar);
+        $this->assertSame(302, $root['status'], 'A csupasz gyökér-URL-nek átirányítania kell, nem közvetlenül a Kasszát kiszolgálnia.');
+        $this->assertSame('dashboard.php', $root['headers']['location'] ?? null);
+
+        $explicitIndex = self::request('GET', '/index.php', null, [], $jar);
+        $this->assertSame(200, $explicitIndex['status'], 'Az explicit /index.php-nek (pl. a sidebar "Kassza" linkjének) változatlanul a Kasszát kell megnyitnia, nem átirányítania.');
+        $this->assertStringContainsString('Kassza', $explicitIndex['body']);
+    }
 }

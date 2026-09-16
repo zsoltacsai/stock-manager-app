@@ -6,6 +6,21 @@ vagy mert a projekt jelenlegi mérete/célközönsége mellett a
 komplexitás/haszon arány rossz. Egy jövőbeli 1.1-es (vagy későbbi) körben
 érdemes újra megnézni őket, ha a körülmények változnak.
 
+## Dashboard, üzleti riportok, készlet-előrejelzés, WooCommerce szinkron-monitor — MEGOLDVA (1.2.0)
+
+Feature release: a meglévő sales/purchases/inventory/invoice/WooCommerce
+adatokból ad üzleti áttekintést, új adatmodell/külső integráció nélkül.
+Lásd README "FountainTrade 1.2.0 — Dashboard és üzleti riportok" szakasza
+a teljes technikai indoklásért:
+
+- Dashboard főoldal KPI-kkal, egységes backend-authoritative időszakválasztóval.
+- Forgalmi riport (napi/fizetésimód/Top termékek bontás, visszáru-nettósítás).
+- Készlet riport (készletérték, alacsony/kifogyott lista, CSV export).
+- Készletmozgás-riport a meglévő eladás/beszerzés/visszáru/leltár adatokból
+  — nincs párhuzamos stock ledger.
+- Egyszerű, hamis pontosság nélküli készlet-előrejelzés.
+- WooCommerce szinkron-monitor admin-jogszintű kézi újrapróbálkozással.
+
 ## Beszerzés-idempotencia, WooCommerce-push megbízhatóság, ár-validáció, import-keményítés, frontend hibakezelés — MEGOLDVA (1.1.1)
 
 Öt, egymástól független stabilitási/megbízhatósági javítás egy

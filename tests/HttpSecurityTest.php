@@ -1160,4 +1160,197 @@ final class HttpSecurityTest extends TestCase
         $this->assertSame(200, $res['status'], 'Érvényes admin session + friss PIN esetén a visszaállításnak sikeresen le kell futnia: ' . $res['body']);
         $this->assertTrue($res['json']['success'] ?? false);
     }
+
+    // -----------------------------------------------------------------
+    // 1.2.0 — Dashboard/riportok HTTP-szintű coverage (lásd a kör 25.
+    // pontja: "ne csak Database metódusokat tesztelj"). A Database-szintű
+    // (aggregáció-, visszáru-nettósítás-, forecast-) helyesség a
+    // tests/DashboardReportsTest.php-ban van bizonyítva — itt kizárólag a
+    // HTTP-réteg (auth, validáció, státuszkódok, CSV fejlécek, admin-kapu)
+    // a tárgy.
+    // -----------------------------------------------------------------
+
+    public function testDash1_ReportEndpointsRequireAuthentication(): void
+    {
+        foreach ([
+            '/api/dashboard-summary.php', '/api/sales-report.php', '/api/inventory-report.php',
+            '/api/low-stock-report.php', '/api/stock-movements-report.php', '/api/top-products-report.php',
+            '/api/woocommerce-sync-status.php',
+        ] as $path) {
+            $res = self::request('GET', $path);
+            $this->assertSame(401, $res['status'], "$path bejelentkezés nélkül 401-et kell adjon.");
+        }
+    }
+
+    public function testDash2_InvalidPeriodReturns400WithBackendAuthoritativeValidation(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $res = self::request('GET', '/api/sales-report.php?period=holnaputan', null, [], $jar);
+        $this->assertSame(400, $res['status'], 'Egy nem létező period értéknek 400-at kell adnia, nem csendben visszaesnie egy alapértelmezettre.');
+        $this->assertNotEmpty($res['json']['error'] ?? '');
+    }
+
+    public function testDash3_CustomPeriodMissingDatesReturns400(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $res = self::request('GET', '/api/stock-movements-report.php?period=custom', null, [], $jar);
+        $this->assertSame(400, $res['status']);
+    }
+
+    public function testDash4_CustomPeriodOversizedRangeRejected(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $res = self::request('GET', '/api/sales-report.php?period=custom&date_from=1990-01-01&date_to=2026-01-01', null, [], $jar);
+        $this->assertSame(400, $res['status'], 'Egy tíz éves egyedi tartományt (a kör 28. pontja: "oversized requests") el kell utasítani.');
+    }
+
+    public function testDash5_StockMovementsInvalidTypeReturns400(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $res = self::request('GET', '/api/stock-movements-report.php?period=today&type=nem-letezo-tipus', null, [], $jar);
+        $this->assertSame(400, $res['status']);
+    }
+
+    public function testDash6_DashboardSummaryReturnsExpectedJsonShape(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $res = self::request('GET', '/api/dashboard-summary.php?period=today', null, [], $jar);
+        $this->assertSame(200, $res['status'], $res['body']);
+        foreach (['period', 'today', 'period_summary', 'inventory', 'woocommerce', 'nav_invoices'] as $key) {
+            $this->assertArrayHasKey($key, $res['json'], "A dashboard-summary.php válaszának tartalmaznia kell a '$key' kulcsot.");
+        }
+        $this->assertArrayHasKey('revenue_gross', $res['json']['today']);
+        $this->assertArrayHasKey('low_stock', $res['json']['inventory']);
+    }
+
+    public function testDash7_SalesReportCsvExportHasCorrectHeadersAndBom(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $res = self::request('GET', '/api/export-sales-report-csv.php?period=today', null, [], $jar);
+        $this->assertSame(200, $res['status']);
+        $this->assertStringContainsString('text/csv', $res['headers']['content-type'] ?? '');
+        $this->assertStringContainsString('attachment', $res['headers']['content-disposition'] ?? '');
+        $this->assertStringStartsWith("\xEF\xBB\xBF", $res['body'], 'A CSV export-nak UTF-8 BOM-mal kell kezdődnie, hogy Excelben helyesen jelenjenek meg az ékezetes karakterek.');
+    }
+
+    public function testDash8_LowStockCsvExportAppliesFormulaInjectionProtection(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        // Egy `=`-jellel kezdődő terméknév, konkrét CSV-formula-injekciós
+        // kísérlet szimulálása (CWE-1236, lásd _bootstrap.php csv_safe()).
+        $product = self::request('POST', '/api/product-save.php', [
+            'name' => '=HYPERLINK("http://evil.example/steal")', 'gross_price' => 100, 'vat_rate' => '27',
+            'low_stock_threshold' => 1000,
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $product['status'], $product['body']);
+
+        $csv = self::request('GET', '/api/export-low-stock-csv.php?filter=low', null, [], $jar);
+        $this->assertSame(200, $csv['status']);
+        $this->assertStringNotContainsString(
+            "\n=HYPERLINK",
+            $csv['body'],
+            'Egy `=`-jellel kezdődő terméknév a CSV-ben SOSE jelenhet meg vezető aposztróf nélkül (formula-injekció).'
+        );
+        $this->assertStringContainsString("'=HYPERLINK", $csv['body'], 'A csv_safe() védelemnek vezető aposztróffal kell ellátnia az ilyen mezőt.');
+    }
+
+    public function testDash9_WooCommerceSyncRetryRequiresAdminAndOnlyAllowsTerminalRows(): void
+    {
+        $adminJar = self::cookieJar('login-success');
+        $status = self::request('GET', '/api/auth-status.php', null, [], $adminJar);
+        $csrf = $status['json']['csrf_token'];
+
+        // Egy valódi wc_push_queue sor létrehozása — a HTTP-rétegen ehhez
+        // nincs dedikált végpont (a queue MINDIG egy eladás/beszerzés/
+        // leltár-lezárás tranzakciójának belső mellékhatásaként jön létre,
+        // lásd Database::migrateV24WcPushQueue() docblockja), a Database-
+        // szintű enqueue/claim/retry helyesség pedig már bizonyítva van
+        // (tests/WcPushQueueWorkerTest.php,
+        // tests/PurchaseAndWcPushConcurrencyTest.php) — itt KIZÁRÓLAG a
+        // HTTP admin-kapu a tárgy, ezért egy közvetlen SQLite-sor beszúrás
+        // elegendő és arányos (a teszt-gyökér saját, elszigetelt
+        // adatbázisába, lásd setUpBeforeClass()).
+        $product = self::request('POST', '/api/product-save.php', [
+            'name' => 'WC retry teszt termék', 'gross_price' => 100, 'vat_rate' => '27',
+        ], ['X-CSRF-Token' => $csrf], $adminJar);
+        $this->assertSame(200, $product['status'], $product['body']);
+        $productId = $product['json']['product']['id'];
+
+        $pdo = new PDO('sqlite:' . self::$root . '/data/stock.sqlite');
+        $now = date('Y-m-d H:i:s');
+        $pdo->prepare("
+            INSERT INTO wc_push_queue (product_id, wc_product_id, trigger_type, trigger_id, operation_key, status, attempts, created_at, updated_at)
+            VALUES (?, 999, 'sale', 1, ?, 'failed', 3, ?, ?)
+        ")->execute([$productId, 'test-retry-op-key-' . bin2hex(random_bytes(4)), $now, $now]);
+        $queueId = (int) $pdo->lastInsertId();
+
+        $pdo->prepare("
+            INSERT INTO wc_push_queue (product_id, wc_product_id, trigger_type, trigger_id, operation_key, status, attempts, created_at, updated_at)
+            VALUES (?, 999, 'sale', 2, ?, 'queued', 0, ?, ?)
+        ")->execute([$productId, 'test-retry-op-key-queued-' . bin2hex(random_bytes(4)), $now, $now]);
+        $queuedNonTerminalId = (int) $pdo->lastInsertId();
+
+        // 1) Nem-admin (cashier) session -> 403.
+        $cashierJar = self::cookieJar('wc-retry-cashier');
+        $cashierLogin = self::request('POST', '/api/login.php', ['password' => 'nagyon-titkos-jelszo-123'], [], $cashierJar);
+        $this->assertSame(200, $cashierLogin['status']);
+        $cashierStaffLogin = self::request('POST', '/api/staff-login.php', ['pin' => '24680'], ['X-CSRF-Token' => $cashierLogin['json']['csrf_token']], $cashierJar);
+        $this->assertSame(200, $cashierStaffLogin['status'], $cashierStaffLogin['body']);
+        $forbidden = self::request('POST', '/api/woocommerce-sync-retry.php', ['id' => $queueId], ['X-CSRF-Token' => $cashierLogin['json']['csrf_token']], $cashierJar);
+        $this->assertSame(403, $forbidden['status'], 'Egy nem-admin (cashier) session nem próbálhatja meg újraütemezni a push-t.');
+
+        // 2) Admin, de nem létező id -> 404.
+        $adminStaffLogin = self::request('POST', '/api/staff-login.php', ['pin' => '13579'], ['X-CSRF-Token' => $csrf], $adminJar);
+        $this->assertSame(200, $adminStaffLogin['status'], $adminStaffLogin['body']);
+        $notFound = self::request('POST', '/api/woocommerce-sync-retry.php', ['id' => 999999], ['X-CSRF-Token' => $csrf], $adminJar);
+        $this->assertSame(404, $notFound['status']);
+
+        // 3) Admin, de a sor NEM terminális (queued) állapotú -> 409.
+        $conflict = self::request('POST', '/api/woocommerce-sync-retry.php', ['id' => $queuedNonTerminalId], ['X-CSRF-Token' => $csrf], $adminJar);
+        $this->assertSame(409, $conflict['status'], 'Csak terminális (failed/dead_letter) sorra engedélyezett a kézi újrapróbálkozás.');
+
+        // 4) Admin, terminális (failed) sor -> 200, a sor visszakerül queued-ba.
+        $ok = self::request('POST', '/api/woocommerce-sync-retry.php', ['id' => $queueId], ['X-CSRF-Token' => $csrf], $adminJar);
+        $this->assertSame(200, $ok['status'], $ok['body']);
+        $this->assertSame('queued', $ok['json']['row']['status'] ?? null);
+        $this->assertSame(0, $ok['json']['row']['attempts'] ?? null, 'Az újraütemezésnek nulláznia kell a próbálkozás-számlálót.');
+    }
+
+    public function testDash10_ProductScopedReportEndpointsReturn404ForNonexistentProduct(): void
+    {
+        $jar = self::cookieJar('login-success');
+        foreach (['/api/stock-forecast.php', '/api/product-stock-movements.php'] as $path) {
+            $res = self::request('GET', $path . '?product_id=999999', null, [], $jar);
+            $this->assertSame(404, $res['status'], "$path egy nem létező product_id-ra 404-et adjon, ne hamis \"nincs fogyás\" adatot.");
+        }
+    }
+
+    /**
+     * A kör 23. pontja külön kéri a CSV exportok "magyar ékezetek"
+     * lefedettségét — a UTF-8 BOM-ot már testDash7 ellenőrzi, ez a teszt a
+     * TARTALOM tényleges, helyes UTF-8 kódolását bizonyítja ékezetes
+     * terméknévvel, VALÓDI HTTP-n át (nem csak Database-szinten).
+     */
+    public function testDash11_LowStockCsvExportPreservesHungarianAccentsAsUtf8(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        $accentedName = 'Ékezetes Termékteszt Árvíztűrő Tükörfúrógép';
+        $product = self::request('POST', '/api/product-save.php', [
+            'name' => $accentedName, 'gross_price' => 100, 'vat_rate' => '27',
+            'low_stock_threshold' => 1000,
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $product['status'], $product['body']);
+
+        $csv = self::request('GET', '/api/export-low-stock-csv.php?filter=low', null, [], $jar);
+        $this->assertSame(200, $csv['status']);
+        $bodyWithoutBom = substr($csv['body'], 3);
+        $this->assertTrue(mb_check_encoding($bodyWithoutBom, 'UTF-8'), 'A CSV tartalmának érvényes UTF-8-nak kell lennie.');
+        $this->assertStringContainsString($accentedName, $csv['body'], 'Az ékezetes terméknévnek sérülés nélkül kell megjelennie a CSV-ben.');
+    }
 }

@@ -315,6 +315,7 @@ CREATE TABLE IF NOT EXISTS returns (
     credit_invoice_number  VARCHAR(64) NULL,
     created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_returns_sale_id (sale_id),
+    KEY idx_returns_created_at (created_at),
     CONSTRAINT fk_returns_sale FOREIGN KEY (sale_id) REFERENCES sales(id),
     CONSTRAINT fk_returns_staff FOREIGN KEY (staff_id) REFERENCES staff(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -329,6 +330,7 @@ CREATE TABLE IF NOT EXISTS return_items (
     unit_price      DECIMAL(12,2) NOT NULL,
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_return_items_return_id (return_id),
+    KEY idx_return_items_product_id (product_id),
     CONSTRAINT fk_return_items_return FOREIGN KEY (return_id) REFERENCES returns(id),
     CONSTRAINT fk_return_items_product FOREIGN KEY (product_id) REFERENCES products(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -351,6 +353,7 @@ CREATE TABLE IF NOT EXISTS stock_take_items (
     counted_qty     INT NULL,
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_stock_take_items_take_id (stock_take_id),
+    KEY idx_stock_take_items_product_id (product_id),
     CONSTRAINT fk_stock_take_items_take FOREIGN KEY (stock_take_id) REFERENCES stock_takes(id),
     CONSTRAINT fk_stock_take_items_product FOREIGN KEY (product_id) REFERENCES products(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -5,6 +5,11 @@ $__smSidebarCurrent = basename($_SERVER['SCRIPT_NAME']);
 
 $__smSidebarLinks = [
     [
+        'href' => 'dashboard.php',
+        'title' => 'Dashboard',
+        'icon' => '<rect x="3" y="3" width="7" height="9"></rect><rect x="14" y="3" width="7" height="5"></rect><rect x="14" y="12" width="7" height="9"></rect><rect x="3" y="16" width="7" height="5"></rect>',
+    ],
+    [
         'href' => 'index.php',
         'title' => 'Kassza',
         'icon' => '<circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path>',

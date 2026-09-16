@@ -6,7 +6,7 @@ require_once __DIR__ . '/PriceValidator.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 24;
+    private const SCHEMA_VERSION = 25;
 
     private PDO $pdo;
     private string $driver;
@@ -193,6 +193,9 @@ class Database
             }
             if ($version < 24) {
                 $this->migrateV24WcPushQueue();
+            }
+            if ($version < 25) {
+                $this->migrateV25ReportingIndexes();
             }
         }
 
@@ -1476,6 +1479,37 @@ class Database
             try {
                 $this->pdo->exec($sql);
             } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+        }
+    }
+
+    /**
+     * 1.2.0 — csak INDEX, séma-módosítás nélkül. A Dashboard/riportok
+     * (lásd a fájl végén, "1.2.0 — Dashboard / Riportok" szakasz) új
+     * lekérdezéseket vezetnek be `returns`/`return_items`/`stock_take_items`
+     * táblákra dátum- ill. termék-szerinti szűréssel/csoportosítással —
+     * ezeknek eddig NEM volt indexük (a returns/return_items eddig
+     * kizárólag sale_id/return_id szerint volt lekérdezve, lásd
+     * getDailySummary()), enélkül minden riport-lekérdezés teljes
+     * tábla-bejárást igényelne, ami nagyobb adatmennyiségnél (lásd a kör
+     * 18. pontja, "performance") már érezhető lassulást okozna.
+     */
+    private function migrateV25ReportingIndexes(): void
+    {
+        foreach ([
+            'CREATE INDEX idx_returns_created_at ON returns(created_at)',
+            'CREATE INDEX idx_return_items_product_id ON return_items(product_id)',
+            'CREATE INDEX idx_stock_take_items_product_id ON stock_take_items(product_id)',
+        ] as $sql) {
+            if ($this->driver !== 'mysql') {
+                $sql = str_replace('CREATE INDEX ', 'CREATE INDEX IF NOT EXISTS ', $sql);
+            }
+            try {
+                $this->pdo->exec($sql);
+            } catch (PDOException $e) {
+                if (!$this->isBenignSchemaError($e)) {
+                    throw $e;
+                }
+            }
         }
     }
 
@@ -5452,5 +5486,696 @@ class Database
         $stmt->bindValue(2, $limit, PDO::PARAM_INT);
         $stmt->execute();
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    // =================================================================
+    // 1.2.0 — Dashboard / Riportok
+    //
+    // Design-elvek (lásd a fejlesztési kör 1-21. pontjait):
+    //  - Kizárólag a MEGLÉVŐ sales/sale_items/purchases/purchase_items/
+    //    returns/return_items/stock_take_items/stock_transfers/products/
+    //    wc_push_queue/invoices adatokból dolgoznak — nincs új, párhuzamos
+    //    "stock ledger" vagy riport-tábla.
+    //  - A visszárukat MINDENHOL a saját (a visszáru rögzítésének) napja
+    //    szerint vonjuk le, UGYANÚGY, mint a már meglévő getDailySummary()/
+    //    getDailyRevenueTrend() — ez a kasszazárással konzisztens,
+    //    "mi történt ténylegesen ezen a napon" nézőpont.
+    //  - A `sales`/`returns` a forgalom forrása, az `invoices` tábla
+    //    (NAV modification/storno lánc) SOSE kerül bele a forgalom-
+    //    számításba — ez zárja ki a kör 3. pontjának tiltott dupla
+    //    számolását ("sales és invoice fogalmat külön kezeld").
+    // =================================================================
+
+    /**
+     * Forgalmi összesítő egy TETSZŐLEGES dátumtartományra — a már bevált
+     * getDailySummary() PONTOS tétel-szintű, kedvezmény-arányosításos
+     * logikáját alkalmazza (lásd ott a docblockot), csak tartományra és
+     * opcionális fizetésimód-szűrésre általánosítva, plusz napi bontással.
+     * Két batch-lekérdezés (sales + sale_items IN (...)) — nincs N+1.
+     */
+    public function getSalesReportSummary(string $dateFrom, string $dateTo, ?string $paymentMethod = null): array
+    {
+        $dateExpr = $this->driver === 'mysql' ? 'DATE(created_at)' : "substr(created_at, 1, 10)";
+        $sql = "SELECT * FROM sales WHERE $dateExpr BETWEEN ? AND ?";
+        $params = [$dateFrom, $dateTo];
+        if ($paymentMethod !== null && $paymentMethod !== '') {
+            $sql .= ' AND payment_method = ?';
+            $params[] = $paymentMethod;
+        }
+        $stmt = $this->pdo->prepare($sql . ' ORDER BY created_at');
+        $stmt->execute($params);
+        $sales = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $itemsBySale = [];
+        if ($sales) {
+            $saleIds = array_column($sales, 'id');
+            $placeholders = implode(',', array_fill(0, count($saleIds), '?'));
+            $itemsStmt = $this->pdo->prepare("SELECT * FROM sale_items WHERE sale_id IN ($placeholders)");
+            $itemsStmt->execute($saleIds);
+            foreach ($itemsStmt->fetchAll(PDO::FETCH_ASSOC) as $item) {
+                $itemsBySale[$item['sale_id']][] = $item;
+            }
+        }
+
+        $byDay = [];
+        $byPayment = [];
+        $totalGross = 0.0;
+        $totalNet = 0.0;
+        $totalVat = 0.0;
+
+        foreach ($sales as $sale) {
+            $day = substr($sale['created_at'], 0, 10);
+            $byDay[$day] ??= ['date' => $day, 'gross' => 0.0, 'net' => 0.0, 'count' => 0];
+            $byDay[$day]['gross'] += (float) $sale['total'];
+            $byDay[$day]['count']++;
+
+            $method = $sale['payment_method'] ?: 'Készpénz';
+            $byPayment[$method]['count'] = ($byPayment[$method]['count'] ?? 0) + 1;
+            $byPayment[$method]['total'] = ($byPayment[$method]['total'] ?? 0) + (float) $sale['total'];
+
+            $items = $itemsBySale[$sale['id']] ?? [];
+            $saleSubtotal = 0.0;
+            foreach ($items as $item) {
+                $saleSubtotal += (float) $item['unit_price'] * (int) $item['qty'];
+            }
+            $discountRatio = $saleSubtotal > 0 ? min(1, (float) $sale['total'] / $saleSubtotal) : 1.0;
+
+            $saleNet = 0.0;
+            foreach ($items as $item) {
+                $vatRate = (string) $item['vat_rate'];
+                $vatPct = is_numeric($vatRate) ? ((float) $vatRate) / 100 : 0.0;
+                $lineGross = round((float) $item['unit_price'] * (int) $item['qty'] * $discountRatio, 2);
+                $lineNet = is_numeric($vatRate) ? round($lineGross / (1 + $vatPct), 2) : $lineGross;
+                $saleNet += $lineNet;
+            }
+            $totalNet += $saleNet;
+            $totalVat += ((float) $sale['total'] - $saleNet);
+            $byDay[$day]['net'] += $saleNet;
+            $totalGross += (float) $sale['total'];
+        }
+
+        // Visszáruk — saját napjuk szerint, ugyanaz a levonás-elv, mint
+        // getDailySummary()-nél (lásd ott a docblockot a részletes indoklásért).
+        $returnDateExpr = $this->driver === 'mysql' ? 'DATE(r.created_at)' : "substr(r.created_at, 1, 10)";
+        $returnsSql = "
+            SELECT r.*, s.payment_method
+            FROM returns r
+            JOIN sales s ON s.id = r.sale_id
+            WHERE $returnDateExpr BETWEEN ? AND ?
+        ";
+        $returnsParams = [$dateFrom, $dateTo];
+        if ($paymentMethod !== null && $paymentMethod !== '') {
+            $returnsSql .= ' AND s.payment_method = ?';
+            $returnsParams[] = $paymentMethod;
+        }
+        $returnsStmt = $this->pdo->prepare($returnsSql);
+        $returnsStmt->execute($returnsParams);
+        $returns = $returnsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $totalReturnsGross = 0.0;
+        if ($returns) {
+            $returnIds = array_column($returns, 'id');
+            $riPlaceholders = implode(',', array_fill(0, count($returnIds), '?'));
+            $riStmt = $this->pdo->prepare("
+                SELECT ri.*, si.vat_rate AS vat_rate
+                FROM return_items ri
+                LEFT JOIN sale_items si ON si.id = ri.sale_item_id
+                WHERE ri.return_id IN ($riPlaceholders)
+            ");
+            $riStmt->execute($returnIds);
+            $returnItemsByReturn = [];
+            foreach ($riStmt->fetchAll(PDO::FETCH_ASSOC) as $ri) {
+                $returnItemsByReturn[$ri['return_id']][] = $ri;
+            }
+
+            foreach ($returns as $ret) {
+                $day = substr($ret['created_at'], 0, 10);
+                $refund = (float) $ret['total_refund'];
+                $totalGross -= $refund;
+                $totalReturnsGross += $refund;
+                $byDay[$day] ??= ['date' => $day, 'gross' => 0.0, 'net' => 0.0, 'count' => 0];
+                $byDay[$day]['gross'] -= $refund;
+
+                $method = $ret['payment_method'] ?: 'Készpénz';
+                $byPayment[$method]['count'] = $byPayment[$method]['count'] ?? 0;
+                $byPayment[$method]['total'] = ($byPayment[$method]['total'] ?? 0) - $refund;
+
+                $retItems = $returnItemsByReturn[$ret['id']] ?? [];
+                $rawRefund = 0.0;
+                foreach ($retItems as $ri) {
+                    $rawRefund += (float) $ri['unit_price'] * (int) $ri['qty'];
+                }
+                $retRatio = $rawRefund > 0 ? ($refund / $rawRefund) : 1.0;
+
+                $retNet = 0.0;
+                foreach ($retItems as $ri) {
+                    $vatRate = (string) ($ri['vat_rate'] ?? '');
+                    $vatPct = is_numeric($vatRate) ? ((float) $vatRate) / 100 : 0.0;
+                    $lineGross = round((float) $ri['unit_price'] * (int) $ri['qty'] * $retRatio, 2);
+                    $lineNet = is_numeric($vatRate) ? round($lineGross / (1 + $vatPct), 2) : $lineGross;
+                    $retNet += $lineNet;
+                }
+                $totalNet -= $retNet;
+                $totalVat -= ($refund - $retNet);
+                $byDay[$day]['net'] -= $retNet;
+            }
+        }
+
+        ksort($byDay);
+        foreach ($byDay as &$row) {
+            $row['gross'] = round($row['gross'], 2);
+            $row['net'] = round($row['net'], 2);
+        }
+        unset($row);
+        foreach ($byPayment as $method => &$row) {
+            $row['total'] = round($row['total'], 2);
+        }
+        unset($row);
+        $salesCount = count($sales);
+        $paymentTotalAbs = array_sum(array_map('abs', array_column($byPayment, 'total'))) ?: 0.0;
+        foreach ($byPayment as $method => &$row) {
+            $row['percent'] = $paymentTotalAbs > 0 ? round(abs($row['total']) / $paymentTotalAbs * 100, 1) : 0.0;
+        }
+        unset($row);
+
+        return [
+            'date_from'         => $dateFrom,
+            'date_to'           => $dateTo,
+            'sales_count'       => $salesCount,
+            'total_gross'       => round($totalGross, 2),
+            'total_net'         => round($totalNet, 2),
+            'total_vat'         => round($totalVat, 2),
+            'total_returns'     => round($totalReturnsGross, 2),
+            'avg_sale_gross'    => $salesCount > 0 ? round($totalGross / $salesCount, 2) : 0.0,
+            'by_payment_method' => $byPayment,
+            'by_day'            => array_values($byDay),
+        ];
+    }
+
+    /**
+     * Top termékek egy dátumtartományra, opcionális csoport-szűréssel és
+     * minimum darabszámmal — a visszáruval NETTÓSÍTVA (eladott - visszáru,
+     * ugyanabban a tartományban, a visszáru SAJÁT dátuma szerint), lásd a
+     * kör 5. pontja ("Ne egyszerűen SUM(quantity)-t használj"). Két
+     * aggregált SQL lekérdezés (eladás + visszáru), PHP-ban összefésülve —
+     * nincs N+1, nincs termékenkénti külön lekérdezés.
+     */
+    public function getTopProductsReport(string $dateFrom, string $dateTo, ?string $groupName = null, int $minQty = 0, int $limit = 50): array
+    {
+        $dateExpr = $this->driver === 'mysql' ? 'DATE(s.created_at)' : "substr(s.created_at, 1, 10)";
+        $sql = "
+            SELECT si.product_id, p.name, p.barcode, p.group_name,
+                   SUM(si.qty) AS qty, SUM(si.unit_price * si.qty) AS revenue
+            FROM sale_items si
+            JOIN sales s ON s.id = si.sale_id
+            JOIN products p ON p.id = si.product_id
+            WHERE $dateExpr BETWEEN ? AND ? AND si.product_id IS NOT NULL
+        ";
+        $params = [$dateFrom, $dateTo];
+        if ($groupName !== null && $groupName !== '') {
+            $sql .= ' AND p.group_name = ?';
+            $params[] = $groupName;
+        }
+        $sql .= ' GROUP BY si.product_id';
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+
+        $byProduct = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $byProduct[$row['product_id']] = [
+                'product_id' => (int) $row['product_id'],
+                'name'       => $row['name'],
+                'barcode'    => $row['barcode'],
+                'group_name' => $row['group_name'],
+                'qty'        => (int) $row['qty'],
+                'revenue'    => round((float) $row['revenue'], 2),
+            ];
+        }
+
+        $returnDateExpr = $this->driver === 'mysql' ? 'DATE(r.created_at)' : "substr(r.created_at, 1, 10)";
+        $returnsStmt = $this->pdo->prepare("
+            SELECT ri.product_id, SUM(ri.qty) AS qty, SUM(ri.unit_price * ri.qty) AS revenue
+            FROM return_items ri
+            JOIN returns r ON r.id = ri.return_id
+            WHERE $returnDateExpr BETWEEN ? AND ? AND ri.product_id IS NOT NULL
+            GROUP BY ri.product_id
+        ");
+        $returnsStmt->execute([$dateFrom, $dateTo]);
+        foreach ($returnsStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $pid = (int) $row['product_id'];
+            if (!isset($byProduct[$pid])) {
+                continue; // visszáru olyan termékre, ami ebben a tartományban nem is szerepelt eladásként — nincs mit nettósítani
+            }
+            $byProduct[$pid]['qty'] -= (int) $row['qty'];
+            $byProduct[$pid]['revenue'] = round($byProduct[$pid]['revenue'] - (float) $row['revenue'], 2);
+        }
+
+        $result = array_values(array_filter($byProduct, static fn ($r) => $r['qty'] >= $minQty));
+        usort($result, static fn ($a, $b) => $b['qty'] <=> $a['qty']);
+        return array_slice($result, 0, $limit);
+    }
+
+    /**
+     * Készletáttekintés — összesített SQL aggregáció, NEM termékenkénti
+     * lekérdezés (lásd a kör 18. pontja, "ne indítson több száz
+     * product-level queryt"). A készletérték a MEGLÉVŐ purchase_price_net
+     * mezőt használja (utolsó ismert nettó beszerzési ár) — nincs új cost
+     * accounting bevezetve (lásd a kör 6. pontja).
+     */
+    public function getInventoryOverview(int $defaultLowStockThreshold, int $topByValueLimit = 10): array
+    {
+        $stmt = $this->pdo->prepare('
+            SELECT
+                COUNT(*) AS total_products,
+                SUM(CASE WHEN stock_qty > 0 THEN 1 ELSE 0 END) AS in_stock,
+                SUM(CASE WHEN stock_qty = 0 THEN 1 ELSE 0 END) AS zero_stock,
+                SUM(CASE WHEN stock_qty < 0 THEN 1 ELSE 0 END) AS negative_stock,
+                SUM(CASE WHEN stock_qty > 0 AND stock_qty <= COALESCE(low_stock_threshold, ?) THEN 1 ELSE 0 END) AS low_stock,
+                SUM(stock_qty * purchase_price_net) AS stock_value_net
+            FROM products
+            WHERE is_deleted = 0
+        ');
+        $stmt->execute([$defaultLowStockThreshold]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        $topStmt = $this->pdo->prepare('
+            SELECT id, name, barcode, stock_qty, purchase_price_net, (stock_qty * purchase_price_net) AS value
+            FROM products
+            WHERE is_deleted = 0 AND stock_qty > 0
+            ORDER BY value DESC
+            LIMIT ?
+        ');
+        $topStmt->bindValue(1, $topByValueLimit, PDO::PARAM_INT);
+        $topStmt->execute();
+
+        return [
+            'total_products'   => (int) ($row['total_products'] ?? 0),
+            'in_stock'         => (int) ($row['in_stock'] ?? 0),
+            'zero_stock'       => (int) ($row['zero_stock'] ?? 0),
+            'negative_stock'   => (int) ($row['negative_stock'] ?? 0),
+            'low_stock'        => (int) ($row['low_stock'] ?? 0),
+            'stock_value_net'  => round((float) ($row['stock_value_net'] ?? 0), 2),
+            'top_by_value'     => array_map(static function ($r) {
+                $r['stock_qty'] = (int) $r['stock_qty'];
+                $r['purchase_price_net'] = (float) $r['purchase_price_net'];
+                $r['value'] = round((float) $r['value'], 2);
+                return $r;
+            }, $topStmt->fetchAll(PDO::FETCH_ASSOC)),
+        ];
+    }
+
+    /**
+     * Alacsony készletű / kifogyott termékek LAPOS listája (a meglévő
+     * getPurchaseSuggestions() beszállító szerint CSOPORTOSÍT — ez a
+     * riport-nézethez, szűréshez/exporthoz lapos lista kell, lásd a kör
+     * 7. pontja). Ugyanazt a javasolt-mennyiség ökölszabályt használja,
+     * mint getPurchaseSuggestions() ("a küszöb duplájára tölt fel").
+     *
+     * @param string $filter 'low' (készlet <= küszöb, a kifogyottat/negatívat is beleértve) | 'out' (készlet <= 0)
+     */
+    public function getLowStockReport(int $defaultThreshold, string $filter = 'low'): array
+    {
+        $sql = '
+            SELECT p.id, p.name, p.barcode, p.group_name, p.stock_qty, p.low_stock_threshold,
+                   p.preferred_supplier_id, s.name AS supplier_name
+            FROM products p
+            LEFT JOIN suppliers s ON s.id = p.preferred_supplier_id
+            WHERE p.is_deleted = 0
+        ';
+        if ($filter === 'out') {
+            $sql .= ' AND p.stock_qty <= 0';
+        } else {
+            $sql .= ' AND p.stock_qty <= COALESCE(p.low_stock_threshold, ?)';
+        }
+        $sql .= ' ORDER BY p.stock_qty ASC, p.name ASC';
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($filter === 'out' ? [] : [$defaultThreshold]);
+
+        $result = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $threshold = $row['low_stock_threshold'] !== null ? (int) $row['low_stock_threshold'] : $defaultThreshold;
+            $result[] = [
+                'id'             => (int) $row['id'],
+                'name'           => $row['name'],
+                'barcode'        => $row['barcode'],
+                'group_name'     => $row['group_name'],
+                'stock_qty'      => (int) $row['stock_qty'],
+                'threshold'      => $threshold,
+                'supplier_name'  => $row['supplier_name'],
+                'suggested_qty'  => max(1, ($threshold * 2) - (int) $row['stock_qty']),
+            ];
+        }
+        return $result;
+    }
+
+    /**
+     * Készletmozgás-riport — a MEGLÉVŐ, egymástól független forrás-táblák
+     * (sale_items/purchase_items/return_items/stock_take_items/
+     * stock_transfers) UNIÓJA, PHP-ban összefésülve és dátum szerint
+     * rendezve. Szándékosan NEM egy párhuzamos "stock ledger" tábla (lásd
+     * a kör 8. pontja) — nincs "before/after" mező, mert ezt a meglévő
+     * adatmodell történeti mozgásokra nem biztosítja (csak a termék JELENLEGI
+     * stock_qty-ja ismert) — ezt a hívó (API-végpont) NULL-ként adja tovább,
+     * nem hamis pontossággal.
+     *
+     * A stock_transfers közül csak a from_location_id IS NULL sorok
+     * kerülnek bele: ezek TÉNYLEGESEN növelik az összesített products.stock_qty-t
+     * ("új készlet felvétele" egy telephelyre) — a telephelyek KÖZÖTTI
+     * mozgatás nettó 0 hatással van az összesített készletre, azt a
+     * Telephelyek oldal saját előzmény-nézete (getStockTransferHistory())
+     * már lefedi, ide belevenni csak zajt jelentene.
+     *
+     * @param array $filters date_from, date_to (kötelező, YYYY-MM-DD), product_id (opcionális int),
+     *   type (opcionális: 'sale'|'purchase'|'return'|'stock_take'|'transfer')
+     */
+    /**
+     * Biztonsági korlát forrás-táblánként (lásd a kör 28. pontja,
+     * "oversized requests, expensive report queries") — egy nagyon széles
+     * (akár az 5 éves maximumot kihasználó, lásd ReportPeriod) egyedi
+     * dátumtartomány se tölthessen be korlátlan sormennyiséget a PHP
+     * memóriájába egyetlen forrás-táblából. A legfrissebb (DESC rendezett)
+     * sorok maradnak meg csonkoláskor — ha ez a korlát ténylegesen
+     * érvényesül, a `total`/`has_more` a CSONKOLT halmazra vonatkozik,
+     * nem a valódi teljes találatszámra; egy ilyen tartomány gyakorlati
+     * használatra amúgy is túl széles lenne egyetlen riport-nézethez.
+     */
+    private const MAX_MOVEMENT_ROWS_PER_SOURCE = 5000;
+
+    public function getStockMovements(array $filters, int $limit = 200, int $offset = 0): array
+    {
+        $dateFrom = $filters['date_from'];
+        $dateTo = $filters['date_to'];
+        $productId = isset($filters['product_id']) ? (int) $filters['product_id'] : null;
+        $type = $filters['type'] ?? null;
+
+        $movements = [];
+
+        if ($type === null || $type === 'sale') {
+            $sql = "
+                SELECT s.created_at AS date, si.product_id, p.name AS product_name,
+                       -si.qty AS qty_change, s.id AS ref_id
+                FROM sale_items si
+                JOIN sales s ON s.id = si.sale_id
+                LEFT JOIN products p ON p.id = si.product_id
+                WHERE si.product_id IS NOT NULL AND s.created_at >= ? AND s.created_at < ?
+                ORDER BY s.created_at DESC LIMIT " . self::MAX_MOVEMENT_ROWS_PER_SOURCE . "
+            ";
+            $params = [$dateFrom . ' 00:00:00', $this->nextDay($dateTo)];
+            if ($productId) { $sql .= ' AND si.product_id = ?'; $params[] = $productId; }
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute($params);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                $movements[] = $this->movementRow($r['date'], (int) $r['product_id'], $r['product_name'], 'sale', (int) $r['qty_change'], 'sale', (int) $r['ref_id']);
+            }
+        }
+
+        if ($type === null || $type === 'purchase') {
+            $sql = "
+                SELECT pu.created_at AS date, pi.product_id, p.name AS product_name,
+                       pi.qty AS qty_change, pu.id AS ref_id
+                FROM purchase_items pi
+                JOIN purchases pu ON pu.id = pi.purchase_id
+                LEFT JOIN products p ON p.id = pi.product_id
+                WHERE pu.created_at >= ? AND pu.created_at < ?
+                ORDER BY pu.created_at DESC LIMIT " . self::MAX_MOVEMENT_ROWS_PER_SOURCE . "
+            ";
+            $params = [$dateFrom . ' 00:00:00', $this->nextDay($dateTo)];
+            if ($productId) { $sql .= ' AND pi.product_id = ?'; $params[] = $productId; }
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute($params);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                $movements[] = $this->movementRow($r['date'], (int) $r['product_id'], $r['product_name'], 'purchase', (int) $r['qty_change'], 'purchase', (int) $r['ref_id']);
+            }
+        }
+
+        if ($type === null || $type === 'return') {
+            $sql = "
+                SELECT r.created_at AS date, ri.product_id, p.name AS product_name,
+                       ri.qty AS qty_change, r.id AS ref_id
+                FROM return_items ri
+                JOIN returns r ON r.id = ri.return_id
+                LEFT JOIN products p ON p.id = ri.product_id
+                WHERE ri.product_id IS NOT NULL AND r.created_at >= ? AND r.created_at < ?
+                ORDER BY r.created_at DESC LIMIT " . self::MAX_MOVEMENT_ROWS_PER_SOURCE . "
+            ";
+            $params = [$dateFrom . ' 00:00:00', $this->nextDay($dateTo)];
+            if ($productId) { $sql .= ' AND ri.product_id = ?'; $params[] = $productId; }
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute($params);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                $movements[] = $this->movementRow($r['date'], (int) $r['product_id'], $r['product_name'], 'return', (int) $r['qty_change'], 'return', (int) $r['ref_id']);
+            }
+        }
+
+        if ($type === null || $type === 'stock_take') {
+            $sql = "
+                SELECT st.completed_at AS date, sti.product_id, p.name AS product_name,
+                       (sti.counted_qty - sti.expected_qty) AS qty_change, sti.stock_take_id AS ref_id
+                FROM stock_take_items sti
+                JOIN stock_takes st ON st.id = sti.stock_take_id
+                LEFT JOIN products p ON p.id = sti.product_id
+                WHERE st.completed_at IS NOT NULL AND sti.counted_qty IS NOT NULL
+                  AND sti.counted_qty != sti.expected_qty
+                  AND st.completed_at >= ? AND st.completed_at < ?
+                ORDER BY st.completed_at DESC LIMIT " . self::MAX_MOVEMENT_ROWS_PER_SOURCE . "
+            ";
+            $params = [$dateFrom . ' 00:00:00', $this->nextDay($dateTo)];
+            if ($productId) { $sql .= ' AND sti.product_id = ?'; $params[] = $productId; }
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute($params);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                $movements[] = $this->movementRow($r['date'], (int) $r['product_id'], $r['product_name'], 'stock_take', (int) $r['qty_change'], 'stock_take', (int) $r['ref_id']);
+            }
+        }
+
+        if ($type === null || $type === 'transfer') {
+            $sql = "
+                SELECT st.created_at AS date, st.product_id, p.name AS product_name, st.qty AS qty_change, st.id AS ref_id
+                FROM stock_transfers st
+                LEFT JOIN products p ON p.id = st.product_id
+                WHERE st.from_location_id IS NULL AND st.created_at >= ? AND st.created_at < ?
+                ORDER BY st.created_at DESC LIMIT " . self::MAX_MOVEMENT_ROWS_PER_SOURCE . "
+            ";
+            $params = [$dateFrom . ' 00:00:00', $this->nextDay($dateTo)];
+            if ($productId) { $sql .= ' AND st.product_id = ?'; $params[] = $productId; }
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute($params);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                $movements[] = $this->movementRow($r['date'], (int) $r['product_id'], $r['product_name'], 'transfer', (int) $r['qty_change'], 'transfer', (int) $r['ref_id']);
+            }
+        }
+
+        usort($movements, static fn ($a, $b) => $b['date'] <=> $a['date']);
+        $total = count($movements);
+        return [
+            'movements' => array_slice($movements, $offset, $limit),
+            'total'     => $total,
+            'has_more'  => ($offset + $limit) < $total,
+        ];
+    }
+
+    private function movementRow(string $date, int $productId, ?string $productName, string $type, int $qtyChange, string $sourceType, int $refId): array
+    {
+        return [
+            'date'         => $date,
+            'product_id'   => $productId,
+            'product_name' => $productName,
+            'type'         => $type,
+            'qty_change'   => $qtyChange,
+            'before_qty'   => null, // a meglévő adatmodell nem tárol historikus készlet-pillanatképet — lásd a metódus docblockja
+            'after_qty'    => null,
+            'source_type'  => $sourceType,
+            'source_ref'   => $refId,
+        ];
+    }
+
+    private function nextDay(string $date): string
+    {
+        return (new DateTimeImmutable($date))->modify('+1 day')->format('Y-m-d') . ' 00:00:00';
+    }
+
+    /**
+     * Egyszerű, átlátható készlet-előrejelzés (lásd a kör 10. pontja) —
+     * NEM ML/bonyolult forecasting, csak "átlagos napi fogyás + aktuális
+     * készlet = becsült hátralévő napok". A visszárukkal NETTÓSÍTOTT
+     * fogyást használja (ugyanaz az elv, mint getTopProductsReport()-nál).
+     *
+     * Bulk-metódus (nem termékenkénti lekérdezés, lásd a kör 18. pontja) —
+     * egyetlen batch lekérdezés adja az eladás-oldalt, egy másik a
+     * visszáru-oldalt, PHP-ban termékenként összegezve.
+     *
+     * Állapotok:
+     *  - 'insufficient_data': a termékre ebben az ablakban 0 vagy PONTOSAN 1
+     *    elszigetelt eladási NAP volt — egyetlen adatpont nem megbízható
+     *    "ráta", hamis pontosságot adna (lásd a kör 10. pontja: "ne pedig
+     *    hamis pontosságú 23 nap"). Kivéve, ha a fogyás ténylegesen nulla
+     *    (lásd lent) — az EGY konkrét, megbízható eredmény, nem bizonytalan.
+     *  - 'zero_consumption': legalább 2 különböző napon volt adat a
+     *    termékhez (tehát van elég megfigyelés), de az ablakban a nettó
+     *    (visszáruval csökkentett) fogyás összesen <= 0 — ez egy MEGBÍZHATÓ,
+     *    magabiztos megállapítás ("jelenleg nem fogy"), nem bizonytalanság.
+     *  - 'out_of_stock': a jelenlegi készlet <= 0 — nincs értelme "X nap
+     *    múlva fogy el"-t mondani, ha már most sincs készleten.
+     *  - 'ok': normál előrejelzés, estimated_days_remaining kitöltve.
+     */
+    public function getStockForecastBulk(array $productIds, int $windowDays = 30): array
+    {
+        $productIds = array_values(array_unique(array_map('intval', $productIds)));
+        if (!$productIds) {
+            return [];
+        }
+        $since = date('Y-m-d H:i:s', strtotime("-$windowDays days"));
+        $placeholders = implode(',', array_fill(0, count($productIds), '?'));
+
+        $soldStmt = $this->pdo->prepare("
+            SELECT si.product_id, SUM(si.qty) AS qty, COUNT(DISTINCT substr(s.created_at, 1, 10)) AS sale_days
+            FROM sale_items si
+            JOIN sales s ON s.id = si.sale_id
+            WHERE si.product_id IN ($placeholders) AND s.created_at >= ?
+            GROUP BY si.product_id
+        ");
+        $soldStmt->execute(array_merge($productIds, [$since]));
+        $sold = [];
+        foreach ($soldStmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $sold[(int) $r['product_id']] = ['qty' => (int) $r['qty'], 'days' => (int) $r['sale_days']];
+        }
+
+        $returnedStmt = $this->pdo->prepare("
+            SELECT ri.product_id, SUM(ri.qty) AS qty, COUNT(DISTINCT substr(r.created_at, 1, 10)) AS return_days
+            FROM return_items ri
+            JOIN returns r ON r.id = ri.return_id
+            WHERE ri.product_id IN ($placeholders) AND r.created_at >= ?
+            GROUP BY ri.product_id
+        ");
+        $returnedStmt->execute(array_merge($productIds, [$since]));
+        $returned = [];
+        foreach ($returnedStmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $returned[(int) $r['product_id']] = ['qty' => (int) $r['qty'], 'days' => (int) $r['return_days']];
+        }
+
+        $stockStmt = $this->pdo->prepare("SELECT id, stock_qty FROM products WHERE id IN ($placeholders)");
+        $stockStmt->execute($productIds);
+        $stockByProduct = [];
+        foreach ($stockStmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $stockByProduct[(int) $r['id']] = (int) $r['stock_qty'];
+        }
+
+        $result = [];
+        foreach ($productIds as $pid) {
+            $currentStock = $stockByProduct[$pid] ?? 0;
+            $soldQty = $sold[$pid]['qty'] ?? 0;
+            $returnedQty = $returned[$pid]['qty'] ?? 0;
+            $netQty = max(0, $soldQty - $returnedQty);
+            // Egyedi napok száma, amikor EGYÁLTALÁN történt valami (eladás
+            // VAGY visszáru) ezzel a termékkel — ez adja a "hány
+            // MEGFIGYELÉST láttunk" jelet, nem maga a nettó mennyiség.
+            $observedDays = max($sold[$pid]['days'] ?? 0, $returned[$pid]['days'] ?? 0);
+
+            if ($currentStock <= 0) {
+                $result[$pid] = ['product_id' => $pid, 'status' => 'out_of_stock', 'window_days' => $windowDays, 'avg_daily_consumption' => null, 'estimated_days_remaining' => null];
+                continue;
+            }
+            if ($observedDays < 2 && $netQty > 0) {
+                // Volt fogyás, de csak egyetlen elszigetelt napon — túl kevés
+                // megfigyelés egy megbízható átlaghoz.
+                $result[$pid] = ['product_id' => $pid, 'status' => 'insufficient_data', 'window_days' => $windowDays, 'avg_daily_consumption' => null, 'estimated_days_remaining' => null];
+                continue;
+            }
+            if ($netQty <= 0) {
+                $result[$pid] = ['product_id' => $pid, 'status' => 'zero_consumption', 'window_days' => $windowDays, 'avg_daily_consumption' => 0.0, 'estimated_days_remaining' => null];
+                continue;
+            }
+
+            $avgDaily = $netQty / $windowDays;
+            $result[$pid] = [
+                'product_id'               => $pid,
+                'status'                   => 'ok',
+                'window_days'              => $windowDays,
+                'avg_daily_consumption'    => round($avgDaily, 3),
+                'estimated_days_remaining' => (int) floor($currentStock / $avgDaily),
+            ];
+        }
+        return $result;
+    }
+
+    /**
+     * WooCommerce push-sor állapot-összesítő (lásd a kör 12-13. pontja) —
+     * a meglévő wc_push_queue táblát csoportosítja állapot szerint, plusz
+     * a legutóbbi/legközelebbi esedékes sorok referenciái. NEM új
+     * állapotgép — a queue meglévő queued/processing/done/failed/dead_letter
+     * állapotait adja vissza, olvasva.
+     */
+    public function getWcQueueStatusSummary(int $recentLimit = 20): array
+    {
+        $counts = [];
+        $stmt = $this->pdo->query('SELECT status, COUNT(*) AS cnt FROM wc_push_queue GROUP BY status');
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $counts[$r['status']] = (int) $r['cnt'];
+        }
+
+        $recentStmt = $this->pdo->prepare("
+            SELECT wq.*, p.name AS product_name
+            FROM wc_push_queue wq
+            LEFT JOIN products p ON p.id = wq.product_id
+            WHERE wq.status IN ('failed', 'dead_letter')
+            ORDER BY wq.updated_at DESC
+            LIMIT ?
+        ");
+        $recentStmt->bindValue(1, $recentLimit, PDO::PARAM_INT);
+        $recentStmt->execute();
+
+        return [
+            'counts'        => [
+                'queued'      => $counts['queued'] ?? 0,
+                'processing'  => $counts['processing'] ?? 0,
+                'done'        => $counts['done'] ?? 0,
+                'failed'      => $counts['failed'] ?? 0,
+                'dead_letter' => $counts['dead_letter'] ?? 0,
+            ],
+            'recent_failed' => $recentStmt->fetchAll(PDO::FETCH_ASSOC),
+        ];
+    }
+
+    /**
+     * Kimenő számla-queue (`invoices`) állapot-összesítő, a MEGLÉVŐ
+     * INVOICE_STATUS_BUCKETS leképezéssel (lásd ott a docblockot) — nincs
+     * új state machine (lásd a kör 14. pontja).
+     */
+    public function getInvoiceQueueStatusSummary(string $provider = 'nav'): array
+    {
+        $stmt = $this->pdo->prepare('SELECT status, COUNT(*) AS cnt FROM invoices WHERE provider = ? GROUP BY status');
+        $stmt->execute([$provider]);
+        $byStatus = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $byStatus[$r['status']] = (int) $r['cnt'];
+        }
+
+        $buckets = ['done' => 0, 'pending' => 0, 'failed' => 0];
+        foreach (self::INVOICE_STATUS_BUCKETS as $bucket => $statuses) {
+            foreach ($statuses as $status) {
+                $buckets[$bucket] += $byStatus[$status] ?? 0;
+            }
+        }
+
+        return ['provider' => $provider, 'buckets' => $buckets, 'by_status' => $byStatus];
+    }
+
+    /** Beszerzések összege egy dátumtartományra (bruttó) — Dashboard "mai/időszaki beszerzés" KPI-hoz. */
+    public function getPeriodPurchaseTotal(string $dateFrom, string $dateTo): array
+    {
+        $dateExpr = $this->driver === 'mysql' ? 'DATE(created_at)' : "substr(created_at, 1, 10)";
+        $stmt = $this->pdo->prepare("
+            SELECT COUNT(*) AS cnt, COALESCE(SUM(total_gross), 0) AS total_gross, COALESCE(SUM(total_net), 0) AS total_net
+            FROM purchases
+            WHERE $dateExpr BETWEEN ? AND ?
+        ");
+        $stmt->execute([$dateFrom, $dateTo]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+        return [
+            'count'       => (int) ($row['cnt'] ?? 0),
+            'total_gross' => round((float) ($row['total_gross'] ?? 0), 2),
+            'total_net'   => round((float) ($row['total_net'] ?? 0), 2),
+        ];
     }
 }

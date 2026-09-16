@@ -15,7 +15,7 @@ final class AppVersion
     public const PRODUCT = 'FountainTrade';
 
     /** SemVer (major.minor.patch) — ez a ténylegesen telepített kód verziója. */
-    public const CURRENT = '1.1.1';
+    public const CURRENT = '1.2.0';
 
     /** Alapértelmezett update-csatorna — jelenleg csak 'stable' létezik. */
     public const DEFAULT_CHANNEL = 'stable';

@@ -1,5 +1,19 @@
 const fmt = (n) => new Intl.NumberFormat('hu-HU').format(Math.round(n));
 
+// 1.2.0 — a kör 11. pontja: a MEGLÉVŐ javaslat-listát egy egyszerű
+// készlet-előrejelzéssel egészíti ki (lásd api/purchase-suggestions.php),
+// a javasolt-mennyiség logikát NEM módosítja.
+function forecastLabel(f) {
+    if (!f) return '<span class="muted">—</span>';
+    switch (f.status) {
+        case 'out_of_stock': return '<span class="stock-badge zero">Elfogyott</span>';
+        case 'insufficient_data': return '<span class="muted">Nincs elegendő adat</span>';
+        case 'zero_consumption': return '<span class="muted">Jelenleg nem fogy</span>';
+        case 'ok': return `<span>${f.estimated_days_remaining} nap múlva fogyhat el</span>`;
+        default: return '<span class="muted">—</span>';
+    }
+}
+
 async function loadSuggestions() {
     const box = document.getElementById('suggestions-content');
     try {
@@ -28,7 +42,7 @@ function renderGroups(groups) {
             </div>
             <div class="sample-table-wrap">
                 <table class="sample-table">
-                    <thead><tr><th>Termék</th><th>Készlet</th><th>Küszöb</th><th>Javasolt mennyiség</th></tr></thead>
+                    <thead><tr><th>Termék</th><th>Készlet</th><th>Küszöb</th><th>Javasolt mennyiség</th><th>Előrejelzés</th></tr></thead>
                     <tbody>
                         ${group.products.map((p, pi) => `
                             <tr>
@@ -36,6 +50,7 @@ function renderGroups(groups) {
                                 <td>${p.stock_qty} db</td>
                                 <td>${p.threshold} db</td>
                                 <td><input type="number" min="1" value="${p.suggested_qty}" data-group="${gi}" data-index="${pi}" class="suggested-qty-input" style="width:80px;"></td>
+                                <td>${forecastLabel(p.forecast)}</td>
                             </tr>
                         `).join('')}
                     </tbody>

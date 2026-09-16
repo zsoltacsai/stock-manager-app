@@ -42,6 +42,12 @@ window.ProductModal = (function () {
     const pDeleted = document.getElementById('p-deleted');
     const pPriceHistoryBox = document.getElementById('p-price-history-box');
     const pPriceHistoryList = document.getElementById('p-price-history-list');
+    // 1.2.0 — "Készletmozgások" fül, lásd a kör 9. pontja. Ez a modal
+    // beszerzes.php-ban is megjelenik (megosztott markup), ahol EZ a fül
+    // NEM létezik (a gyors termék-létrehozás/szerkesztés kontextusában nem
+    // releváns) — a hiányzó elemek miatt minden itteni hivatkozás null-
+    // ellenőrzött, hogy a JS ott is hiba nélkül fusson.
+    const pMovementsList = document.getElementById('p-movements-list');
     const pGenerateBarcodeBtn = document.getElementById('p-generate-barcode-btn');
     const pPrintLabelBtn = document.getElementById('p-print-label-btn');
 
@@ -141,6 +147,37 @@ window.ProductModal = (function () {
                 : 'Még nem változott az ár.';
         } catch (e) {
             pPriceHistoryList.textContent = 'Az ártörténet betöltése sikertelen.';
+        }
+    }
+
+    const TAB_MOVEMENT_TYPE_LABELS = { sale: 'Eladás', purchase: 'Beszerzés', return: 'Visszáru', stock_take: 'Leltár', transfer: 'Készlet hozzáadás' };
+
+    async function loadStockMovements(productId) {
+        if (!pMovementsList) return;
+        if (!productId) {
+            pMovementsList.innerHTML = '<p class="muted">Előbb mentsd el a terméket.</p>';
+            return;
+        }
+        pMovementsList.innerHTML = '<div class="spinner-row"><span class="spinner"></span>Betöltés...</div>';
+        try {
+            const res = await fetch('/api/product-stock-movements.php?product_id=' + productId + '&limit=100');
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+            const movements = data.movements || [];
+            pMovementsList.innerHTML = movements.length
+                ? `<div class="sample-table-wrap"><table class="sample-table">
+                    <thead><tr><th>Dátum</th><th>Típus</th><th>Mennyiség</th></tr></thead>
+                    <tbody>${movements.map(m => `
+                        <tr>
+                            <td>${m.date}</td>
+                            <td>${TAB_MOVEMENT_TYPE_LABELS[m.type] || escapeHtml(m.type)}</td>
+                            <td style="${m.qty_change < 0 ? 'color:var(--danger);' : 'color:var(--accent);'}">${m.qty_change > 0 ? '+' : ''}${m.qty_change} db</td>
+                        </tr>
+                    `).join('')}</tbody>
+                </table></div>`
+                : '<p class="muted">Nincs rögzített készletmozgás az elmúlt 365 napban.</p>';
+        } catch (e) {
+            pMovementsList.innerHTML = `<p class="feedback error">A készletmozgások betöltése sikertelen: ${escapeHtml(e.message)}</p>`;
         }
     }
 
@@ -270,6 +307,7 @@ window.ProductModal = (function () {
         modal.classList.add('open');
         pName.focus();
         loadPriceHistory(editingId);
+        loadStockMovements(editingId);
 
         ensureRichTextEditors().then(() => {
             const shortEditor = tinymce.get('p-short-desc');

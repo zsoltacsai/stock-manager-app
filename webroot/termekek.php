@@ -133,6 +133,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <button class="tab-btn" data-tab="tab-prices">Árak</button>
             <button class="tab-btn" data-tab="tab-other">Egyéb</button>
             <button class="tab-btn" data-tab="tab-media">Leírás és kép</button>
+            <button class="tab-btn" data-tab="tab-movements">Készletmozgások</button>
         </div>
 
         <div id="tab-main" class="tab-panel active">
@@ -285,6 +286,11 @@ if (!Auth::isLoggedIn($appSettings)) {
                 sem behúzáskor nem írja felül, sem szinkron-kiküldéskor nem
                 frissül/nem csökken a webshopban a készlete.
             </p>
+        </div>
+
+        <div id="tab-movements" class="tab-panel">
+            <p class="muted" style="margin-top:0;">Az elmúlt 365 nap készletmozgásai — teljes riport a <a href="stock-movements.php">Készletmozgások</a> oldalon.</p>
+            <div id="p-movements-list"></div>
         </div>
 
         <p id="product-modal-feedback" class="modal-feedback"></p>

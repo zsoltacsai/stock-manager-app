@@ -4,6 +4,50 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## [1.2.0] — 2026-09-16 (Dashboard és üzleti riportok)
+
+**Feature release — a meglévő sales/purchases/inventory/invoice/
+WooCommerce adatokból ad üzleti áttekintést, nincs új külső integráció.
+Lásd README "FountainTrade 1.2.0 — Dashboard és üzleti riportok" szakasza
+a részletekért.**
+
+### Added
+
+- Új Dashboard főoldal (`dashboard.php`) — KPI-k (mai/időszaki forgalom,
+  eladásszám, átlagos kosárérték, mai beszerzés, készletérték, alacsony/
+  nulla/negatív készlet, WooCommerce és NAV queue összesítő), egységes
+  backend-authoritative időszakválasztó (`src/ReportPeriod.php`).
+- Forgalmi riport (`sales-report.php`) — napi bontás, fizetésimód szerinti
+  bontás, Top termékek (csoport/minimum darabszám szűréssel,
+  visszáruval nettósítva).
+- Készlet riport (`inventory-report.php`) — készletérték, legnagyobb
+  értékű termékek, alacsony/kifogyott készlet lista CSV exporttal.
+- Készletmozgás-riport (`stock-movements.php`) — a meglévő eladás/
+  beszerzés/visszáru/leltár/telephely-mozgás adatokból, szűrhető,
+  lapozható, CSV exporttal; új "Készletmozgások" fül a termék-
+  részletezőben.
+- Egyszerű készlet-előrejelzés (átlagos napi fogyás alapján), a
+  Beszerzési javaslat oldalon és a Készlet riportban — négy explicit
+  állapot (`out_of_stock`/`insufficient_data`/`zero_consumption`/`ok`),
+  sose hamis pontosságú becslés.
+- WooCommerce szinkron-monitor (`woocommerce-sync.php`) — queue-állapot
+  összesítő, admin-jogszintű kézi újrapróbálkozás a meglévő
+  `wc_push_queue`-ra.
+- Új, kizárólag olvasó riport-API végpontok (lásd README) + 4 CSV export
+  (a meglévő formula-injekció elleni `csv_safe()` védelemmel).
+
+### Changed
+
+- `purchase-suggestions.php` válasza additívan bővült egy `forecast`
+  mezővel soronként — a meglévő javasolt-mennyiség logika és válasz-alak
+  változatlan.
+
+### Database
+
+- `Database::SCHEMA_VERSION` 24 → 25 — kizárólag 3 új index
+  (`idx_returns_created_at`, `idx_return_items_product_id`,
+  `idx_stock_take_items_product_id`), nincs új tábla/oszlop.
+
 ## [1.1.1] — 2026-09-14 (stabilitási / megbízhatósági kiadás)
 
 **Maintenance release — nincs új üzleti funkció, kizárólag stabilitási/

@@ -2255,6 +2255,139 @@ reprodukálhatóvá tett. Javítva: `Database::closeForExternalFileReplacement()
 + `reconnect()` — a kapcsolat a nyers fájlcsere KÖRÜL explicit le- majd
 újranyílik, nem csak utólag cserélődik le.
 
+## FountainTrade 1.2.0 — Dashboard és üzleti riportok
+
+Feature release: a meglévő sales/purchases/inventory/invoice/WooCommerce
+adatokból ad valódi üzleti áttekintést — nincs új külső integráció, minden
+riport a MÁR meglévő adatmodellből épül fel (nincs párhuzamos "stock ledger"
+vagy egyéb duplikált adattábla).
+
+### Dashboard (`dashboard.php`)
+
+Új főoldali áttekintő nézet (sidebar: "Dashboard", első ikon) — "Kassza"
+marad az alapértelmezett bejelentkezés utáni oldal, a Dashboard önálló,
+opcionális új funkció. KPI-k: mai árbevétel/eladásszám/átlagos kosárérték/
+beszerzés, a kiválasztott időszak bruttó/nettó árbevétele és eladásszáma,
+készletérték és alacsony/nulla/negatív készletű termékek száma, WooCommerce
+push-queue és NAV számla-queue összesítő (csak akkor jelenik meg, ha az
+adott integráció ténylegesen be van állítva — lásd `dashboard-summary.php`).
+Az időszakválasztó (ma/tegnap/7 nap/30 nap/aktuális hónap/előző hónap/egyedi)
+minden riport-oldalon egységes, a dátumhatárokat KIZÁRÓLAG a backend számolja
+ki (`src/ReportPeriod.php`, `Europe/Budapest` időzóna, ugyanaz, mint a napi
+zárásnál) — a kliens csak egy kulcsszót küld.
+
+### Forgalmi riport (`sales-report.php`)
+
+Bruttó/nettó forgalom, eladásszám, átlagos kosárérték, fizetésimód szerinti
+bontás (darabszám/összeg/százalék, a `payment_methods` beállításból, nincs
+hardcodolt lista), napi bontás, és Top termékek (csoport/minimum darabszám
+szűréssel). A visszárukat a visszáru SAJÁT napja szerint vonja le — ugyanaz
+az elv, mint a már meglévő napi zárásnál/bevétel-trendnél — és a Top
+termékek nettósítva (eladott − visszáru) számol, nem egyszerű
+`SUM(qty)`-vel. Az `invoices` (NAV modification/storno-lánc) tábla SOSE
+kerül a forgalom-számításba — a `sales`/`returns` a forgalom egyetlen
+forrása, ez zárja ki a sales/invoice fogalom összekeverését.
+
+### Készlet riport (`inventory-report.php`)
+
+Összesített termékszám/készleten/nulla/negatív/alacsony készlet, teljes
+készletérték (a MEGLÉVŐ `purchase_price_net` — utolsó ismert nettó
+beszerzési ár — mezőből, nincs új cost accounting bevezetve), legnagyobb
+készletértékű termékek. Alacsony készletű termékek lapos listája (a
+meglévő, beszállító szerint csoportosító Beszerzési javaslat oldal
+mellett), szűrhető alacsony/kifogyott állapotra, CSV exporttal.
+
+### Készletmozgások (`stock-movements.php` + termék-részletező fül)
+
+A MEGLÉVŐ mozgás-forrás táblák (`sale_items`, `purchase_items`,
+`return_items`, `stock_take_items`, `stock_transfers`) uniója, dátum/típus/
+termék szerint szűrhető, lapozható, CSV exporttal. A termék-részletező
+modaljában ("Árucikkek" oldal) új "Készletmozgások" fül mutatja az adott
+termék elmúlt 365 napi mozgásait. Nincs before/after (historikus
+pillanatkép) mező — a meglévő adatmodell ezt nem biztosítja, a riport ezt
+őszintén NULL-ként jelzi, nem hamis pontossággal. A telephelyek KÖZÖTTI
+mozgatás (nettó 0 hatás az összesített készletre) nem szerepel itt — azt a
+meglévő Telephelyek-oldal saját előzmény-nézete fedi le.
+
+### Készlet-előrejelzés
+
+Egyszerű, átlátható modell (nincs ML): `átlagos napi fogyás (visszáruval
+nettósítva) + aktuális készlet = becsült hátralévő napok`, állítható
+időablakkal (alapértelmezett 30 nap). Négy állapot, hamis pontosság
+nélkül:
+
+- **`out_of_stock`** — a készlet már most is ≤ 0, nincs értelme napot
+  becsülni.
+- **`insufficient_data`** — a termékhez az ablakban csak EGY elszigetelt
+  eladási nap tartozik — egyetlen adatpont nem megbízható ráta.
+- **`zero_consumption`** — a termék az ablakban egyáltalán nem fogyott
+  (de VAN adat, ez egy magabiztos "nem fogy" megállapítás, nem
+  bizonytalanság).
+- **`ok`** — legalább 2 különböző eladási nap + pozitív nettó fogyás →
+  `becsült hátralévő napok = aktuális készlet / átlagos napi fogyás`.
+
+Az előrejelzés megjelenik a Beszerzési javaslat oldalon (a meglévő,
+beszállító szerint csoportosított listát egészíti ki, a javasolt-mennyiség
+logikát nem módosítja) és a Készlet riport alacsony-készlet listáján.
+
+### WooCommerce szinkron-monitor (`woocommerce-sync.php`)
+
+Admin UI a 1.1.1-ben bevezetett `wc_push_queue`-hoz: állapot szerinti
+összesítő (queued/processing/done/failed/dead_letter) és a sikertelen
+sorok listája kézi "Újrapróbálás" gombbal. A gomb kizárólag terminális
+(failed/dead_letter) sorra engedélyezett, vezetői jogszintet igényel — a
+MEGLÉVŐ `Database::resetWcPushForManualRetry()`-t hívja, nincs új
+állapotgép. A Dashboard egy rövid összesítőt mutat ("Várakozó: N",
+"Sikertelen: N" csak ha van), sose blokkolja a kasszát.
+
+### NAV számla-queue összesítő
+
+A Dashboardon látható a függőben lévő/sikertelen NAV-számlák száma (a
+MEGLÉVŐ `Invoices::INVOICE_STATUS_BUCKETS` leképezéssel, nincs új state
+machine), link a Kimenő számlák oldalra. Csak akkor jelenik meg
+tartalmasan, ha a `invoice_provider` beállítás ténylegesen `nav`.
+
+### API
+
+Új, kizárólag olvasó (GET, bejelentkezés szükséges) végpontok:
+`dashboard-summary.php`, `sales-report.php`, `top-products-report.php`,
+`inventory-report.php`, `low-stock-report.php`, `stock-movements-report.php`,
+`product-stock-movements.php`, `stock-forecast.php`,
+`woocommerce-sync-status.php`, plusz 4 CSV export végpont (sales/inventory/
+low-stock/stock-movements — mind a meglévő `csv_safe()` formula-injekció
+védelemmel). Egyetlen állapotváltoztató végpont: `woocommerce-sync-retry.php`
+(POST, admin + CSRF). A `purchase-suggestions.php` additívan bővült
+(`forecast` mező soronként), a válasz-alakja egyébként változatlan.
+
+### Adatbázis-migráció
+
+`Database::SCHEMA_VERSION` 24 → **25** — KIZÁRÓLAG index (nincs új
+tábla/oszlop): `idx_returns_created_at`, `idx_return_items_product_id`,
+`idx_stock_take_items_product_id` — a riportok új dátum-/termék-szerinti
+lekérdezéseihez, mindkét motoron (SQLite + MySQL), friss telepítési séma is
+frissítve.
+
+### Teljesítmény
+
+A Dashboard KPI-jai aggregált SQL-lekérdezések (nincs termékenkénti/
+soronkénti külön query) — a készletáttekintés egyetlen `SUM(CASE WHEN...)`
+lekérdezés, a forecast bulk-metódusa két batch-lekérdezéssel dolgozza fel
+akár több száz terméket is. Nincs cache bevezetve a valós idejű adatokra
+(mai forgalom, aktuális készlet, függő szinkron) — ezeknél a friss adat
+fontosabb, mint a válaszidő egy pár tized másodperces megtakarítása.
+
+### Ismert korlátok
+
+- A Készletmozgások riport nem tartalmaz before/after készlet-
+  pillanatképet (lásd fent) — csak a mennyiségváltozást.
+- A készlet-előrejelzés lineáris átlagra épül, szezonalitást/trendet nem
+  ismer fel — ez szándékos, dokumentált egyszerűsítés (lásd fent).
+- A Forgalmi riport a teljes időszak eladásait/tételeit egyszerre tölti be
+  a szerver memóriájába (2 batch lekérdezéssel) a pontos, tétel-szintű
+  kedvezmény-arányosítás miatt — ez ennek az alkalmazás-méretnek
+  (egybolti POS) megfelelő, nagyon nagy (több tízezer eladás/hónap)
+  forgalomnál érdemes lehet később ezt is aggregált SQL-re váltani.
+
 ## Biztonság
 
 **A valódi védelem az, hogy minden adat és minden művelet kizárólag az

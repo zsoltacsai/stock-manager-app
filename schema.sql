@@ -304,6 +304,7 @@ CREATE TABLE IF NOT EXISTS returns (
     created_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_returns_sale_id ON returns(sale_id);
+CREATE INDEX IF NOT EXISTS idx_returns_created_at ON returns(created_at);
 
 CREATE TABLE IF NOT EXISTS return_items (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -316,6 +317,7 @@ CREATE TABLE IF NOT EXISTS return_items (
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_return_items_return_id ON return_items(return_id);
+CREATE INDEX IF NOT EXISTS idx_return_items_product_id ON return_items(product_id);
 
 -- Leltározás
 CREATE TABLE IF NOT EXISTS stock_takes (
@@ -335,6 +337,7 @@ CREATE TABLE IF NOT EXISTS stock_take_items (
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_stock_take_items_take_id ON stock_take_items(stock_take_id);
+CREATE INDEX IF NOT EXISTS idx_stock_take_items_product_id ON stock_take_items(product_id);
 
 -- sales.staff_id — ki dolgozott a Kasszánál az eladáskor
 -- (a saveProduct/insertSale metódusok a Database.php-ban kapják meg az ALTER-t meglévő adatbázisoknál)

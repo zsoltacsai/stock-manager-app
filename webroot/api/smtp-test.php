@@ -54,9 +54,23 @@ $subject = 'FountainTrade — teszt email';
 $html = '<div style="font-family:Arial,sans-serif;"><h2>FountainTrade</h2><p>Ez egy teszt email az SMTP beállítások ellenőrzéséhez.</p><p>Ha ezt megkaptad, az SMTP kapcsolat, hitelesítés és a kézbesítés rendben működik.</p></div>';
 
 $result = MailerService::send($smtpConfig, $toEmail, $subject, $html);
+$retentionDays = system_event_retention_days($current);
 
 if (!$result['success']) {
+    $settings->save([
+        'last_smtp_test_at'      => date('c'),
+        'last_smtp_test_status'  => 'failure',
+        'last_smtp_test_message' => 'Az SMTP teszt email küldése sikertelen volt.',
+    ]);
+    $db->logSystemEvent('smtp', 'test_failed', 'error', 'failure', 'Az SMTP teszt email küldése sikertelen volt.', $result['error'], $retentionDays);
     send_json(['error' => $result['error']], 500);
 }
+
+$settings->save([
+    'last_smtp_test_at'      => date('c'),
+    'last_smtp_test_status'  => 'success',
+    'last_smtp_test_message' => 'Az SMTP teszt email sikeresen elküldve.',
+]);
+$db->logSystemEvent('smtp', 'test_success', 'info', 'success', 'Az SMTP teszt email sikeresen elküldve.', null, $retentionDays);
 
 send_json(['success' => true]);

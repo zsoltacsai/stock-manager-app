@@ -30,6 +30,7 @@ require_once __DIR__ . '/../src/WcPushQueueWorker.php';
 require_once __DIR__ . '/../src/ReportPeriod.php';
 require_once __DIR__ . '/../src/HungarianNameDays.php';
 require_once __DIR__ . '/../src/PurchaseDecisionService.php';
+require_once __DIR__ . '/../src/HealthMonitor.php';
 
 /**
  * Minden tesztfüggvény saját, egyszer használatos SQLite fájllal dolgozik

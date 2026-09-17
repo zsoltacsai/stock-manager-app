@@ -112,6 +112,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
     CONSTRAINT fk_audit_log_staff FOREIGN KEY (staff_id) REFERENCES staff(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Rendszeresemény-napló (1.4.0) — lásd schema.sql ugyanezen megjegyzését.
+CREATE TABLE IF NOT EXISTS system_events (
+    id               INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    category         VARCHAR(32) NOT NULL,
+    event_type       VARCHAR(64) NOT NULL,
+    severity         VARCHAR(16) NOT NULL,
+    status           VARCHAR(16) NOT NULL,
+    user_message     TEXT NOT NULL,
+    technical_detail TEXT NULL,
+    created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_system_events_created_at (created_at),
+    KEY idx_system_events_category_severity (category, severity)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Kedvezménykód / kupon
 CREATE TABLE IF NOT EXISTS coupons (
     id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

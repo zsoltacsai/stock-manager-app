@@ -1436,12 +1436,10 @@ pont mennyi kedvezményt ér beváltáskor. Bekapcsolva:
 
 ## Rendszerállapot (rendszerállapot oldal)
 
-A `rendszerallapot.html` egy pillantásra összefogja mindazt, ami
-egyébként szét van szórva a Beállítások fülein és a szinkron-naplóban:
-az utolsó WooCommerce szinkron és mentés időpontjai/eredményei, az
-alacsony készletű termékek és a legutóbbi számla-hibák száma, hogy a
-nyomtató/Számlázz.hu/hűségprogram funkciók be vannak-e állítva, és a
-szinkron-napló utolsó 20 bejegyzése (a hibák kiemelve).
+A `rendszerallapot.php` egy pillantásra összefogja mindazt, ami
+egyébként szét lenne szórva a Beállítások fülein és a szinkron-naplóban
+— lásd a részletes leírást a "FountainTrade 1.4.0 — Operations &
+Reliability" szakaszban.
 
 ## Telepíthető mobil-app (PWA)
 
@@ -2887,3 +2885,186 @@ végpont-tesztek, pl. `webroot/api/*.php` közvetlen hívásai) — a cél az
 volt, hogy a legkockázatosabb, pénzügyi hatású logika (készlet, kupon,
 jogosultság) automatikusan ellenőrizhető legyen egy jövőbeli módosítás
 után is.
+
+## FountainTrade 1.4.0 — Operations & Reliability
+
+Üzemeltetési/megbízhatósági kör — a cél NEM új üzleti funkció, hanem
+hogy egy pillantással eldönthető legyen "rendben van-e a rendszer?", és
+ha nem, "mi a baj?" és "mit tegyek?". Minden új felület a MEGLÉVŐ
+architektúrára épül (audit_log, sync_log, `update_state`/`update_history`
+minta, `getWcQueueStatusSummary()`/`getInvoiceQueueStatusSummary()`) —
+nem készült párhuzamos naplózó/health-check rendszer.
+
+### Rendszeresemény-napló (`system_events`)
+
+Új, önálló tábla + `Database::logSystemEvent()`/`getSystemEvents()`/
+`countRecentSystemEventsBySeverity()`. Minden bejegyzés: kategória
+(`backup`/`woocommerce`/`nav`/`updater`/`printer`/`smtp`/`auth`/
+`database`), súlyosság (`info`/`warning`/`error`), állapot
+(`started`/`success`/`failure`), egy felhasználóbarát üzenet, és egy
+KÜLÖN technikai részlet — utóbbi SOSE látszik nem-admin felhasználónak
+(ugyanaz az "effektíve admin" ellenőrzés, mint a számla-részletnézeten).
+
+**Miért külön tábla, és nem az `audit_log` bővítése?** Az `audit_log`
+egy EMBER által végzett akciót ír le (`staff_id`, `action`,
+`entity_type`/`id`) — nincs benne súlyosság/állapot-fogalom, és nincs
+"háttérfolyamat, aminek nincs emberi szereplője" koncepció (pl. egy
+automatikus cron-alapú szinkron). A `sync_log` sem alkalmas bővítésre:
+annak SOHA nem volt semmilyen megőrzési/takarítási mechanizmusa (végtelenül
+nő), és kizárólag a WooCommerce termékszinkron üzeneteire korlátozódik.
+A `system_events` egy kereszt-metszeti, üzemeltetési idővonal — minden
+íráskor automatikusan takarít a `system_events_retention_days`
+beállítás szerint (alapértelmezés: 14 nap), tehát NEM nőhet korlátlanul.
+
+### `audit_log` vs. `system_events` — a határvonal, és mi lett kiegészítve
+
+Ebben a körben végigmentünk azon a listán, hogy a felhasználó-szándékú
+akciók (készlet-korrekció, beszerzés, eladás, számla-akció,
+visszaállítás, frissítés, biztonsági beállítás-módosítás, admin
+beállítás-módosítás, dolgozó-változás) valóban vissza vannak-e követve
+valahol — és VALÓDI, korábban hiányzó lefedettségi réseket találtunk:
+
+- **Biztonsági beállítás-módosítás** (`security-settings-save.php`) és
+  **admin beállítás-módosítás** (`settings.php`) — EGYIKNEK sem volt
+  eddig SEMMILYEN nyoma sehol. Mindkettő mostantól `logAudit()`-ot ír
+  (`security_settings_update`/`admin_settings_update`), de a `details`
+  KIZÁRÓLAG a módosított mezők NEVEIT sorolja fel — a tényleges (sokszor
+  titkos: jelszó/API-kulcs/token) ÉRTÉKEKET soha.
+- **Dolgozó-változás** (`staff-save.php`) — új dolgozó felvétele vagy
+  meglévő szerkesztése (beleértve a szerepkör-váltást és a PIN-cserét)
+  szintén nem volt naplózva. Mostantól `staff_create`/`staff_update`
+  eseményt ír, a PIN tényleges értéke nélkül (csak azt jelzi, történt-e
+  csere).
+- **Beszerzés** (`purchase-save.php`) — a `purchases` táblának NINCS
+  `staff_id` oszlopa (lásd `schema.sql`), tehát "ki rögzítette ezt a
+  beszerzést" enélkül visszakereshetetlen lett volna. Egy sémamódosítás
+  (oszlop hozzáadása) aránytalanul nagy beavatkozás lett volna egy
+  üzemeltetési körben — a MEGLÉVŐ `audit_log` mechanizmus pontosan erre
+  a kérdésre való, ezért `purchase_create` eseményt ír, sémaváltoztatás
+  nélkül.
+
+Ahol NEM készült új naplózás, mert a lefedettség MÁR megvan a saját
+üzleti táblán keresztül (a `staff_id`/`created_at` pár már ott van):
+**eladás** (`sales.staff_id`), **készlet-korrekció/leltár**
+(`stock_takes.staff_id`), **telephely-mozgatás**
+(`stock_transfers.staff_id`), **visszáru** (`returns.staff_id`). Ezeknél
+egy PÁRHUZAMOS `audit_log`-bejegyzés redundáns lenne, és a `sales` a
+legforgalmasabb útvonal az egész appban — egy extra írás minden egyes
+eladásnál indokolatlan terhelés/zaj lenne egy már teljes körűen
+nyomon követett akcióhoz.
+
+**Számla-akció** (`invoice-modify.php`/`invoice-storno.php`) és
+**visszaállítás** (`backup-restore.php`) MÁR korábban is naplózva volt —
+nem változott.
+
+**Frissítés** (self-update) SZÁNDÉKOSAN a `system_events`-be kerül, NEM
+az `audit_log`-ba — ez egy automatikus/háttérfolyamat, aminek nincs
+egyetlen konkrét emberi szereplője egy adott pillanatban (lásd
+`UpdateState::transitionTo()`), pontosan az `audit_log` és a
+`system_events` közötti, e kör elején meghúzott elvi határ szerint.
+
+### `HealthMonitor` — egyetlen állapot-forrás
+
+`src/HealthMonitor.php` egyetlen, újrafelhasználható
+`computeComponentStatuses()` függvényben számítja ki MINDEN komponens
+(adatbázis, biztonsági mentés, WooCommerce, NAV, Számlázz.hu, SMTP,
+nyomtató, frissítő) állapotát — öt lehetséges érték: `OK` / `WARNING` /
+`ERROR` / `NOT_CONFIGURED` / `UNKNOWN`. Ugyanezt a számítást olvassa a
+Rendszerállapot oldal ÉS a Dashboard widget ÉS a figyelmet-igénylő-elemek
+listája — szándékosan NINCS két-három párhuzamos "mi a baj" logika.
+
+Csak a ténylegesen beállított integrációk jelennek meg (egy be nem
+állított WooCommerce/NAV/Számlázz.hu/SMTP egyszerűen hiányzik a
+listából, nem hamis piros/zöld jelzést kap). A cron-alapú komponenseknél
+(biztonsági mentés, WooCommerce szinkron, NAV várólista) az "elavult"
+küszöb az adott feladat SAJÁT, dokumentált gyakoriságához igazodik (nincs
+egy közös, globális időtúllépés-érték), és a döntés a frissesség MELLETT
+a cron-végpontok "Hiba:" előtaggal jelzett összegzés-szövegét is
+figyelembe veszi — enélkül egy tartósan hibázó, de rendszeresen lefutó
+cron hamis-zöldet mutatna, mert az időbélyeg hibás lefutáskor is frissül.
+
+A rendszer SOHA nem fabrikál "következő futás" időpontot — az alkalmazás
+nem ismeri a Windows Feladatütemező tényleges belső ütemezését, és egy
+kitalált érték hamis biztonságérzetet adna (lásd ROADMAP.md).
+
+### Rendszerállapot oldal
+
+A `rendszerallapot.php` kártyái: "Áttekintés" (a korábbi statisztika-
+rács, kiegészítve az összesített állapottal), "Figyelmet igényel" (csak
+akkor jelenik meg, ha ténylegesen van valami), "Rendszer komponensek"
+(állapot-pötty + felirat, utolsó ellenőrzés/siker időpontja, rövid
+felhasználóbarát hibaüzenet, WooCommerce/NAV-nál várólista-összegzés
+kattintható linkkel, ahol értelmezhető egy "Kapcsolat tesztelése" gomb),
+"Eseménynapló" (kategória/súlyosság szűrővel), és a korábbi WooCommerce
+termékszinkron-napló (`sync_log`), immár külön, termék-szintű
+részletező nézetként megtartva.
+
+### Dashboard "Rendszer állapota" kártya
+
+Kompakt, egy-soros-komponensenkénti lista a Dashboard tetején,
+kattintható linkkel a teljes Rendszerállapot oldalra. **Nem okoz új
+HTTP-kérést** — a már meglévő, egyetlen aggregált `dashboard-summary.php`
+hívás adja vissza ugyanazt az adatot, amit a Rendszerállapot oldal is
+használ.
+
+### Manuális kapcsolat-tesztek
+
+A Rendszerállapot oldalon "Kapcsolat tesztelése" gomb érhető el
+WooCommerce-hez (`webroot/api/wc-test-connection.php`) és NAV-hoz (új
+`webroot/api/nav-test-connection.php`, admin+CSRF védett, a meglévő
+`NavClient::testConnection()`-t hívja). Mindkettő **kizárólag olvasás
+jellegű** — nem hoz létre/módosít üzleti adatot, nem küld valódi
+WooCommerce-rendelést, nem állít ki számlát. A Számlázz.hu-hoz
+SZÁNDÉKOSAN nincs ilyen gomb: a `SzamlazzClient` Agent API-jának nincs
+dokumentált, mellékhatás-mentes tesztművelete — minden metódusa valódi
+számlát hoz létre, módosít vagy sztornóz, így egy "teszt" gomb
+valójában üzleti adatot hozna létre.
+
+### Eseménynaplózás a háttérfolyamatokban
+
+`logSystemEvent()` hívás került a következő helyekre: biztonsági mentés
+(kézi és automatikus — indul/kész/sikertelen, visszaállítás indul/kész/
+sikertelen), WooCommerce (automatikus szinkron indul/kész/sikertelen,
+várólista-feldolgozás lefutott/elakadt tétel), NAV (kimenő várólista
+feldolgozva/számla feldolgozva/sikertelen, bejövő szinkron kész/
+sikertelen), frissítő (MINDEN állapotváltás —
+ellenőrzés/letöltés/ellenőrzés/mentés/telepítés/migráció/health-check/
+kész/sikertelen/visszaállítás — közvetlenül `UpdateState::transitionTo()`-
+ból, `idle` kivételével, ami túl gyakori/nem informatív lenne),
+nyomtató (**csak a sikertelen** automatikus nyugtanyomtatás — a sikeres
+nyomtatás szándékosan NINCS naplózva, hogy ne árassza el a naplót normál,
+nagy forgalmú kasszahasználat mellett), SMTP-teszt, bejelentkezés
+(siker/sikertelen — **az IP-cím SOHA nem kerül naplózásra**),
+kijelentkezés.
+
+### `install-windows.ps1` — Windows telepítő/beüzemelő szkript
+
+Önálló PowerShell szkript, ami az `install.txt` kézi lépéseinek egy
+részét automatizálja egy új Windows gépen:
+
+- PHP megtalálása, verzió-ellenőrzés (≥8.1), az összes kötelező
+  kiterjesztés (`pdo_sqlite`, `sqlite3`, `curl`, `mbstring`, `gd`,
+  `xmlwriter`, `zip`, `fileinfo`, `openssl`) tényleges meglétének
+  ellenőrzése, OPcache-figyelmeztetés.
+- Az írható mappák (`data`, `data\backups`, `data\imports`, `invoices`,
+  `webroot\assets`) létrehozása/ellenőrzése, VALÓDI írás-teszttel (nem
+  csak jogosultság-kikövetkeztetéssel).
+- A beépített PHP szerver és mind az öt automatikus háttérfeladat
+  (WooCommerce szinkron, biztonsági mentés, NAV kimenő/bejövő,
+  frissítés-ellenőrzés) Feladatütemező-bejegyzéseinek **idempotens**
+  létrehozása/frissítése — egy második (vagy N-edik) futtatás
+  ELLENŐRZI a meglévő bejegyzést, és csak frissíti, sose duplikál.
+- **A cron-titkos token SOHA nincs beégetve a szkript forrásába** — vagy
+  a `-CronToken` paraméterrel adható át, vagy a szkript a MÁR LÉTEZŐ
+  `data\settings.json`-ból olvassa be; ha egyik sem elérhető, a
+  cron-feladatok létrehozása figyelmeztetéssel kimarad, a végső
+  összegzés pedig pontosan megmondja, mit kell utólag tenni.
+- Opcionális asztali parancsikon (idempotens — nem hoz létre duplikátumot).
+- Valódi HTTP-alapú egészség-ellenőrzés a telepítés végén (ideiglenesen
+  elindítja a szervert, ha még nem fut, lekéri a főoldalt, majd leállítja).
+- Végén egy áttekinthető, színkódolt összegzés (OK/FIGYELEM/HIBA soronként).
+
+Futtatás: `.\install-windows.ps1` (alapértelmezett beüzemelés) vagy
+`.\install-windows.ps1 -CronToken "<a Beállításokban beállított token>" -Port 8000`
+(teljes beüzemelés, cron-feladatokkal együtt). Lásd a szkript saját
+`Get-Help .\install-windows.ps1 -Full` súgóját a további paraméterekért.

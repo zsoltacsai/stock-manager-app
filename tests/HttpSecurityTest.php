@@ -1793,4 +1793,123 @@ final class HttpSecurityTest extends TestCase
             'A JAVÍTÁS (RuntimeException külön catch-elése) UTÁN is a valódi, konkrét üzenetnek kell megjelennie — nem egy generikus "váratlan szerverhiba"-nak.'
         );
     }
+
+    // -----------------------------------------------------------------
+    // 1.4.0 "Operations & Reliability" — system-health.php/system-events.php
+    // HTTP-szintű coverage: auth, válasz-alak, admin-only technikai
+    // részlet, admin+CSRF a manuális kapcsolat-teszt végpontokon.
+    // -----------------------------------------------------------------
+
+    public function testOps1_SystemHealthRequiresAuthentication(): void
+    {
+        $freshJar = self::cookieJar('ops-health-no-session');
+        $res = self::request('GET', '/api/system-health.php', null, [], $freshJar);
+        $this->assertSame(401, $res['status']);
+    }
+
+    public function testOps2_SystemHealthResponseShapeAndComponentFields(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $res = self::request('GET', '/api/system-health.php', null, [], $jar);
+        $this->assertSame(200, $res['status'], $res['body']);
+        $json = $res['json'];
+
+        $this->assertContains($json['overall']['level'], ['ok', 'warning', 'error']);
+        $this->assertNotEmpty($json['overall']['label']);
+        $this->assertArrayHasKey('database', $json['components']);
+        foreach ($json['components'] as $component) {
+            foreach (['status', 'last_checked_at', 'last_success_at', 'message'] as $key) {
+                $this->assertArrayHasKey($key, $component);
+            }
+            $this->assertContains($component['status'], ['ok', 'warning', 'error', 'not_configured', 'unknown']);
+        }
+        $this->assertIsArray($json['attention']);
+        $this->assertIsArray($json['recent_events']);
+        $this->assertArrayHasKey('info', $json['event_counts_24h']);
+        $this->assertArrayHasKey('warning', $json['event_counts_24h']);
+        $this->assertArrayHasKey('error', $json['event_counts_24h']);
+    }
+
+    public function testOps3_SystemHealthHidesTechnicalDetailFromNonAdminStaff(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+        self::request('POST', '/api/backup-now.php', [], ['X-CSRF-Token' => $csrf], $jar); // legyen legalább 1 esemény technical_detail-lel (backup-now.php sikertelen is naplóz)
+
+        $adminRes = self::request('GET', '/api/system-health.php', null, [], $jar);
+        $this->assertTrue($adminRes['json']['is_admin']);
+
+        $cashierJar = self::cookieJar('admin-gate-regression-cashier'); // már bejelentkezett cashier-session a 056-os tesztből
+        $cashierRes = self::request('GET', '/api/system-health.php', null, [], $cashierJar);
+        $this->assertSame(200, $cashierRes['status']);
+        $this->assertFalse($cashierRes['json']['is_admin']);
+        foreach ($cashierRes['json']['recent_events'] as $event) {
+            $this->assertArrayNotHasKey('technical_detail', $event, 'Nem-admin session SOSE kaphatja meg a technical_detail mezőt.');
+        }
+    }
+
+    public function testOps4_SystemEventsRequiresAuthenticationAndFiltersByCategory(): void
+    {
+        $freshJar = self::cookieJar('ops-events-no-session');
+        $this->assertSame(401, self::request('GET', '/api/system-events.php', null, [], $freshJar)['status']);
+
+        $jar = self::cookieJar('login-success');
+        $res = self::request('GET', '/api/system-events.php?category=backup', null, [], $jar);
+        $this->assertSame(200, $res['status']);
+        foreach ($res['json']['events'] as $event) {
+            $this->assertSame('backup', $event['category']);
+        }
+    }
+
+    public function testOps5_NavTestConnectionRequiresAdminAndCsrf(): void
+    {
+        $freshJar = self::cookieJar('ops-nav-test-no-session');
+        $this->assertSame(401, self::request('POST', '/api/nav-test-connection.php', [], [], $freshJar)['status']);
+
+        $jar = self::cookieJar('login-success');
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $this->assertSame(403, self::request('POST', '/api/nav-test-connection.php', [], [], $jar)['status'], 'CSRF-token nélkül elutasítva.');
+
+        $cashierJar = self::cookieJar('admin-gate-regression-cashier');
+        $cashierStatus = self::request('GET', '/api/auth-status.php', null, [], $cashierJar);
+        $cashierCsrf = $cashierStatus['json']['csrf_token'];
+        $this->assertSame(403, self::request('POST', '/api/nav-test-connection.php', [], ['X-CSRF-Token' => $cashierCsrf], $cashierJar)['status'], 'Nem-admin session ne juthasson túl a require_admin()-en.');
+    }
+
+    // Regresszió (1.4.0, valódi böngészős hiba-injektálással felfedezve —
+    // lásd a kör 20. pontja): a wc-test-connection.php UrlSafety-elutasítási
+    // ága (pl. belső/loopback cím, vagy fel nem oldható host) korábban a
+    // try/catch ELŐTT tért vissza, emiatt SOSE került az eseménynaplóba —
+    // holott a felhasználó felé helyesen jelent meg a hibaüzenet. Egy
+    // localhost URL determinisztikusan (valódi hálózati hívás/DNS nélkül)
+    // váltja ki ugyanezt az elutasítási ágat.
+    public function testOps6_WcTestConnectionUrlSafetyRejectionStillLogsSystemEvent(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        $resp = self::request(
+            'POST',
+            '/api/wc-test-connection.php',
+            ['store_url' => 'http://localhost:1234', 'consumer_key' => 'ck', 'consumer_secret' => 'cs'],
+            ['X-CSRF-Token' => $csrf],
+            $jar
+        );
+        $this->assertSame(200, $resp['status']);
+        $this->assertFalse($resp['json']['success']);
+        $this->assertSame('Belső/loopback cím nem engedélyezett.', $resp['json']['error']);
+
+        $events = self::request('GET', '/api/system-events.php?category=woocommerce', null, [], $jar);
+        $this->assertSame(200, $events['status']);
+        $found = false;
+        foreach ($events['json']['events'] as $event) {
+            if ($event['event_type'] === 'test_failed' && $event['technical_detail'] === 'Belső/loopback cím nem engedélyezett.') {
+                $found = true;
+                break;
+            }
+        }
+        $this->assertTrue($found, 'Az UrlSafety-elutasítás miatti teszt-kudarcnak is meg kell jelennie az eseménynaplóban.');
+    }
 }

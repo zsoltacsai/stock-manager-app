@@ -36,13 +36,21 @@ if (empty($wcConfig['store_url']) || empty($wcConfig['consumer_key']) || empty($
 // ténylegesen kimenő híváskor (védelmi mélységként) is elvégez.
 [$urlOk, $urlError] = UrlSafety::check($wcConfig['store_url']);
 if (!$urlOk) {
+    // Regresszió (1.4.0, élő böngészős teszteléssel felfedezve): ez az
+    // elutasítási ág korábban a try/catch ELŐTT tért vissza, emiatt egy
+    // ide eső hiba (pl. fel nem oldható host — a leggyakoribb valódi
+    // teszt-kudarc) SOSE került az eseménynaplóba, holott a felhasználó
+    // felé helyesen jelent meg a hibaüzenet.
+    $db->logSystemEvent('woocommerce', 'test_failed', 'error', 'failure', 'A WooCommerce kapcsolat teszt sikertelen volt.', $urlError, system_event_retention_days($appSettings));
     send_json(['success' => false, 'error' => $urlError]);
 }
 
 try {
     $wc = new WooCommerceClient($wcConfig);
     $wc->testConnection();
+    $db->logSystemEvent('woocommerce', 'test_success', 'info', 'success', 'A WooCommerce kapcsolat teszt sikeres volt.', null, system_event_retention_days($appSettings));
     send_json(['success' => true]);
 } catch (Throwable $e) {
+    $db->logSystemEvent('woocommerce', 'test_failed', 'error', 'failure', 'A WooCommerce kapcsolat teszt sikertelen volt.', $e->getMessage(), system_event_retention_days($appSettings));
     send_json(['success' => false, 'error' => $e->getMessage()]);
 }

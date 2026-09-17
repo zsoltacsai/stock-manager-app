@@ -8,4 +8,5 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 Auth::logout();
+$db->logSystemEvent('auth', 'logout', 'info', 'success', 'Kijelentkezés.', null, system_event_retention_days($appSettings));
 send_json(['ok' => true]);

@@ -445,6 +445,18 @@ if (!empty($appSettings['printer_auto_print_enabled'])) {
     } catch (Throwable $e) {
         $printResult = ['success' => false, 'error' => $e->getMessage()];
     }
+    // Csak a SIKERTELEN automata nyomtatást naplózzuk rendszereseményként —
+    // minden egyes sikeres nyugtanyomtatást naplózni (naponta akár száz
+    // eladás) csak zajt jelentene a rendszeresemény-naplóban, üzemeltetői
+    // szempontból a SIKERTELEN eset a ténylegesen jelzésértékű (lásd a kör
+    // 3. pontja: "print failed").
+    if ($printResult !== null && empty($printResult['success'])) {
+        try {
+            $db->logSystemEvent('printer', 'print_failed', 'error', 'failure', 'Eladás #' . $saleId . ' — a nyugta automatikus nyomtatása sikertelen volt.', $printResult['error'] ?? null, system_event_retention_days($appSettings));
+        } catch (Throwable $logError) {
+            error_log('[fountaintrade] sale.php print_failed system_event log sikertelen: ' . $logError->getMessage());
+        }
+    }
 }
 
 send_json([

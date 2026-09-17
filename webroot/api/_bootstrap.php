@@ -259,6 +259,18 @@ function require_admin(Database $db): void
 }
 
 /**
+ * 1.4.0 — a `Database::logSystemEvent()` minden hívási helyén ugyanazt
+ * a beállított megőrzési időt kell átadni (lásd logAudit()/
+ * audit_log_retention_days pontosan ugyanezen, már bevált mintáját) —
+ * ez a segédfüggvény csak a `(int) ($settings[...] ?? 14)` ismétlését
+ * váltja ki minden hívási helyen.
+ */
+function system_event_retention_days(array $settings): int
+{
+    return max(1, (int) ($settings['system_events_retention_days'] ?? 14));
+}
+
+/**
  * CSV/formula-injekció elleni védelem (CWE-1236) minden CSV-exporthoz. Ha
  * egy cella (pl. termék/vásárló/beszállító neve, megjegyzés) `=`, `+`, `-`
  * vagy `@` karakterrel kezdődik, Excel/LibreOffice megnyitáskor képletként

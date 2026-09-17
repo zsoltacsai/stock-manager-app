@@ -7,7 +7,7 @@ require_once __DIR__ . '/PurchaseDecisionService.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 25;
+    private const SCHEMA_VERSION = 26;
 
     private PDO $pdo;
     private string $driver;
@@ -197,6 +197,9 @@ class Database
             }
             if ($version < 25) {
                 $this->migrateV25ReportingIndexes();
+            }
+            if ($version < 26) {
+                $this->migrateV26SystemEvents();
             }
         }
 
@@ -1511,6 +1514,53 @@ class Database
                     throw $e;
                 }
             }
+        }
+    }
+
+    /**
+     * 1.4.0 — "Operations & Reliability": egységes rendszeresemény-napló
+     * (backup/WooCommerce/NAV/updater/nyomtató/SMTP/auth események egy
+     * közös idővonalon). Szándékosan KÜLÖN tábla, NEM az audit_log
+     * bővítése — az audit_log egy DOLGOZÓI cselekvés-naplót ír le ("ki
+     * csinált mit"), aminek nincs `staff_id`-tól független "a háttérben,
+     * cron-ból magától lefutott" fogalma, és nincs severity/status/
+     * category mezője sem — ezeket ráhúzni az audit_log-ra összemosná a
+     * két, tudatosan elkülönített koncepciót (emberi cselekvés-napló vs.
+     * rendszeresemény-idővonal). A `sync_log` táblát sem bővítettük:
+     * annak semmilyen retention/cleanup mechanizmusa nincs (korlátlanul
+     * nő), és kizárólag WooCommerce termékszinkron-üzenetekre való —
+     * nem terjed ki NAV/backup/updater/nyomtató/SMTP/auth eseményekre.
+     */
+    private function migrateV26SystemEvents(): void
+    {
+        $isMysql = $this->driver === 'mysql';
+        $pk = $isMysql ? 'INT UNSIGNED AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
+        $ts = $isMysql ? 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' : "TEXT NOT NULL DEFAULT (datetime('now'))";
+
+        try {
+            $this->pdo->exec("CREATE TABLE IF NOT EXISTS system_events (
+                id               $pk,
+                category         VARCHAR(32) NOT NULL,
+                event_type       VARCHAR(64) NOT NULL,
+                severity         VARCHAR(16) NOT NULL,
+                status           VARCHAR(16) NOT NULL,
+                user_message     TEXT NOT NULL,
+                technical_detail TEXT,
+                created_at       $ts
+            )" . ($isMysql ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : ''));
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        foreach ([
+            $this->driver !== 'mysql'
+                ? 'CREATE INDEX IF NOT EXISTS idx_system_events_created_at ON system_events(created_at)'
+                : 'CREATE INDEX idx_system_events_created_at ON system_events(created_at)',
+            $this->driver !== 'mysql'
+                ? 'CREATE INDEX IF NOT EXISTS idx_system_events_category_severity ON system_events(category, severity)'
+                : 'CREATE INDEX idx_system_events_category_severity ON system_events(category, severity)',
+        ] as $sql) {
+            try {
+                $this->pdo->exec($sql);
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
         }
     }
 
@@ -5237,6 +5287,102 @@ class Database
         $stmt->bindValue(1, $limit, PDO::PARAM_INT);
         $stmt->execute();
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    // ---------------------------------------------------------------
+    // Rendszeresemény-napló (1.4.0, "Operations & Reliability") — lásd
+    // migrateV26SystemEvents() docblokkja az audit_log-tól való
+    // szándékos elkülönítés indoklásáért.
+    // ---------------------------------------------------------------
+
+    private const SYSTEM_EVENT_CATEGORIES = ['backup', 'woocommerce', 'nav', 'updater', 'printer', 'smtp', 'auth', 'database'];
+    private const SYSTEM_EVENT_SEVERITIES = ['info', 'warning', 'error'];
+    private const SYSTEM_EVENT_STATUSES = ['started', 'success', 'failure'];
+
+    /**
+     * @param string $userMessage Rövid, felhasználó számára érthető üzenet
+     *   — SOSE tartalmazhat titkot, hitelesítő adatot, fájlrendszer-
+     *   elérési utat vagy nyers kivétel-szöveget (lásd 1.3.1 release-gate
+     *   audit "error message leak" javításainak ugyanezen elve).
+     * @param string|null $technicalDetail Admin-only diagnosztikai
+     *   kiegészítés — EZ IS a hívó felelőssége szűrten tartani (nem egy
+     *   nyers $e->getMessage() dump helye).
+     */
+    public function logSystemEvent(
+        string $category,
+        string $eventType,
+        string $severity,
+        string $status,
+        string $userMessage,
+        ?string $technicalDetail = null,
+        int $retentionDays = 14
+    ): void {
+        if (!in_array($category, self::SYSTEM_EVENT_CATEGORIES, true)) {
+            throw new InvalidArgumentException("Érvénytelen system_events kategória: $category");
+        }
+        if (!in_array($severity, self::SYSTEM_EVENT_SEVERITIES, true)) {
+            throw new InvalidArgumentException("Érvénytelen system_events severity: $severity");
+        }
+        if (!in_array($status, self::SYSTEM_EVENT_STATUSES, true)) {
+            throw new InvalidArgumentException("Érvénytelen system_events status: $status");
+        }
+
+        $this->pdo->prepare('
+            INSERT INTO system_events (category, event_type, severity, status, user_message, technical_detail, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ')->execute([$category, $eventType, $severity, $status, $userMessage, $technicalDetail, date('Y-m-d H:i:s')]);
+
+        // Ugyanaz a "beírás-kor takarít" minta, mint logAudit()-nál — a
+        // rendszeresemény-napló ELVÁRHATÓAN sokkal magasabb írási
+        // gyakoriságú (percenkénti cron-eseményekig), ezért itt SZÜKSÉGES
+        // a retention (a sync_log-gal ellentétben, aminek korábban semmi
+        // nem volt, és emiatt korlátlanul nőtt — lásd migrateV26 docblokkja).
+        $cutoff = date('Y-m-d H:i:s', strtotime("-$retentionDays days"));
+        $this->pdo->prepare('DELETE FROM system_events WHERE created_at < ?')->execute([$cutoff]);
+    }
+
+    /**
+     * @param array $filters Opcionális: 'category' (string), 'severity' (string)
+     */
+    public function getSystemEvents(array $filters = [], int $limit = 100): array
+    {
+        $where = [];
+        $params = [];
+        if (!empty($filters['category'])) {
+            $where[] = 'category = ?';
+            $params[] = $filters['category'];
+        }
+        if (!empty($filters['severity'])) {
+            $where[] = 'severity = ?';
+            $params[] = $filters['severity'];
+        }
+        $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+
+        $stmt = $this->pdo->prepare("SELECT * FROM system_events $whereSql ORDER BY created_at DESC LIMIT ?");
+        foreach ($params as $i => $p) {
+            $stmt->bindValue($i + 1, $p);
+        }
+        $stmt->bindValue(count($params) + 1, $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Kompakt összesítő a legutóbbi N óra eseményeiről kategóriánként —
+     * a health-aggregátor (HealthMonitor) ezt használja, NEM a teljes
+     * lista betöltésével (lásd a kör 16. pontja, "ne legyen teljes
+     * event-log betöltés csak a Dashboard miatt").
+     */
+    public function countRecentSystemEventsBySeverity(int $hours = 24): array
+    {
+        $since = date('Y-m-d H:i:s', strtotime("-$hours hours"));
+        $stmt = $this->pdo->prepare('SELECT severity, COUNT(*) AS cnt FROM system_events WHERE created_at >= ? GROUP BY severity');
+        $stmt->execute([$since]);
+        $counts = ['info' => 0, 'warning' => 0, 'error' => 0];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $counts[$row['severity']] = (int) $row['cnt'];
+        }
+        return $counts;
     }
 
     // ---------------------------------------------------------------

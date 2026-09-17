@@ -36,5 +36,26 @@ if ($db->listStaff(true) && !$db->isStaffAdmin(Auth::currentStaffId())) {
     send_json(['error' => 'Ehhez vezetői jogszint szükséges.'], 403);
 }
 
+$isNew = empty($input['id']);
 $id = $db->saveStaff($input);
+
+// Dolgozó-felvétel/-szerkesztés naplózása (1.4.0, lásd a kör 12.
+// pontja) — a `details` SOSE tartalmazza a PIN-kódot, csak azt, hogy
+// történt-e PIN-csere.
+$role = ($input['role'] ?? 'cashier') === 'admin' ? 'admin' : 'cashier';
+$db->logAudit(
+    Auth::currentStaffId(),
+    $isNew ? 'staff_create' : 'staff_update',
+    'staff',
+    $id,
+    sprintf(
+        'Név: %s, szerepkör: %s, aktív: %s%s',
+        (string) ($input['name'] ?? ''),
+        $role,
+        empty($input['id']) || !empty($input['is_active']) ? 'igen' : 'nem',
+        !empty($input['pin']) ? ', PIN módosítva' : ''
+    ),
+    (int) ($appSettings['audit_log_retention_days'] ?? 30)
+);
+
 send_json(['id' => $id]);

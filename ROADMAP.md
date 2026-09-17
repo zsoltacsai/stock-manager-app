@@ -6,6 +6,31 @@ vagy mert a projekt jelenlegi mérete/célközönsége mellett a
 komplexitás/haszon arány rossz. Egy jövőbeli 1.1-es (vagy későbbi) körben
 érdemes újra megnézni őket, ha a körülmények változnak.
 
+## Rendszerállapot / üzemeltetés — MEGOLDVA (1.4.0)
+
+A "FountainTrade 1.4.0 — Operations & Reliability" kör központi
+állapot-naplót (`system_events`), egységes `HealthMonitor` állapot-
+számítást, átdolgozott Rendszerállapot oldalt, Dashboard-widgetet,
+manuális kapcsolat-teszteket (WooCommerce/NAV) és egy idempotens Windows
+telepítő szkriptet (`install-windows.ps1`) vezetett be — lásd
+`CHANGELOG.md` "[1.4.0]" szakasza a teljes listáért. Tudatosan e körön
+kívül hagyott pontok:
+
+- **Számlázz.hu kapcsolat-teszt** — a `SzamlazzClient` Agent API-jának
+  nincs mellékhatás-mentes tesztművelete (minden metódusa valódi
+  számlát hoz létre/módosít/sztornóz) — **trigger**: ha a Számlázz.hu
+  valaha bevezet egy dedikált "ping"/teszt-végpontot, érdemes pótolni.
+- **Szó szerinti cron-monitor táblázat** ("Feladat | Utolsó futás |
+  Eredmény") — a döntés a `HealthMonitor` komponens-soraiba olvasztotta
+  ezt az információt, hogy ne legyen két párhuzamos "mi a baj" logika —
+  **trigger**: ha a felhasználói visszajelzés szerint ez a konszolidált
+  nézet nem elég átlátható, érdemes egy külön táblázatot is hozzáadni.
+- **"Következő futás" időpont** — szándékosan SOHA nem fabrikált, mert az
+  alkalmazás nem ismeri a Windows Feladatütemező tényleges ütemezését —
+  **trigger**: csak akkor oldható fel, ha az alkalmazás valamilyen módon
+  ténylegesen le tudja kérdezni a Feladatütemezőt (pl. a `schtasks`/
+  `Get-ScheduledTaskInfo` kimenetének beolvasásával egy jövőbeli körben).
+
 ## 1.3.1 stabilizációs audit — tudatosan e körön kívül hagyott pontok
 
 A teljes körű 1.3.1 audit (kód, adatintegritás, security, teljesítmény,

@@ -19,6 +19,9 @@ if (time() < $dueAt) {
     send_json(['skipped' => true, 'reason' => 'not_due', 'next_run_at' => date('c', $dueAt)]);
 }
 
+$eventRetentionDays = system_event_retention_days($current);
+$db->logSystemEvent('woocommerce', 'sync_started', 'info', 'started', 'WooCommerce termékkatalógus-szinkron indítva.', null, $eventRetentionDays);
+
 try {
     $wc = new WooCommerceClient($config['woocommerce']);
     $result = $wc->fetchAllProducts();
@@ -55,6 +58,7 @@ try {
         'last_auto_sync_at'      => date('c'),
         'last_auto_sync_summary' => $summary,
     ]);
+    $db->logSystemEvent('woocommerce', 'sync_completed', 'info', 'success', $summary, null, $eventRetentionDays);
 
     send_json(['ran' => true, 'imported' => $imported, 'skipped' => $skipped]);
 } catch (RuntimeException $e) {
@@ -67,6 +71,7 @@ try {
         'last_auto_sync_at'      => date('c'),
         'last_auto_sync_summary' => 'Hiba: ' . $e->getMessage(),
     ]);
+    $db->logSystemEvent('woocommerce', 'sync_failed', 'error', 'failure', 'WooCommerce kapcsolat hiba miatt a szinkron sikertelen volt.', $e->getMessage(), $eventRetentionDays);
     send_json(['ran' => true, 'error' => $e->getMessage()], 502);
 } catch (Throwable $e) {
     $db->rollBack();
@@ -75,5 +80,6 @@ try {
         'last_auto_sync_at'      => date('c'),
         'last_auto_sync_summary' => 'Váratlan szerverhiba történt — részletek a szerver naplójában.',
     ]);
+    $db->logSystemEvent('woocommerce', 'sync_failed', 'error', 'failure', 'Váratlan szerverhiba történt a WooCommerce szinkron közben.', $e->getMessage(), $eventRetentionDays);
     send_json(['ran' => true, 'error' => 'Váratlan szerverhiba történt.'], 500);
 }

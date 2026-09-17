@@ -27,6 +27,8 @@ if (time() < $dueAt) {
 }
 
 $manager = new BackupManager($config['db'], __DIR__ . '/../../data/backups');
+$retentionDays = system_event_retention_days($s);
+$db->logSystemEvent('backup', 'backup_started', 'info', 'started', 'Automatikus biztonsági mentés indítva.', null, $retentionDays);
 
 try {
     $result = $manager->run($s);
@@ -40,6 +42,7 @@ try {
         'last_backup_at'      => date('c'),
         'last_backup_summary' => $summary,
     ]);
+    $db->logSystemEvent('backup', 'backup_completed', 'info', 'success', $summary, null, $retentionDays);
 
     send_json(['ran' => true, 'result' => $result]);
 } catch (Throwable $e) {
@@ -47,5 +50,6 @@ try {
         'last_backup_at'      => date('c'),
         'last_backup_summary' => 'Hiba: ' . $e->getMessage(),
     ]);
+    $db->logSystemEvent('backup', 'backup_failed', 'error', 'failure', 'Az automatikus biztonsági mentés sikertelen volt.', $e->getMessage(), $retentionDays);
     send_json(['ran' => true, 'error' => $e->getMessage()], 500);
 }

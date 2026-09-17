@@ -109,6 +109,21 @@ if (isset($input['geo_block_enabled']) || isset($input['geo_block_countries']) |
 $data = $settings->save($update);
 unset($data['app_password_hash']); // a hash sose menjen vissza a kliensnek
 
+// Biztonsági beállítás módosítása — MINDIG naplózva (1.4.0, lásd a kör
+// 12. pontja), de a `details` SOSE tartalmaz jelszót/titkot, csak azt,
+// MELYIK mezők változtak (a tényleges értékek nélkül).
+$changedFields = array_keys($update);
+if ($changedFields !== []) {
+    $db->logAudit(
+        Auth::currentStaffId(),
+        'security_settings_update',
+        'settings',
+        null,
+        'Módosított mezők: ' . implode(', ', $changedFields),
+        (int) ($appSettings['audit_log_retention_days'] ?? 30)
+    );
+}
+
 // Regresszió (1.3.1): korábban ez a végpont a settings->save() TELJES,
 // maszkolatlan eredményét küldte vissza — minden security-settings-save.php
 // hívás (pl. egy sima geo-blokkolás-váltás, amihez semmi köze egy

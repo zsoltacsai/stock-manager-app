@@ -4,6 +4,7 @@ declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 require_once __DIR__ . '/../../src/ReportPeriod.php';
 require_once __DIR__ . '/../../src/HungarianNameDays.php';
+require_once __DIR__ . '/../../src/HealthMonitor.php';
 
 // 1.2.0 — Dashboard fő KPI-összesítő. Két réteg kombinálódik:
 //  - "Mai" adatok MINDIG a naptári mai napra vonatkoznak (nem a period
@@ -67,72 +68,31 @@ function dashboard_pct_change(float $today, float $yesterday): ?float
     return round((($today - $yesterday) / $yesterday) * 100, 1);
 }
 
-// "Figyelmet igényel" — csak ténylegesen fennálló (>0) tételek, mindegyik
-// egy már meglévő oldalra/riportra mutat. Sorrend: legsürgősebb elöl.
-$attention = [];
-if ($urgentPurchaseCount > 0) {
-    $attention[] = [
-        'type' => 'purchase_urgent', 'count' => $urgentPurchaseCount,
-        'label' => $urgentPurchaseCount . ' sürgősen beszerzendő termék',
-        'link' => 'beszerzesi-javaslat.php?urgency=urgent',
-    ];
-}
-if ($soonPurchaseCount > 0) {
-    $attention[] = [
-        'type' => 'purchase_soon', 'count' => $soonPurchaseCount,
-        'label' => $soonPurchaseCount . ' termék ' . PurchaseDecisionService::SOON_DAYS_THRESHOLD . ' napon belül várhatóan elfogy',
-        'link' => 'beszerzesi-javaslat.php?urgency=soon',
-    ];
-}
-if ($otherLowPurchaseCount > 0) {
-    $attention[] = [
-        'type' => 'purchase_low', 'count' => $otherLowPurchaseCount,
-        'label' => $otherLowPurchaseCount . ' további termék alacsony készleten',
-        'link' => 'beszerzesi-javaslat.php?urgency=low',
-    ];
-}
-if ($draftWebshopOrders > 0) {
-    $attention[] = [
-        'type' => 'draft_webshop_orders', 'count' => $draftWebshopOrders,
-        'label' => $draftWebshopOrders . ' webshop rendelés várakozik',
-        'link' => 'beerkezo-eladasok.php',
-    ];
-}
-if ($invoiceProvider === 'nav' && $navQueue['buckets']['failed'] > 0) {
-    $attention[] = [
-        'type' => 'invoice_failed', 'count' => $navQueue['buckets']['failed'],
-        'label' => $navQueue['buckets']['failed'] . ' sikertelen NAV-számla',
-        'link' => 'kimeno-szamlak.php',
-    ];
-} elseif ($invoiceProvider !== 'nav' && $invoiceFailures7d > 0) {
-    $attention[] = [
-        'type' => 'invoice_failed', 'count' => $invoiceFailures7d,
-        'label' => $invoiceFailures7d . ' sikertelen számla (7 nap)',
-        'link' => 'eladasok.php',
-    ];
-}
-if ($wcQueue['counts']['failed'] + $wcQueue['counts']['dead_letter'] > 0) {
-    $wcFailedTotal = $wcQueue['counts']['failed'] + $wcQueue['counts']['dead_letter'];
-    $attention[] = [
-        'type' => 'wc_failed', 'count' => $wcFailedTotal,
-        'label' => $wcFailedTotal . ' sikertelen WooCommerce szinkron',
-        'link' => 'woocommerce-sync.php',
-    ];
-}
-
-// Rendszerállapot — KIZÁRÓLAG már meglévő, ténylegesen mért jelekből (lásd
-// a kör 1. pontja: "ne legyen fiktív állapot"). Sync-hiba (valódi
-// technikai hiba) piros; a többi (üzleti jellegű, önmagában nem a
-// rendszer működését veszélyeztető) figyelmeztetés csak sárga.
-if ($syncFailures24h > 0) {
-    $systemStatus = ['level' => 'error', 'label' => 'Hiba'];
-} elseif ($wcQueue['counts']['failed'] + $wcQueue['counts']['dead_letter'] > 0
-    || ($invoiceProvider === 'nav' ? $navQueue['buckets']['failed'] > 0 : $invoiceFailures7d > 0)
-) {
-    $systemStatus = ['level' => 'warning', 'label' => 'Figyelmet igényel'];
-} else {
-    $systemStatus = ['level' => 'ok', 'label' => 'Minden rendszer működik'];
-}
+// 1.4.0 — a "Figyelmet igényel" blokk ÉS a rendszerállapot-jelző mostantól
+// a központi HealthMonitor-on keresztül épül fel (lásd a kör 11. pontja:
+// "egy rendszer → egy igazságforrás") — ugyanazt a logikát hívja, mint a
+// Dashboard kompakt "Rendszer állapota" widgetje és a Rendszerállapot
+// oldal (system-health.php). Az itt átadott $healthSignals ugyanazokból,
+// MÁR lekérdezett primitívekből épül, amiket ez a végpont eddig is
+// begyűjtött — nincs extra lekérdezés emiatt (lásd a kör 16. pontja).
+$healthSignals = [
+    'settings' => $appSettings,
+    'db_ok' => true, // ha idáig eljutottunk, a $db kapcsolat már bizonyítottan működik
+    'woocommerce_configured' => !empty($config['woocommerce']['store_url']) && !empty($config['woocommerce']['consumer_key']),
+    'wc_queue' => $wcQueue,
+    'sync_failures_24h' => $syncFailures24h,
+    'nav_configured' => $invoiceProvider === 'nav' && !empty($appSettings['nav_login']),
+    'nav_queue' => $navQueue,
+    'invoice_provider' => $invoiceProvider,
+    'invoice_failures_7d' => $invoiceFailures7d,
+    'draft_webshop_orders' => $draftWebshopOrders,
+    'urgent_purchase_count' => $urgentPurchaseCount,
+    'soon_purchase_count' => $soonPurchaseCount,
+    'other_low_purchase_count' => $otherLowPurchaseCount,
+    'update_state' => $db->getUpdateState(),
+];
+$attention = HealthMonitor::computeAttentionItems($healthSignals);
+$systemStatus = HealthMonitor::computeOverallStatus(HealthMonitor::computeComponentStatuses($healthSignals));
 
 $todayTopProducts = $db->getTopProductsReport($today, $today, null, 0, 5);
 $nowTs = time();
@@ -158,6 +118,12 @@ send_json([
         'avg_sale_change_pct'   => dashboard_pct_change($todaySummary['avg_sale_gross'], $yesterdaySummary['avg_sale_gross']),
     ],
     'attention' => $attention,
+    // 1.4.0 — a Dashboard kompakt "Rendszer állapota" widgetje ebből épül
+    // fel, KÜLÖN system-health.php hívás nélkül (lásd a kör 16. pontja:
+    // "ne legyen minden Dashboard-megnyitáskor 10-20 külön kérés") — a
+    // teljes, admin-only technikai-részletes nézet a Rendszerállapot
+    // oldalon (system-health.php) érhető el.
+    'system_components' => HealthMonitor::computeComponentStatuses($healthSignals),
     'today_status' => [
         'closing_done'         => $closingToday !== null,
         'webshop_draft_count'  => $draftWebshopOrders,

@@ -51,6 +51,13 @@ if (!Auth::isLoggedIn($appSettings)) {
         </div>
     </div>
 
+    <!-- 1.5. Rendszer állapota (kompakt — lásd rendszerallapot.php a teljes nézetért) -->
+    <div class="import-card" id="dash-health-card">
+        <h2>Rendszer állapota</h2>
+        <div id="dash-health-list"></div>
+        <p class="muted" style="margin:10px 0 0;"><a href="rendszerallapot.php">Rendszerállapot megtekintése →</a></p>
+    </div>
+
     <!-- 2. Mai KPI-k -->
     <div class="import-card">
         <h2>Ma</h2>

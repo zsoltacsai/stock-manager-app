@@ -60,6 +60,17 @@ try {
         'last_nav_queue_run_at' => date('c'),
         'last_nav_queue_run_summary' => $summary,
     ]);
+    $navHasFailures = $submissions['dead_letters'] > 0 || $submissions['permanent_failures'] > 0 || $statusChecks['failed'] > 0 || $uncertainRecovery['gave_up'] > 0;
+    $totalProcessed = $submissions['claimed'] + $statusChecks['claimed'] + $uncertainRecovery['claimed'];
+    $db->logSystemEvent(
+        'nav',
+        $navHasFailures ? 'invoice_failed' : ($totalProcessed > 0 ? 'invoice_processed' : 'queue_checked'),
+        $navHasFailures ? 'warning' : 'info',
+        'success',
+        $summary,
+        null,
+        system_event_retention_days($current)
+    );
 
     send_json(['ran' => true, 'submissions' => $submissions, 'status_checks' => $statusChecks, 'uncertain_recovery' => $uncertainRecovery]);
 } catch (Throwable $e) {
@@ -67,5 +78,6 @@ try {
         'last_nav_queue_run_at' => date('c'),
         'last_nav_queue_run_summary' => 'Hiba: ' . $e->getMessage(),
     ]);
+    $db->logSystemEvent('nav', 'queue_run_failed', 'error', 'failure', 'A NAV számla-várólista feldolgozása sikertelen volt.', $e->getMessage(), system_event_retention_days($current));
     send_json(['ran' => true, 'error' => $e->getMessage()], 500);
 }

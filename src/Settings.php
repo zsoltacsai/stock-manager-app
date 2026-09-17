@@ -29,6 +29,14 @@ class Settings
         // Tevékenységnapló (audit log)
         'audit_log_retention_days' => 30,
 
+        // Rendszeresemény-napló (1.4.0) — lásd migrateV26SystemEvents()
+        // docblokkja. Rövidebb alapértelmezett megőrzés, mint az
+        // audit_log-nál (30 nap), mert ez akár percenkénti cron-
+        // eseményeket is rögzít — sokkal magasabb írási gyakoriság,
+        // amit korlátlanul megőrizni felesleges adatbázis-növekedést
+        // okozna (lásd a kör 17. pontja).
+        'system_events_retention_days' => 14,
+
         // Biztonság
         // 'local'   — a telepítő/üzemeltető KIFEJEZETTEN úgy nyilatkozott,
         //             hogy ez a telepítés csak a helyi gépről/hálózatról
@@ -79,6 +87,16 @@ class Settings
         // (receipt.html?sale_id=...&token=...) — ÜRESEN a QR-kód kihagyásra
         // kerül (nincs kitalált/nem működő link), lásd print-receipt.php.
         'receipt_public_base_url'    => '',
+
+        // 1.4.0 — a nyomtatónak nincs ambiens (háttérben futó) állapot-
+        // ellenőrzése, csak admin által kézzel indított teszt
+        // (webroot/api/printer-test.php) — ennek EREDMÉNYÉT innentől
+        // elmentjük, hogy a Rendszerállapot oldal "utoljára ismert"
+        // státuszt tudjon mutatni, SOHA nem hamis "OK"-t egy sose
+        // tesztelt nyomtatóra (lásd HealthMonitor::STATUS_NOT_CONFIGURED).
+        'last_printer_test_at'      => null,
+        'last_printer_test_status'  => null,  // 'success' | 'failure'
+        'last_printer_test_message' => null,
 
         'backup_enabled'          => false,
         'backup_time'             => '23:30',
@@ -137,6 +155,12 @@ class Settings
         // a szerver a képet.
         'product_image_size'  => 1200,
 
+        // 1.4.0 — korábban (1.1.1 óta) wc-queue-run.php ÍRTA ezeket, de a
+        // DEFAULTS-ban nem szerepeltek (csendes rés — friss telepítésen az
+        // ELSŐ futásig hiányoztak). Most explicit deklarálva.
+        'last_wc_queue_run_at'      => null,
+        'last_wc_queue_run_summary' => null,
+
         // NAV Online Számla technikai felhasználó — for company-lookup.php's
         // adószám-alapú cégadat kitöltés, ÉS (Phase 5B óta) a tényleges
         // NAV számlaküldés hitelesítéséhez is. See README for how to obtain these.
@@ -146,6 +170,13 @@ class Settings
         'nav_exchange_key' => '',
         'nav_tax_number'   => '',
         'nav_test_mode'    => false,
+
+        // 1.4.0 — lásd last_printer_test_* fenti indoklását, ugyanaz az
+        // elv a NAV token-csere teszt (webroot/api/nav-test-connection.php)
+        // eredményére.
+        'last_nav_test_at'      => null,
+        'last_nav_test_status'  => null,  // 'success' | 'failure'
+        'last_nav_test_message' => null,
 
         // A NAV invoiceData minden egyes számlán megköveteli a kiállító
         // (eladó) teljes nevét/címét — a Számlázz.hu-val ellentétben
@@ -186,6 +217,11 @@ class Settings
         'smtp_encryption' => 'starttls', // 'none' | 'ssl' | 'starttls'
         'smtp_from_name'  => '',
         'smtp_from_email' => '',
+        // 1.4.0 — lásd last_printer_test_* fenti indoklását, ugyanaz az elv
+        // az SMTP-teszt (webroot/api/smtp-test.php) eredményére.
+        'last_smtp_test_at'      => null,
+        'last_smtp_test_status'  => null,  // 'success' | 'failure'
+        'last_smtp_test_message' => null,
 
         'low_stock_default_threshold' => 5,
         'low_stock_notify_webhook'    => '',

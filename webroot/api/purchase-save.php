@@ -108,6 +108,21 @@ try {
     send_generic_error_response($e, 'purchase-save.php beszerzés rögzítése sikertelen');
 }
 
+// Beszerzés naplózása (1.4.0, lásd a kör 12. pontja) — a `purchases`
+// táblának NINCS staff_id oszlopa (lásd schema.sql), tehát "ki rögzítette
+// ezt a beszerzést" enélkül a naplózás nélkül visszakereshetetlen lenne.
+// Egy sémamódosítás (staff_id hozzáadása a purchases táblához) itt
+// aránytalanul nagy beavatkozás lenne egy üzemeltetési körben — a MEGLÉVŐ
+// audit_log mechanizmus pontosan erre a "ki/mikor/mit" kérdésre való.
+$db->logAudit(
+    Auth::currentStaffId(),
+    'purchase_create',
+    'purchase',
+    (int) $result['purchase_id'],
+    sprintf('Beszállító: %s, nettó összeg: %s Ft', (string) ($purchase['supplier_name'] ?? '—'), number_format($result['total_net'], 0, ',', ' ')),
+    (int) ($appSettings['audit_log_retention_days'] ?? 30)
+);
+
 // A WooCommerce-push MÁR beütemezve a recordPurchase() saját tranzakciójában
 // (lásd Database::enqueueWcPush()) — a tényleges kiküldés egy külön,
 // cron-indított workerben (WcPushQueueWorker) történik, ASZINKRON, hogy egy

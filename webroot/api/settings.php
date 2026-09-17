@@ -192,6 +192,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($input['audit_log_retention_days'])) {
         $update['audit_log_retention_days'] = max(1, (int) $input['audit_log_retention_days']);
     }
+    if (isset($input['system_events_retention_days'])) {
+        $update['system_events_retention_days'] = max(1, (int) $input['system_events_retention_days']);
+    }
     if (isset($input['payment_methods']) && is_array($input['payment_methods'])) {
         $methods = [];
         $seen = [];
@@ -212,6 +215,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     $data = $settings->save($update);
+
+    // Admin beállítás-módosítás naplózása (1.4.0, lásd a kör 12. pontja)
+    // — a `details` KIZÁRÓLAG a módosított mezők NEVEIT sorolja fel, a
+    // tényleges (esetenként titkos: API-kulcs/jelszó/token) ÉRTÉKEKET
+    // soha — ugyanaz a fegyelem, mint amit a `Settings::maskSecretFields()`
+    // már a válaszra is alkalmaz.
+    if ($update !== []) {
+        $db->logAudit(
+            Auth::currentStaffId(),
+            'admin_settings_update',
+            'settings',
+            null,
+            'Módosított mezők: ' . implode(', ', array_keys($update)),
+            (int) ($appSettings['audit_log_retention_days'] ?? 30)
+        );
+    }
 } else {
     $data = $settings->read();
 }

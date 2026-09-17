@@ -54,10 +54,27 @@ if (!empty($appSettings['receipt_show_logo']) && !empty($appSettings['logo_filen
     }
 }
 
+$settings = new Settings(__DIR__ . '/../../data/settings.json');
+$retentionDays = system_event_retention_days($appSettings);
+
 try {
     $printer = new EscPosPrinter($ip, $port, $paperWidth, $encoding);
     $printer->printTestPage($config['shop'], $logoPath, $includeQrSample);
+
+    $settings->save([
+        'last_printer_test_at'      => date('c'),
+        'last_printer_test_status'  => 'success',
+        'last_printer_test_message' => 'A nyomtató teszt sikeres volt.',
+    ]);
+    $db->logSystemEvent('printer', 'print_success', 'info', 'success', 'A nyomtató teszt sikeres volt.', null, $retentionDays);
+
     send_json(['success' => true]);
 } catch (Throwable $e) {
+    $settings->save([
+        'last_printer_test_at'      => date('c'),
+        'last_printer_test_status'  => 'failure',
+        'last_printer_test_message' => 'A nyomtató nem érhető el vagy hibát adott.',
+    ]);
+    $db->logSystemEvent('printer', 'print_failed', 'error', 'failure', 'A nyomtató nem érhető el vagy hibát adott.', $e->getMessage(), $retentionDays);
     send_json(['error' => $e->getMessage()], 500);
 }

@@ -43,7 +43,13 @@ try {
         'skipped' => 'kihagyva: ' . ($result['reason'] ?? '?'),
         'success' => sprintf('siker: %d ablak feldolgozva%s', $result['windows_processed'] ?? 0, !empty($result['has_more']) ? ' (van még hátra)' : ''),
         'retry' => 'átmeneti hiba, újrapróbálva: ' . ($result['error'] ?? '?'),
-        'failed' => 'sikertelen: ' . ($result['error'] ?? '?'),
+        // 1.4.0 — "Hiba:" előtag, hogy ugyanazt a konvenciót kövesse, mint
+        // a többi cron-végpont (lásd HealthMonitor::isCronSummaryFailure())
+        // — enélkül a rendszerállapot-figyelő nem tudta volna
+        // megkülönböztetni ezt a VALÓDI, terminális hibaállapotot egy
+        // sikeres futástól, mert a korábbi szöveg nem illeszkedett az
+        // egységes hiba-előtag konvencióhoz.
+        'failed' => 'Hiba: ' . ($result['error'] ?? '?'),
         default => 'ismeretlen kimenetel',
     };
 
@@ -51,6 +57,16 @@ try {
         'last_nav_incoming_sync_run_at' => date('c'),
         'last_nav_incoming_sync_run_summary' => $summary,
     ]);
+    $isFailure = $result['outcome'] === 'failed';
+    $db->logSystemEvent(
+        'nav',
+        $isFailure ? 'incoming_sync_failed' : 'incoming_sync_completed',
+        $isFailure ? 'error' : 'info',
+        $isFailure ? 'failure' : 'success',
+        $summary,
+        null,
+        system_event_retention_days($current)
+    );
 
     send_json(['ran' => true, 'result' => $result]);
 } catch (Throwable $e) {
@@ -58,5 +74,6 @@ try {
         'last_nav_incoming_sync_run_at' => date('c'),
         'last_nav_incoming_sync_run_summary' => 'Hiba: ' . $e->getMessage(),
     ]);
+    $db->logSystemEvent('nav', 'incoming_sync_failed', 'error', 'failure', 'A NAV bejövő számla-szinkron sikertelen volt.', $e->getMessage(), system_event_retention_days($current));
     send_json(['ran' => true, 'error' => $e->getMessage()], 500);
 }

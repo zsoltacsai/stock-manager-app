@@ -72,6 +72,9 @@ if ($db->listStaff(true)) {
     Auth::clearRateLimit($rateLimitKey);
 }
 
+$eventRetentionDays = system_event_retention_days($appSettings);
+$db->logSystemEvent('backup', 'restore_started', 'warning', 'started', 'Biztonsági mentés visszaállítása indítva: ' . basename($sourcePath) . '.', null, $eventRetentionDays);
+
 try {
     // KRITIKUS: lásd Database::closeForExternalFileReplacement() docblokkja
     // (UpdateInstaller::install() ugyanezt a mintát használja a migráció
@@ -99,8 +102,14 @@ try {
         'Visszaállítva innen: ' . basename($sourcePath),
         (int) ($appSettings['audit_log_retention_days'] ?? 30)
     );
+    $db->logSystemEvent('backup', 'restore_completed', 'warning', 'success', $summary, null, $eventRetentionDays);
 
     send_json(['success' => true, 'safety_backup' => $result['safety_backup'], 'settings_restored' => $result['settings_restored']]);
 } catch (Throwable $e) {
+    try {
+        $db->logSystemEvent('backup', 'restore_failed', 'error', 'failure', 'A biztonsági mentés visszaállítása sikertelen volt.', $e->getMessage(), $eventRetentionDays);
+    } catch (Throwable $logError) {
+        error_log('[fountaintrade] backup-restore.php system_event log sikertelen: ' . $logError->getMessage());
+    }
     send_json(['error' => 'A visszaállítás sikertelen: ' . $e->getMessage()], 500);
 }

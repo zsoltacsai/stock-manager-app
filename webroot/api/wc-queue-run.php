@@ -26,6 +26,20 @@ try {
         'last_wc_queue_run_at' => date('c'),
         'last_wc_queue_run_summary' => $summary,
     ]);
+    // "queue drained" — ha a claim-elt tételek mindegyike véglegesen
+    // lezárult (nincs retry-ra visszatett elem) ebben a körben, a
+    // várólista ezen szegmense kiürült. "queue item failed" —
+    // dead_letter/végleges hiba esetén warning/error severity.
+    $hasFailures = $result['dead_letters'] > 0 || $result['permanent_failures'] > 0;
+    $db->logSystemEvent(
+        'woocommerce',
+        $hasFailures ? 'queue_item_failed' : ($result['claimed'] > 0 ? 'queue_drained' : 'queue_checked'),
+        $hasFailures ? 'warning' : 'info',
+        'success',
+        $summary,
+        null,
+        system_event_retention_days($settings->read())
+    );
 
     send_json(['ran' => true, 'result' => $result]);
 } catch (Throwable $e) {
@@ -33,5 +47,6 @@ try {
         'last_wc_queue_run_at' => date('c'),
         'last_wc_queue_run_summary' => 'Hiba: ' . $e->getMessage(),
     ]);
+    $db->logSystemEvent('woocommerce', 'queue_run_failed', 'error', 'failure', 'A WooCommerce várólista feldolgozása sikertelen volt.', $e->getMessage(), system_event_retention_days($settings->read()));
     send_json(['ran' => true, 'error' => $e->getMessage()], 500);
 }

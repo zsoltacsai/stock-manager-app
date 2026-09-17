@@ -48,6 +48,40 @@ function renderKpis(data) {
     ].join('');
 }
 
+const HEALTH_STATUS_DISPLAY = {
+    ok: { dot: '🟢', color: 'var(--accent)' },
+    warning: { dot: '🟠', color: 'var(--warn)' },
+    error: { dot: '🔴', color: 'var(--danger)' },
+    not_configured: { dot: '⚪', color: 'var(--muted)' },
+    unknown: { dot: '⚪', color: 'var(--muted)' },
+};
+const HEALTH_COMPONENT_LABELS = {
+    database: 'Adatbázis', backup: 'Backup', woocommerce: 'WooCommerce', nav: 'NAV',
+    szamlazz: 'Számlázz.hu', smtp: 'Email (SMTP)', printer: 'Nyomtató', updater: 'Frissítés',
+};
+
+// 1.4.0 — kompakt Dashboard-widget (lásd a kör 5. pontja: "Ne legyen nagy")
+// — csak a ténylegesen konfigurált (NEM not_configured) komponenseket
+// mutatja, PLUSZ mindig az adatbázist. A teljes, minden komponenst felsoroló
+// nézet a Rendszerállapot oldalon van.
+function renderHealthComponents(components) {
+    const list = document.getElementById('dash-health-list');
+    const entries = Object.entries(components || {}).filter(([key, c]) => key === 'database' || c.status !== 'not_configured');
+    if (!entries.length) {
+        list.innerHTML = '<p class="muted" style="margin:0;">Nincs elérhető állapotadat.</p>';
+        return;
+    }
+    list.innerHTML = entries.map(([key, c]) => {
+        const display = HEALTH_STATUS_DISPLAY[c.status] || HEALTH_STATUS_DISPLAY.unknown;
+        const label = HEALTH_COMPONENT_LABELS[key] || key;
+        return `<div style="display:flex; align-items:center; gap:8px; padding:4px 0; font-size:13px;">
+            <span style="color:${display.color};">${display.dot}</span>
+            <strong>${escapeHtml(label)}</strong>
+            <span class="muted">— ${escapeHtml(c.message || '')}</span>
+        </div>`;
+    }).join('');
+}
+
 function renderAttention(items) {
     const card = document.getElementById('dash-attention-card');
     const list = document.getElementById('dash-attention-list');
@@ -102,12 +136,13 @@ function renderPaymentMethods(methods) {
 }
 
 async function loadDashboard() {
-    const errorBoxes = ['dash-kpi-stats', 'dash-attention-list', 'dash-today-status', 'dash-top-products', 'dash-payment-methods'];
+    const errorBoxes = ['dash-kpi-stats', 'dash-health-list', 'dash-attention-list', 'dash-today-status', 'dash-top-products', 'dash-payment-methods'];
     try {
         const data = await fetchJson('/api/dashboard-summary.php?period=today');
         document.title = 'FountainTrade — Dashboard';
         renderHeader(data.date);
         renderSystemStatus(data.system_status);
+        renderHealthComponents(data.system_components);
         renderKpis(data);
         renderAttention(data.attention);
         renderTodayStatus(data);

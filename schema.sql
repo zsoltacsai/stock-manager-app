@@ -293,6 +293,23 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);
 
+-- Rendszeresemény-napló (1.4.0, "Operations & Reliability") — backup/
+-- WooCommerce/NAV/updater/nyomtató/SMTP/auth események egy közös
+-- idővonalon, az audit_log-tól (dolgozói cselekvés-napló) szándékosan
+-- külön — megőrzési idő a Beállításokban állítható (alapértelmezett 14 nap).
+CREATE TABLE IF NOT EXISTS system_events (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    category         TEXT NOT NULL,     -- 'backup'|'woocommerce'|'nav'|'updater'|'printer'|'smtp'|'auth'|'database'
+    event_type       TEXT NOT NULL,     -- pl. 'sync_completed', 'sync_failed', 'invoice_processed'
+    severity         TEXT NOT NULL,     -- 'info'|'warning'|'error'
+    status           TEXT NOT NULL,     -- 'started'|'success'|'failure'
+    user_message     TEXT NOT NULL,     -- felhasználó-orientált, sose tartalmaz titkot/elérési utat/nyers kivételt
+    technical_detail TEXT,              -- admin-only diagnosztika (szintén titok/elérési út nélkül)
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_system_events_created_at ON system_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_system_events_category_severity ON system_events(category, severity);
+
 -- Hűségszintek (loyalty tiers) — az összesített elköltés alapján
 -- customers.total_spent már az eladásoknál frissül, a szint a beállított
 -- küszöbök alapján számolódik ki futásidőben, nincs külön oszlop rá.

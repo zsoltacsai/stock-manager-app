@@ -4,6 +4,152 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## [1.4.0] — 2026-09-17 (Operations & Reliability — rendszerállapot és üzemeltetés)
+
+**Üzemeltetési/megbízhatósági release — szándékosan NEM új üzleti funkció.**
+A cél: a felhasználó/üzemeltető egy pillantással lássa "Rendben van a
+rendszer?", és ha nem, "mi a baj?" és "mit tegyek?". Minden új felület a
+MEGLÉVŐ architektúrára épül (lásd Ismert korlátok/döntések alul) — nem
+készült párhuzamos naplózó/health-check rendszer.
+
+### Added
+
+- **Új `system_events` tábla és `Database::logSystemEvent()`/
+  `getSystemEvents()`/`countRecentSystemEventsBySeverity()`** — kategória
+  (backup/woocommerce/nav/updater/printer/smtp/auth/database),
+  súlyosság (info/warning/error), állapot (started/success/failure),
+  felhasználóbarát üzenet + KÜLÖN technikai részlet (utóbbi csak
+  adminoknak látszik). Minden íráskor automatikusan takarít a
+  konfigurálható megőrzési idő szerint (`system_events_retention_days`,
+  alapértelmezés: 14 nap) — a napló NEM nőhet korlátlanul. Szándékosan
+  KÜLÖN tábla az `audit_log`-tól (az egy ember-által-végzett-akció napló,
+  nincs benne súlyosság/állapot/háttérfolyamat-fogalom) és a `sync_log`-tól
+  (annak soha nem volt semmilyen takarítása, és csak a WooCommerce
+  termékszinkronra korlátozódik) — lásd `migrateV26SystemEvents()`
+  docblokkja a teljes indoklásért.
+- **`HealthMonitor` domain-szolgáltatás** (`src/HealthMonitor.php`) — EGY
+  közös, újrafelhasználható állapot-számítás (`computeComponentStatuses()`)
+  minden komponensre (adatbázis, biztonsági mentés, WooCommerce, NAV,
+  Számlázz.hu, SMTP, nyomtató, frissítő), öt állapottal: OK / WARNING /
+  ERROR / NOT_CONFIGURED / UNKNOWN. Csak a ténylegesen beállított
+  integrációk jelennek meg. A cron-alapú komponenseknél a "elavult" döntés
+  az adott feladat SAJÁT, dokumentált gyakoriságához igazodik (nincs egy
+  közös, globális időtúllépés), és figyelembe veszi, hogy egy tartósan
+  hibázó, de rendszeresen lefutó cron a résztvevő végpontok "Hiba:"
+  előtaggal jelzett összegzése alapján ISMERI FEL a hibát, nem csak a
+  frissesség alapján (egy hibázó cron ugyanis a hibás lefutáskor is
+  frissíti az időbélyeget). A rendszer SOHA nem fabrikál "következő
+  futás" időpontot — a Feladatütemező tényleges ütemezését az alkalmazás
+  nem ismeri.
+- **`Rendszerállapot` oldal átdolgozva valódi üzemeltetési monitorrá**
+  (`webroot/rendszerallapot.php`/`.js`): "Figyelmet igényel" kártya, új
+  "Rendszer komponensek" lista (állapot-jelzés, utolsó ellenőrzés/siker,
+  rövid hibaüzenet, várólista-összegzés WooCommerce/NAV-nál), új
+  "Eseménynapló" kártya kategória/súlyosság szűrővel. A meglévő
+  WooCommerce termékszinkron-napló (`sync_log`) megmaradt, külön,
+  termék-részletező nézetként.
+- **Dashboard "Rendszer állapota" kompakt kártya** — egy soros állapot
+  komponensenként, kattintható link a Rendszerállapot oldalra. NEM okoz
+  új HTTP-kérést a Dashboard megnyitásakor: a `dashboard-summary.php`
+  már meglévő, egyetlen aggregált hívása adja vissza az adatot.
+- **Manuális "Kapcsolat tesztelése" health-check** WooCommerce-hez
+  (`wc-test-connection.php`, meglévő végpont kiegészítve eseménynaplózással)
+  és NAV-hoz (új `nav-test-connection.php`, admin+CSRF védett, a meglévő
+  `NavClient::testConnection()`-t hívja). Egyik teszt SEM módosít üzleti
+  adatot, nem hoz létre számlát, nem küld valódi WooCommerce-rendelést.
+  A Számlázz.hu-hoz SZÁNDÉKOSAN nincs kapcsolat-teszt gomb — a
+  `SzamlazzClient` Agent API-jának nincs mellékhatás-mentes,
+  dokumentum-létrehozás nélküli tesztművelete (lásd Ismert korlátok).
+- **Várólista-összegzés a Rendszerállapoton** — "WooCommerce várólista: N
+  függő / N sikertelen", "NAV várólista: N függő / N sikertelen", a
+  meglévő `getWcQueueStatusSummary()`/`getInvoiceQueueStatusSummary()`
+  forrásokból, kattintható linkkel a részletes nézetre.
+- **Eseménynaplózás minden érintett háttérfolyamatnál**: biztonsági
+  mentés (indul/kész/sikertelen/visszaállítás indul/kész/sikertelen),
+  WooCommerce (szinkron indul/kész/sikertelen, várólista feldolgozva/
+  elakadt tétel), NAV (kimenő várólista feldolgozva/számla feldolgozva/
+  sikertelen, bejövő szinkron kész/sikertelen), frissítő (minden
+  állapotváltás — ellenőrzés/letöltés/telepítés/migráció/health-check/
+  kész/sikertelen/visszaállítás — `UpdateState::transitionTo()`-ból),
+  nyomtató (csak SIKERTELEN automatikus nyugtanyomtatás — a sikeres
+  nyomtatás szándékosan NINCS naplózva, hogy ne árassza el a naplót
+  normál, nagy forgalmú működés mellett), SMTP-teszt, bejelentkezés
+  (siker/sikertelen — IP-cím SOHA nem kerül naplózásra), kijelentkezés.
+- **`install-windows.ps1`** — új, önálló Windows telepítő/beüzemelő
+  szkript: PHP-verzió és kötelező kiterjesztések ellenőrzése, írható
+  mappák létrehozása/ellenőrzése, a beépített PHP szerver és mind az öt
+  automatikus háttérfeladat (WooCommerce szinkron, biztonsági mentés, NAV
+  kimenő/bejövő, frissítés-ellenőrzés) Feladatütemező-bejegyzéseinek
+  IDEMPOTENS létrehozása/frissítése, asztali parancsikon, valódi
+  HTTP-alapú egészség-ellenőrzés a telepítés végén. A cron-token SOHA
+  nincs beégetve a szkript forrásába — vagy paraméterként adható át, vagy
+  a szkript a MÁR LÉTEZŐ `data\settings.json`-ból olvassa, egyébként
+  figyelmeztetéssel kihagyja a cron-feladatok létrehozását.
+- **`audit_log` lefedettségi rés pótolva** (a kör 12. pontjának
+  ellenőrzése során talált, korábban NEM naplózott, valódi hiány):
+  biztonsági beállítás-módosítás, admin beállítás-módosítás,
+  dolgozó-felvétel/-szerkesztés, és beszerzés rögzítése mostantól
+  `logAudit()`-ot ír — lásd README "`audit_log` vs. `system_events` — a
+  határvonal" szakasza a teljes indoklásért (mit miért naplózunk most,
+  és mit miért nem, mert az már máshonnan visszakövethető).
+
+### Fixed
+
+- **Frissítés-ellenőrzés false-positive "új verzió elérhető" jelzés** — a
+  korábbi (ebben a körben bevezetett, majd még ugyanebben a körben,
+  böngészős teszteléssel felfedezett) logika a tárolt
+  `update_state.current_version` mezőt hasonlította a legutóbb ismert
+  legújabb verzióhoz, de ez a DB-ben tárolt érték csak egy TÉNYLEGES
+  önfrissítés lefutásakor frissül, és emiatt tetszőlegesen elavult
+  lehet a ténylegesen futó kódhoz képest. A `HealthMonitor` mostantól
+  mindig a ténylegesen futó kód verzióját (`AppVersion::CURRENT`) veti
+  össze a legújabb ismert verzióval, sose a DB-gyorsítótárazott értéket.
+- **WooCommerce/NAV komponens tévesen "Nincs beállítva" státuszt mutatott**,
+  ha a hozzá tartozó automatikus cron ki volt kapcsolva, holott az
+  integráció maga be volt állítva — összekeverve "nincs konfigurálva" és
+  "az automatizmus szándékosan ki van kapcsolva" állapotokat. Mostantól a
+  WooCommerce kikapcsolt automatizmusa OK-ként (ez egy legitim admin-
+  döntés), a NAV kikapcsolt automatizmusa viszont FIGYELMEZTETÉSKÉNT
+  jelenik meg (a README szerint dokumentált kockázat: a számlák
+  feldolgozatlanul torlódnának).
+- **`wc-test-connection.php` az UrlSafety-elutasítási ágon (pl. belső/
+  loopback cím, vagy fel nem oldható host) NEM naplózta az eseményt** —
+  ez az ág a try/catch ELŐTT tért vissza, így egy ilyen teszt-kudarc
+  (a leggyakoribb valódi hiba egy hibásan beállított Áruház URL-nél)
+  a felhasználó felé helyesen jelent meg, de az Eseménynaplóba SOSE
+  került be. Élő, szándékosan kiváltott hiba-teszteléssel fedezve fel
+  (a kör 20. pontja) — javítva, regressziós HTTP-teszttel bizonyítva.
+- **A "Kapcsolat tesztelése" gomb 375px-es mobil nézetben átfedte a
+  komponens nevét** — a komponens-sor `flex-wrap:nowrap` volt, emiatt a
+  szöveges oszlop (WooCommerce/NAV neve, üzenet, státusz) egy ~71px
+  széles, nagyon magas, sok sorra tördelt oszloppá zsugorodott a gomb
+  mellett, ahelyett hogy a gomb saját sorra került volna. Élő, mind a 6
+  megkövetelt töréspontnál (1920/1440/1280/1024/768/375px) elvégzett
+  reszponzív ellenőrzés során fedezve fel (a kör 15. pontja) — javítva
+  `flex-wrap:wrap`-re váltással, a gomb mostantól saját sorra kerül
+  keskeny képernyőn.
+- **`nav-incoming-sync-run.php` egy valódi, korábban rejtett hibaállapot-
+  jelzési inkonzisztenciát tartalmazott**: a sikertelen kimenetel
+  összegzése nem a többi cron-végpont által következetesen használt
+  "Hiba:" előtaggal kezdődött, emiatt ez a konkrét hibaállapot (a bejövő
+  NAV-szinkron backoff-kimerülése) észrevétlen maradt volna az új
+  health-monitor számára.
+
+### Known limitations / tudatos döntések
+
+- Nincs önálló, szó szerinti "Feladat | Utolsó futás | Eredmény"
+  cron-monitor táblázat — a cron-gyakoriság/frissesség-információ a
+  `HealthMonitor` egyes komponens-sorainak "utolsó ellenőrzés"/"utolsó
+  siker" mezőibe olvasztva jelenik meg, szándékosan EGYETLEN
+  állapot-forrásból (nem egy második, párhuzamos "mi a baj" logika).
+- Számlázz.hu-hoz nincs "Kapcsolat tesztelése" gomb — a `SzamlazzClient`
+  Agent API-jának nincs dokumentált, mellékhatás-mentes tesztművelete;
+  minden metódusa valódi számlát hoz létre/módosít/sztornóz.
+- A `Rendszerállapot` komponens-táblázat szándékosan NEM mutat
+  "Következő futás" oszlopot — az alkalmazás nem ismeri a Windows
+  Feladatütemező tényleges ütemezését, és egy fabrikált érték hamis
+  biztonságérzetet adna.
+
 ## [1.3.1] — 2026-09-16 (Stabilizáció — audit és hibajavítás)
 
 **Stabilitási release — NEM új funkciófejlesztés.** Teljes körű kód-,

@@ -28,8 +28,13 @@ if ($limit['locked']) {
 if ($password === '' || !Auth::login($password, $appSettings)) {
     Auth::recordFailedAttempt($rateLimitKey, $maxAttempts, $lockoutMinutes);
     $left = max(0, $limit['attempts_left'] - 1);
+    // Az IP-t SOSE (lásd GeoBlocker::resolveClientIp() dokumentációja a
+    // proxy-mögötti megbízhatatlanságáról) — csak azt jelezzük, hogy
+    // TÖRTÉNT sikertelen próbálkozás, nem azt, HONNAN.
+    $db->logSystemEvent('auth', 'login_failure', 'warning', 'failure', 'Sikertelen bejelentkezési kísérlet (hibás jelszó).', null, system_event_retention_days($appSettings));
     send_json(['error' => "Hibás jelszó." . ($left > 0 ? " Még $left próbálkozás." : ' Ez volt az utolsó próbálkozás — a fiók zárolva lesz.')], 401);
 }
 
 Auth::clearRateLimit($rateLimitKey);
+$db->logSystemEvent('auth', 'login_success', 'info', 'success', 'Sikeres bejelentkezés.', null, system_event_retention_days($appSettings));
 send_json(['ok' => true, 'csrf_token' => Auth::csrfToken()]);

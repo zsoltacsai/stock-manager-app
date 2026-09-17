@@ -101,6 +101,49 @@ Ha a gépen még nincs PHP:
 
 
 ---------------------------------------------------------------
+2A. GYORSÍTOTT ÚT: AUTOMATIZÁLT TELEPÍTŐ SZKRIPT (opcionális)
+---------------------------------------------------------------
+
+Ha a PHP-t már a 2. pont szerint telepítetted, a 3-4. és 8. pont
+lépéseinek NAGY RÉSZÉT (mappa-ellenőrzés, szerver-indítás
+Feladatütemezőben, az öt automatikus háttérfeladat beállítása)
+elvégezheted egyetlen paranccsal, a projekt gyökeréből:
+
+    powershell -ExecutionPolicy Bypass -File .\install-windows.ps1
+
+(Ha PowerShell-ből futtatod, az -ExecutionPolicy Bypass rész
+elhagyható: .\install-windows.ps1)
+
+A szkript IDEMPOTENS — bátran futtatható többször is (pl. ha a PHP
+útvonala vagy a port változott), nem hoz létre duplikált
+Feladatütemező-bejegyzéseket. Ellenőrzi a PHP verzióját és az összes
+kötelező kiterjesztést, létrehozza/ellenőrzi az írható mappákat (valódi
+írás-teszttel, nem csak feltételezéssel), Feladatütemező-bejegyzést hoz
+létre a beépített PHP szerver bejelentkezéskori indítására, majd — ha
+van elérhető cron-titkos token — létrehozza mind az öt automatikus
+háttérfeladatot (8. pont) is. A végén valódi HTTP-hívással ellenőrzi,
+hogy az app ténylegesen válaszol-e, és egy áttekinthető összegzést ad.
+
+A cron-titkos token (8. pont) SOHA nincs beégetve a szkriptbe. Ha még
+nincs beállítva a Beállítások → Mentés alatt, a szkript figyelmeztetéssel
+kihagyja a háttérfeladatok létrehozását — ilyenkor először végezd el az
+5. pont szerinti telepítő varázslót és állítsd be a tokent, majd futtasd
+újra a szkriptet a tokennel:
+
+    .\install-windows.ps1 -CronToken "<a beállított token>"
+
+Paraméterek (mind opcionális): -InstallPath, -PhpPath, -Port (alap:
+8000), -CronToken, -SkipScheduledTasks. Részletes súgó:
+
+    Get-Help .\install-windows.ps1 -Full
+
+Ha ezt a szkriptet használod, a 3., 4. és 8. pontot NEM kell külön,
+kézzel elvégezned — de érdemes átfutni őket, hogy tudd, a szkript
+pontosan mit csinál helyetted. Az 5-7. és 9. pont (telepítő varázsló,
+első lépések, biztonság, hibaelhárítás) továbbra is kézi lépés marad.
+
+
+---------------------------------------------------------------
 3. A PROJEKT MÁSOLÁSA
 ---------------------------------------------------------------
 
@@ -314,6 +357,30 @@ Elfelejtett alkalmazás-jelszó
      szövegszerkesztőben, és állítsd "app_password_enabled": false
      értékre, mentsd el, majd indítsd újra a szervert. Ezután
      Beállítások → Biztonság alatt állíts be új jelszót.
+
+Nem tudod eldönteni, hogy "rendben van-e" a rendszer, vagy hogy miért
+nem szinkronizál/mentődik valami
+  -> Nyisd meg a Rendszerállapot oldalt (bal oldali menü, vagy
+     http://localhost:8000/rendszerallapot.php). Ez EGY helyen mutatja
+     minden beállított integráció (adatbázis, biztonsági mentés,
+     WooCommerce, NAV, SMTP, nyomtató, frissítő) állapotát, az utolsó
+     ellenőrzés/siker időpontját és — hiba esetén — egy emberi nyelvű
+     magyarázatot. A "Figyelmet igényel" kártya (ha megjelenik) mindig
+     a legfontosabb, azonnal kezelendő problémákat listázza. Az
+     "Eseménynapló" kártya az elmúlt események (sikeres/sikertelen
+     mentés, szinkron, frissítés stb.) részletes, szűrhető listáját
+     adja. WooCommerce-hez és NAV-hoz "Kapcsolat tesztelése" gombbal
+     azonnal ellenőrizhető a beállítás, üzleti adat módosítása nélkül.
+
+Egy automatikus háttérfeladat (szinkron/mentés/NAV) "STALE"/elavultnak
+tűnik a Rendszerállapoton
+  -> Ellenőrizd, fut-e ténylegesen a hozzá tartozó Feladatütemező-
+     bejegyzés (lásd 8. pont, vagy futtasd újra a 2A. pont szerinti
+     .\install-windows.ps1-et, ami idempotensen újra létrehozza/
+     frissíti ezeket). Az app SOHA nem tudja megmondani a Feladatütemező
+     tényleges következő futási idejét — csak azt jelzi, mennyi ideje
+     nem volt sikeres futás az adott feladat saját, dokumentált
+     gyakoriságához képest.
 
 
 ---------------------------------------------------------------

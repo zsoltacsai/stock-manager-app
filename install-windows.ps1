@@ -1,74 +1,123 @@
 ﻿#requires -Version 5.1
 <#
 .SYNOPSIS
-    FountainTrade — automatizált Windows telepítő/beüzemelő szkript (1.4.0).
+    FountainTrade — teljes, önálló Windows telepítő (1.4.0).
 
 .DESCRIPTION
-    Ez a szkript a install.txt kézi lépéseinek egy részét automatizálja egy
-    Windows gépen: ellenőrzi a PHP-t és a szükséges kiterjesztéseket,
-    ellenőrzi/létrehozza az írható mappákat, létrehoz egy Windows Feladat-
-    ütemező bejegyzést a PHP beépített szerver indítására bejelentkezéskor,
-    ÉS létrehozza/frissíti az öt automatikus háttérfeladat (WooCommerce
-    szinkron, biztonsági mentés, NAV kimenő/bejövő, frissítés-ellenőrzés)
-    Feladatütemező-bejegyzéseit.
+    Ez a szkript két üzemmódban működik, AUTOMATIKUSAN felismerve, melyikről
+    van szó — nincs külön "ügyfél-mód"/"fejlesztői mód" kapcsoló, mert az
+    egyetlen megbízható jel maga a fájlrendszer állapota:
+
+      1) FRISS ÜGYFÉLTELEPÍTÉS — a szkript melletti mappában NINCS "webroot"
+         (azaz a szkript önmagában, a FountainTrade-Setup.bat-tal és egy
+         README-INSTALL.txt-vel együtt lett átadva, lásd 27. pont). Ilyenkor
+         a szkript a legutóbbi, HIVATALOSAN PUBLIKÁLT GitHub Release-ből
+         tölti le és ellenőrzi (manifest + SHA-256 + a tag Git-referenciából
+         független úton feloldott commit) a FountainTrade-et, majd
+         kicsomagolja a célkönyvtárba (alapértelmezetten
+         C:\ProgramData\FountainTrade).
+      2) MEGLÉVŐ TELEPÍTÉS / FEJLESZTŐI KÖRNYEZET — a szkript melletti
+         mappában MÁR OTT VAN a "webroot" (pl. mert valaki a teljes
+         forráskódot másolta ki, vagy ez egy már működő telepítés
+         frissítése/újra-beüzemelése). Ilyenkor a letöltési lépés
+         kimarad, és a szkript a saját mappáját ($PSScriptRoot) használja
+         célkönyvtárként — ugyanaz a viselkedés, mint az 1.4.0-s eredeti
+         verzióban.
+
+    Mindkét esetben ugyanaz a PHP-ellenőrzés/telepítés, mappa-ellenőrzés,
+    Feladatütemező-beállítás, parancsikon-létrehozás és egészség-ellenőrzés
+    fut le — NINCS párhuzamos telepítési logika a két mód között, csak a
+    "honnan jönnek a FountainTrade fájlok" kérdés dől el automatikusan.
+
+    ÖNMAGÁT EMELI ADMIN JOGRA (self-elevation): ha a szkript nem
+    Rendszergazdaként fut, automatikusan újraindítja magát UAC-on
+    keresztül, ugyanazokkal a paraméterekkel. Ehhez nem kell a
+    felhasználónak saját magának PowerShell-t nyitnia vagy Rendszergazdaként
+    újraindítania — ez már a FountainTrade-Setup.bat-ból induló hívásra is
+    érvényes.
 
     IDEMPOTENS: másodszori (vagy N-edik) futtatás nem hoz létre duplikált
-    feladatokat — minden lépés előbb ELLENŐRZI, létezik-e már a cél
-    (task/mappa/php.ini-beállítás), és csak akkor módosít, ha szükséges.
+    feladatokat/parancsikonokat, nem ír felül meglévő adatot/beállítást —
+    minden lépés előbb ELLENŐRZI, létezik-e már a cél, és csak akkor
+    módosít, ha szükséges.
 
-    NEM TARTALMAZ semmilyen titkot/cron-tokent a szkript SAJÁT forrásában —
-    a cron-tokent vagy a -CronToken paraméterrel kell futáskor átadni, vagy
-    a szkript automatikusan beolvassa a MÁR LÉTEZŐ data\settings.json
-    fájlból (ha a telepítő varázsló/Beállítások oldal korábban már
-    beállította). Ha egyik sem érhető el, a szkript figyelmeztetéssel
-    KIHAGYJA a cron-feladatok létrehozását, és a végső összegzésben
-    egyértelműen jelzi, mit kell a felhasználónak utólag megtennie.
+    NEM TARTALMAZ semmilyen titkot/cron-tokent/API-kulcsot a szkript SAJÁT
+    forrásában. A cron-titkos token forrása ebben a sorrendben dől el:
+    a -CronToken paraméter → a MÁR LÉTEZŐ data\settings.json cron_secret
+    mezője → ha egyik sincs, a szkript maga GENERÁL egy kriptográfiailag
+    véletlen tokent és elmenti a settings.json-ba (lásd a 13. pont
+    ellenőrzésének eredményét a szkript törzsében és a végső riportban) —
+    enélkül egy vadonatúj gépen a háttérfeladatok csendben, észrevétlenül
+    sose futnának le sikeresen.
 
 .PARAMETER InstallPath
-    A FountainTrade mappa útvonala. Alapértelmezetten a szkript saját
-    mappája (feltételezve, hogy a szkript a projekt gyökerében fut).
+    A FountainTrade célkönyvtára. Ha nincs megadva: fejlesztői/meglévő
+    módban a szkript saját mappája, friss ügyféltelepítésnél
+    C:\ProgramData\FountainTrade.
+
+.PARAMETER PhpDir
+    A PHP célkönyvtára, ha telepíteni kell. Alapértelmezett: C:\tools\php83.
 
 .PARAMETER PhpPath
-    A php.exe teljes útvonala. Ha nincs megadva, a szkript megpróbálja
-    megtalálni a PATH-on, majd a szokásos C:\tools\php83\php.exe helyen.
+    Egy MÁR TELEPÍTETT php.exe teljes útvonala — ha meg van adva, a szkript
+    ezt használja, és kihagyja a PHP-keresést/telepítést.
 
 .PARAMETER Port
     A beépített PHP szerver portja. Alapértelmezett: 8000.
 
 .PARAMETER CronToken
-    Opcionális — a Beállítások → Mentés fülön beállított cron-titkos
-    token. Ha nincs megadva, a szkript megpróbálja beolvasni a MÁR
-    LÉTEZŐ data\settings.json-ból.
+    Opcionális — lásd fent a cron-token forrás-sorrendjét.
+
+.PARAMETER Channel
+    Az update-csatorna, amiről a friss ügyféltelepítés a GitHub Release-t
+    letölti. Jelenleg csak "stable" létezik (lásd AppVersion::DEFAULT_CHANNEL).
 
 .PARAMETER SkipScheduledTasks
-    Ha meg van adva, a szkript KIHAGYJA az összes Feladatütemező-bejegyzés
-    létrehozását/frissítését (pl. ha ezt már valaki kézzel beállította, és
-    csak a PHP/mappa-ellenőrzést szeretnéd újra lefuttatni).
+    Kihagyja az összes Feladatütemező-bejegyzés létrehozását/frissítését.
+
+.PARAMETER SkipPhpInstall
+    Kihagyja a PHP automatikus telepítését — ha nincs található PHP, a
+    szkript hibával leáll, ehelyett kézi telepítésre utasítva.
+
+.PARAMETER SkipShortcuts
+    Kihagyja az Asztal/Start Menü parancsikonok létrehozását.
+
+.PARAMETER SkipDownload
+    Kihagyja a GitHub Release letöltését még akkor is, ha a "webroot" mappa
+    hiányzik — ilyenkor a szkript csak a Feladatütemező/PHP/parancsikon
+    lépéseket végzi el, feltételezve, hogy a fájlok más úton már ott vannak.
 
 .EXAMPLE
     .\install-windows.ps1
-    Alapértelmezett beüzemelés — PHP/mappa-ellenőrzés, majd a cron-
-    feladatok LÉTREHOZÁSÁNAK MEGKÍSÉRLÉSE (token nélkül ez figyelmeztetéssel
-    kimarad, ha még nincs elmentett cron_secret).
+    Automatikus felismerés — friss ügyféltelepítésnél letölti a legutóbbi
+    stabil GitHub Release-t, egyébként a saját mappáját használja.
 
 .EXAMPLE
-    .\install-windows.ps1 -CronToken "a-mentett-cron-titok" -Port 8000
-    Teljes beüzemelés, a cron-feladatok a megadott tokennel jönnek létre.
+    .\install-windows.ps1 -InstallPath "D:\FountainTrade" -Port 8080
 #>
 
 [CmdletBinding()]
 param(
-    [string]$InstallPath = $PSScriptRoot,
+    [string]$InstallPath,
+    [string]$PhpDir = 'C:\tools\php83',
     [string]$PhpPath,
     [int]$Port = 8000,
     [string]$CronToken,
-    [switch]$SkipScheduledTasks
+    [string]$Channel = 'stable',
+    [switch]$SkipScheduledTasks,
+    [switch]$SkipPhpInstall,
+    [switch]$SkipShortcuts,
+    [switch]$SkipDownload
 )
 
 $ErrorActionPreference = 'Stop'
 $script:WarningCount = 0
+$script:ErrorCount = 0
 $script:Summary = [System.Collections.Generic.List[string]]::new()
 
+# ---------------------------------------------------------------------
+# Segédfüggvények — kimenet + összegzés
+# ---------------------------------------------------------------------
 function Write-Step {
     param([string]$Message)
     Write-Host "`n==> $Message" -ForegroundColor Cyan
@@ -88,79 +137,441 @@ function Write-Warn2 {
 }
 
 function Write-Err2 {
-    param([string]$Message)
+    param([string]$Message, [string]$NextStep = '')
     Write-Host "    [HIBA] $Message" -ForegroundColor Red
     $script:Summary.Add("[HIBA] $Message")
-}
-
-# -------------------------------------------------------------------
-# 1. PHP megtalálása és ellenőrzése
-# -------------------------------------------------------------------
-Write-Step "PHP telepítés ellenőrzése"
-
-if (-not $PhpPath) {
-    $fromPath = Get-Command php.exe -ErrorAction SilentlyContinue
-    if ($fromPath) {
-        $PhpPath = $fromPath.Source
-    } elseif (Test-Path 'C:\tools\php83\php.exe') {
-        $PhpPath = 'C:\tools\php83\php.exe'
+    $script:ErrorCount++
+    if ($NextStep) {
+        Write-Host "           Következő lépés: $NextStep" -ForegroundColor Red
+        $script:Summary.Add("           -> $NextStep")
     }
 }
 
-if (-not $PhpPath -or -not (Test-Path $PhpPath)) {
-    Write-Err2 "Nem található PHP (php.exe). Add meg a -PhpPath paraméterrel, vagy telepítsd az install.txt 2. pontja szerint."
+# A szkript SOSE zárja be magát csendben/azonnal hiba esetén — lásd a
+# 17. pont explicit követelményét: a felhasználó lássa, MELYIK lépés
+# bukott el, MIÉRT, és mi a következő teendő, mielőtt az ablak bezárul.
+function Exit-WithFailureSummary {
+    param([string]$Reason, [string]$NextStep)
+    Write-Err2 $Reason $NextStep
+    Show-FinalSummary -Failed
+    Write-Host "`nNyomj meg egy billentyűt a kilépéshez..." -ForegroundColor Red
+    if (-not $env:FOUNTAINTRADE_NONINTERACTIVE) {
+        [void][System.Console]::ReadKey($true)
+    }
     exit 1
 }
-Write-Ok "PHP találva: $PhpPath"
 
-$phpVersionOutput = & $PhpPath -v 2>&1 | Select-Object -First 1
+function Show-FinalSummary {
+    param([switch]$Failed)
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host " FountainTrade Telepítő — összegzés" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    $script:Summary | ForEach-Object { Write-Host $_ }
+    Write-Host ""
+    if ($Failed -or $script:ErrorCount -gt 0) {
+        Write-Host "A telepítés NEM fejeződött be sikeresen — lásd a fenti [HIBA] sorokat." -ForegroundColor Red
+    } elseif ($script:WarningCount -gt 0) {
+        Write-Host "$($script:WarningCount) figyelmeztetés — lásd fent a részleteket." -ForegroundColor Yellow
+    } else {
+        Write-Host "Nincs figyelmeztetés." -ForegroundColor Green
+    }
+}
+
+# ---------------------------------------------------------------------
+# 0. Self-elevation — a felhasználónak SOSE kell kézzel admin-ként
+#    újraindítania, se Execution Policy-t módosítania (lásd 3. pont).
+#    Csak a JELENLEGI FOLYAMATRA vonatkozó Bypass-t használunk — a
+#    Windows globális Execution Policy-je változatlan marad.
+# ---------------------------------------------------------------------
+$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host "Rendszergazdai jogosultság szükséges — UAC-kérés megjelenítése..." -ForegroundColor Yellow
+    $scriptPath = $MyInvocation.MyCommand.Path
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$scriptPath`"")
+    foreach ($key in $PSBoundParameters.Keys) {
+        $value = $PSBoundParameters[$key]
+        if ($value -is [switch]) {
+            if ($value.IsPresent) { $argList += "-$key" }
+        } else {
+            $argList += "-$key"
+            $argList += "`"$value`""
+        }
+    }
+    try {
+        Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -Verb RunAs -Wait
+    } catch {
+        Write-Host "[HIBA] Az UAC-emelés megszakadt vagy elutasításra került: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Rendszergazdai jog nélkül a telepítés nem folytatható (Feladatütemező-bejegyzések létrehozásához szükséges)." -ForegroundColor Red
+        if (-not $env:FOUNTAINTRADE_NONINTERACTIVE) { [void][System.Console]::ReadKey($true) }
+    }
+    exit
+}
+
+# ---------------------------------------------------------------------
+# 1. Telepítési mód felismerése — friss letöltés vagy meglévő mappa
+# ---------------------------------------------------------------------
+Write-Step "Telepítési mód felismerése"
+
+$scriptDir = $PSScriptRoot
+$hasLocalApp = Test-Path (Join-Path $scriptDir 'webroot\index.php')
+
+if (-not $InstallPath) {
+    if ($hasLocalApp) {
+        $InstallPath = $scriptDir
+    } else {
+        $InstallPath = 'C:\ProgramData\FountainTrade'
+    }
+}
+
+$freshDownloadNeeded = (-not $hasLocalApp) -and (-not $SkipDownload) -and (-not (Test-Path (Join-Path $InstallPath 'webroot\index.php')))
+
+if ($freshDownloadNeeded) {
+    Write-Ok "Friss ügyféltelepítés — a FountainTrade fájljai a legutóbbi GitHub Release-ből lesznek letöltve."
+} else {
+    Write-Ok "Meglévő/helyi FountainTrade-fájlok használva — nincs letöltés."
+}
+Write-Host "    Célkönyvtár: $InstallPath"
+
+# ---------------------------------------------------------------------
+# 2. FountainTrade letöltése és ellenőrzése (csak friss telepítésnél)
+#    — UGYANAZT a biztonsági SZERZŐDÉST követi, mint a beépített
+#    önfrissítő (src/GitHubReleaseClient.php + src/UpdateVerifier.php):
+#    manifest kötelező mezői, SHA-256, és a commit-SHA FÜGGETLEN
+#    kereszt-ellenőrzése a GitHub Git Data API-n keresztül (nem elég,
+#    ha csak a manifest ÁLLÍTJA magáról). PowerShell nem tudja
+#    közvetlenül meghívni a PHP-osztályokat, ezért ugyanazt a SZABÁLY-
+#    rendszert ismételjük meg itt, saját, gyengébb "installer-only"
+#    logika kitalálása helyett.
+# ---------------------------------------------------------------------
+$RepoOwner = 'zsoltacsai'
+$RepoName  = 'stock-manager-app'
+$GitHubApiBase = 'https://api.github.com'
+$AllowedAssetHosts = @('github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com', 'api.github.com')
+
+function Get-AllowedHost {
+    param([string]$Url)
+    try { return ([Uri]$Url).Host } catch { return $null }
+}
+
+function Install-FountainTradeFromGitHub {
+    param([string]$TargetDir, [string]$Channel)
+
+    Write-Step "FountainTrade letöltése a legutóbbi publikált GitHub Release-ből"
+
+    $headers = @{ 'User-Agent' = 'FountainTrade-WindowsInstaller'; 'Accept' = 'application/vnd.github+json' }
+
+    try {
+        $release = Invoke-RestMethod -Uri "$GitHubApiBase/repos/$RepoOwner/$RepoName/releases/latest" -Headers $headers -TimeoutSec 30
+    } catch {
+        Exit-WithFailureSummary "Nem sikerült lekérdezni a legutóbbi GitHub Release-t ($RepoOwner/$RepoName): $($_.Exception.Message)" "Ellenőrizd az internetkapcsolatot, majd futtasd újra a telepítőt. Ha van már helyi FountainTrade-mappád, használd a -SkipDownload kapcsolót."
+    }
+
+    $tag = $release.tag_name
+    if (-not $tag) {
+        Exit-WithFailureSummary "A GitHub Release válasza érvénytelen (hiányzó tag_name)." "Próbáld újra később, vagy jelezd a problémát."
+    }
+
+    $manifestAsset = $release.assets | Where-Object { $_.name -eq 'manifest.json' } | Select-Object -First 1
+    $zipAsset = $release.assets | Where-Object { $_.name -like 'fountaintrade-*.zip' } | Select-Object -First 1
+    if (-not $manifestAsset -or -not $zipAsset) {
+        Exit-WithFailureSummary "A legutóbbi GitHub Release ($tag) nem tartalmazza a szükséges assetet (manifest.json / fountaintrade-*.zip)." "Ellenőrizd a repository Release oldalát: https://github.com/$RepoOwner/$RepoName/releases"
+    }
+
+    foreach ($assetUrl in @($manifestAsset.browser_download_url, $zipAsset.browser_download_url)) {
+        $h = Get-AllowedHost $assetUrl
+        if (-not $h -or ($AllowedAssetHosts -notcontains $h)) {
+            Exit-WithFailureSummary "Az asset letöltési címe nem a várt GitHub-hoszton van ($h)." "Ez váratlan — jelezd a problémát, ne folytasd a telepítést."
+        }
+    }
+
+    $tempDir = Join-Path $env:TEMP "fountaintrade-install-$(Get-Date -Format 'yyyyMMddHHmmss')"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    $manifestPath = Join-Path $tempDir 'manifest.json'
+    $zipPath = Join-Path $tempDir $zipAsset.name
+
+    try {
+        Invoke-WebRequest -Uri $manifestAsset.browser_download_url -OutFile $manifestPath -Headers $headers -TimeoutSec 30
+        $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+    } catch {
+        Exit-WithFailureSummary "A manifest.json letöltése/beolvasása sikertelen: $($_.Exception.Message)" "Próbáld újra, vagy ellenőrizd a hálózati kapcsolatot."
+    }
+
+    $requiredFields = @('product', 'channel', 'version', 'commit', 'artifact', 'sha256', 'min_upgradable_version')
+    foreach ($field in $requiredFields) {
+        if (-not ($manifest.PSObject.Properties.Name -contains $field) -or [string]::IsNullOrWhiteSpace($manifest.$field)) {
+            Exit-WithFailureSummary "A manifest.json hiányos vagy érvénytelen — hiányzó `"$field`" mező." "A Release valószínűleg sérült — jelezd a problémát, ne folytasd."
+        }
+    }
+    if ($manifest.product -ne 'FountainTrade') {
+        Exit-WithFailureSummary "A manifest más terméket jelöl (`"$($manifest.product)`"), nem FountainTrade-et." "Ne folytasd — ez váratlan/gyanús állapot."
+    }
+    if ($manifest.commit -notmatch '^[a-f0-9]{40}$') {
+        Exit-WithFailureSummary "A manifest commit mezője nem érvényes teljes Git commit-SHA." "Ne folytasd — a Release valószínűleg sérült."
+    }
+    if ($manifest.sha256 -notmatch '^[a-f0-9]{64}$') {
+        Exit-WithFailureSummary "A manifest sha256 mezője nem érvényes SHA-256 hash." "Ne folytasd — a Release valószínűleg sérült."
+    }
+
+    $normalizedTag = $tag.TrimStart('v', 'V')
+    if ($normalizedTag -ne $manifest.version) {
+        Exit-WithFailureSummary "A manifest verziója ($($manifest.version)) nem egyezik a GitHub Release tag-jével ($tag)." "Ne folytasd — ez váratlan/gyanús állapot."
+    }
+
+    # Commit független kereszt-ellenőrzése a GitHub Git Data API-n keresztül
+    # — pontosan a GitHubReleaseClient::resolveTagCommitSha() PHP-logikáját
+    # követve (lightweight VS annotált tag megkülönböztetése).
+    try {
+        # A Git-referencia LEKÉRDEZÉSE a tag EREDETI nevével történik (pl.
+        # "v1.4.0") — a "v" előtag csak a SemVer-összehasonlításhoz kerül
+        # levágva ($normalizedTag), a tényleges Git ref-név ettől független
+        # (élő teszteléssel felfedezett hiba: a levágott névvel a GitHub
+        # API 404-et adott, mert a valódi tag "v1.4.0", nem "1.4.0").
+        $ref = Invoke-RestMethod -Uri "$GitHubApiBase/repos/$RepoOwner/$RepoName/git/ref/tags/$tag" -Headers $headers -TimeoutSec 30
+        $resolvedSha = if ($ref.object.type -eq 'tag') {
+            (Invoke-RestMethod -Uri "$GitHubApiBase/repos/$RepoOwner/$RepoName/git/tags/$($ref.object.sha)" -Headers $headers -TimeoutSec 30).object.sha
+        } else {
+            $ref.object.sha
+        }
+    } catch {
+        Exit-WithFailureSummary "A(z) `"$tag`" tag Git-referenciájának feloldása sikertelen: $($_.Exception.Message)" "Próbáld újra később."
+    }
+    if ($resolvedSha.ToLower() -ne $manifest.commit.ToLower()) {
+        Exit-WithFailureSummary "A manifest commit-SHA-ja nem egyezik a GitHub által a tag-hez ténylegesen feloldott commit-tal." "Ne folytasd — ez integritás-sérülésre utal."
+    }
+    Write-Ok "Manifest ellenőrizve: FountainTrade $($manifest.version), commit $($manifest.commit.Substring(0,12))..."
+
+    try {
+        Invoke-WebRequest -Uri $zipAsset.browser_download_url -OutFile $zipPath -Headers $headers -TimeoutSec 120
+    } catch {
+        Exit-WithFailureSummary "Az artifact letöltése sikertelen: $($_.Exception.Message)" "Ellenőrizd az internetkapcsolatot, majd futtasd újra a telepítőt."
+    }
+
+    $actualHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
+    if ($actualHash -ne $manifest.sha256.ToLower()) {
+        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        Exit-WithFailureSummary "Checksum-eltérés: a letöltött fájl SHA-256 hash-e ($actualHash) nem egyezik a manifestben megadottal ($($manifest.sha256)) — a fájl sérült vagy módosított lehet." "Ne folytasd — töröld az ideiglenes fájlt, próbáld újra a letöltést."
+    }
+    Write-Ok "SHA-256 checksum egyezik — az artifact sértetlen."
+
+    New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
+    Expand-SafeZip -ZipPath $zipPath -DestDir $TargetDir
+
+    $requiredExtracted = @('webroot\index.php', 'src\Database.php', 'schema.sql', 'schema.mysql.sql')
+    foreach ($rel in $requiredExtracted) {
+        if (-not (Test-Path (Join-Path $TargetDir $rel))) {
+            Exit-WithFailureSummary "A kicsomagolt csomagból hiányzik egy kötelező fájl: $rel" "A letöltött artifact hibás lehet — próbáld újra a telepítést."
+        }
+    }
+    Write-Ok "FountainTrade $($manifest.version) kicsomagolva ide: $TargetDir"
+
+    Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Zip Slip elleni védelem PowerShell-ben — a src/UpdateVerifier.php
+# assertSafeZipEntryName()-jének megfelelője: path traversal ("..",),
+# abszolút útvonal, Windows-meghajtóbetűjel egyik bejegyzésnél sem
+# engedélyezett. Minden bejegyzést ELLENŐRZÜNK, mielőtt BÁRMIT kiírnánk.
+function Expand-SafeZip {
+    param([string]$ZipPath, [string]$DestDir)
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+    try {
+        foreach ($entry in $zip.Entries) {
+            $name = $entry.FullName
+            if ([string]::IsNullOrEmpty($name)) { continue }
+            $normalized = $name -replace '\\', '/'
+            if ($normalized.StartsWith('/') -or $normalized -match '^[A-Za-z]:' -or ($normalized -split '/') -contains '..') {
+                $zip.Dispose()
+                Exit-WithFailureSummary "Az archívum gyanús bejegyzést tartalmaz (`"$name`") — a kicsomagolás megszakítva." "Ne folytasd — töröld a letöltött fájlt, próbáld újra."
+            }
+        }
+        foreach ($entry in $zip.Entries) {
+            if ([string]::IsNullOrEmpty($entry.Name) -and $entry.FullName.EndsWith('/')) {
+                New-Item -ItemType Directory -Path (Join-Path $DestDir $entry.FullName) -Force | Out-Null
+                continue
+            }
+            $targetPath = Join-Path $DestDir ($entry.FullName -replace '/', '\')
+            $targetParent = Split-Path -Parent $targetPath
+            if (-not (Test-Path $targetParent)) { New-Item -ItemType Directory -Path $targetParent -Force | Out-Null }
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $targetPath, $true)
+        }
+    } finally {
+        $zip.Dispose()
+    }
+}
+
+if ($freshDownloadNeeded) {
+    Install-FountainTradeFromGitHub -TargetDir $InstallPath -Channel $Channel
+}
+
+if (-not (Test-Path (Join-Path $InstallPath 'webroot\index.php'))) {
+    Exit-WithFailureSummary "Nem található FountainTrade a célkönyvtárban: $InstallPath" "Futtasd a telepítőt -SkipDownload nélkül, vagy add meg helyesen a -InstallPath paramétert."
+}
+
+# Írható mappák a jövőben ACL-t is kaphatnak (lásd 4. pont) — nem-admin
+# napi használó (pénztáros) is tudjon írni a data/invoices/assets alá,
+# még ha a telepítés maga admin jogból is történt.
+Write-Step "Telepítési könyvtár jogosultságainak beállítása"
+try {
+    icacls $InstallPath /grant '*S-1-5-32-545:(OI)(CI)M' /T /Q | Out-Null
+    Write-Ok "A beépített 'Users' csoport Módosítás jogot kapott a célkönyvtárra (nem-admin napi használathoz)."
+} catch {
+    Write-Warn2 "Az ACL beállítása sikertelen (nem kritikus, ha ugyanaz a fiók telepít és használja az appot): $($_.Exception.Message)"
+}
+
+# -------------------------------------------------------------------
+# 3. PHP megtalálása, és szükség esetén telepítése
+# -------------------------------------------------------------------
+Write-Step "PHP telepítés ellenőrzése"
+
+function Get-InstalledPhpExe {
+    if ($PhpPath -and (Test-Path $PhpPath)) { return $PhpPath }
+    $local = Join-Path $PhpDir 'php.exe'
+    if (Test-Path $local) { return $local }
+    $fromPath = Get-Command php.exe -ErrorAction SilentlyContinue
+    if ($fromPath) { return $fromPath.Source }
+    return $null
+}
+
+# Hivatalos, ellenőrzött PHP-forrás: windows.php.net saját, gépileg
+# olvasható releases.json-ja — VALÓDI, verziózott SHA-256-tal minden
+# buildhez (élőben ellenőrizve: 2026-09-21, PHP 8.3.33, "ts-vs16-x64").
+# NEM egy "legfrissebb" scrape-elt link — explicit, ellenőrizhető forrás,
+# ahogy a kör 5. pontja megköveteli. Winget csak MÁSODLAGOS, ha ez a
+# hivatalos forrás valamiért elérhetetlen.
+function Install-PhpFromOfficialSource {
+    param([string]$TargetDir)
+
+    Write-Host "PHP telepítése a hivatalos windows.php.net forrásból..." -ForegroundColor Yellow
+    try {
+        $releases = Invoke-RestMethod -Uri 'https://windows.php.net/downloads/releases/releases.json' -TimeoutSec 30
+        $v83 = $releases.'8.3'
+        $build = $v83.'ts-vs16-x64'
+        if (-not $build) { $build = $v83.'ts-vc16-x64' }
+        if (-not $build -or -not $build.zip.path) {
+            throw 'A releases.json nem tartalmazza a várt PHP 8.3 Thread-Safe x64 buildet.'
+        }
+        $fileName = $build.zip.path
+        $expectedSha256 = $build.zip.sha256
+
+        $tempZip = Join-Path $env:TEMP $fileName
+        $downloadUrls = @(
+            "https://windows.php.net/downloads/releases/$fileName",
+            "https://windows.php.net/downloads/releases/archives/$fileName"
+        )
+        $downloaded = $false
+        foreach ($url in $downloadUrls) {
+            try {
+                Invoke-WebRequest -Uri $url -OutFile $tempZip -TimeoutSec 120
+                $downloaded = $true
+                break
+            } catch { continue }
+        }
+        if (-not $downloaded) { throw 'A PHP ZIP letöltése egyik hivatalos útvonalról sem sikerült.' }
+
+        $actualHash = (Get-FileHash -Path $tempZip -Algorithm SHA256).Hash.ToLower()
+        if ($actualHash -ne $expectedSha256.ToLower()) {
+            Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+            throw "Checksum-eltérés a letöltött PHP csomagnál ($actualHash vs $expectedSha256 várt) — a fájl sérült lehet."
+        }
+
+        New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
+        Expand-Archive -Path $tempZip -DestinationPath $TargetDir -Force
+        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+
+        Write-Ok "PHP $($v83.version) telepítve (SHA-256 ellenőrizve) ide: $TargetDir"
+        return (Join-Path $TargetDir 'php.exe')
+    } catch {
+        Write-Warn2 "A hivatalos windows.php.net forrásból történő telepítés sikertelen: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Install-PhpViaWinget {
+    param([string]$TargetDir)
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { return $null }
+    Write-Host "PHP telepítése winget-tel (másodlagos módszer)..." -ForegroundColor Yellow
+    try {
+        winget install --id PHP.PHP.8.3 -e --accept-package-agreements --accept-source-agreements | Out-Null
+        $fromPath = Get-Command php.exe -ErrorAction SilentlyContinue
+        if ($fromPath) { return $fromPath.Source }
+        return $null
+    } catch {
+        return $null
+    }
+}
+
+$phpExe = Get-InstalledPhpExe
+
+if (-not $phpExe -and -not $SkipPhpInstall) {
+    $phpExe = Install-PhpFromOfficialSource -TargetDir $PhpDir
+    if (-not $phpExe) {
+        $phpExe = Install-PhpViaWinget -TargetDir $PhpDir
+    }
+}
+
+if (-not $phpExe -or -not (Test-Path $phpExe)) {
+    Exit-WithFailureSummary "Nem található és nem telepíthető automatikusan PHP." "Telepítsd kézzel a PHP 8.3 x64 Thread Safe csomagot innen: https://windows.php.net/download/ (csomagold ki ide: $PhpDir), majd futtasd újra a telepítőt."
+}
+Write-Ok "PHP találva: $phpExe"
+
+$phpVersionOutput = & $phpExe -v 2>&1 | Select-Object -First 1
 if ($phpVersionOutput -match 'PHP (\d+)\.(\d+)') {
     $major = [int]$Matches[1]
     $minor = [int]$Matches[2]
     if ($major -lt 8 -or ($major -eq 8 -and $minor -lt 1)) {
-        Write-Err2 "A PHP verzió (${major}.${minor}) túl régi — legalább PHP 8.1 szükséges (lásd README 'Követelmények')."
-        exit 1
+        Exit-WithFailureSummary "A PHP verzió (${major}.${minor}) túl régi — legalább PHP 8.1 szükséges." "Telepíts PHP 8.1+ verziót, vagy add meg a -PhpPath paraméterrel egy megfelelő php.exe-t."
     }
     Write-Ok "PHP verzió: ${major}.${minor}"
 } else {
     Write-Warn2 "Nem sikerült megállapítani a PHP verziószámát a '$phpVersionOutput' kimenetből."
 }
 
-# A README/install.txt szerint kötelező kiterjesztések — hiányzó
-# kiterjesztés esetén az app csendben, nehezen diagnosztizálható módon
-# hibázna később (fehér oldal / "Call to undefined function"), ezért itt,
-# a telepítés ELEJÉN ellenőrizzük.
-$requiredExtensions = @('pdo_sqlite', 'sqlite3', 'curl', 'mbstring', 'gd', 'xmlwriter', 'zip', 'fileinfo', 'openssl')
-$loadedModules = & $PhpPath -m 2>&1
-$missingExtensions = @()
-foreach ($ext in $requiredExtensions) {
-    if ($loadedModules -notcontains $ext) {
-        $missingExtensions += $ext
+# php.ini biztosítása, ha még nincs (friss PHP-telepítésnél normál eset).
+$phpHome = Split-Path -Parent $phpExe
+$phpIniPath = Join-Path $phpHome 'php.ini'
+if (-not (Test-Path $phpIniPath)) {
+    $devIni = Join-Path $phpHome 'php.ini-development'
+    if (Test-Path $devIni) {
+        Copy-Item -LiteralPath $devIni -Destination $phpIniPath -Force
+        $iniContent = Get-Content $phpIniPath -Raw
+        $iniContent = $iniContent -replace ';extension_dir = "ext"', 'extension_dir = "ext"'
+        foreach ($ext in @('curl', 'fileinfo', 'gd', 'mbstring', 'openssl', 'pdo_sqlite', 'sqlite3', 'xmlwriter', 'zip')) {
+            $iniContent = $iniContent -replace ";extension=$ext", "extension=$ext"
+        }
+        $iniContent = $iniContent -replace ';zend_extension=opcache', 'zend_extension=opcache'
+        $iniContent += "`n[opcache]`nopcache.enable=1`nopcache.enable_cli=0`nopcache.memory_consumption=64`nopcache.max_accelerated_files=4000`nopcache.revalidate_freq=1`nopcache.validate_timestamps=1`n"
+        Set-Content -LiteralPath $phpIniPath -Value $iniContent -Encoding ASCII
+        Write-Ok "php.ini létrehozva és a szükséges kiterjesztések bekapcsolva: $phpIniPath"
+    } else {
+        Write-Warn2 "Nem található sem php.ini, sem php.ini-development itt: $phpHome — a szükséges kiterjesztéseket kézzel kell bekapcsolni."
     }
 }
+
+# A README/install.txt szerint kötelező kiterjesztések — a TÉNYLEGES
+# `php.exe -m` kimenetet ellenőrizzük, nem csak azt, hogy a php.ini-ben
+# szerepel-e valami (lásd a kör 6. pontjának explicit követelménye).
+$requiredExtensions = @('pdo_sqlite', 'sqlite3', 'curl', 'mbstring', 'gd', 'xmlwriter', 'zip', 'fileinfo', 'openssl')
+$loadedModules = & $phpExe -m 2>&1
+$missingExtensions = @($requiredExtensions | Where-Object { $loadedModules -notcontains $_ })
 if ($missingExtensions.Count -gt 0) {
-    Write-Err2 "Hiányzó PHP-kiterjesztések: $($missingExtensions -join ', ') — kapcsold be őket a php.ini-ben (lásd install.txt 1-2. pontja), majd futtasd újra ezt a szkriptet."
-    exit 1
+    Exit-WithFailureSummary "Hiányzó PHP-kiterjesztések: $($missingExtensions -join ', ')" "Kapcsold be őket a php.ini-ben ($phpIniPath), majd futtasd újra ezt a szkriptet."
 }
 Write-Ok "Minden szükséges PHP-kiterjesztés be van kapcsolva ($($requiredExtensions -join ', '))."
 
 if ($loadedModules -notcontains 'Zend OPcache') {
-    Write-Warn2 "Az OPcache nincs bekapcsolva — nem kötelező, de erősen ajánlott a gyorsabb oldalbetöltéshez (lásd install.txt 2. pontja)."
+    Write-Warn2 "Az OPcache nincs bekapcsolva — nem kötelező, de erősen ajánlott a gyorsabb oldalbetöltéshez."
 } else {
     Write-Ok "OPcache bekapcsolva."
 }
 
 # -------------------------------------------------------------------
-# 2. Mappák — létezés + írhatóság
+# 4. Mappák — létezés + írhatóság (valódi írás-teszttel)
 # -------------------------------------------------------------------
 Write-Step "Mappák ellenőrzése ($InstallPath)"
 
 $webrootPath = Join-Path $InstallPath 'webroot'
-if (-not (Test-Path $webrootPath)) {
-    Write-Err2 "Nem található a 'webroot' mappa itt: $InstallPath — biztosan a projekt gyökerében fut ez a szkript?"
-    exit 1
-}
-
 $writableDirs = @(
     (Join-Path $InstallPath 'data'),
     (Join-Path $InstallPath 'data\backups'),
@@ -173,98 +584,172 @@ foreach ($dir in $writableDirs) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         Write-Ok "Létrehozva: $dir"
     }
-    # Írhatóság-teszt: egy ideiglenes fájl létrehozása/törlése — Windows
-    # alatt NTFS-jogosultsági probléma ritka a saját felhasználói mappában,
-    # de egy megosztott/vállalati gépen előfordulhat (lásd install.txt 3.
-    # pontja "permission denied" hibaelhárítása).
     $testFile = Join-Path $dir '.install-write-test'
     try {
         [System.IO.File]::WriteAllText($testFile, 'ok')
         Remove-Item $testFile -Force
         Write-Ok "Írható: $dir"
     } catch {
-        Write-Err2 "NEM írható: $dir — jobb klikk a mappán -> Tulajdonságok -> Biztonság -> adj Módosítás jogot a felhasználódnak (lásd install.txt 3. pontja)."
+        Exit-WithFailureSummary "NEM írható: $dir" "Jobb klikk a mappán -> Tulajdonságok -> Biztonság -> adj Módosítás jogot a felhasználódnak, majd futtasd újra a telepítőt."
     }
 }
 
 # -------------------------------------------------------------------
-# 3. Feladatütemező — PHP szerver indítása bejelentkezéskor (idempotens)
+# 5. Cron-token — automatikus generálás, ha még sehol sincs (lásd 13. pont
+#    ellenőrzésének eredménye: a Database/Settings.php DEFAULTS-ban a
+#    cron_secret alapértéke '' — SOHA nincs automatikusan generálva az
+#    alkalmazás saját kódjában, csak a Beállítások -> Mentés kézi mentésekor.
+#    Enélkül egy vadonatúj gépen a háttérfeladatok csendben sose futnának.)
 # -------------------------------------------------------------------
+$settingsPath = Join-Path $InstallPath 'data\settings.json'
+
+function Get-OrCreateCronToken {
+    param([string]$SettingsPath, [string]$SuppliedToken)
+
+    if ($SuppliedToken) { return @{ Token = $SuppliedToken; Generated = $false } }
+
+    $existing = $null
+    if (Test-Path $SettingsPath) {
+        try {
+            $json = Get-Content $SettingsPath -Raw | ConvertFrom-Json
+            if ($json.PSObject.Properties.Name -contains 'cron_secret' -and $json.cron_secret) {
+                $existing = $json.cron_secret
+            }
+        } catch { }
+    }
+    if ($existing) { return @{ Token = $existing; Generated = $false } }
+
+    # Kriptográfiailag véletlen, 32 bájtos (64 hex karakteres) token —
+    # ugyanolyan erősségű, mint amit egy felhasználó a Beállítások oldalon
+    # kézzel generálna. A szkript SAJÁT FORRÁSÁBA soha nem kerül be —
+    # csak futásidőben, a CÉLGÉPEN generálódik.
+    $bytes = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $generated = ($bytes | ForEach-Object { $_.ToString('x2') }) -join ''
+
+    $obj = if (Test-Path $SettingsPath) {
+        try { Get-Content $SettingsPath -Raw | ConvertFrom-Json } catch { [PSCustomObject]@{} }
+    } else {
+        [PSCustomObject]@{}
+    }
+    if ($obj.PSObject.Properties.Name -contains 'cron_secret') {
+        $obj.cron_secret = $generated
+    } else {
+        $obj | Add-Member -NotePropertyName 'cron_secret' -NotePropertyValue $generated -Force
+    }
+    New-Item -ItemType Directory -Path (Split-Path -Parent $SettingsPath) -Force | Out-Null
+    $json = $obj | ConvertTo-Json -Depth 20
+    # UTF-8, BOM NÉLKÜL — a PHP json_decode() nem tolerálja a BOM-ot, a
+    # Settings::save() saját írása is BOM nélküli UTF-8-at termel.
+    [System.IO.File]::WriteAllText($SettingsPath, $json, (New-Object System.Text.UTF8Encoding($false)))
+
+    return @{ Token = $generated; Generated = $true }
+}
+
+if (-not $SkipScheduledTasks) {
+    Write-Step "Cron-token ellenőrzése/generálása"
+    $cronResult = Get-OrCreateCronToken -SettingsPath $settingsPath -SuppliedToken $CronToken
+    $CronToken = $cronResult.Token
+    if ($cronResult.Generated) {
+        Write-Ok "Nem volt elérhető cron-token — a telepítő újat generált és elmentette a data\settings.json-ba (a Beállítások -> Mentés oldalon később bármikor lecserélhető)."
+    } else {
+        Write-Ok "Cron-token elérhető (paraméterből vagy a meglévő beállításokból)."
+    }
+}
+
+# -------------------------------------------------------------------
+# 6. Feladatütemező — PHP szerver bejelentkezéskor, crash esetén újraindul
+# -------------------------------------------------------------------
+function Test-PortInUseByOurServer {
+    param([int]$Port)
+    try {
+        $resp = Invoke-WebRequest -Uri "http://localhost:$Port/api/install-status.php" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+        return $resp.StatusCode -eq 200
+    } catch {
+        return $false
+    }
+}
+
 if (-not $SkipScheduledTasks) {
     Write-Step "Feladatütemező — PHP szerver automatikus indítása"
 
-    $serverTaskName = 'FountainTrade - Szerver'
-    $serverAction = New-ScheduledTaskAction -Execute $PhpPath -Argument "-S localhost:$Port -t `"$webrootPath`"" -WorkingDirectory $InstallPath
-    $serverTrigger = New-ScheduledTaskTrigger -AtLogOn
-    $serverSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+    $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    if ($listener) {
+        if (Test-PortInUseByOurServer -Port $Port) {
+            Write-Ok "A(z) $Port port már egy futó FountainTrade-példány alatt van — ezt használjuk tovább, nem indítunk másikat."
+        } else {
+            Exit-WithFailureSummary "A(z) $Port port már foglalt, de nem egy FountainTrade-példány válaszol rajta." "Válassz másik portot a -Port paraméterrel, vagy zárd be a portot jelenleg használó alkalmazást."
+        }
+    }
 
-    $existingServerTask = Get-ScheduledTask -TaskName $serverTaskName -ErrorAction SilentlyContinue
-    if ($existingServerTask) {
-        # Idempotencia: FRISSÍTJÜK a meglévő feladatot (pl. ha a port vagy a
-        # PHP útvonala változott), NEM hozunk létre egy második, duplikált
-        # bejegyzést ugyanarra a célra.
-        Set-ScheduledTask -TaskName $serverTaskName -Action $serverAction -Trigger $serverTrigger -Settings $serverSettings | Out-Null
-        Write-Ok "Feladatütemező-bejegyzés frissítve: '$serverTaskName'"
-    } else {
-        Register-ScheduledTask -TaskName $serverTaskName -Action $serverAction -Trigger $serverTrigger -Settings $serverSettings -Description 'FountainTrade beépített PHP szerver indítása bejelentkezéskor.' | Out-Null
-        Write-Ok "Feladatütemező-bejegyzés létrehozva: '$serverTaskName'"
+    $serverTaskName = 'FountainTrade - Szerver'
+    # Csak localhost/loopback — SOSE minden hálózati interfészre (lásd
+    # 11. és 22. pont: "ne nyisson szükségtelen hálózati portot").
+    $serverAction = New-ScheduledTaskAction -Execute $phpExe -Argument "-S localhost:$Port -t `"$webrootPath`"" -WorkingDirectory $InstallPath
+    # Élő teszteléssel elkülönítve igazolva (izolált Register-ScheduledTask
+    # próbákkal, 2026-09-21): pontosan az "-AtLogOn" trigger-TÍPUS igényel
+    # valódi rendszergazdai jogot a regisztráláshoz — egy "-Once" ismétlődő
+    # trigger (lásd a cron-feladatok lentebb) NEM. Ez az oka annak, hogy egy
+    # nem emelt jogú futtatásnál PONT ez a bejegyzés bukik el "Access is
+    # denied"-del, miközben a cron-feladatok sikeresen létrejönnek — ez NEM
+    # hiba, hanem a Windows Feladatütemező saját, dokumentálatlan, de
+    # reprodukálható viselkedése, és pontosan ez az oka annak, hogy a
+    # szkript elején a self-elevation (0. lépés) MINDIG lefut.
+    $serverTrigger = New-ScheduledTaskTrigger -AtLogOn
+    $serverSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1)
+
+    # FONTOS (élő teszteléssel felfedezett hiba): a Register-ScheduledTask/
+    # Set-ScheduledTask CIM-alapú hibája NEM terminating error alapértelmezetten
+    # — a globális $ErrorActionPreference='Stop' MAGÁBAN NEM állítja meg a
+    # végrehajtást, és a hívás UTÁNI kód (pl. a "[OK]" üzenet) TÉVESEN
+    # sikeresként futott volna tovább egy ténylegesen elutasított (pl.
+    # "Access is denied" jogosultsági hiba miatt meghiúsult) hívás után is.
+    # Ezért itt MINDEN Feladatütemező-hívás explicit -ErrorAction Stop-pal
+    # + try/catch-csel fut, hogy egy valódi hiba SOHA ne tűnjön "[OK]"-nak.
+    $serverTaskCreated = $false
+    try {
+        $existingServerTask = Get-ScheduledTask -TaskName $serverTaskName -ErrorAction SilentlyContinue
+        if ($existingServerTask) {
+            Set-ScheduledTask -TaskName $serverTaskName -Action $serverAction -Trigger $serverTrigger -Settings $serverSettings -ErrorAction Stop | Out-Null
+            Write-Ok "Feladatütemező-bejegyzés frissítve: '$serverTaskName'"
+        } else {
+            Register-ScheduledTask -TaskName $serverTaskName -Action $serverAction -Trigger $serverTrigger -Settings $serverSettings -Description 'FountainTrade beépített PHP szerver indítása bejelentkezéskor (csak localhost).' -ErrorAction Stop | Out-Null
+            Write-Ok "Feladatütemező-bejegyzés létrehozva: '$serverTaskName'"
+        }
+        $serverTaskCreated = $true
+    } catch {
+        Write-Err2 "A(z) '$serverTaskName' Feladatütemező-bejegyzés létrehozása/frissítése sikertelen: $($_.Exception.Message)" "Ellenőrizd, hogy rendszergazdai jogban fut-e a telepítő, és hogy a Feladatütemező szolgáltatás (Task Scheduler) elérhető-e. Kézi indítás: `"$phpExe`" -S localhost:$Port -t `"$webrootPath`""
+    }
+
+    if ($serverTaskCreated -and -not $listener) {
+        try {
+            Start-ScheduledTask -TaskName $serverTaskName -ErrorAction Stop
+            Start-Sleep -Seconds 2
+        } catch {
+            Write-Warn2 "A szerver Task létrejött, de nem indult el azonnal (a következő bejelentkezéskor automatikusan elindul): $($_.Exception.Message)"
+        }
     }
 } else {
     Write-Step "Feladatütemező-lépések kihagyva (-SkipScheduledTasks)"
 }
 
 # -------------------------------------------------------------------
-# 4. Cron-token beolvasása/ellenőrzése — SOSE hardcode-olva a szkriptben
-# -------------------------------------------------------------------
-if (-not $SkipScheduledTasks) {
-    Write-Step "Cron-token ellenőrzése"
-
-    if (-not $CronToken) {
-        $settingsPath = Join-Path $InstallPath 'data\settings.json'
-        if (Test-Path $settingsPath) {
-            try {
-                $settingsJson = Get-Content $settingsPath -Raw | ConvertFrom-Json
-                if ($settingsJson.cron_secret) {
-                    $CronToken = $settingsJson.cron_secret
-                    Write-Ok "Cron-token beolvasva a meglévő data\settings.json fájlból."
-                }
-            } catch {
-                Write-Warn2 "A data\settings.json beolvasása sikertelen — a fájl esetleg sérült."
-            }
-        }
-    }
-
-    if (-not $CronToken) {
-        Write-Warn2 "Nincs elérhető cron-token — a háttérfeladatok (szinkron/mentés/NAV/frissítés-ellenőrzés) Feladatütemező-bejegyzései KIMARADNAK ebből a futásból."
-        Write-Warn2 "Először állíts be egy cron-titkos tokent a Beállítások -> Mentés fülön, majd futtasd újra: .\install-windows.ps1 -CronToken `"<a beállított token>`""
-    }
-}
-
-# -------------------------------------------------------------------
-# 5. Cron-feladatok (idempotens létrehozás/frissítés)
+# 7. Cron-feladatok (idempotens létrehozás/frissítés)
 # -------------------------------------------------------------------
 if (-not $SkipScheduledTasks -and $CronToken) {
     Write-Step "Automatikus háttérfeladatok (cron) beállítása"
 
-    # Minden bejegyzés: (Feladatnév, endpoint, javasolt gyakoriság) — lásd
-    # install.txt "8. AUTOMATIKUS FELADATOK" szakasza a pontos indoklásért.
-    # A token KIZÁRÓLAG az X-Cron-Token fejlécben megy — ugyanaz a
-    # curl-parancs, amit install.txt is dokumentál, csak Feladatütemező alá
-    # szervezve, hogy ne kelljen 5x kézzel bepötyögni a Feladatütemező GUI-ban.
     $cronJobs = @(
-        @{ Name = 'FountainTrade - WooCommerce szinkron'; Endpoint = 'auto-sync-run.php'; Trigger = { New-ScheduledTaskTrigger -Once (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration ([TimeSpan]::MaxValue) } },
-        @{ Name = 'FountainTrade - Biztonsagi mentes'; Endpoint = 'auto-backup-run.php'; Trigger = { New-ScheduledTaskTrigger -Once (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration ([TimeSpan]::MaxValue) } },
-        @{ Name = 'FountainTrade - NAV kimeno queue'; Endpoint = 'nav-queue-run.php'; Trigger = { New-ScheduledTaskTrigger -Once (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration ([TimeSpan]::MaxValue) } },
-        @{ Name = 'FountainTrade - NAV bejovo szinkron'; Endpoint = 'nav-incoming-sync-run.php'; Trigger = { New-ScheduledTaskTrigger -Once (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration ([TimeSpan]::MaxValue) } },
-        @{ Name = 'FountainTrade - Frissites ellenorzes'; Endpoint = 'update-check-run.php'; Trigger = { New-ScheduledTaskTrigger -Once (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration ([TimeSpan]::MaxValue) } }
+        @{ Name = 'FountainTrade - WooCommerce szinkron'; Endpoint = 'auto-sync-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650) } },
+        @{ Name = 'FountainTrade - Biztonsagi mentes'; Endpoint = 'auto-backup-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650) } },
+        @{ Name = 'FountainTrade - NAV kimeno queue'; Endpoint = 'nav-queue-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650) } },
+        @{ Name = 'FountainTrade - NAV bejovo szinkron'; Endpoint = 'nav-incoming-sync-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 3650) } },
+        @{ Name = 'FountainTrade - Frissites ellenorzes'; Endpoint = 'update-check-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration (New-TimeSpan -Days 3650) } }
     )
 
-    # curl.exe (Windows 10 1803+ óta beépített) a natív választás — nincs
-    # szükség külön PowerShell Invoke-WebRequest-parancsfájlra, ugyanaz a
-    # parancs, amit install.txt kézi Feladatütemező-beállításhoz is javasol.
     $curlPath = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
     if (-not $curlPath) {
-        Write-Err2 "A curl.exe nem található (Windows 10 1803+ alapból tartalmazza) — a cron-feladatok létrehozása kimarad."
+        Write-Err2 "A curl.exe nem található (Windows 10 1803+ alapból tartalmazza) — a cron-feladatok létrehozása kimarad." "Telepítsd a curl-t, vagy futtasd újra a telepítőt egy újabb Windows-verzión."
     } else {
         foreach ($job in $cronJobs) {
             $url = "http://localhost:$Port/api/$($job.Endpoint)"
@@ -273,13 +758,17 @@ if (-not $SkipScheduledTasks -and $CronToken) {
             $trigger = & $job.Trigger
             $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
 
-            $existing = Get-ScheduledTask -TaskName $job.Name -ErrorAction SilentlyContinue
-            if ($existing) {
-                Set-ScheduledTask -TaskName $job.Name -Action $action -Trigger $trigger -Settings $settings | Out-Null
-                Write-Ok "Frissítve: '$($job.Name)' -> $($job.Endpoint)"
-            } else {
-                Register-ScheduledTask -TaskName $job.Name -Action $action -Trigger $trigger -Settings $settings -Description "FountainTrade automatikus feladat: $($job.Endpoint)" | Out-Null
-                Write-Ok "Létrehozva: '$($job.Name)' -> $($job.Endpoint)"
+            try {
+                $existing = Get-ScheduledTask -TaskName $job.Name -ErrorAction SilentlyContinue
+                if ($existing) {
+                    Set-ScheduledTask -TaskName $job.Name -Action $action -Trigger $trigger -Settings $settings -ErrorAction Stop | Out-Null
+                    Write-Ok "Frissítve: '$($job.Name)' -> $($job.Endpoint)"
+                } else {
+                    Register-ScheduledTask -TaskName $job.Name -Action $action -Trigger $trigger -Settings $settings -Description "FountainTrade automatikus feladat: $($job.Endpoint)" -ErrorAction Stop | Out-Null
+                    Write-Ok "Létrehozva: '$($job.Name)' -> $($job.Endpoint)"
+                }
+            } catch {
+                Write-Err2 "A(z) '$($job.Name)' Feladatütemező-bejegyzés létrehozása/frissítése sikertelen: $($_.Exception.Message)" "Hozd létre kézzel a Feladatütemezőben, vagy futtasd újra a telepítőt rendszergazdai jogban."
             }
         }
     }
@@ -288,68 +777,118 @@ if (-not $SkipScheduledTasks -and $CronToken) {
 }
 
 # -------------------------------------------------------------------
-# 6. Asztali parancsikon (opcionális kényelmi lépés)
+# 8. Parancsikonok — Asztal + Start Menü, Dashboard-ra mutatva
+#    (NEM a Kasszára/index.php-ra — lásd 15. pont: Dashboard = kezdőoldal)
 # -------------------------------------------------------------------
-Write-Step "Asztali parancsikon"
-try {
-    $desktopPath = [Environment]::GetFolderPath('Desktop')
-    $shortcutPath = Join-Path $desktopPath 'FountainTrade.url'
-    if (-not (Test-Path $shortcutPath)) {
-        "[InternetShortcut]`nURL=http://localhost:$Port/" | Out-File -FilePath $shortcutPath -Encoding ascii
-        Write-Ok "Asztali parancsikon létrehozva: $shortcutPath"
-    } else {
-        Write-Ok "Asztali parancsikon már létezik — nem módosítva."
+if (-not $SkipShortcuts) {
+    Write-Step "Parancsikonok létrehozása"
+
+    $dashboardUrl = "http://localhost:$Port/dashboard.php"
+    $edgePath = @(
+        "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
+        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+
+    function New-FountainTradeShortcut {
+        param([string]$LinkPath)
+        if (Test-Path $LinkPath) {
+            Write-Ok "Parancsikon már létezik — nem módosítva: $LinkPath"
+            return
+        }
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($LinkPath)
+        if ($edgePath) {
+            $shortcut.TargetPath = $edgePath
+            $shortcut.Arguments = "--app=$dashboardUrl"
+        } else {
+            # Nincs Edge — az alapértelmezett böngésző nyissa meg (a .url
+            # parancsikon-formátum ezt automatikusan a rendszer
+            # alapértelmezett protokoll-kezelőjére bízza).
+            $shortcut.TargetPath = $dashboardUrl
+        }
+        $shortcut.IconLocation = "$webrootPath\favicon.svg"
+        $shortcut.Save()
+        Write-Ok "Parancsikon létrehozva: $LinkPath"
     }
-} catch {
-    Write-Warn2 "Az asztali parancsikon létrehozása sikertelen (nem kritikus): $($_.Exception.Message)"
+
+    $desktopPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'FountainTrade.lnk'
+    New-FountainTradeShortcut -LinkPath $desktopPath
+
+    $startMenuDir = [Environment]::GetFolderPath('StartMenu') + '\Programs'
+    if (Test-Path $startMenuDir) {
+        $startMenuPath = Join-Path $startMenuDir 'FountainTrade.lnk'
+        New-FountainTradeShortcut -LinkPath $startMenuPath
+    }
 }
 
 # -------------------------------------------------------------------
-# 7. Health-ellenőrzés — TÉNYLEGESEN elérhető-e az app a telepítés után
+# 9. Egészség-ellenőrzés + böngésző-megnyitás
+#    A meglévő install.php varázslót nyitjuk meg, ha a app MÉG NINCS
+#    inicializálva — a varázsló saját maga TOKENT követel (lásd
+#    webroot/install.php — ez a kör 1. pontjának ellenőrzése során
+#    kiderült, valódi kód-vizsgálattal, nem feltételezésből), amit a
+#    topbar.js kliens-oldali átirányítása NEM ad át, emiatt e nélkül a
+#    lépés nélkül a felhasználó egy 403-as, Unix-parancsra ("cat
+#    data/.install-token") hivatkozó hibaoldalt látna Windows alatt —
+#    ez a szkript a token-fájlt közvetlenül, helyi fájlrendszer-
+#    hozzáféréssel olvassa ki (ugyanaz a bizalmi szint, mint amivel a
+#    telepítő amúgy is módosítja a settings.json-t), és a böngészőt
+#    egyből a helyes, token-nel ellátott címen nyitja meg. Ez NEM
+#    gyengíti a token védelmét — egy távoli internetes látogató
+#    továbbra sem fér hozzá a helyi fájlrendszerhez.
 # -------------------------------------------------------------------
 Write-Step "Egészség-ellenőrzés"
 
-$serverProcess = $null
-$alreadyRunning = $false
-try {
-    $testConnection = Test-NetConnection -ComputerName 'localhost' -Port $Port -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
-    $alreadyRunning = $testConnection -and $testConnection.TcpTestSucceeded
-} catch {
-    $alreadyRunning = $false
+$serverReady = $false
+for ($i = 0; $i -lt 10; $i++) {
+    try {
+        $response = Invoke-WebRequest -Uri "http://localhost:$Port/" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+        if ($response.StatusCode -eq 200) { $serverReady = $true; break }
+    } catch { }
+    Start-Sleep -Seconds 1
 }
 
-if (-not $alreadyRunning) {
-    Write-Ok "A szerver jelenleg nem fut — ideiglenesen elindítjuk az ellenőrzéshez."
-    $serverProcess = Start-Process -FilePath $PhpPath -ArgumentList "-S localhost:$Port -t `"$webrootPath`"" -WorkingDirectory $InstallPath -WindowStyle Hidden -PassThru
-    Start-Sleep -Seconds 2
+if (-not $serverReady) {
+    Exit-WithFailureSummary "A szerver nem válaszol 10 másodperc után sem (http://localhost:$Port/)." "Indítsd el kézzel: `"$phpExe`" -S localhost:$Port -t `"$webrootPath`", és ellenőrizd a hibaüzenetet."
 }
+Write-Ok "A szerver válaszol — http://localhost:$Port/"
 
+$launchUrl = "http://localhost:$Port/dashboard.php"
 try {
-    $response = Invoke-WebRequest -Uri "http://localhost:$Port/" -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
-    if ($response.StatusCode -eq 200) {
-        Write-Ok "A szerver válaszol (HTTP $($response.StatusCode)) — http://localhost:$Port/"
+    $installStatus = Invoke-RestMethod -Uri "http://localhost:$Port/api/install-status.php" -TimeoutSec 5
+    if (-not $installStatus.installed) {
+        # Az install.php GET kérése magától generálja a token-fájlt, ha még
+        # nincs — utána közvetlenül a helyi lemezről olvassuk ki.
+        try { Invoke-WebRequest -Uri "http://localhost:$Port/install.php" -UseBasicParsing -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null } catch { }
+        $tokenPath = Join-Path $InstallPath 'data\.install-token'
+        if (Test-Path $tokenPath) {
+            $installToken = (Get-Content $tokenPath -Raw).Trim()
+            $launchUrl = "http://localhost:$Port/install.php?token=$installToken"
+            Write-Ok "Az app még nincs inicializálva — a telepítő varázsló nyílik meg."
+        } else {
+            $launchUrl = "http://localhost:$Port/install.php"
+            Write-Warn2 "Nem sikerült kiolvasni a telepítő-token fájlt — a telepítő varázsló token nélkül nyílik meg (403 hibaoldalt fog mutatni)."
+        }
     } else {
-        Write-Warn2 "A szerver váratlan státuszkóddal válaszolt: HTTP $($response.StatusCode)"
+        Write-Ok "Az app már inicializálva van — a Dashboard nyílik meg."
     }
 } catch {
-    Write-Err2 "A szerver nem válaszol: $($_.Exception.Message) — indítsd el kézzel: `"$PhpPath`" -S localhost:$Port -t `"$webrootPath`""
-} finally {
-    if ($serverProcess) {
-        Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
-    }
+    Write-Warn2 "A telepítési állapot lekérdezése sikertelen — a Dashboard címét nyitjuk meg alapértelmezésként."
+}
+
+try {
+    Start-Process $launchUrl
+    Write-Ok "Böngésző megnyitva: $launchUrl"
+} catch {
+    Write-Warn2 "A böngésző automatikus megnyitása sikertelen — nyisd meg kézzel: $launchUrl"
 }
 
 # -------------------------------------------------------------------
-# 8. Végső összegzés
+# 10. Végső összegzés
 # -------------------------------------------------------------------
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host " FountainTrade telepítés — összegzés" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-$script:Summary | ForEach-Object { Write-Host $_ }
-Write-Host ""
-if ($script:WarningCount -gt 0) {
-    Write-Host "$($script:WarningCount) figyelmeztetés — lásd fent a részleteket." -ForegroundColor Yellow
-} else {
-    Write-Host "Nincs figyelmeztetés." -ForegroundColor Green
+Show-FinalSummary
+Write-Host "`nMegnyitás: $launchUrl" -ForegroundColor Cyan
+if (-not $env:FOUNTAINTRADE_NONINTERACTIVE) {
+    Write-Host "`nNyomj meg egy billentyűt a bezáráshoz..." -ForegroundColor DarkGray
+    [void][System.Console]::ReadKey($true)
 }
-Write-Host "`nKövetkező lépés: nyisd meg http://localhost:$Port/ a böngészőben az első indítási varázslóhoz (ha még nem futott le)." -ForegroundColor Cyan

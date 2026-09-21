@@ -3037,34 +3037,114 @@ nagy forgalmú kasszahasználat mellett), SMTP-teszt, bejelentkezés
 (siker/sikertelen — **az IP-cím SOHA nem kerül naplózásra**),
 kijelentkezés.
 
-### `install-windows.ps1` — Windows telepítő/beüzemelő szkript
+### Windows telepítő — `FountainTrade-Setup.bat` + `install-windows.ps1`
 
-Önálló PowerShell szkript, ami az `install.txt` kézi lépéseinek egy
-részét automatizálja egy új Windows gépen:
+**Az elsődleges, ajánlott telepítési út egy megrendelő gépén**:
+dupla kattintás a `FountainTrade-Setup.bat`-ra → UAC elfogadása →
+várakozás → a böngésző magától megnyílik a Dashboardon (vagy a
+telepítő varázslón, ha az app még nincs beállítva). A `.bat` maga
+minimális — nem tartalmaz semmilyen titkot/tokent, kizárólag a tényleges
+logikát tartalmazó `install-windows.ps1`-et indítja el, a Windows
+globális Execution Policy-jének tartós módosítása nélkül (csak az adott
+folyamatra vonatkozó `-ExecutionPolicy Bypass`-szal).
 
-- PHP megtalálása, verzió-ellenőrzés (≥8.1), az összes kötelező
-  kiterjesztés (`pdo_sqlite`, `sqlite3`, `curl`, `mbstring`, `gd`,
-  `xmlwriter`, `zip`, `fileinfo`, `openssl`) tényleges meglétének
-  ellenőrzése, OPcache-figyelmeztetés.
+Az `install-windows.ps1` **önmagát emeli admin jogra** (UAC-on
+keresztül, ha még nem fut rendszergazdaként), és **automatikusan
+felismeri**, melyik helyzetben van:
+
+- **Friss ügyféltelepítés** — a szkript mellett nincs `webroot` mappa
+  (azaz csak a `.bat` + `.ps1` + `README-INSTALL.txt` lett átadva).
+  Ilyenkor a **legutóbbi, hivatalosan publikált GitHub Release-t** tölti
+  le és ellenőrzi — UGYANAZT a biztonsági szerződést követve, mint a
+  beépített önfrissítő (`src/GitHubReleaseClient.php`/
+  `src/UpdateVerifier.php`): manifest kötelező mezői, SHA-256 checksum,
+  és a commit-SHA FÜGGETLEN kereszt-ellenőrzése a GitHub Git Data API-n
+  keresztül (nem elég, ha csak a manifest állítja magáról). PowerShell
+  nem tudja közvetlenül meghívni a PHP-osztályokat, ezért ugyanazt a
+  SZABÁLYRENDSZERT ismétli meg — nincs külön, gyengébb "csak
+  installer" ellenőrzési logika. Alapértelmezett célkönyvtár:
+  `C:\ProgramData\FountainTrade` (lásd lent, miért).
+- **Meglévő telepítés / fejlesztői környezet** — a szkript mellett MÁR
+  ott van a `webroot` mappa. Ilyenkor letöltés nélkül, a saját mappáját
+  használja célkönyvtárként.
+
+Mindkét esetben ugyanaz fut le utána:
+
+- PHP megtalálása, és — ha hiányzik — **automatikus telepítése** a
+  hivatalos `windows.php.net/downloads/releases/releases.json`
+  forrásból (élőben ellenőrzött, verziózott, SHA-256-tal ellátott build,
+  nem egy scrape-elt/találgatott link), SHA-256-ellenőrzéssel; ha ez nem
+  elérhető, másodlagos módszerként wingettel. Verzió-ellenőrzés (≥8.1),
+  az összes kötelező kiterjesztés (`pdo_sqlite`, `sqlite3`, `curl`,
+  `mbstring`, `gd`, `xmlwriter`, `zip`, `fileinfo`, `openssl`) TÉNYLEGES
+  meglétének ellenőrzése (`php -m` kimenetéből, nem a php.ini
+  feltételezéséből), OPcache-figyelmeztetés.
+- A célkönyvtár **ACL-je** úgy áll be (`icacls ... Users:M`), hogy a
+  beépített "Users" csoport is tudjon írni bele — még ha a telepítés
+  admin jogból is történt, a napi használat (kasszázás) lehet egy
+  nem-admin fiókkal.
 - Az írható mappák (`data`, `data\backups`, `data\imports`, `invoices`,
-  `webroot\assets`) létrehozása/ellenőrzése, VALÓDI írás-teszttel (nem
-  csak jogosultság-kikövetkeztetéssel).
-- A beépített PHP szerver és mind az öt automatikus háttérfeladat
-  (WooCommerce szinkron, biztonsági mentés, NAV kimenő/bejövő,
-  frissítés-ellenőrzés) Feladatütemező-bejegyzéseinek **idempotens**
-  létrehozása/frissítése — egy második (vagy N-edik) futtatás
-  ELLENŐRZI a meglévő bejegyzést, és csak frissíti, sose duplikál.
-- **A cron-titkos token SOHA nincs beégetve a szkript forrásába** — vagy
-  a `-CronToken` paraméterrel adható át, vagy a szkript a MÁR LÉTEZŐ
-  `data\settings.json`-ból olvassa be; ha egyik sem elérhető, a
-  cron-feladatok létrehozása figyelmeztetéssel kimarad, a végső
-  összegzés pedig pontosan megmondja, mit kell utólag tenni.
-- Opcionális asztali parancsikon (idempotens — nem hoz létre duplikátumot).
-- Valódi HTTP-alapú egészség-ellenőrzés a telepítés végén (ideiglenesen
-  elindítja a szervert, ha még nem fut, lekéri a főoldalt, majd leállítja).
-- Végén egy áttekinthető, színkódolt összegzés (OK/FIGYELEM/HIBA soronként).
+  `webroot\assets`) létrehozása/ellenőrzése, VALÓDI írás-teszttel.
+- **Cron-titkos token automatikus generálása**, ha sehol sincs — a
+  `Settings::DEFAULTS`-ban a `cron_secret` alapértéke üres string, és az
+  alkalmazás SAJÁT kódja SOHA nem generál automatikusan tokent (csak a
+  Beállítások → Mentés kézi mentésekor kerül be). E nélkül a lépés
+  nélkül egy vadonatúj gépen a háttérfeladatok csendben, észrevétlenül
+  sose futnának le sikeresen — ezt élő kód-vizsgálattal (nem
+  feltételezésből) állapítottuk meg. A generált token a
+  `data\settings.json`-ba kerül, a MEGLÉVŐ egyéb beállítások
+  érintetlenül hagyásával.
+- A beépített PHP szerver (`FountainTrade - Szerver`) és mind az öt
+  automatikus háttérfeladat Feladatütemező-bejegyzéseinek
+  **idempotens** létrehozása/frissítése, valódi crash-esetén-újraindul
+  szabállyal (`-RestartCount 5 -RestartInterval 1 perc`). **Élő
+  teszteléssel felfedezett, dokumentált viselkedés**: a szerver-task
+  `-AtLogOn` trigger-típusa VALÓDI rendszergazdai jogot igényel a
+  regisztráláshoz (egy `-Once` ismétlődő trigger, mint a cron-
+  feladatoké, nem) — ez pontosan az oka annak, hogy a szkript elején a
+  self-elevation mindig lefut.
+- **A telepítő varázsló helyes megnyitása** — élő kód-vizsgálattal
+  felfedezett, korábban rejtett hiba: `webroot/install.php` egy
+  token-et követel meg (`data/.install-token`), amit a kliens-oldali
+  átirányítás (`topbar.js`) NEM ad át, Windows alatt egy Unix-parancsra
+  ("cat data/.install-token") hivatkozó, használhatatlan hibaoldalt
+  eredményezve. A telepítő a tokent közvetlenül, helyi fájlrendszer-
+  hozzáféréssel olvassa ki, és a böngészőt egyből a helyes címen nyitja
+  meg — ez NEM gyengíti a token védelmét (egy távoli látogató továbbra
+  sem fér hozzá a helyi fájlrendszerhez).
+- Parancsikonok (Asztal + Start Menü, ha van), a **Dashboardra** mutatva
+  (nem a Kasszára) — Edge-ben `--app=` módban, ha elérhető, egyébként az
+  alapértelmezett böngészőben. Idempotens — nem hoz létre duplikátumot.
+- Valódi HTTP-alapú egészség-ellenőrzés + böngésző-megnyitás a végén.
+- Minden Feladatütemező-hívás explicit `-ErrorAction Stop` + try/catch
+  alatt fut — élő teszteléssel felfedezett, korábbi hiba: a
+  `Register-ScheduledTask` CIM-alapú hibája alapértelmezetten NEM
+  terminating error, emiatt egy ténylegesen elutasított (pl. jogosultsági
+  hiba miatt meghiúsult) hívás után a szkript TÉVESEN "[OK]"-t írt volna
+  ki — ez javítva lett, egy valódi hiba mostantól SOHA nem tűnik
+  "[OK]"-nak.
+- Végén egy áttekinthető, színkódolt összegzés (OK/FIGYELEM/HIBA
+  soronként) — hiba esetén a szkript SOSE zárja be magát azonnal, mindig
+  vár egy billentyűlenyomásra, miután elolvashattad, melyik lépés bukott
+  el és mi a következő teendő.
 
-Futtatás: `.\install-windows.ps1` (alapértelmezett beüzemelés) vagy
-`.\install-windows.ps1 -CronToken "<a Beállításokban beállított token>" -Port 8000`
-(teljes beüzemelés, cron-feladatokkal együtt). Lásd a szkript saját
-`Get-Help .\install-windows.ps1 -Full` súgóját a további paraméterekért.
+**Miért `C:\ProgramData\FountainTrade` az alapértelmezett cél**: nem a
+felhasználó `Downloads` mappája (átmeneti hely), hanem egy stabil,
+gépi-szintű útvonal, ami a Feladatütemező-alapú automatikus indítással
+és a MEGLÉVŐ önfrissítő rendszerrel is kompatibilis marad — kiegészítve
+az explicit ACL-lel (lásd fent), hogy egy nem-admin napi felhasználó is
+tudjon írni a `data`/`invoices` alá.
+
+Futtatás közvetlenül PowerShell-ből (haladóknak, egyedi paraméterekkel):
+`.\install-windows.ps1 -InstallPath "D:\FountainTrade" -Port 8080`.
+Lásd a szkript saját `Get-Help .\install-windows.ps1 -Full` súgóját a
+további paraméterekért (`-PhpDir`, `-PhpPath`, `-CronToken`, `-Channel`,
+`-SkipScheduledTasks`, `-SkipPhpInstall`, `-SkipShortcuts`,
+`-SkipDownload`).
+
+**Ismert korlát**: a szkript Feladatütemező-bejegyzés-neveket használ
+(`FountainTrade - Szerver` stb.), NEM névtér-elkülönítve célkönyvtár
+szerint — egyetlen gépen egyetlen FountainTrade-példány futtatására lett
+tervezve (ami megfelel a valós, egy-kasszás használati esetnek). Két
+külön célkönyvtárba telepített példány UGYANAZOKAT a Feladatütemező-
+bejegyzéseket használná, és az egyik telepítés átírná a másikét.

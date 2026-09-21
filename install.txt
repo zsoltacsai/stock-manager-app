@@ -10,8 +10,47 @@ sem, az Excel-import saját maga olvassa be az .xls/.xlsx fájlokat).
 
 
 ---------------------------------------------------------------
-1. RENDSZERKÖVETELMÉNYEK
+0. GYORS TELEPÍTÉS (AJÁNLOTT) — FountainTrade-Setup.bat
 ---------------------------------------------------------------
+
+Ha a "FountainTrade-Installer" mappát kaptad meg (FountainTrade-Setup.bat
++ install-windows.ps1 + README-INSTALL.txt), a teljes telepítéshez ennyi
+a teendő:
+
+  1. Duplán kattints a FountainTrade-Setup.bat fájlra.
+  2. Fogadd el a megjelenő UAC-ablakot ("Igen").
+  3. Várd meg, amíg a telepítő végez (ez néhány percig eltarthat, ha a
+     PHP-t is most kell letöltenie).
+  4. A böngésző magától megnyílik — ha az app még nincs beállítva, a
+     telepítő varázslóra, egyébként a Dashboardra.
+
+Ennyi — nincs szükség PowerShell-parancsok kézi bemásolására, a PHP-t
+és a FountainTrade legutóbbi stabil kiadását a telepítő magától letölti
+és ellenőrzi (checksum + a GitHub Release valódiságának ellenőrzésével).
+A telepítő TÖBBSZÖR is futtatható (pl. ha módosult valami a gépen) —
+nem hoz létre duplikált Feladatütemező-bejegyzést vagy parancsikont, és
+nem törli a meglévő adatokat/beállításokat.
+
+Alapértelmezett telepítési hely: C:\ProgramData\FountainTrade.
+
+Ha a telepítő bármelyik lépésnél hibát jelez, az ablak NEM záródik be
+azonnal — elolvasható, melyik lépés bukott el és mi a javasolt következő
+teendő. Ha valami mégsem egyértelmű, lásd a 9. pont (Hibaelhárítás)
+szakaszát, vagy a részletes, kézi telepítési lépéseket alább (1-8. pont)
+— ezek akkor is hasznosak, ha csak ellenőrizni szeretnéd, mit csinál a
+gyors telepítő a háttérben, vagy ha valamiért kézzel, lépésről lépésre
+szeretnéd elvégezni ugyanezt.
+
+
+---------------------------------------------------------------
+1. RÉSZLETES/KÉZI TELEPÍTÉS — RENDSZERKÖVETELMÉNYEK
+---------------------------------------------------------------
+
+(Ha a 0. pont szerinti FountainTrade-Setup.bat-ot használtad, ez a
+szakasz és az utána következők [2-8. pont] csak tájékoztató jellegűek —
+a gyors telepítő ugyanezeket a lépéseket végzi el automatikusan. Kézi
+telepítéshez, hibaelhárításhoz, vagy ha külön szeretnéd érteni/
+irányítani az egyes lépéseket, kövesd az alábbiakat.)
 
 - Windows 10/11
 - PHP 8.1 vagy újabb (ez az útmutató PHP 8.3-mal lett tesztelve)
@@ -101,46 +140,50 @@ Ha a gépen még nincs PHP:
 
 
 ---------------------------------------------------------------
-2A. GYORSÍTOTT ÚT: AUTOMATIZÁLT TELEPÍTŐ SZKRIPT (opcionális)
+2A. AZ install-windows.ps1 SZKRIPT KÖZVETLEN FUTTATÁSA (haladóknak)
 ---------------------------------------------------------------
 
-Ha a PHP-t már a 2. pont szerint telepítetted, a 3-4. és 8. pont
-lépéseinek NAGY RÉSZÉT (mappa-ellenőrzés, szerver-indítás
-Feladatütemezőben, az öt automatikus háttérfeladat beállítása)
-elvégezheted egyetlen paranccsal, a projekt gyökeréből:
+A 0. pont szerinti FountainTrade-Setup.bat valójában ugyanezt az
+install-windows.ps1 szkriptet indítja el, csak automatikus UAC-emeléssel
+és Execution Policy-kezeléssel becsomagolva. Ha PowerShell-ből, kézzel,
+egyedi paraméterekkel szeretnéd futtatni (pl. más portra, más
+célkönyvtárba, vagy egy már kicsomagolt FountainTrade-mappán belülről),
+Rendszergazdaként futtatott PowerShell-ből:
 
-    powershell -ExecutionPolicy Bypass -File .\install-windows.ps1
+    .\install-windows.ps1
 
-(Ha PowerShell-ből futtatod, az -ExecutionPolicy Bypass rész
-elhagyható: .\install-windows.ps1)
+A szkript AUTOMATIKUSAN felismeri, hogy friss telepítésről van-e szó
+(nincs "webroot" mappa mellette — ilyenkor letölti és ellenőrzi a
+legutóbbi stabil GitHub Release-t, lásd 8. pont), vagy egy már
+kicsomagolt/telepített FountainTrade-en belül fut (ilyenkor a saját
+mappáját használja, letöltés nélkül — ez a viselkedés, ha a projekt
+teljes forráskódját magaddal hoztad). Ha nem Rendszergazdaként indítod,
+saját magát újraindítja UAC-on keresztül — ehhez sem Execution Policy
+módosítás, sem kézi PowerShell-megnyitás nem szükséges.
 
-A szkript IDEMPOTENS — bátran futtatható többször is (pl. ha a PHP
-útvonala vagy a port változott), nem hoz létre duplikált
-Feladatütemező-bejegyzéseket. Ellenőrzi a PHP verzióját és az összes
-kötelező kiterjesztést, létrehozza/ellenőrzi az írható mappákat (valódi
-írás-teszttel, nem csak feltételezéssel), Feladatütemező-bejegyzést hoz
-létre a beépített PHP szerver bejelentkezéskori indítására, majd — ha
-van elérhető cron-titkos token — létrehozza mind az öt automatikus
-háttérfeladatot (8. pont) is. A végén valódi HTTP-hívással ellenőrzi,
-hogy az app ténylegesen válaszol-e, és egy áttekinthető összegzést ad.
+A szkript IDEMPOTENS — bátran futtatható többször is, nem hoz létre
+duplikált Feladatütemező-bejegyzéseket/parancsikonokat, nem ír felül
+meglévő adatot. Ellenőrzi (és szükség esetén automatikusan telepíti,
+hivatalos, ellenőrzött forrásból) a PHP-t és az összes kötelező
+kiterjesztést, létrehozza/ellenőrzi az írható mappákat (valódi
+írás-teszttel), Feladatütemező-bejegyzést hoz létre a beépített PHP
+szerver bejelentkezéskori, crash esetén automatikusan újrainduló
+indítására, majd létrehozza mind az öt automatikus háttérfeladatot
+(8. pont) is.
 
-A cron-titkos token (8. pont) SOHA nincs beégetve a szkriptbe. Ha még
-nincs beállítva a Beállítások → Mentés alatt, a szkript figyelmeztetéssel
-kihagyja a háttérfeladatok létrehozását — ilyenkor először végezd el az
-5. pont szerinti telepítő varázslót és állítsd be a tokent, majd futtasd
-újra a szkriptet a tokennel:
+A cron-titkos token (8. pont) SOHA nincs beégetve a szkriptbe — ha még
+nincs beállítva sehol, a szkript maga GENERÁL egy kriptográfiailag
+véletlen tokent, és elmenti a data\settings.json-ba (ez a Beállítások →
+Mentés oldalon később bármikor lecserélhető). Ez enélkül egy vadonatúj
+gépen a háttérfeladatok csendben, észrevétlenül sose futnának le
+sikeresen — a Beállítások oldal saját maga sose generál tokent
+automatikusan, csak kézi mentéskor menti el, amit oda beírsz.
 
-    .\install-windows.ps1 -CronToken "<a beállított token>"
-
-Paraméterek (mind opcionális): -InstallPath, -PhpPath, -Port (alap:
-8000), -CronToken, -SkipScheduledTasks. Részletes súgó:
+Paraméterek (mind opcionális): -InstallPath, -PhpDir, -PhpPath, -Port
+(alap: 8000), -CronToken, -Channel, -SkipScheduledTasks, -SkipPhpInstall,
+-SkipShortcuts, -SkipDownload. Részletes súgó:
 
     Get-Help .\install-windows.ps1 -Full
-
-Ha ezt a szkriptet használod, a 3., 4. és 8. pontot NEM kell külön,
-kézzel elvégezned — de érdemes átfutni őket, hogy tudd, a szkript
-pontosan mit csinál helyetted. Az 5-7. és 9. pont (telepítő varázsló,
-első lépések, biztonság, hibaelhárítás) továbbra is kézi lépés marad.
 
 
 ---------------------------------------------------------------
@@ -330,9 +373,27 @@ füleken állíthatod be.
 9. HIBAELHÁRÍTÁS
 ---------------------------------------------------------------
 
+A FountainTrade-Setup.bat elutasítja az UAC-ablakot, vagy nem jelenik
+meg semmi
+  -> Rendszergazdai jog nélkül a telepítő nem tud Feladatütemező-
+     bejegyzést létrehozni. Indítsd újra a FountainTrade-Setup.bat-ot,
+     és az UAC-ablakban válaszd az "Igen"-t. Ha az UAC-ablak egyáltalán
+     nem jelenik meg, ellenőrizd, hogy a fiókod rendelkezik-e
+     rendszergazdai jogosultsággal (Vezérlőpult → Felhasználói fiókok).
+
+A FountainTrade-Setup.bat ablaka egy pillanatra felvillan, majd eltűnik
+  -> Ez NEM várt viselkedés — a telepítő SOSE záródik be azonnal hiba
+     esetén (mindig vár egy billentyűlenyomásra). Ha mégis ezt látod,
+     valószínűleg a PowerShell futtatása van teljesen letiltva a gépen
+     (pl. vállalati csoportházirenddel) — jelezd az IT-adminisztrátornak,
+     vagy kövesd az 1-8. pont szerinti kézi telepítést.
+
 "This site can't be reached" / nem töltődik be az oldal
-  -> Fut-e még a php -S parancssor-ablak? Ha bezártad, indítsd újra
-     (4. pont).
+  -> Fut-e még a php -S parancssor-ablak (vagy a "FountainTrade -
+     Szerver" Feladatütemező-bejegyzés)? Ha kézzel indítottad és
+     bezártad az ablakot, indítsd újra (4. pont), vagy futtasd újra a
+     FountainTrade-Setup.bat-ot — az idempotens, nem hoz létre
+     duplikált bejegyzést.
 
 Fehér oldal vagy "Call to undefined function" hiba
   -> Valamelyik szükséges PHP-kiterjesztés nincs bekapcsolva. Nézd meg

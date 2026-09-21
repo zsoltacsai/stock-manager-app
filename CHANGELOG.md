@@ -4,6 +4,68 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## [Unreleased] — Windows telepítő professzionalizálása
+
+**Kizárólag telepítési élmény/üzemeltethetőség — nincs alkalmazás-
+oldali (üzleti logikai) változás, ezért nincs verziószám-emelés.**
+A telepítő önmagában frissül/terjeszthető újra, az alkalmazás verziójától
+függetlenül (a telepítő a MEGLÉVŐ GitHub Release-ből tölti le a
+FountainTrade-et, nem fordítva).
+
+### Added
+
+- **`FountainTrade-Setup.bat`** — minimális indítówrapper: OS/PowerShell-
+  ellenőrzés, automatikus UAC-emelés (a globális Execution Policy tartós
+  módosítása nélkül), majd `install-windows.ps1` indítása. Nem tartalmaz
+  titkot/tokent/API-kulcsot.
+- **`install-windows.ps1` — teljes átdolgozás**: self-elevation, két
+  automatikusan felismert üzemmód (friss ügyféltelepítés a legutóbbi
+  publikált GitHub Release-ből, manifest+SHA-256+független commit-
+  kereszt-ellenőrzéssel; vagy meglévő/fejlesztői mappa), automatikus PHP-
+  telepítés hivatalos, ellenőrzött forrásból (`windows.php.net` saját
+  `releases.json`-ja, SHA-256-tal), `C:\ProgramData\FountainTrade`
+  alapértelmezett célkönyvtár explicit ACL-lel (nem-admin napi
+  használathoz), automatikus cron-titkos-token-generálás, a telepítő
+  varázsló helyes (token-nel ellátott) megnyitása, Dashboard-ra mutató
+  parancsikonok, crash-esetén-újrainduló szerver-task.
+- **`tests/Install-WindowsTests.ps1`** — Pester-tesztek a szkript
+  tisztán logikai (mellékhatás-mentes) részeire: GitHub-hoszt fehérlista,
+  cron-token-generálás/-megőrzés/-véletlenszerűség, Zip Slip-védelem.
+
+### Fixed (mind ÉLŐ végrehajtással, nem csak syntax-check-kel felfedezve)
+
+- `New-ScheduledTaskTrigger -Once (Get-Date) ...` hibás szintaxis volt
+  (a `-Once` egy switch, az időpont a `-At` paraméterbe tartozik) — emiatt
+  egyetlen cron-háttérfeladat (WooCommerce szinkron, biztonsági mentés,
+  NAV kimenő/bejövő, frissítés-ellenőrzés) SEM jött volna létre soha,
+  egy megtévesztő, a hívó helyére mutató hibaüzenettel.
+- `-RepetitionDuration ([TimeSpan]::MaxValue)` a Feladatütemező saját XML-
+  sémája szerint érvénytelen (tartományon kívüli) érték — javítva
+  `(New-TimeSpan -Days 3650)`-re.
+- A `Register-ScheduledTask`/`Set-ScheduledTask` CIM-alapú hibája
+  alapértelmezetten NEM terminating error — egy ténylegesen elutasított
+  hívás után a szkript TÉVESEN "[OK]"-t írt volna ki. Minden
+  Feladatütemező-hívás mostantól explicit `-ErrorAction Stop` + try/catch
+  alatt fut.
+- A `git/ref/tags/` GitHub API-hívás a "v" előtaggal levágott
+  verziószámmal indult (404-et adva) a tag EREDETI nevével kellett volna
+  (a "v" levágás csak a SemVer-összehasonlításhoz tartozik).
+
+### Known limitations
+
+- A valódi, elemelt (UAC-elfogadott) végrehajtás — konkrétan az
+  `-AtLogOn` trigger-típusú szerver-task tényleges létrehozása — NEM
+  volt interaktívan tesztelhető ebben a környezetben (nincs valódi
+  felhasználó a UAC-ablak elfogadásához). Izolált, nem-elevated
+  diagnosztikával VISSZAVEZETVE/BIZONYÍTVA, hogy pontosan ez (és csakis
+  ez) a lépés igényel rendszergazdai jogot — az összes többi lépés
+  (letöltés+ellenőrzés, PHP-detektálás, mappák, cron-token-generálás,
+  mind az 5 cron-feladat létrehozása, parancsikonok, idempotencia)
+  valódi végrehajtással, ismételt futtatással bizonyítottan működik.
+- A szkript egyetlen FountainTrade-példányra lett tervezve gépenként —
+  a Feladatütemező-bejegyzés-nevek nincsenek célkönyvtár szerint
+  névtér-elkülönítve.
+
 ## [1.4.0] — 2026-09-17 (Operations & Reliability — rendszerállapot és üzemeltetés)
 
 **Üzemeltetési/megbízhatósági release — szándékosan NEM új üzleti funkció.**

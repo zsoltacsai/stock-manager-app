@@ -175,6 +175,10 @@ function Show-FinalSummary {
     } else {
         Write-Host "Nincs figyelmeztetés." -ForegroundColor Green
     }
+    if ($script:TranscriptPath) {
+        Write-Host "`nRészletes napló (hibaelhárításhoz): $script:TranscriptPath" -ForegroundColor DarkGray
+        try { Stop-Transcript | Out-Null } catch { }
+    }
 }
 
 # ---------------------------------------------------------------------
@@ -185,7 +189,12 @@ function Show-FinalSummary {
 # ---------------------------------------------------------------------
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host "Rendszergazdai jogosultság szükséges — UAC-kérés megjelenítése..." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Rendszergazdai jogosultság szükséges a telepítéshez." -ForegroundColor Yellow
+    Write-Host "Mindjárt megjelenik egy Windows UAC-ablak (,,Szeretné engedélyezni...'') — fogadd el." -ForegroundColor Yellow
+    Write-Host "Elfogadás UTÁN egy ÚJ, rendszergazdai jogú PowerShell-ablak nyílik meg — AZ végzi a tényleges telepítést." -ForegroundColor Yellow
+    Write-Host "(Ez az ablak addig nyitva marad, amíg az az új ablak be nem fejeződik.)" -ForegroundColor DarkGray
+    Write-Host ""
     $scriptPath = $MyInvocation.MyCommand.Path
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$scriptPath`"")
     foreach ($key in $PSBoundParameters.Keys) {
@@ -198,14 +207,46 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
         }
     }
     try {
-        Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -Verb RunAs -Wait
+        # -PassThru + a gyerek folyamat TÉNYLEGES kilépési kódjának
+        # továbbítása — élő teszteléssel felfedezett hiba javítása: korábban
+        # ez az ág egy sima "exit"-tel zárult, ami MINDIG 0 (siker) kódot
+        # adott vissza a hívónak (a FountainTrade-Setup.bat-nak), FÜGGETLENÜL
+        # attól, hogy az emelt telepítés ténylegesen sikerült-e — ez
+        # megtévesztő "csendben bezáródik" viselkedést okozott.
+        $elevatedProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -Verb RunAs -Wait -PassThru -WindowStyle Normal
+        Write-Host "Az emelt jogú telepítő ablak befejeződött (kilépési kód: $($elevatedProcess.ExitCode))." -ForegroundColor $(if ($elevatedProcess.ExitCode -eq 0) { 'Green' } else { 'Red' })
+        exit $elevatedProcess.ExitCode
     } catch {
         Write-Host "[HIBA] Az UAC-emelés megszakadt vagy elutasításra került: $($_.Exception.Message)" -ForegroundColor Red
         Write-Host "Rendszergazdai jog nélkül a telepítés nem folytatható (Feladatütemező-bejegyzések létrehozásához szükséges)." -ForegroundColor Red
         if (-not $env:FOUNTAINTRADE_NONINTERACTIVE) { [void][System.Console]::ReadKey($true) }
+        exit 1
     }
-    exit
 }
+
+# ---------------------------------------------------------------------
+# Transzkript-naplózás — a telepítő teljes kimenete egy fájlba is íródik,
+# a $env:TEMP-be (mindig elérhető hely, még mielőtt az InstallPath
+# eldőlne) — így egy zavaros/gyorsan bezáródó ablak esetén is UTÓLAG
+# visszakereshető, pontosan mi történt. Ha a Start-Transcript valamiért
+# nem indul (pl. már fut egy másik transzkript ugyanabban a folyamatban),
+# ez NEM állíthatja meg a tényleges telepítést.
+$script:TranscriptPath = Join-Path $env:TEMP "FountainTrade-install-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+try {
+    Start-Transcript -Path $script:TranscriptPath -Force | Out-Null
+    Write-Host "Napló: $script:TranscriptPath" -ForegroundColor DarkGray
+} catch {
+    $script:TranscriptPath = $null
+}
+
+# A tisztán logikai, mellékhatás-mentes segédfüggvények (GitHub-hoszt
+# fehérlista, Zip Slip-védelem, rejtett-ablakos VBS-generálás,
+# cron-token-generálás, Feladatütemező-visszaolvasás-ellenőrzés) KÜLÖN
+# fájlban élnek — lásd install-windows-lib.ps1 tetején a docblokkot a
+# teljes indoklásért (élő tapasztalat: egy korábbi, AST-kinyerésen +
+# Invoke-Expression-ön alapuló teszt-módszer víruskereső-karantént
+# okozott — egy sima dot-source- os fájl-betöltés ezt elkerüli).
+. (Join-Path $PSScriptRoot 'install-windows-lib.ps1')
 
 # ---------------------------------------------------------------------
 # 1. Telepítési mód felismerése — friss letöltés vagy meglévő mappa
@@ -247,11 +288,6 @@ $RepoOwner = 'zsoltacsai'
 $RepoName  = 'stock-manager-app'
 $GitHubApiBase = 'https://api.github.com'
 $AllowedAssetHosts = @('github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com', 'api.github.com')
-
-function Get-AllowedHost {
-    param([string]$Url)
-    try { return ([Uri]$Url).Host } catch { return $null }
-}
 
 function Install-FountainTradeFromGitHub {
     param([string]$TargetDir, [string]$Channel)
@@ -354,7 +390,11 @@ function Install-FountainTradeFromGitHub {
     Write-Ok "SHA-256 checksum egyezik — az artifact sértetlen."
 
     New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
-    Expand-SafeZip -ZipPath $zipPath -DestDir $TargetDir
+    try {
+        Expand-SafeZip -ZipPath $zipPath -DestDir $TargetDir
+    } catch {
+        Exit-WithFailureSummary "Az archívum gyanús bejegyzést tartalmaz: $($_.Exception.Message)" "Ne folytasd — töröld a letöltött fájlt, próbáld újra."
+    }
 
     $requiredExtracted = @('webroot\index.php', 'src\Database.php', 'schema.sql', 'schema.mysql.sql')
     foreach ($rel in $requiredExtracted) {
@@ -365,40 +405,6 @@ function Install-FountainTradeFromGitHub {
     Write-Ok "FountainTrade $($manifest.version) kicsomagolva ide: $TargetDir"
 
     Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-# Zip Slip elleni védelem PowerShell-ben — a src/UpdateVerifier.php
-# assertSafeZipEntryName()-jének megfelelője: path traversal ("..",),
-# abszolút útvonal, Windows-meghajtóbetűjel egyik bejegyzésnél sem
-# engedélyezett. Minden bejegyzést ELLENŐRZÜNK, mielőtt BÁRMIT kiírnánk.
-function Expand-SafeZip {
-    param([string]$ZipPath, [string]$DestDir)
-
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
-    try {
-        foreach ($entry in $zip.Entries) {
-            $name = $entry.FullName
-            if ([string]::IsNullOrEmpty($name)) { continue }
-            $normalized = $name -replace '\\', '/'
-            if ($normalized.StartsWith('/') -or $normalized -match '^[A-Za-z]:' -or ($normalized -split '/') -contains '..') {
-                $zip.Dispose()
-                Exit-WithFailureSummary "Az archívum gyanús bejegyzést tartalmaz (`"$name`") — a kicsomagolás megszakítva." "Ne folytasd — töröld a letöltött fájlt, próbáld újra."
-            }
-        }
-        foreach ($entry in $zip.Entries) {
-            if ([string]::IsNullOrEmpty($entry.Name) -and $entry.FullName.EndsWith('/')) {
-                New-Item -ItemType Directory -Path (Join-Path $DestDir $entry.FullName) -Force | Out-Null
-                continue
-            }
-            $targetPath = Join-Path $DestDir ($entry.FullName -replace '/', '\')
-            $targetParent = Split-Path -Parent $targetPath
-            if (-not (Test-Path $targetParent)) { New-Item -ItemType Directory -Path $targetParent -Force | Out-Null }
-            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $targetPath, $true)
-        }
-    } finally {
-        $zip.Dispose()
-    }
 }
 
 if ($freshDownloadNeeded) {
@@ -572,12 +578,14 @@ if ($loadedModules -notcontains 'Zend OPcache') {
 Write-Step "Mappák ellenőrzése ($InstallPath)"
 
 $webrootPath = Join-Path $InstallPath 'webroot'
+$toolsDir = Join-Path $InstallPath 'tools'
 $writableDirs = @(
     (Join-Path $InstallPath 'data'),
     (Join-Path $InstallPath 'data\backups'),
     (Join-Path $InstallPath 'data\imports'),
     (Join-Path $InstallPath 'invoices'),
-    (Join-Path $webrootPath 'assets')
+    (Join-Path $webrootPath 'assets'),
+    $toolsDir
 )
 foreach ($dir in $writableDirs) {
     if (-not (Test-Path $dir)) {
@@ -602,49 +610,6 @@ foreach ($dir in $writableDirs) {
 #    Enélkül egy vadonatúj gépen a háttérfeladatok csendben sose futnának.)
 # -------------------------------------------------------------------
 $settingsPath = Join-Path $InstallPath 'data\settings.json'
-
-function Get-OrCreateCronToken {
-    param([string]$SettingsPath, [string]$SuppliedToken)
-
-    if ($SuppliedToken) { return @{ Token = $SuppliedToken; Generated = $false } }
-
-    $existing = $null
-    if (Test-Path $SettingsPath) {
-        try {
-            $json = Get-Content $SettingsPath -Raw | ConvertFrom-Json
-            if ($json.PSObject.Properties.Name -contains 'cron_secret' -and $json.cron_secret) {
-                $existing = $json.cron_secret
-            }
-        } catch { }
-    }
-    if ($existing) { return @{ Token = $existing; Generated = $false } }
-
-    # Kriptográfiailag véletlen, 32 bájtos (64 hex karakteres) token —
-    # ugyanolyan erősségű, mint amit egy felhasználó a Beállítások oldalon
-    # kézzel generálna. A szkript SAJÁT FORRÁSÁBA soha nem kerül be —
-    # csak futásidőben, a CÉLGÉPEN generálódik.
-    $bytes = New-Object byte[] 32
-    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-    $generated = ($bytes | ForEach-Object { $_.ToString('x2') }) -join ''
-
-    $obj = if (Test-Path $SettingsPath) {
-        try { Get-Content $SettingsPath -Raw | ConvertFrom-Json } catch { [PSCustomObject]@{} }
-    } else {
-        [PSCustomObject]@{}
-    }
-    if ($obj.PSObject.Properties.Name -contains 'cron_secret') {
-        $obj.cron_secret = $generated
-    } else {
-        $obj | Add-Member -NotePropertyName 'cron_secret' -NotePropertyValue $generated -Force
-    }
-    New-Item -ItemType Directory -Path (Split-Path -Parent $SettingsPath) -Force | Out-Null
-    $json = $obj | ConvertTo-Json -Depth 20
-    # UTF-8, BOM NÉLKÜL — a PHP json_decode() nem tolerálja a BOM-ot, a
-    # Settings::save() saját írása is BOM nélküli UTF-8-at termel.
-    [System.IO.File]::WriteAllText($SettingsPath, $json, (New-Object System.Text.UTF8Encoding($false)))
-
-    return @{ Token = $generated; Generated = $true }
-}
 
 if (-not $SkipScheduledTasks) {
     Write-Step "Cron-token ellenőrzése/generálása"
@@ -685,7 +650,19 @@ if (-not $SkipScheduledTasks) {
     $serverTaskName = 'FountainTrade - Szerver'
     # Csak localhost/loopback — SOSE minden hálózati interfészre (lásd
     # 11. és 22. pont: "ne nyisson szükségtelen hálózati portot").
-    $serverAction = New-ScheduledTaskAction -Execute $phpExe -Argument "-S localhost:$Port -t `"$webrootPath`"" -WorkingDirectory $InstallPath
+    #
+    # REJTETT ABLAK (élő teszteléssel felfedezett, release-blocking UX-hiba
+    # javítása): a php.exe konzol-alkalmazás — közvetlenül Feladatütemező-
+    # akcióként indítva egy TARTÓSAN NYITVA MARADÓ, látható fekete
+    # konzolablakot eredményezne a bejelentkezett felhasználó képernyőjén,
+    # amíg a szerver fut (azaz gyakorlatilag folyamatosan). A
+    # wscript.exe-n keresztüli rejtett indítás (lásd fent
+    # New-HiddenLauncherVbs) ezt teljesen megszünteti — a php.exe
+    # folyamat maga változatlanul, teljes értékűen fut a háttérben, csak
+    # az ablaka nem jelenik meg.
+    $serverVbsPath = Join-Path $toolsDir 'run-server-hidden.vbs'
+    New-HiddenLauncherVbs -VbsPath $serverVbsPath -ExePath $phpExe -Arguments "-S localhost:$Port -t `"$webrootPath`""
+    $serverAction = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //NoLogo `"$serverVbsPath`"" -WorkingDirectory $InstallPath
     # Élő teszteléssel elkülönítve igazolva (izolált Register-ScheduledTask
     # próbákkal, 2026-09-21): pontosan az "-AtLogOn" trigger-TÍPUS igényel
     # valódi rendszergazdai jogot a regisztráláshoz — egy "-Once" ismétlődő
@@ -706,17 +683,24 @@ if (-not $SkipScheduledTasks) {
     # "Access is denied" jogosultsági hiba miatt meghiúsult) hívás után is.
     # Ezért itt MINDEN Feladatütemező-hívás explicit -ErrorAction Stop-pal
     # + try/catch-csel fut, hogy egy valódi hiba SOHA ne tűnjön "[OK]"-nak.
+    $serverVbsArgs = "//B //NoLogo `"$serverVbsPath`""
     $serverTaskCreated = $false
     try {
         $existingServerTask = Get-ScheduledTask -TaskName $serverTaskName -ErrorAction SilentlyContinue
         if ($existingServerTask) {
             Set-ScheduledTask -TaskName $serverTaskName -Action $serverAction -Trigger $serverTrigger -Settings $serverSettings -ErrorAction Stop | Out-Null
-            Write-Ok "Feladatütemező-bejegyzés frissítve: '$serverTaskName'"
         } else {
             Register-ScheduledTask -TaskName $serverTaskName -Action $serverAction -Trigger $serverTrigger -Settings $serverSettings -Description 'FountainTrade beépített PHP szerver indítása bejelentkezéskor (csak localhost).' -ErrorAction Stop | Out-Null
-            Write-Ok "Feladatütemező-bejegyzés létrehozva: '$serverTaskName'"
         }
-        $serverTaskCreated = $true
+        # Visszaolvasás + tényleges ellenőrzés (lásd a kör 8. pontja) — a
+        # hívás sikeres visszatérése MAGÁBAN nem elég egy "[OK]"-hoz.
+        $verify = Test-ScheduledTaskRegistration -TaskName $serverTaskName -ExpectedExecute 'wscript.exe' -ExpectedArguments $serverVbsArgs -ExpectedWorkingDirectory $InstallPath
+        if ($verify.Ok) {
+            $serverTaskCreated = $true
+            Write-Ok "Feladatütemező-bejegyzés létrehozva/frissítve és visszaolvasással ellenőrizve: '$serverTaskName' (rejtett ablakkal, wscript.exe-n keresztül)"
+        } else {
+            Write-Err2 "A(z) '$serverTaskName' bejegyzés a regisztráció UTÁN, visszaolvasáskor NEM felel meg az elvártnak: $($verify.Reason)" "Ellenőrizd kézzel a Feladatütemezőben ('taskschd.msc'), vagy futtasd újra a telepítőt."
+        }
     } catch {
         Write-Err2 "A(z) '$serverTaskName' Feladatütemező-bejegyzés létrehozása/frissítése sikertelen: $($_.Exception.Message)" "Ellenőrizd, hogy rendszergazdai jogban fut-e a telepítő, és hogy a Feladatütemező szolgáltatás (Task Scheduler) elérhető-e. Kézi indítás: `"$phpExe`" -S localhost:$Port -t `"$webrootPath`""
     }
@@ -754,7 +738,19 @@ if (-not $SkipScheduledTasks -and $CronToken) {
         foreach ($job in $cronJobs) {
             $url = "http://localhost:$Port/api/$($job.Endpoint)"
             $curlArgs = "-s -H `"X-Cron-Token: $CronToken`" `"$url`""
-            $action = New-ScheduledTaskAction -Execute $curlPath -Argument $curlArgs
+            # Rejtett ablak (ugyanaz az indoklás, mint a szerver-tasknál) —
+            # a curl.exe konzol-alkalmazás, közvetlen Feladatütemező-
+            # akcióként percenként/óránként felvillanó konzolablakot adna.
+            # MELLÉKESEN ez a cron-titkos tokent is KIVESZI a Feladatütemező
+            # saját, könnyen böngészhető Action/Arguments mezőjéből — élő
+            # teszteléssel felfedezett, valódi biztonsági megfigyelés (lásd
+            # a New-HiddenLauncherVbs docblokkja) —, a token ehelyett a
+            # generált .vbs fájl TARTALMÁBAN van, ugyanolyan bizalmi
+            # szinten, mint a data\settings.json.
+            $cronVbsPath = Join-Path $toolsDir ("run-cron-" + ($job.Endpoint -replace '\.php$', '') + ".vbs")
+            New-HiddenLauncherVbs -VbsPath $cronVbsPath -ExePath $curlPath -Arguments $curlArgs
+            $cronVbsArgs = "//B //NoLogo `"$cronVbsPath`""
+            $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument $cronVbsArgs
             $trigger = & $job.Trigger
             $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
 
@@ -762,10 +758,15 @@ if (-not $SkipScheduledTasks -and $CronToken) {
                 $existing = Get-ScheduledTask -TaskName $job.Name -ErrorAction SilentlyContinue
                 if ($existing) {
                     Set-ScheduledTask -TaskName $job.Name -Action $action -Trigger $trigger -Settings $settings -ErrorAction Stop | Out-Null
-                    Write-Ok "Frissítve: '$($job.Name)' -> $($job.Endpoint)"
                 } else {
                     Register-ScheduledTask -TaskName $job.Name -Action $action -Trigger $trigger -Settings $settings -Description "FountainTrade automatikus feladat: $($job.Endpoint)" -ErrorAction Stop | Out-Null
-                    Write-Ok "Létrehozva: '$($job.Name)' -> $($job.Endpoint)"
+                }
+                # Visszaolvasás + tényleges ellenőrzés (lásd a kör 8-9. pontja).
+                $verify = Test-ScheduledTaskRegistration -TaskName $job.Name -ExpectedExecute 'wscript.exe' -ExpectedArguments $cronVbsArgs
+                if ($verify.Ok) {
+                    Write-Ok "'$($job.Name)' -> $($job.Endpoint) — létrehozva/frissítve, visszaolvasással ellenőrizve (rejtett ablakkal)"
+                } else {
+                    Write-Err2 "A(z) '$($job.Name)' bejegyzés a regisztráció UTÁN, visszaolvasáskor NEM felel meg az elvártnak: $($verify.Reason)" "Ellenőrizd kézzel a Feladatütemezőben ('taskschd.msc'), vagy futtasd újra a telepítőt."
                 }
             } catch {
                 Write-Err2 "A(z) '$($job.Name)' Feladatütemező-bejegyzés létrehozása/frissítése sikertelen: $($_.Exception.Message)" "Hozd létre kézzel a Feladatütemezőben, vagy futtasd újra a telepítőt rendszergazdai jogban."
@@ -789,35 +790,52 @@ if (-not $SkipShortcuts) {
         "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
     ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 
+    $expectedTarget = if ($edgePath) { $edgePath } else { $dashboardUrl }
+    $expectedArguments = if ($edgePath) { "--app=$dashboardUrl" } else { '' }
+
     function New-FountainTradeShortcut {
-        param([string]$LinkPath)
-        if (Test-Path $LinkPath) {
-            Write-Ok "Parancsikon már létezik — nem módosítva: $LinkPath"
-            return
-        }
+        param([string]$LinkPath, [string]$ExpectedTarget, [string]$ExpectedArguments)
+
         $shell = New-Object -ComObject WScript.Shell
-        $shortcut = $shell.CreateShortcut($LinkPath)
-        if ($edgePath) {
-            $shortcut.TargetPath = $edgePath
-            $shortcut.Arguments = "--app=$dashboardUrl"
-        } else {
-            # Nincs Edge — az alapértelmezett böngésző nyissa meg (a .url
-            # parancsikon-formátum ezt automatikusan a rendszer
-            # alapértelmezett protokoll-kezelőjére bízza).
-            $shortcut.TargetPath = $dashboardUrl
+
+        if (Test-Path $LinkPath) {
+            # Élő teszteléssel felfedezett hiányosság javítása: korábban egy
+            # MÁR LÉTEZŐ parancsikon sose lett újraellenőrizve/frissítve —
+            # egy port-váltással újrafuttatott telepítő emiatt egy ELAVULT
+            # (régi portra mutató) parancsikont hagyott volna hátra. Most
+            # visszaolvassuk és ÖSSZEHASONLÍTJUK a ténylegesen elvárt
+            # célponttal — csak akkor írunk, ha valóban eltér.
+            $existing = $shell.CreateShortcut($LinkPath)
+            if ($existing.TargetPath -eq $ExpectedTarget -and $existing.Arguments -eq $ExpectedArguments) {
+                Write-Ok "Parancsikon már létezik és helyes — nem módosítva: $LinkPath"
+                return
+            }
+            Write-Warn2 "A meglévő parancsikon elavult célpontra mutatott — frissítve: $LinkPath"
         }
+
+        $shortcut = $shell.CreateShortcut($LinkPath)
+        $shortcut.TargetPath = $ExpectedTarget
+        $shortcut.Arguments = $ExpectedArguments
         $shortcut.IconLocation = "$webrootPath\favicon.svg"
         $shortcut.Save()
-        Write-Ok "Parancsikon létrehozva: $LinkPath"
+
+        # Visszaolvasás + tényleges ellenőrzés (lásd a kör 15. pontja: "ne
+        # csak fájllétezést" — Target/Arguments/WorkingDirectory).
+        $verify = $shell.CreateShortcut($LinkPath)
+        if ($verify.TargetPath -eq $ExpectedTarget -and $verify.Arguments -eq $ExpectedArguments) {
+            Write-Ok "Parancsikon létrehozva/frissítve és visszaolvasással ellenőrizve: $LinkPath"
+        } else {
+            Write-Err2 "A parancsikon mentés után, visszaolvasáskor NEM a várt célpontra mutat: $LinkPath" "Hozd létre kézzel: cél = $ExpectedTarget"
+        }
     }
 
     $desktopPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'FountainTrade.lnk'
-    New-FountainTradeShortcut -LinkPath $desktopPath
+    New-FountainTradeShortcut -LinkPath $desktopPath -ExpectedTarget $expectedTarget -ExpectedArguments $expectedArguments
 
     $startMenuDir = [Environment]::GetFolderPath('StartMenu') + '\Programs'
     if (Test-Path $startMenuDir) {
         $startMenuPath = Join-Path $startMenuDir 'FountainTrade.lnk'
-        New-FountainTradeShortcut -LinkPath $startMenuPath
+        New-FountainTradeShortcut -LinkPath $startMenuPath -ExpectedTarget $expectedTarget -ExpectedArguments $expectedArguments
     }
 }
 

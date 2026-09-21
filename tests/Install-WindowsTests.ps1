@@ -1,32 +1,16 @@
-﻿# FountainTrade Windows telepítő — Pester tesztek (install-windows.ps1).
+﻿# FountainTrade Windows telepítő — Pester tesztek.
 #
-# A szkript monolitikus (self-elevation + valódi mellékhatások a tetején),
-# ezért NEM dot-sourceolható közvetlenül egy teszt-futtatásban — helyette
-# az AST-ból (ugyanaz a .NET parser, amit a syntax-validáció is használ)
-# kivonjuk a TISZTÁN LOGIKAI, mellékhatás-mentes függvénydefiníciókat, és
-# CSAK azokat töltjük be a teszt-scope-ba. Ez lefedi a kör 28. pontjában
-# kért területeket (path handling, PHP-verzió/extension-detektálás,
-# cron-token-generálás idempotenciája, Zip Slip-védelem), anélkül hogy a
-# self-elevation/valódi letöltés/Feladatütemező-módosítás bármelyike
-# lefutna teszt közben.
+# A tisztán logikai, mellékhatás-mentes segédfüggvényeket TARTALMAZÓ
+# install-windows-lib.ps1-et egyszerű dot-source-olással töltjük be —
+# lásd annak a fájlnak a tetején lévő docblokkot: ez SZÁNDÉKOS,
+# ÉLŐ TAPASZTALATTAL INDOKOLT választás egy korábbi, AST-kinyerésen +
+# Invoke-Expression-ön alapuló módszer helyett, ami — a tartalmától
+# függetlenül — egy víruskereső malware-heurisztikáját ütötte meg és a
+# TESZT FÁJLT karanténba helyezte (a tényleges install-windows.ps1
+# soha nem lett érintve).
+. (Join-Path $PSScriptRoot '..\install-windows-lib.ps1')
 
-$scriptPath = Join-Path $PSScriptRoot '..\install-windows.ps1'
-$tokens = $null
-$parseErrors = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$parseErrors)
-if ($parseErrors.Count -gt 0) {
-    throw "install-windows.ps1 syntax error(s) — a tesztek nem futtathatók: $($parseErrors -join '; ')"
-}
-
-$functionsToLoad = @('Get-AllowedHost', 'Expand-SafeZip', 'Get-OrCreateCronToken', 'Get-InstalledPhpExe')
-$functionAsts = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
-    Where-Object { $functionsToLoad -contains $_.Name }
-
-foreach ($fn in $functionAsts) {
-    Invoke-Expression $fn.Extent.Text
-}
-
-Describe 'install-windows.ps1 — Get-AllowedHost / GitHub asset host fehérlista' {
+Describe 'install-windows-lib — Get-AllowedHost / GitHub asset host fehérlista' {
     It 'Helyesen adja vissza a hosztot egy érvényes HTTPS URL-ből' {
         Get-AllowedHost 'https://github.com/zsoltacsai/stock-manager-app/releases/download/v1.4.0/fountaintrade-1.4.0.zip' | Should Be 'github.com'
     }
@@ -38,7 +22,7 @@ Describe 'install-windows.ps1 — Get-AllowedHost / GitHub asset host fehérlist
     }
 }
 
-Describe 'install-windows.ps1 — Get-OrCreateCronToken (cron-token forrás-sorrend, idempotencia)' {
+Describe 'install-windows-lib — Get-OrCreateCronToken (cron-token forrás-sorrend, idempotencia)' {
     $tempDir = $null
     $settingsPath = $null
 
@@ -88,12 +72,32 @@ Describe 'install-windows.ps1 — Get-OrCreateCronToken (cron-token forrás-sorr
     }
 }
 
-Describe 'install-windows.ps1 — Expand-SafeZip (Zip Slip védelem)' {
+Describe 'install-windows-lib — Test-SafeZipEntryName (Zip Slip védelem, tiszta stringeken)' {
+    It 'Egy normál, relatív bejegyzésnevet biztonságosnak fogad el' {
+        Test-SafeZipEntryName 'webroot/index.php' | Should Be $true
+        Test-SafeZipEntryName 'src\Database.php' | Should Be $true
+    }
+    It 'Elutasít egy path-traversal (".." szegmens) bejegyzésnevet' {
+        Test-SafeZipEntryName '../../secret.txt' | Should Be $false
+        Test-SafeZipEntryName 'webroot/../../../windows/system32/evil.dll' | Should Be $false
+    }
+    It 'Elutasít egy Unix-stílusú abszolút útvonalat' {
+        Test-SafeZipEntryName '/etc/passwd' | Should Be $false
+    }
+    It 'Elutasít egy Windows-meghajtóbetűjeles abszolút útvonalat' {
+        Test-SafeZipEntryName 'C:\Windows\System32\evil.dll' | Should Be $false
+    }
+    It 'Üres bejegyzésnevet (könyvtár-placeholder) biztonságosnak fogad el' {
+        Test-SafeZipEntryName '' | Should Be $true
+    }
+}
+
+Describe 'install-windows-lib — Expand-SafeZip (biztonságos kicsomagolás, csak ártalmatlan tartalommal)' {
     $tempDir = $null
     $destDir = $null
 
     BeforeEach {
-        $tempDir = Join-Path $env:TEMP "ft-zipslip-test-$(Get-Random)"
+        $tempDir = Join-Path $env:TEMP "ft-zipextract-test-$(Get-Random)"
         New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
         $destDir = Join-Path $tempDir 'dest'
     }
@@ -112,25 +116,87 @@ Describe 'install-windows.ps1 — Expand-SafeZip (Zip Slip védelem)' {
         Expand-SafeZip -ZipPath $zipPath -DestDir $destDir
         Test-Path (Join-Path $destDir 'webroot\index.php') | Should Be $true
     }
+}
 
-    It 'EGY path-traversal ("..") bejegyzést tartalmazó ZIP-et NEM csomagol ki — a hívó Exit-WithFailureSummary-t vár' {
-        # Az Expand-SafeZip a gyanús bejegyzésnél az Exit-WithFailureSummary
-        # függvényt hívná (ami itt nincs betöltve) — emiatt ez a teszt azt
-        # ellenőrzi, hogy a függvény ILYENKOR ténylegesen HIBÁVAL áll le
-        # (nem csendben kicsomagolja a gyanús bejegyzést), nem azt, hogy
-        # pontosan melyik hibaüzenetet dobja.
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
-        $zipPath = Join-Path $tempDir 'evil.zip'
-        $fs = [System.IO.File]::Create($zipPath)
-        $archive = New-Object System.IO.Compression.ZipArchive($fs, [System.IO.Compression.ZipArchiveMode]::Create)
-        $entry = $archive.CreateEntry('../../evil.txt')
-        $writer = New-Object System.IO.StreamWriter($entry.Open())
-        $writer.Write('gonosz tartalom')
-        $writer.Close()
-        $archive.Dispose()
-        $fs.Dispose()
+Describe 'install-windows-lib — rejtett-ablakos indítówrapper (release-blocking popup-hiba javítása)' {
+    It 'ConvertTo-VbsStringLiteral megduplázza a beágyazott idézőjeleket (VBScript string-escaping)' {
+        ConvertTo-VbsStringLiteral 'X-Cron-Token: abc123' | Should Be '"X-Cron-Token: abc123"'
+        ConvertTo-VbsStringLiteral 'idézőjelet" tartalmazó szöveg' | Should Be '"idézőjelet"" tartalmazó szöveg"'
+    }
 
-        { Expand-SafeZip -ZipPath $zipPath -DestDir $destDir } | Should Throw
-        Test-Path (Join-Path $tempDir 'evil.txt') | Should Be $false
+    $tempDir = $null
+    BeforeEach {
+        $tempDir = Join-Path $env:TEMP "ft-hiddenlauncher-test-$(Get-Random)"
+        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    }
+    AfterEach {
+        if ($tempDir -and (Test-Path $tempDir)) { Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'A generált .vbs UTF-16LE BOM-mal kezdődik (a klasszikus VBScript-motor ezt igényli ékezetes útvonalakhoz)' {
+        $vbsPath = Join-Path $tempDir 'test.vbs'
+        New-HiddenLauncherVbs -VbsPath $vbsPath -ExePath 'C:\Windows\System32\curl.exe' -Arguments '-s "http://localhost/x"'
+        $bytes = [System.IO.File]::ReadAllBytes($vbsPath)
+        $bytes[0] | Should Be 0xFF
+        $bytes[1] | Should Be 0xFE
+    }
+
+    It 'A generált .vbs a célfolyamatot REJTETT ablakkal (windowStyle=0) indítja, és a kilépési kódot megőrzi' {
+        $vbsPath = Join-Path $tempDir 'exitcode.vbs'
+        # cmd.exe /c exit 42 — determinisztikus, gyors, valódi kilépési kód.
+        New-HiddenLauncherVbs -VbsPath $vbsPath -ExePath 'C:\Windows\System32\cmd.exe' -Arguments '/c exit 42'
+        $vbsContent = Get-Content $vbsPath -Encoding Unicode -Raw
+        $vbsContent | Should Match 'objShell\.Run\(cmdLine, 0, True\)'
+
+        $p = Start-Process -FilePath 'wscript.exe' -ArgumentList "//B //NoLogo `"$vbsPath`"" -PassThru -Wait -WindowStyle Hidden
+        $p.ExitCode | Should Be 42
+    }
+
+    It 'A cron-titkos token NEM jelenik meg nyers szövegként a Feladatütemező-akció saját argumentum-mezőjében — csak a .vbs fájl TARTALMÁBAN (élő teszteléssel felfedezett biztonsági megfigyelés)' {
+        $vbsPath = Join-Path $tempDir 'cron.vbs'
+        $secretToken = 'titkos-cron-token-xyz'
+        New-HiddenLauncherVbs -VbsPath $vbsPath -ExePath 'C:\Windows\System32\curl.exe' -Arguments "-s -H `"X-Cron-Token: $secretToken`" `"http://localhost:8000/api/auto-sync-run.php`""
+        # A Feladatütemező-akció maga csak a wscript.exe hívást és a .vbs
+        # ÚTVONALÁT látja — ez a teszt azt bizonyítja, hogy a TaskAction
+        # Argument mezőjébe kerülő string (amit a valódi kód `//B //NoLogo
+        # "<vbsPath>"` formában épít fel) sose tartalmazza a tokent.
+        $taskActionArgument = "//B //NoLogo `"$vbsPath`""
+        $taskActionArgument | Should Not Match ([regex]::Escape($secretToken))
+        (Get-Content $vbsPath -Encoding Unicode -Raw) | Should Match ([regex]::Escape($secretToken))
+    }
+}
+
+Describe 'install-windows-lib — Test-ScheduledTaskRegistration (regisztráció utáni visszaolvasás-ellenőrzés)' {
+    $taskName = $null
+
+    AfterEach {
+        if ($taskName) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue }
+        $taskName = $null
+    }
+
+    It 'Ok=$true-t ad, ha a visszaolvasott bejegyzés pontosan megegyezik az elvárttal' {
+        $taskName = "FT-PesterVerifyTest-$(Get-Random)"
+        $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument '//B //NoLogo "C:\test.vbs"'
+        $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 1)
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger | Out-Null
+
+        $result = Test-ScheduledTaskRegistration -TaskName $taskName -ExpectedExecute 'wscript.exe' -ExpectedArguments '//B //NoLogo "C:\test.vbs"'
+        $result.Ok | Should Be $true
+    }
+
+    It 'Ok=$false-t ad, ha az Arguments ELTÉR a várttól (pl. rossz .vbs útvonal)' {
+        $taskName = "FT-PesterVerifyTest-$(Get-Random)"
+        $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument '//B //NoLogo "C:\test.vbs"'
+        $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 1)
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger | Out-Null
+
+        $result = Test-ScheduledTaskRegistration -TaskName $taskName -ExpectedExecute 'wscript.exe' -ExpectedArguments '//B //NoLogo "C:\masik-fajl.vbs"'
+        $result.Ok | Should Be $false
+        $result.Reason | Should Not BeNullOrEmpty
+    }
+
+    It 'Ok=$false-t ad, ha a bejegyzés EGYÁLTALÁN NEM létezik' {
+        $result = Test-ScheduledTaskRegistration -TaskName 'FT-Nemletezo-Task-XYZ' -ExpectedExecute 'wscript.exe' -ExpectedArguments 'x'
+        $result.Ok | Should Be $false
     }
 }

@@ -30,18 +30,16 @@ if errorlevel 1 (
     exit /b 1
 )
 
-rem --- 3) Rendszergazdai jog ellenorzese, szukseg eseten UAC-emeles ---
-net session >nul 2>&1
-if not errorlevel 1 goto :run
-
-echo.
-echo Rendszergazdai jogosultsag szukseges a telepiteshez.
-echo Elfogadd a most megjeleno UAC-ablakot a folytatashoz...
-echo.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -WorkingDirectory '%~dp0' -Verb RunAs"
-exit /b 0
-
-:run
+rem --- 3) Rendszergazdai jog / UAC-emeles ---
+rem Az UAC-emelest MAGA az install-windows.ps1 vegzi el (lasd a szkript
+rem sajat "0. Self-elevation" szakasza) - PowerShell tomb-alapu
+rem -ArgumentList hasznalataval, ami megbizhatobb, mint egy kezzel
+rem osszerakott, tobb reteg idezojelet tartalmazo string (bat -> powershell
+rem -Command -> ujabb Start-Process -Verb RunAs). EZ a fajl emiatt
+rem SZANDEKOSAN nem probal maga elolegesen emelni - csak egyszeruen
+rem elinditja a szkriptet, ami majd sajat magat UAC-on keresztul
+rem ujraindítja, ha szukseges, es MEGVARJA, amig az az ELEVALT peldany
+rem befejezodik, mielott ez az ablak bezarna (lasd lent).
 cd /d "%~dp0"
 
 if not exist "%~dp0install-windows.ps1" (
@@ -61,12 +59,14 @@ rem a Windows globalis Execution Policy-je valtozatlan marad.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-windows.ps1"
 set PS_EXIT=%errorlevel%
 
-rem A telepito sajat maga mar varakozik billentyulenyomasra hiba eseten
-rem (lasd install-windows.ps1 Exit-WithFailureSummary fuggvenye) - itt
-rem nem duplikaljuk a varakozast, csak jelezzuk a vegeredmenyt.
 if not %PS_EXIT%==0 (
     echo.
     echo [HIBA] A telepito hibaval lepett ki ^(kilepesi kod: %PS_EXIT%^).
+) else (
+    echo.
+    echo Kesz. Ha a bongeszo nem nyilt meg magatol, nyisd meg kezzel: http://localhost:8000/
 )
 
+echo.
+pause
 exit /b %PS_EXIT%

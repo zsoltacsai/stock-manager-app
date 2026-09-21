@@ -43,3 +43,10 @@ Thumbs.db
 # lásd README "Automatizált tesztek" szakasz a letöltéshez.
 /tools/phpunit.phar
 /.phpunit.cache
+
+# install-windows.ps1 által telepítéskor GENERÁLT rejtett-ablakos
+# indítówrapper-szkriptek — TARTALMAZZÁK a cron-titkos tokent nyers
+# szövegként (lásd New-HiddenLauncherVbs docblokkja), gépspecifikusak,
+# minden futtatáskor újragenerálódnak — sose kerülhetnek verziókezelésbe.
+/tools/run-server-hidden.vbs
+/tools/run-cron-*.vbs

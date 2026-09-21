@@ -4,20 +4,22 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
-## [Unreleased] — Windows telepítő professzionalizálása
+## [1.4.1] — 2026-09-21 (Windows telepítő professzionalizálása)
 
-**Kizárólag telepítési élmény/üzemeltethetőség — nincs alkalmazás-
-oldali (üzleti logikai) változás, ezért nincs verziószám-emelés.**
-A telepítő önmagában frissül/terjeszthető újra, az alkalmazás verziójától
-függetlenül (a telepítő a MEGLÉVŐ GitHub Release-ből tölti le a
-FountainTrade-et, nem fordítva).
+**Kizárólag telepítési élmény/üzemeltethetőség/hibajavítás — nincs
+alkalmazás-oldali üzleti funkció.** A teljes láncot (UAC → PHP → app →
+Feladatütemező → szerver → háttérfeladatok → böngésző → Dashboard →
+Windows-restart) valódi, éles felhasználói UAC-elfogadással, 3 egymást
+követő telepítő-futással és egy tényleges géprestarttal bizonyítottuk —
+nem csak szintaxis-ellenőrzéssel.
 
 ### Added
 
 - **`FountainTrade-Setup.bat`** — minimális indítówrapper: OS/PowerShell-
-  ellenőrzés, automatikus UAC-emelés (a globális Execution Policy tartós
-  módosítása nélkül), majd `install-windows.ps1` indítása. Nem tartalmaz
-  titkot/tokent/API-kulcsot.
+  ellenőrzés, majd `install-windows.ps1` indítása (az UAC-emelést maga a
+  PS1 végzi, tömb-alapú `-ArgumentList`-tel — lásd lent), a globális
+  Execution Policy tartós módosítása nélkül. Nem tartalmaz titkot/
+  tokent/API-kulcsot.
 - **`install-windows.ps1` — teljes átdolgozás**: self-elevation, két
   automatikusan felismert üzemmód (friss ügyféltelepítés a legutóbbi
   publikált GitHub Release-ből, manifest+SHA-256+független commit-
@@ -27,41 +29,89 @@ FountainTrade-et, nem fordítva).
   alapértelmezett célkönyvtár explicit ACL-lel (nem-admin napi
   használathoz), automatikus cron-titkos-token-generálás, a telepítő
   varázsló helyes (token-nel ellátott) megnyitása, Dashboard-ra mutató
-  parancsikonok, crash-esetén-újrainduló szerver-task.
-- **`tests/Install-WindowsTests.ps1`** — Pester-tesztek a szkript
-  tisztán logikai (mellékhatás-mentes) részeire: GitHub-hoszt fehérlista,
-  cron-token-generálás/-megőrzés/-véletlenszerűség, Zip Slip-védelem.
+  parancsikonok, crash-esetén-újrainduló szerver-task, teljes
+  transzkript-naplózás (`%TEMP%\FountainTrade-install-*.log`).
+- **Rejtett-ablakos VBScript-indítówrapper** (`wscript.exe` +
+  `WScript.Shell.Run(cmd, 0, True)`) mind a szerver-, mind a cron-
+  taskokhoz — release-blocking UX-hiba megszüntetve (korábban a
+  curl.exe/php.exe közvetlen Feladatütemező-akcióként felvillanó/
+  tartósan nyitva maradó konzolablakokat okozott). Mellékesen a
+  cron-titkos token is eltűnt a Feladatütemező saját, böngészhető
+  Action-mezőjéből.
+- **Valódi, több felbontású (16–256px) `fountaintrade-kassa.ico`** a
+  Desktop/Start Menu parancsikonokhoz — a FountainTrade UI saját
+  "Kassza" oldalsáv-motívuma (Feather Icons "shopping-cart", MIT
+  licenc), a favicon.svg-vel azonos szín/stílus-nyelven, saját
+  build-eszközzel (`tools/generate-kassza-icon.ps1`) generálva.
+- **`install-windows-lib.ps1`** — a tisztán logikai, mellékhatás-mentes
+  segédfüggvények külön fájlba emelve, egyszerű dot-source-olással
+  tesztelve.
+- **`tests/Install-WindowsTests.ps1`** — 28 Pester-teszt: GitHub-hoszt
+  fehérlista, cron-token-generálás/-megőrzés/-véletlenszerűség/UTF-8-
+  biztonság, Zip Slip-védelem, rejtett-ablakos indítás, Feladatütemező-
+  visszaolvasás-ellenőrzés, .ico jelenlét/érvényesség/IconLocation.
 
 ### Fixed (mind ÉLŐ végrehajtással, nem csak syntax-check-kel felfedezve)
 
 - `New-ScheduledTaskTrigger -Once (Get-Date) ...` hibás szintaxis volt
   (a `-Once` egy switch, az időpont a `-At` paraméterbe tartozik) — emiatt
-  egyetlen cron-háttérfeladat (WooCommerce szinkron, biztonsági mentés,
-  NAV kimenő/bejövő, frissítés-ellenőrzés) SEM jött volna létre soha,
-  egy megtévesztő, a hívó helyére mutató hibaüzenettel.
+  egyetlen cron-háttérfeladat sem jött volna létre soha.
 - `-RepetitionDuration ([TimeSpan]::MaxValue)` a Feladatütemező saját XML-
-  sémája szerint érvénytelen (tartományon kívüli) érték — javítva
-  `(New-TimeSpan -Days 3650)`-re.
-- A `Register-ScheduledTask`/`Set-ScheduledTask` CIM-alapú hibája
-  alapértelmezetten NEM terminating error — egy ténylegesen elutasított
-  hívás után a szkript TÉVESEN "[OK]"-t írt volna ki. Minden
-  Feladatütemező-hívás mostantól explicit `-ErrorAction Stop` + try/catch
-  alatt fut.
+  sémája szerint érvénytelen — javítva `(New-TimeSpan -Days 3650)`-re.
+- A `Register-ScheduledTask`/`Set-ScheduledTask` CIM-hibája alapértelmezetten
+  NEM terminating error — egy ténylegesen elutasított hívás után a szkript
+  TÉVESEN "[OK]"-t írt volna ki. Minden Feladatütemező-hívás mostantól
+  explicit `-ErrorAction Stop` + try/catch alatt fut, ÉS a regisztráció
+  UTÁN visszaolvasva is ellenőrzött (nem elég a hívás sikeres visszatérése).
 - A `git/ref/tags/` GitHub API-hívás a "v" előtaggal levágott
-  verziószámmal indult (404-et adva) a tag EREDETI nevével kellett volna
-  (a "v" levágás csak a SemVer-összehasonlításhoz tartozik).
+  verziószámmal indult (404), a tag EREDETI nevével kellett volna.
+- **A self-elevation korábban MINDIG 0 (siker) kilépési kóddal tért
+  vissza**, függetlenül az emelt telepítés tényleges kimenetelétől — ezt
+  éles, kétszeri UAC-elfogadással fedeztük fel (a hívó ablak "csendben
+  bezáródni" tűnt). Most a valódi gyerek-folyamat kilépési kódját
+  propagálja.
+- **[SÚLYOS, valódi adatvesztést okozó hiba] Kódlap-hiba a
+  `settings.json` olvasásánál**: a `Get-Content -Raw` explicit
+  `-Encoding` nélkül Windows PowerShell 5.1 alatt egy BOM nélküli
+  fájlnál a RENDSZER ANSI kódlapját használta UTF-8 helyett (magyar
+  Windows-on CP1250) — ez a felhasználó ÉLES `settings.json`-ját
+  ténylegesen korrumpálta (fizetési módok, nyugta-szövegek,
+  Számlázz.hu alap fizetési mód) az első valódi UAC-teszt közben.
+  Minden `Get-Content`-hívás lecserélve
+  `[System.IO.File]::ReadAllText(path, [System.Text.Encoding]::UTF8)`-ra.
+  A sérült éles adat — a felhasználó jóváhagyásával, biztonsági
+  másolat után — helyreállítva. Regressziós Pester-teszttel bizonyítva.
+- **Kritikus UX**: a parancsikonok `IconLocation`-je egy `.svg`-re
+  mutatott — a Windows Shell `.lnk`-formátuma ezt sosem támogatta, üres/
+  alapértelmezett ikont eredményezve. Javítva valódi `.ico`-val, a
+  hiányzó `WorkingDirectory` is pótolva.
+- **Elavult parancsikon port-váltás után** nem frissült volna — most a
+  meglévő parancsikon Target/Arguments/Icon mindegyike újraellenőrzött,
+  csak akkor ír, ha ténylegesen eltér.
+
+### Teszt-módszertani megfigyelés
+
+Egy korábbi Pester-tesztelési módszer (AST-kinyerés + `Invoke-Expression`
+egy futó szkriptből, plusz egy ténylegesen path-traversal-bejegyzést
+tartalmazó ZIP-fixture) — a tartalomtól függetlenül — víruskereső
+malware-heurisztikáját ütötte meg, és a TESZT FÁJLT karanténba
+helyezte/törölte. A tényleges `install-windows.ps1` és az általa
+generált `.vbs` fájlok NEM lettek érintve, és 3 valódi telepítő-futás +
+egy restart alatt sem jelentkezett hasonló. Áttervezve: egyszerű
+dot-source-olás + a Zip Slip-védelem tiszta stringeken tesztelve.
 
 ### Known limitations
 
-- A valódi, elemelt (UAC-elfogadott) végrehajtás — konkrétan az
-  `-AtLogOn` trigger-típusú szerver-task tényleges létrehozása — NEM
-  volt interaktívan tesztelhető ebben a környezetben (nincs valódi
-  felhasználó a UAC-ablak elfogadásához). Izolált, nem-elevated
-  diagnosztikával VISSZAVEZETVE/BIZONYÍTVA, hogy pontosan ez (és csakis
-  ez) a lépés igényel rendszergazdai jogot — az összes többi lépés
-  (letöltés+ellenőrzés, PHP-detektálás, mappák, cron-token-generálás,
-  mind az 5 cron-feladat létrehozása, parancsikonok, idempotencia)
-  valódi végrehajtással, ismételt futtatással bizonyítottan működik.
+- Teljesen tiszta (OOBE) Windows telepítés nem lett éles UAC-cal
+  tesztelve ezen a körön — ez a gép már használt fejlesztői gép
+  (dev-mode út); a GitHub-letöltés+ellenőrzés külön, valódi teszttel
+  igazolt.
+- A bundled-ikon *fallback*-másolási ága (ha egy letöltött GitHub
+  Release régebbi az ikon bevezetésénél) kód-szinten/szintaxisban
+  ellenőrzött, nem élesben, hiányzó-ikon-forgatókönyvvel lefuttatva.
+- A rejtett-ablakos VBScript-technika elméletileg más (agresszívabb)
+  antivirus-terméknél kiválthat riasztást — ezen a gépen 3 valódi
+  telepítő-futás + restart alatt sem jelentkezett ilyen.
 - A szkript egyetlen FountainTrade-példányra lett tervezve gépenként —
   a Feladatütemező-bejegyzés-nevek nincsenek célkönyvtár szerint
   névtér-elkülönítve.

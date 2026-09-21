@@ -228,3 +228,36 @@ Describe 'install-windows-lib — Test-ScheduledTaskRegistration (regisztráció
         $result.Ok | Should Be $false
     }
 }
+
+Describe 'Kassza .ico — jelenlét és shortcut-integráció (regresszió: korábban .svg volt az IconLocation-ben)' {
+    $icoPath = Join-Path $PSScriptRoot '..\webroot\assets\fountaintrade-kassa.ico'
+    $mainScriptText = Get-Content (Join-Path $PSScriptRoot '..\install-windows.ps1') -Raw
+
+    It 'A fountaintrade-kassa.ico ténylegesen létezik a webroot/assets alatt' {
+        Test-Path $icoPath | Should Be $true
+    }
+
+    It 'Az .ico fájl érvényes, több felbontású Windows ikon (a .NET saját Icon-betöltőjével ellenőrizve)' {
+        Add-Type -AssemblyName System.Drawing
+        { New-Object System.Drawing.Icon($icoPath) } | Should Not Throw
+    }
+
+    It 'Az .ico fájl legalább 16/32/48/256px felbontást tartalmaz (ICONDIR bejegyzésszám >= 4)' {
+        $bytes = [System.IO.File]::ReadAllBytes($icoPath)
+        $count = $bytes[4] + ($bytes[5] * 256)
+        $count | Should BeGreaterThan 3
+    }
+
+    It 'install-windows.ps1 a VALÓDI .ico fájlra állítja be a parancsikon IconLocation-jét' {
+        $mainScriptText | Should Match 'fountaintrade-kassa\.ico'
+        $mainScriptText | Should Match '\$shortcut\.IconLocation\s*='
+    }
+
+    It 'install-windows.ps1 SEHOL nem állít be .svg-t parancsikon IconLocation-ként (a Windows Shell ezt nem támogatja)' {
+        $mainScriptText | Should Not Match 'IconLocation\s*=\s*"[^"]*\.svg'
+    }
+
+    It 'A parancsikon-létrehozó függvény a WorkingDirectory-t is beállítja (nem csak Target/Arguments-et)' {
+        $mainScriptText | Should Match '\$shortcut\.WorkingDirectory\s*='
+    }
+}

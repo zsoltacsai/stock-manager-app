@@ -19,6 +19,3 @@ Ennyi. Nincs szükség semmilyen parancs bemásolására.
 Ha valami hibát jelez, az ablak NEM záródik be — olvasd el a piros
 "[HIBA]" sorokat, azok megmondják, mi történt és mi a következő
 teendő.
-
-Kérdés esetén lásd az "install.txt" fájlt a teljes, részletes
-útmutatóért.

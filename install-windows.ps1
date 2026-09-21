@@ -793,8 +793,43 @@ if (-not $SkipShortcuts) {
     $expectedTarget = if ($edgePath) { $edgePath } else { $dashboardUrl }
     $expectedArguments = if ($edgePath) { "--app=$dashboardUrl" } else { '' }
 
+    # A parancsikon ikonja — VALÓDI .ico fájl, NEM .svg (élő hiba javítva:
+    # a Windows Shell/.lnk-formátum SOSE támogatott SVG-t IconLocation-ként
+    # — ez korábban üres/alapértelmezett ikont eredményezett volna). Ugyanaz
+    # a "Kassza" motívum (Feather "shopping-cart"), amit a FountainTrade UI
+    # saját oldalsávja is használ — lásd webroot/sidebarmenu.php és
+    # tools/generate-kassza-icon.ps1.
+    #
+    # ELSŐDLEGES FORRÁS: a webroot/assets alatt — ez MINDEN telepítéssel
+    # (GitHub Release-ből VAGY meglévő mappából) automatikusan megérkezik,
+    # mert a repó/release RÉSZE.
+    #
+    # TARTALÉK FORRÁS: a telepítő-csomag SAJÁT, mellékelt példánya (a
+    # FountainTrade-Installer\fountaintrade-kassa.ico, közvetlenül a
+    # szkript mellett) — arra az esetre, ha a letöltött GitHub Release
+    # RÉGEBBI, mint az ikon bevezetése (tehát a kicsomagolt appban még
+    # nincs .ico). Ilyenkor a telepítő-csomag saját példányát BEMÁSOLJUK a
+    # frissen telepített app-ba — attól kezdve az már az alkalmazás
+    # normál, önálló része, nem függ többé a telepítő-csomagtól.
+    $kasszaIconPath = Join-Path $webrootPath 'assets\fountaintrade-kassa.ico'
+    if (-not (Test-Path $kasszaIconPath)) {
+        $bundledIconPath = Join-Path $PSScriptRoot 'fountaintrade-kassa.ico'
+        if (Test-Path $bundledIconPath) {
+            try {
+                Copy-Item -LiteralPath $bundledIconPath -Destination $kasszaIconPath -Force
+                Write-Ok "A kassza-ikon a telepítő-csomag saját példányából pótolva (a letöltött verzió még nem tartalmazta)."
+            } catch {
+                Write-Warn2 "A kassza-ikon pótlása sikertelen: $($_.Exception.Message)"
+            }
+        }
+    }
+    $expectedIconLocation = if (Test-Path $kasszaIconPath) { "$kasszaIconPath,0" } else { $null }
+    if (-not $expectedIconLocation) {
+        Write-Warn2 "A fountaintrade-kassa.ico nem található ($kasszaIconPath) — a parancsikon Windows alapértelmezett ikonnal jön létre."
+    }
+
     function New-FountainTradeShortcut {
-        param([string]$LinkPath, [string]$ExpectedTarget, [string]$ExpectedArguments)
+        param([string]$LinkPath, [string]$ExpectedTarget, [string]$ExpectedArguments, [string]$ExpectedIconLocation, [string]$ExpectedWorkingDirectory)
 
         $shell = New-Object -ComObject WScript.Shell
 
@@ -804,38 +839,44 @@ if (-not $SkipShortcuts) {
             # egy port-váltással újrafuttatott telepítő emiatt egy ELAVULT
             # (régi portra mutató) parancsikont hagyott volna hátra. Most
             # visszaolvassuk és ÖSSZEHASONLÍTJUK a ténylegesen elvárt
-            # célponttal — csak akkor írunk, ha valóban eltér.
+            # célponttal ÉS ikonnal — csak akkor írunk, ha valóban eltér.
             $existing = $shell.CreateShortcut($LinkPath)
-            if ($existing.TargetPath -eq $ExpectedTarget -and $existing.Arguments -eq $ExpectedArguments) {
+            $iconMatches = (-not $ExpectedIconLocation) -or ($existing.IconLocation -eq $ExpectedIconLocation)
+            if ($existing.TargetPath -eq $ExpectedTarget -and $existing.Arguments -eq $ExpectedArguments -and $iconMatches) {
                 Write-Ok "Parancsikon már létezik és helyes — nem módosítva: $LinkPath"
                 return
             }
-            Write-Warn2 "A meglévő parancsikon elavult célpontra mutatott — frissítve: $LinkPath"
+            Write-Warn2 "A meglévő parancsikon elavult célpontra/ikonra mutatott — frissítve: $LinkPath"
         }
 
         $shortcut = $shell.CreateShortcut($LinkPath)
         $shortcut.TargetPath = $ExpectedTarget
         $shortcut.Arguments = $ExpectedArguments
-        $shortcut.IconLocation = "$webrootPath\favicon.svg"
+        $shortcut.WorkingDirectory = $ExpectedWorkingDirectory
+        if ($ExpectedIconLocation) {
+            $shortcut.IconLocation = $ExpectedIconLocation
+        }
         $shortcut.Save()
 
-        # Visszaolvasás + tényleges ellenőrzés (lásd a kör 15. pontja: "ne
-        # csak fájllétezést" — Target/Arguments/WorkingDirectory).
+        # Visszaolvasás + tényleges ellenőrzés (lásd a kör 5. pontja: Target/
+        # Arguments/WorkingDirectory/IconLocation mind ellenőrizve, nem csak
+        # fájllétezés).
         $verify = $shell.CreateShortcut($LinkPath)
-        if ($verify.TargetPath -eq $ExpectedTarget -and $verify.Arguments -eq $ExpectedArguments) {
-            Write-Ok "Parancsikon létrehozva/frissítve és visszaolvasással ellenőrizve: $LinkPath"
+        $verifyIconOk = (-not $ExpectedIconLocation) -or ($verify.IconLocation -eq $ExpectedIconLocation)
+        if ($verify.TargetPath -eq $ExpectedTarget -and $verify.Arguments -eq $ExpectedArguments -and $verifyIconOk) {
+            Write-Ok "Parancsikon létrehozva/frissítve és visszaolvasással ellenőrizve (Target+Arguments+Icon): $LinkPath"
         } else {
-            Write-Err2 "A parancsikon mentés után, visszaolvasáskor NEM a várt célpontra mutat: $LinkPath" "Hozd létre kézzel: cél = $ExpectedTarget"
+            Write-Err2 "A parancsikon mentés után, visszaolvasáskor NEM a várt célpontra/ikonra mutat: $LinkPath" "Hozd létre kézzel: cél = $ExpectedTarget, ikon = $ExpectedIconLocation"
         }
     }
 
     $desktopPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'FountainTrade.lnk'
-    New-FountainTradeShortcut -LinkPath $desktopPath -ExpectedTarget $expectedTarget -ExpectedArguments $expectedArguments
+    New-FountainTradeShortcut -LinkPath $desktopPath -ExpectedTarget $expectedTarget -ExpectedArguments $expectedArguments -ExpectedIconLocation $expectedIconLocation -ExpectedWorkingDirectory $InstallPath
 
     $startMenuDir = [Environment]::GetFolderPath('StartMenu') + '\Programs'
     if (Test-Path $startMenuDir) {
         $startMenuPath = Join-Path $startMenuDir 'FountainTrade.lnk'
-        New-FountainTradeShortcut -LinkPath $startMenuPath -ExpectedTarget $expectedTarget -ExpectedArguments $expectedArguments
+        New-FountainTradeShortcut -LinkPath $startMenuPath -ExpectedTarget $expectedTarget -ExpectedArguments $expectedArguments -ExpectedIconLocation $expectedIconLocation -ExpectedWorkingDirectory $InstallPath
     }
 }
 

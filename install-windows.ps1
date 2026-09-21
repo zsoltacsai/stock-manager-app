@@ -327,7 +327,7 @@ function Install-FountainTradeFromGitHub {
 
     try {
         Invoke-WebRequest -Uri $manifestAsset.browser_download_url -OutFile $manifestPath -Headers $headers -TimeoutSec 30
-        $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+        $manifest = [System.IO.File]::ReadAllText($manifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
     } catch {
         Exit-WithFailureSummary "A manifest.json letöltése/beolvasása sikertelen: $($_.Exception.Message)" "Próbáld újra, vagy ellenőrizd a hálózati kapcsolatot."
     }
@@ -541,7 +541,7 @@ if (-not (Test-Path $phpIniPath)) {
     $devIni = Join-Path $phpHome 'php.ini-development'
     if (Test-Path $devIni) {
         Copy-Item -LiteralPath $devIni -Destination $phpIniPath -Force
-        $iniContent = Get-Content $phpIniPath -Raw
+        $iniContent = [System.IO.File]::ReadAllText($phpIniPath, [System.Text.Encoding]::UTF8)
         $iniContent = $iniContent -replace ';extension_dir = "ext"', 'extension_dir = "ext"'
         foreach ($ext in @('curl', 'fileinfo', 'gd', 'mbstring', 'openssl', 'pdo_sqlite', 'sqlite3', 'xmlwriter', 'zip')) {
             $iniContent = $iniContent -replace ";extension=$ext", "extension=$ext"
@@ -880,7 +880,7 @@ try {
         try { Invoke-WebRequest -Uri "http://localhost:$Port/install.php" -UseBasicParsing -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null } catch { }
         $tokenPath = Join-Path $InstallPath 'data\.install-token'
         if (Test-Path $tokenPath) {
-            $installToken = (Get-Content $tokenPath -Raw).Trim()
+            $installToken = ([System.IO.File]::ReadAllText($tokenPath, [System.Text.Encoding]::UTF8)).Trim()
             $launchUrl = "http://localhost:$Port/install.php?token=$installToken"
             Write-Ok "Az app még nincs inicializálva — a telepítő varázsló nyílik meg."
         } else {

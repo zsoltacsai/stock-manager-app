@@ -70,6 +70,34 @@ Describe 'install-windows-lib — Get-OrCreateCronToken (cron-token forrás-sorr
         $r2 = Get-OrCreateCronToken -SettingsPath (Join-Path $tempDir 's2.json') -SuppliedToken $null
         $r1.Token | Should Not Be $r2.Token
     }
+
+    # Regresszió: valódi telepítés közben ez a függvény egy éles
+    # settings.json-t (ékezetes magyar szöveggel: payment_methods,
+    # receipt_header_lines stb.) korrumpált, mert a korábbi "Get-Content
+    # -Raw" (explicit -Encoding nélkül) Windows PowerShell 5.1 alatt egy
+    # BOM nélküli fájlnál a RENDSZER ANSI kódlapját használta UTF-8
+    # helyett (magyar Windows-on CP1250) — "Készpénz" -> "KĂ©szpĂ©nz".
+    It 'Az ÉKEZETES magyar szöveget (settings.json meglévő mezői) VÁLTOZATLANUL, SÉRÜLÉS NÉLKÜL megőrzi' {
+        $payload = @{
+            theme = 'dark'
+            receipt_footer_lines = 'Köszönjük a vásárlást!'
+            payment_methods = @(
+                @{ value = 'Készpénz'; color = '#16a34a' },
+                @{ value = 'Átutalás'; color = '#a855f7' },
+                @{ value = 'Bankkártya'; color = '#3b82f6' }
+            )
+        }
+        $json = $payload | ConvertTo-Json -Depth 10
+        [System.IO.File]::WriteAllText($settingsPath, $json, (New-Object System.Text.UTF8Encoding($false)))
+
+        Get-OrCreateCronToken -SettingsPath $settingsPath -SuppliedToken $null | Out-Null
+
+        $saved = [System.IO.File]::ReadAllText($settingsPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        $saved.receipt_footer_lines | Should Be 'Köszönjük a vásárlást!'
+        $saved.payment_methods[0].value | Should Be 'Készpénz'
+        $saved.payment_methods[1].value | Should Be 'Átutalás'
+        $saved.payment_methods[2].value | Should Be 'Bankkártya'
+    }
 }
 
 Describe 'install-windows-lib — Test-SafeZipEntryName (Zip Slip védelem, tiszta stringeken)' {

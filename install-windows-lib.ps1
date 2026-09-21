@@ -129,7 +129,16 @@ function Get-OrCreateCronToken {
     $existing = $null
     if (Test-Path $SettingsPath) {
         try {
-            $json = Get-Content $SettingsPath -Raw | ConvertFrom-Json
+            # ÉLŐ ADATVESZTÉST OKOZÓ HIBA JAVÍTVA: a "Get-Content -Raw" (explicit
+            # -Encoding NÉLKÜL) Windows PowerShell 5.1 alatt egy BOM NÉLKÜLI
+            # fájlnál (a PHP json_encode() SOSE ír BOM-ot) a RENDSZER ANSI
+            # kódlapját használja UTF-8 helyett (pl. magyar Windows-on CP1250) —
+            # ez minden ékezetes karaktert (payment_methods, receipt_header_lines
+            # stb.) hangtalanul összetört a settings.json egy korábbi
+            # olvasás-módosítás-írás körénél. [System.IO.File]::ReadAllText()
+            # explicit UTF-8 encoding-gal MINDIG helyesen olvas, függetlenül a
+            # rendszer nyelvi beállításaitól.
+            $json = [System.IO.File]::ReadAllText($SettingsPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             if ($json.PSObject.Properties.Name -contains 'cron_secret' -and $json.cron_secret) {
                 $existing = $json.cron_secret
             }
@@ -146,7 +155,9 @@ function Get-OrCreateCronToken {
     $generated = ($bytes | ForEach-Object { $_.ToString('x2') }) -join ''
 
     $obj = if (Test-Path $SettingsPath) {
-        try { Get-Content $SettingsPath -Raw | ConvertFrom-Json } catch { [PSCustomObject]@{} }
+        # Lásd fent a docblokkot — ugyanaz a magyar-ékezet-tördelő hiba
+        # javítva itt is, explicit UTF-8 olvasással.
+        try { [System.IO.File]::ReadAllText($SettingsPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch { [PSCustomObject]@{} }
     } else {
         [PSCustomObject]@{}
     }

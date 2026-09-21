@@ -1,12 +1,14 @@
 # FountainTrade — Point of Sale & Inventory
 
-**Verzió: 1.3.1** (production release — stabilizáció)
+**Verzió: 1.4.1** (production release — Windows telepítő professzionalizálása)
 
 FountainTrade 1.0 volt az első production kiadás, az 1.0 RC
 stabilizációs és biztonsági hardening ciklus lezárása után. Azóta több
-feature release (1.1.0, 1.1.1, 1.2.0, 1.3.0 — lásd `CHANGELOG.md`)
+feature release (1.1.0, 1.1.1, 1.2.0, 1.3.0, 1.4.0 — lásd `CHANGELOG.md`)
 bővítette az alkalmazást; az 1.3.1 egy tiszta stabilizációs kör (audit +
-hibajavítás, új funkció nélkül) — lásd `CHANGELOG.md` "[1.3.1]"
+hibajavítás, új funkció nélkül) volt, az 1.4.1 pedig kizárólag a Windows
+telepítő élményét/üzemeltethetőségét javította (nincs benne alkalmazás-
+oldali üzleti funkció) — lásd `CHANGELOG.md` "[1.3.1]" és "[1.4.1]"
 szakaszát.
 
 Egy önállóan üzemeltethető PHP alkalmazás egy kisbolt/webshop teljes napi

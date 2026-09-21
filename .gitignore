@@ -11,6 +11,7 @@
 /data/settings.json
 /data/settings.json.lock
 /data/settings.json.before-restore-*
+/data/settings.json.before-mojibake-fix
 /data/geoip-cache.json
 /data/nav-token-cache.json
 /data/imports/*

@@ -4,6 +4,64 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## [Unreleased] — Kasszakezelés (1.5.0 — 1. fázis: kasszanyitás/kasszazárás)
+
+**Az 1.5.0 spec két nagy területéből ("Multi-terminal & Cash Management")
+kizárólag a kasszakezelés (Fázis 1) készült el ebben a körben — a
+kliens/szerver architektúra (Fázis 2) még NEM kezdődött el.** A tervben
+rögzített, jóváhagyott sorrend szerint a kasszakezelés önmagában is
+értékes, kisebb kockázatú, és a meglévő `completeStockTake()`/
+`insertSale()` mintákat klónozza — a kliens/szerver munka egy stabil
+kasszakezelésre épülhet rá később, külön körben.
+
+### Added
+
+- **Kasszanyitás/kasszazárás/pénzmozgás** — új `cash_registers`/
+  `cash_sessions`/`cash_movements` táblák (`Database::SCHEMA_VERSION` 26 →
+  27), pénztárgépenként legfeljebb egy nyitott műszak (atomikus
+  `INSERT ... SELECT ... WHERE NOT EXISTS` nyitáskor,
+  `UPDATE ... WHERE status='open'` zárásnál — utóbbi a bevált
+  `completeStockTake()` minta közvetlen klónja). Valódi, 12 párhuzamos
+  OS-folyamatos `proc_open`-teszttel bizonyítva mindkét irányban
+  (`tests/DatabaseTest.php`).
+- **Várható készpénz képlet, kizárólag szerver-oldalon számolva**:
+  nyitó + készpénzes eladások − készpénzes visszatérítések + pénzbevét −
+  pénzkiadás. `Settings::payment_methods` minden bejegyzése kap egy új
+  `is_cash` mezőt (alapból csak "Készpénz" = igaz) — egy régi
+  `settings.json` erre utólag, olvasáskor kerül feltöltésre
+  (`Settings::backfillPaymentMethodIsCash()`), admin-átnevezés/bővítés
+  esetén sem törik csendben a számítás.
+- `sales`/`returns` táblák új `cash_session_id` oszlopa — a visszatérítés
+  a visszatérítés PILLANATÁBAN nyitott műszakhoz kötődik, nem az eredeti
+  eladáséhoz.
+- Új oldalak: `penztargepek.php` (admin pénztárgép-kezelés,
+  `telephelyek.php` mintája), `kasszazaras.php` (zárás — teljes bontással:
+  nyitó/készpénzes eladás/visszatérítés/be/ki/várható), `kassza-riport.php`
+  (szűrhető lista + CSV export + nyomtatás).
+- POS fejléc élő kassza-jelző (`Kassza: NYITVA/ZÁRVA`) + Pénzbevét/
+  Pénzkiadás/Kasszazárás gyorsműveletek — nulla plusz HTTP-kérés
+  (`locations-list.php` válaszába fűzve). Dashboard rendszerállapot-
+  kártya kompakt kassza-sora ugyanezzel a fegyelemmel
+  (`dashboard-summary.php` `today_status` mezője).
+- Idempotencia-védelem kasszanyitásnál/pénzmozgásnál (a `sales.idempotency_key`
+  bevált mintája) — dupla kattintás/hálózati újrapróbálkozás nem hoz létre
+  duplikált műszakot/pénzmozgást.
+- Új audit-log akciók: `cash_register_create/update`, `cash_session_open/close`,
+  `cash_in`, `cash_out`.
+- Tesztek: `tests/CashSessionTest.php` (formula-helyesség, validáció,
+  Settings-backfill), `tests/CashSessionEndpointsHttpTest.php` (valódi HTTP
+  végpont-tesztek — auth/CSRF/admin-kapu/teljes életciklus/CSV), plusz a
+  fenti 2 valódi konkurrencia-teszt.
+
+### Known limitations (ebben a körben nem készült el)
+
+- **Kliens/szerver architektúra (1.5.0 Fázis 2) — nincs elkezdve.**
+  `node_role`/Standalone-Server-Kliens, `ClientProxy`, `registered_clients`,
+  Windows telepítő szerepkör-választó képernyője stb. — mindez külön körben.
+- A pénztárgép-választó a POS fejlécben csak akkor jelenik meg, ha egy
+  telephelyhez több pénztárgép is tartozik — egy-pénztárgépes telephelynél
+  automatikusan az egyetlen pénztárgép van kiválasztva.
+
 ## [1.4.1] — 2026-09-21 (Windows telepítő professzionalizálása)
 
 **Kizárólag telepítési élmény/üzemeltethetőség/hibajavítás — nincs

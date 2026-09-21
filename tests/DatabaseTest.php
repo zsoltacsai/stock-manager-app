@@ -694,6 +694,175 @@ final class DatabaseTest extends TestCase
         );
     }
 
+    // ------------------------------------------------------------------
+    // Kassza / műszakkezelés — atomikus nyitás/zárás valódi, több
+    // folyamatos konkurrencia alatt. Ugyanaz a proc_open-alapú minta, mint
+    // testCompleteStockTakeAtomicGuardPreventsDoubleCorrectionAcrossRealConcurrentProcesses()-nél,
+    // két különbséggel: (1) itt egy ÚJ sor beszúrását ("INSERT ... SELECT
+    // ... WHERE NOT EXISTS") kell versenyhelyzet-biztosítani, nem egy
+    // meglévő sor lezárását — ez a kódbázisban ÚJ konkurrencia-minta, lásd
+    // Database::openCashSession() docblockja; (2) a záráson kívül a
+    // nyitást is teszteljük, mert mindkettő "legfeljebb egy győztes"
+    // garanciát ad, de eltérő SQL-mintával.
+    // ------------------------------------------------------------------
+
+    public function testOpenCashSessionAtomicGuardPreventsDoubleOpenAcrossRealConcurrentProcesses(): void
+    {
+        if (!function_exists('proc_open')) {
+            $this->markTestSkipped('proc_open nem elérhető — VALÓDI többfolyamatos konkurrencia-teszt itt nem futott le.');
+        }
+
+        $dbPath = sys_get_temp_dir() . '/sm_cashopen_concurrency_test_' . bin2hex(random_bytes(8)) . '.sqlite';
+        register_shutdown_function(static function () use ($dbPath) {
+            @unlink($dbPath);
+            @unlink($dbPath . '-shm');
+            @unlink($dbPath . '-wal');
+        });
+
+        $projectRoot = dirname(__DIR__);
+        $setupDb = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $dbPath]], $projectRoot);
+        $locationId = $setupDb->saveLocation(['name' => 'Konkurrencia teszt telephely']);
+        $registerId = $setupDb->saveCashRegister(['location_id' => $locationId, 'name' => 'Konkurrencia teszt kassza', 'code' => 'CONC1']);
+        unset($setupDb);
+
+        $resultFile = sys_get_temp_dir() . '/sm_cashopen_concurrency_result_' . bin2hex(random_bytes(8)) . '.txt';
+        file_put_contents($resultFile, '');
+        register_shutdown_function(static function () use ($resultFile) {
+            @unlink($resultFile);
+        });
+
+        $childScriptPath = sys_get_temp_dir() . '/sm_cashopen_concurrency_child_' . bin2hex(random_bytes(6)) . '.php';
+        file_put_contents($childScriptPath, <<<'PHP'
+            <?php
+            require $argv[1] . '/src/Database.php';
+            $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $argv[2]]], $argv[1]);
+            try {
+                $db->openCashSession((int) $argv[3], null, 10000.0);
+                file_put_contents($argv[4], "1\n", FILE_APPEND | LOCK_EX);
+            } catch (RuntimeException $e) {
+                // Várt: "Ehhez a pénztárgéphez már van nyitott műszak." —
+                // minden, a győztesen kívüli folyamatnak ezt kell kapnia.
+            }
+            PHP);
+        register_shutdown_function(static function () use ($childScriptPath) {
+            @unlink($childScriptPath);
+        });
+
+        $processCount = 12;
+        $handles = [];
+        $devNull = sys_get_temp_dir() . '/sm_cashopen_concurrency_out_' . bin2hex(random_bytes(4)) . '.log';
+        for ($i = 0; $i < $processCount; $i++) {
+            $handles[] = proc_open(
+                [PHP_BINARY, $childScriptPath, $projectRoot, $dbPath, (string) $registerId, $resultFile],
+                [1 => ['file', $devNull, 'a'], 2 => ['file', $devNull, 'a']],
+                $pipes
+            );
+        }
+        foreach ($handles as $handle) {
+            if (is_resource($handle)) {
+                proc_close($handle);
+            }
+        }
+        @unlink($devNull);
+
+        $successes = array_filter(explode("\n", trim((string) @file_get_contents($resultFile))));
+        $this->assertCount(
+            1,
+            $successes,
+            "Pontosan EGY folyamatnak kellett volna ténylegesen megnyitnia a műszakot — egy ettől eltérő szám azt jelentené, hogy a nyitás nem atomikus (két nyitott műszak jöhetne létre ugyanarra a pénztárgépre)."
+        );
+
+        $verifyPdo = new PDO('sqlite:' . $dbPath);
+        $totalRows = (int) $verifyPdo->query("SELECT COUNT(*) FROM cash_sessions WHERE cash_register_id = $registerId")->fetchColumn();
+        $this->assertSame(1, $totalRows, 'Pontosan EGY cash_sessions sornak kellett létrejönnie ehhez a pénztárgéphez.');
+    }
+
+    public function testCloseCashSessionAtomicGuardPreventsDoubleCloseAcrossRealConcurrentProcesses(): void
+    {
+        if (!function_exists('proc_open')) {
+            $this->markTestSkipped('proc_open nem elérhető — VALÓDI többfolyamatos konkurrencia-teszt itt nem futott le.');
+        }
+
+        $dbPath = sys_get_temp_dir() . '/sm_cashclose_concurrency_test_' . bin2hex(random_bytes(8)) . '.sqlite';
+        register_shutdown_function(static function () use ($dbPath) {
+            @unlink($dbPath);
+            @unlink($dbPath . '-shm');
+            @unlink($dbPath . '-wal');
+        });
+
+        $projectRoot = dirname(__DIR__);
+        $setupDb = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $dbPath]], $projectRoot);
+        $locationId = $setupDb->saveLocation(['name' => 'Konkurrencia teszt telephely']);
+        $registerId = $setupDb->saveCashRegister(['location_id' => $locationId, 'name' => 'Konkurrencia teszt kassza', 'code' => 'CONC2']);
+        $sessionId = $setupDb->openCashSession($registerId, null, 15000.0);
+        unset($setupDb);
+
+        $resultFile = sys_get_temp_dir() . '/sm_cashclose_concurrency_result_' . bin2hex(random_bytes(8)) . '.txt';
+        file_put_contents($resultFile, '');
+        register_shutdown_function(static function () use ($resultFile) {
+            @unlink($resultFile);
+        });
+
+        // Minden folyamat EGY MÁS megszámolt összeggel próbál zárni — ha a
+        // zárás nem lenne atomikus, több sikeres zárás is beírhatná a saját
+        // closing_amount-ját, és az utolsó "nyerne" csendben (ami itt nem
+        // derülne ki csak a success-számlálásból, ezért a végén a
+        // ténylegesen beírt closing_amount-ot a GYŐZTES saját összegével is
+        // összevetjük).
+        $childScriptPath = sys_get_temp_dir() . '/sm_cashclose_concurrency_child_' . bin2hex(random_bytes(6)) . '.php';
+        file_put_contents($childScriptPath, <<<'PHP'
+            <?php
+            require $argv[1] . '/src/Database.php';
+            $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $argv[2]]], $argv[1]);
+            $counted = 15000.0 + (float) $argv[5];
+            try {
+                $db->closeCashSession((int) $argv[3], $counted, ['Készpénz']);
+                file_put_contents($argv[4], $counted . "\n", FILE_APPEND | LOCK_EX);
+            } catch (RuntimeException $e) {
+                // Várt: "Ez a műszak már le van zárva." — minden, a
+                // győztesen kívüli folyamatnak ezt kell kapnia.
+            }
+            PHP);
+        register_shutdown_function(static function () use ($childScriptPath) {
+            @unlink($childScriptPath);
+        });
+
+        $processCount = 12;
+        $handles = [];
+        $devNull = sys_get_temp_dir() . '/sm_cashclose_concurrency_out_' . bin2hex(random_bytes(4)) . '.log';
+        for ($i = 0; $i < $processCount; $i++) {
+            $handles[] = proc_open(
+                [PHP_BINARY, $childScriptPath, $projectRoot, $dbPath, (string) $sessionId, $resultFile, (string) $i],
+                [1 => ['file', $devNull, 'a'], 2 => ['file', $devNull, 'a']],
+                $pipes
+            );
+        }
+        foreach ($handles as $handle) {
+            if (is_resource($handle)) {
+                proc_close($handle);
+            }
+        }
+        @unlink($devNull);
+
+        $successes = array_filter(explode("\n", trim((string) @file_get_contents($resultFile))));
+        $this->assertCount(
+            1,
+            $successes,
+            "Pontosan EGY folyamatnak kellett volna ténylegesen lezárnia a műszakot — egy ettől eltérő szám azt jelentené, hogy a zárás nem atomikus (a variance duplán/eltérő értékekkel íródhatna felül)."
+        );
+
+        $verifyDb = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $dbPath]], $projectRoot);
+        $closed = $verifyDb->getCashSession($sessionId);
+        $winningAmount = (float) reset($successes);
+        $this->assertSame('closed', $closed['status']);
+        $this->assertEqualsWithDelta(
+            $winningAmount,
+            (float) $closed['closing_amount'],
+            0.001,
+            'A ténylegesen elmentett closing_amount-nak PONTOSAN a győztes folyamat saját összegével kellett megegyeznie — egy eltérés azt jelentené, hogy egy másik (vesztes) folyamat is írt az eredménybe.'
+        );
+    }
+
     public function testRecordPurchaseAppliesDiscountAndKeepsTotalsConsistentWithLineSum(): void
     {
         $db = tests_new_database();

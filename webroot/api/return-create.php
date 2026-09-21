@@ -15,6 +15,16 @@ $reason = trim((string) ($input['reason'] ?? ''));
 // beküldött staff_id-ból — különben bárki más dolgozó nevére írhatná a
 // visszárut, torzítva az elszámoltathatóságot.
 $staffId = Auth::currentStaffId();
+// A visszatérítés a JELENLEGI (a visszatérítés PILLANATÁBAN nyitott)
+// műszakhoz kötődik, NEM az eredeti eladáséhoz — a pénz fizikailag MOST
+// hagyja el az aktuális kasszát. Opcionális, visszafelé kompatibilis, lásd
+// sale.php ugyanezen mintáját.
+$cashRegisterId = !empty($input['cash_register_id']) ? (int) $input['cash_register_id'] : null;
+$cashSessionId = null;
+if ($cashRegisterId) {
+    $openSession = $db->getOpenCashSession($cashRegisterId);
+    $cashSessionId = $openSession ? (int) $openSession['id'] : null;
+}
 
 if (!$saleId || empty($requestedItems)) {
     send_json(['error' => 'Válassz ki legalább egy visszaveendő tételt.'], 400);
@@ -81,7 +91,7 @@ $rawRefund = array_sum(array_map(static fn ($i) => $i['qty'] * $i['unit_price'],
 $totalRefund = round($rawRefund * $discountRatio, 2);
 
 try {
-    $returnId = $db->processReturn($saleId, $itemsToReturn, $reason, $staffId, $totalRefund, $sale);
+    $returnId = $db->processReturn($saleId, $itemsToReturn, $reason, $staffId, $totalRefund, $sale, $cashSessionId);
 } catch (RuntimeException $e) {
     // A Database::processReturn() saját, kézzel írt, biztonságosan
     // felhasználó elé tárható üzenete (pl. "...tételből időközben már

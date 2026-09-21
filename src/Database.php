@@ -7,7 +7,7 @@ require_once __DIR__ . '/PurchaseDecisionService.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 26;
+    private const SCHEMA_VERSION = 27;
 
     private PDO $pdo;
     private string $driver;
@@ -200,6 +200,9 @@ class Database
             }
             if ($version < 26) {
                 $this->migrateV26SystemEvents();
+            }
+            if ($version < 27) {
+                $this->migrateV27CashManagement();
             }
         }
 
@@ -1564,6 +1567,113 @@ class Database
         }
     }
 
+    /**
+     * Kassza / műszakkezelés (kasszanyitás/kasszazárás) — lásd
+     * openCashSession()/closeCashSession()/recordCashMovement().
+     * A sales.cash_session_id oszlop FK-mentes (ugyanaz a minta, mint a
+     * V10-es migráció preferred_supplier_id-jánál) — egy migrált MySQL
+     * adatbázison sose kapott explicit FOREIGN KEY-t a meglévő, hasonlóan
+     * hozzáadott oszlopok egyike sem, csak a friss telepítésű séma
+     * (schema.mysql.sql) definiál rá CONSTRAINT-ot.
+     */
+    private function migrateV27CashManagement(): void
+    {
+        $isMysql = $this->driver === 'mysql';
+        $pk = $isMysql ? 'INT UNSIGNED AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
+        $intCol = $isMysql ? 'INT UNSIGNED NULL' : 'INTEGER';
+        $intColRequired = $isMysql ? 'INT UNSIGNED NOT NULL' : 'INTEGER NOT NULL';
+        $moneyCol = $isMysql ? 'DECIMAL(12,2) NOT NULL' : 'REAL NOT NULL';
+        $moneyColNull = $isMysql ? 'DECIMAL(12,2) NULL' : 'REAL';
+        $ts = $isMysql ? 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' : "TEXT NOT NULL DEFAULT (datetime('now'))";
+        $tsNull = $isMysql ? 'DATETIME NULL' : 'TEXT';
+        $engine = $isMysql ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : '';
+
+        $wasInTransaction = $this->pdo->inTransaction();
+        if (!$wasInTransaction) {
+            $this->pdo->beginTransaction();
+        }
+        try {
+            try {
+                $this->pdo->exec("CREATE TABLE IF NOT EXISTS cash_registers (
+                    id $pk,
+                    location_id $intColRequired,
+                    name VARCHAR(191) NOT NULL,
+                    code VARCHAR(32) NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at $ts,
+                    updated_at $ts
+                )$engine");
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+            try {
+                $this->pdo->exec("CREATE TABLE IF NOT EXISTS cash_sessions (
+                    id $pk,
+                    cash_register_id $intColRequired,
+                    staff_id $intCol,
+                    opening_amount $moneyCol,
+                    closing_amount $moneyColNull,
+                    expected_amount $moneyColNull,
+                    variance $moneyColNull,
+                    status VARCHAR(16) NOT NULL DEFAULT 'open',
+                    idempotency_key VARCHAR(64) NULL,
+                    idempotency_fingerprint VARCHAR(64) NULL,
+                    opened_at $ts,
+                    closed_at $tsNull
+                )$engine");
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+            try {
+                $this->pdo->exec("CREATE TABLE IF NOT EXISTS cash_movements (
+                    id $pk,
+                    cash_session_id $intColRequired,
+                    staff_id $intCol,
+                    type VARCHAR(16) NOT NULL,
+                    amount $moneyCol,
+                    reason VARCHAR(255) NOT NULL,
+                    idempotency_key VARCHAR(64) NULL,
+                    created_at $ts
+                )$engine");
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+            $this->migrateColumns('sales', ['cash_session_id' => $intCol]);
+            $this->migrateColumns('returns', ['cash_session_id' => $intCol]);
+
+            foreach ([
+                $isMysql ? 'ALTER TABLE cash_registers ADD UNIQUE KEY uq_cash_registers_code (code)'
+                         : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_registers_code ON cash_registers(code)',
+                $isMysql ? 'ALTER TABLE cash_registers ADD KEY idx_cash_registers_location_id (location_id)'
+                         : 'CREATE INDEX IF NOT EXISTS idx_cash_registers_location_id ON cash_registers(location_id)',
+                $isMysql ? 'ALTER TABLE cash_sessions ADD KEY idx_cash_sessions_register_id (cash_register_id)'
+                         : 'CREATE INDEX IF NOT EXISTS idx_cash_sessions_register_id ON cash_sessions(cash_register_id)',
+                $isMysql ? 'ALTER TABLE cash_sessions ADD KEY idx_cash_sessions_status (status)'
+                         : 'CREATE INDEX IF NOT EXISTS idx_cash_sessions_status ON cash_sessions(status)',
+                $isMysql ? 'ALTER TABLE cash_sessions ADD UNIQUE KEY uq_cash_sessions_idempotency_key (idempotency_key)'
+                         : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_sessions_idempotency_key ON cash_sessions(idempotency_key)',
+                $isMysql ? 'ALTER TABLE cash_movements ADD KEY idx_cash_movements_session_id (cash_session_id)'
+                         : 'CREATE INDEX IF NOT EXISTS idx_cash_movements_session_id ON cash_movements(cash_session_id)',
+                $isMysql ? 'ALTER TABLE cash_movements ADD UNIQUE KEY uq_cash_movements_idempotency_key (idempotency_key)'
+                         : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_movements_idempotency_key ON cash_movements(idempotency_key)',
+                $isMysql ? 'ALTER TABLE sales ADD KEY idx_sales_cash_session_id (cash_session_id)'
+                         : 'CREATE INDEX IF NOT EXISTS idx_sales_cash_session_id ON sales(cash_session_id)',
+                $isMysql ? 'ALTER TABLE returns ADD KEY idx_returns_cash_session_id (cash_session_id)'
+                         : 'CREATE INDEX IF NOT EXISTS idx_returns_cash_session_id ON returns(cash_session_id)',
+            ] as $sql) {
+                try {
+                    $this->pdo->exec($sql);
+                } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+            }
+
+            if (!$wasInTransaction) {
+                $this->pdo->commit();
+            }
+        } catch (Throwable $e) {
+            if (!$wasInTransaction && $this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
     // ---- Önfrissítés (GitHub Release-alapú) ----
 
     private const UPDATE_TERMINAL_STATES = ['idle', 'completed', 'failed', 'rolled_back', 'manual_recovery_required'];
@@ -2428,7 +2538,8 @@ class Database
         float $giftCardRedeemed = 0.0,
         ?int $staffId = null,
         ?string $idempotencyKey = null,
-        ?string $idempotencyFingerprint = null
+        ?string $idempotencyFingerprint = null,
+        ?int $cashSessionId = null
     ): int {
         // A token a nyugta bejelentkezés nélküli (QR-kódos) megtekintéséhez
         // kell — kitalálhatatlan, ellentétben magával a sorszámozott
@@ -2436,14 +2547,15 @@ class Database
         $receiptToken = bin2hex(random_bytes(24));
 
         $stmt = $this->pdo->prepare('
-            INSERT INTO sales (total, payment_method, buyer_name, customer_id, loyalty_points_earned, loyalty_points_redeemed, coupon_id, coupon_discount, gift_card_redeemed, staff_id, status, receipt_token, idempotency_key, idempotency_fingerprint, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sales (total, payment_method, buyer_name, customer_id, loyalty_points_earned, loyalty_points_redeemed, coupon_id, coupon_discount, gift_card_redeemed, staff_id, status, receipt_token, idempotency_key, idempotency_fingerprint, cash_session_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ');
         $stmt->execute([
             $total, $paymentMethod, $buyerName, $customerId, $loyaltyPointsEarned, $loyaltyPointsRedeemed,
             $couponId, $couponDiscount, $giftCardRedeemed, $staffId, 'completed', $receiptToken,
             ($idempotencyKey !== null && $idempotencyKey !== '') ? $idempotencyKey : null,
             ($idempotencyFingerprint !== null && $idempotencyFingerprint !== '') ? $idempotencyFingerprint : null,
+            $cashSessionId,
             date('Y-m-d H:i:s'),
         ]);
         return (int) $this->pdo->lastInsertId();
@@ -4876,7 +4988,7 @@ class Database
      * marad, és a hűségpontok nem módosulnak — ez dokumentált,
      * megfontolt korlát, nem hiba.
      */
-    public function processReturn(int $saleId, array $items, string $reason, ?int $staffId, float $totalRefund, array $sale = []): int
+    public function processReturn(int $saleId, array $items, string $reason, ?int $staffId, float $totalRefund, array $sale = [], ?int $cashSessionId = null): int
     {
         $this->beginTransaction();
         try {
@@ -4910,10 +5022,10 @@ class Database
             }
 
             $stmt = $this->pdo->prepare('
-                INSERT INTO returns (sale_id, staff_id, total_refund, reason, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO returns (sale_id, staff_id, total_refund, reason, cash_session_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
             ');
-            $stmt->execute([$saleId, $staffId, $totalRefund, $reason, date('Y-m-d H:i:s')]);
+            $stmt->execute([$saleId, $staffId, $totalRefund, $reason, $cashSessionId, date('Y-m-d H:i:s')]);
             $returnId = (int) $this->pdo->lastInsertId();
 
             foreach ($items as $item) {
@@ -5213,6 +5325,368 @@ class Database
             throw $e;
         }
         return $updated;
+    }
+
+    // ---------------------------------------------------------------
+    // Kassza / műszakkezelés (kasszanyitás/kasszazárás)
+    // ---------------------------------------------------------------
+
+    public function listCashRegisters(bool $includeInactive = false): array
+    {
+        $sql = 'SELECT cr.*, l.name AS location_name FROM cash_registers cr JOIN locations l ON l.id = cr.location_id';
+        if (!$includeInactive) {
+            $sql .= ' WHERE cr.is_active = 1';
+        }
+        return $this->pdo->query($sql . ' ORDER BY l.name, cr.name')->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function getCashRegisterById(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM cash_registers WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    public function saveCashRegister(array $r): int
+    {
+        $now = date('Y-m-d H:i:s');
+        if (!empty($r['id'])) {
+            $this->pdo->prepare('
+                UPDATE cash_registers SET location_id = ?, name = ?, code = ?, is_active = ?, updated_at = ? WHERE id = ?
+            ')->execute([
+                (int) $r['location_id'], $r['name'], $r['code'], !empty($r['is_active']) ? 1 : 0, $now, (int) $r['id'],
+            ]);
+            return (int) $r['id'];
+        }
+        $stmt = $this->pdo->prepare('
+            INSERT INTO cash_registers (location_id, name, code, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ');
+        $stmt->execute([(int) $r['location_id'], $r['name'], $r['code'], !empty($r['is_active']) ? 1 : 0, $now, $now]);
+        return (int) $this->pdo->lastInsertId();
+    }
+
+    public function getOpenCashSession(int $cashRegisterId): ?array
+    {
+        $stmt = $this->pdo->prepare("SELECT * FROM cash_sessions WHERE cash_register_id = ? AND status = 'open' LIMIT 1");
+        $stmt->execute([$cashRegisterId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    public function getCashSession(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM cash_sessions WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    public function findCashSessionByIdempotencyKey(string $key): ?array
+    {
+        if ($key === '') {
+            return null;
+        }
+        $stmt = $this->pdo->prepare('SELECT * FROM cash_sessions WHERE idempotency_key = ?');
+        $stmt->execute([$key]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    /**
+     * Atomikus kasszanyitás — legfeljebb EGY nyitott műszak lehet
+     * pénztárgépenként egyszerre. Ellentétben a kódbázis többi claim-
+     * mintájával (pl. completeStockTake(), ami egy meglévő sort zár le
+     * "UPDATE ... WHERE x IS NULL"-lal), itt egy ÚJ sor beszúrását kell
+     * versenyhelyzet-biztosan megakadályozni — a helyes általánosítás egy
+     * feltételes "INSERT ... SELECT ... WHERE NOT EXISTS", ugyanabban a
+     * tranzakcióban, mint a leíró pre-check. A rowCount()===0 eset azt
+     * jelenti, hogy időközben (a pre-check és ez között) egy másik kérés
+     * már megnyitott egy műszakot ugyanerre a pénztárgépre.
+     */
+    public function openCashSession(
+        int $cashRegisterId,
+        ?int $staffId,
+        float $openingAmount,
+        ?string $idempotencyKey = null,
+        ?string $idempotencyFingerprint = null
+    ): int {
+        $this->beginTransaction();
+        try {
+            $stmt = $this->pdo->prepare("
+                INSERT INTO cash_sessions (cash_register_id, staff_id, opening_amount, status, idempotency_key, idempotency_fingerprint, opened_at)
+                SELECT ?, ?, ?, 'open', ?, ?, ?
+                WHERE NOT EXISTS (SELECT 1 FROM cash_sessions WHERE cash_register_id = ? AND status = 'open')
+            ");
+            $stmt->execute([
+                $cashRegisterId, $staffId, $openingAmount,
+                ($idempotencyKey !== null && $idempotencyKey !== '') ? $idempotencyKey : null,
+                ($idempotencyFingerprint !== null && $idempotencyFingerprint !== '') ? $idempotencyFingerprint : null,
+                date('Y-m-d H:i:s'),
+                $cashRegisterId,
+            ]);
+            if ($stmt->rowCount() === 0) {
+                throw new RuntimeException('Ehhez a pénztárgéphez már van nyitott műszak.');
+            }
+            $id = (int) $this->pdo->lastInsertId();
+            $this->commit();
+            return $id;
+        } catch (Throwable $e) {
+            $this->rollBack();
+            throw $e;
+        }
+    }
+
+    public function recordCashMovement(
+        int $cashSessionId,
+        ?int $staffId,
+        string $type,
+        float $amount,
+        string $reason,
+        ?string $idempotencyKey = null
+    ): int {
+        if (!in_array($type, ['cash_in', 'cash_out'], true)) {
+            throw new InvalidArgumentException("Érvénytelen pénzmozgás-típus: $type");
+        }
+        if ($amount <= 0) {
+            throw new InvalidArgumentException('A pénzmozgás összege csak pozitív lehet.');
+        }
+        $session = $this->getCashSession($cashSessionId);
+        if (!$session || $session['status'] !== 'open') {
+            throw new RuntimeException('Ez a műszak nincs nyitva, pénzmozgás nem rögzíthető hozzá.');
+        }
+        $stmt = $this->pdo->prepare('
+            INSERT INTO cash_movements (cash_session_id, staff_id, type, amount, reason, idempotency_key, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ');
+        $stmt->execute([
+            $cashSessionId, $staffId, $type, $amount, $reason,
+            ($idempotencyKey !== null && $idempotencyKey !== '') ? $idempotencyKey : null,
+            date('Y-m-d H:i:s'),
+        ]);
+        return (int) $this->pdo->lastInsertId();
+    }
+
+    public function findCashMovementByIdempotencyKey(string $key): ?array
+    {
+        if ($key === '') {
+            return null;
+        }
+        $stmt = $this->pdo->prepare('SELECT * FROM cash_movements WHERE idempotency_key = ?');
+        $stmt->execute([$key]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    public function listCashMovements(int $cashSessionId): array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM cash_movements WHERE cash_session_id = ? ORDER BY created_at');
+        $stmt->execute([$cashSessionId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * A kasszazárás alapja: opening_amount + készpénzes eladások -
+     * készpénzes visszatérítések + pénzbevét - pénzkiadás. A "készpénzes"
+     * besorolás SOSE a kliensre van bízva — a hívó (webroot/api/*.php) a
+     * Settings::payment_methods admin-szerkeszthető listájából adja át,
+     * melyik payment_method-érték számít készpénznek (lásd Settings.php
+     * 'is_cash' mező), hogy egy bolt egy átnevezett/hozzáadott fizetési
+     * móddal se törje csendben a számítást. A visszatérítéseknél a
+     * cash_session_id a visszatérítés PILLANATÁBAN nyitott műszakra mutat
+     * (nem az eredeti eladáséra) — a pénz fizikailag MOST hagyja el az
+     * aktuális kasszát, függetlenül attól, mikor történt az eredeti eladás.
+     *
+     * @param string[] $cashPaymentMethods
+     */
+    public function computeExpectedCash(array $session, array $cashPaymentMethods): float
+    {
+        if (!$cashPaymentMethods) {
+            $cashPaymentMethods = ['Készpénz'];
+        }
+        $placeholders = implode(',', array_fill(0, count($cashPaymentMethods), '?'));
+
+        $salesStmt = $this->pdo->prepare("
+            SELECT COALESCE(SUM(total), 0) FROM sales
+            WHERE cash_session_id = ? AND payment_method IN ($placeholders)
+        ");
+        $salesStmt->execute(array_merge([$session['id']], $cashPaymentMethods));
+        $cashSales = (float) $salesStmt->fetchColumn();
+
+        $refundsStmt = $this->pdo->prepare("
+            SELECT COALESCE(SUM(r.total_refund), 0)
+            FROM returns r
+            JOIN sales s ON s.id = r.sale_id
+            WHERE r.cash_session_id = ? AND s.payment_method IN ($placeholders)
+        ");
+        $refundsStmt->execute(array_merge([$session['id']], $cashPaymentMethods));
+        $cashRefunds = (float) $refundsStmt->fetchColumn();
+
+        $movStmt = $this->pdo->prepare("
+            SELECT type, COALESCE(SUM(amount), 0) AS total FROM cash_movements WHERE cash_session_id = ? GROUP BY type
+        ");
+        $movStmt->execute([$session['id']]);
+        $cashIn = 0.0;
+        $cashOut = 0.0;
+        foreach ($movStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            if ($row['type'] === 'cash_in') { $cashIn = (float) $row['total']; }
+            if ($row['type'] === 'cash_out') { $cashOut = (float) $row['total']; }
+        }
+
+        return round((float) $session['opening_amount'] + $cashSales - $cashRefunds + $cashIn - $cashOut, 2);
+    }
+
+    /**
+     * A kasszazárás-előtti bontás (kasszazaras.php) — ugyanazokat a
+     * részösszegeket adja vissza külön-külön is, amiket
+     * computeExpectedCash() összesít, hogy a felhasználó lássa, miből jön
+     * össze a várható összeg, mielőtt beírná a ténylegesen megszámolt
+     * összeget.
+     *
+     * @param string[] $cashPaymentMethods
+     */
+    public function getCashSessionBreakdown(int $sessionId, array $cashPaymentMethods): array
+    {
+        $session = $this->getCashSession($sessionId);
+        if (!$session) {
+            throw new RuntimeException('A műszak nem található.');
+        }
+        if (!$cashPaymentMethods) {
+            $cashPaymentMethods = ['Készpénz'];
+        }
+        $placeholders = implode(',', array_fill(0, count($cashPaymentMethods), '?'));
+
+        $salesStmt = $this->pdo->prepare("
+            SELECT COALESCE(SUM(total), 0) FROM sales
+            WHERE cash_session_id = ? AND payment_method IN ($placeholders)
+        ");
+        $salesStmt->execute(array_merge([$sessionId], $cashPaymentMethods));
+        $cashSales = (float) $salesStmt->fetchColumn();
+
+        $refundsStmt = $this->pdo->prepare("
+            SELECT COALESCE(SUM(r.total_refund), 0)
+            FROM returns r
+            JOIN sales s ON s.id = r.sale_id
+            WHERE r.cash_session_id = ? AND s.payment_method IN ($placeholders)
+        ");
+        $refundsStmt->execute(array_merge([$sessionId], $cashPaymentMethods));
+        $cashRefunds = (float) $refundsStmt->fetchColumn();
+
+        $movements = $this->listCashMovements($sessionId);
+        $cashIn = array_sum(array_map(fn($m) => $m['type'] === 'cash_in' ? (float) $m['amount'] : 0.0, $movements));
+        $cashOut = array_sum(array_map(fn($m) => $m['type'] === 'cash_out' ? (float) $m['amount'] : 0.0, $movements));
+
+        $expected = round((float) $session['opening_amount'] + $cashSales - $cashRefunds + $cashIn - $cashOut, 2);
+
+        return [
+            'session'          => $session,
+            'opening_amount'   => (float) $session['opening_amount'],
+            'cash_sales'       => round($cashSales, 2),
+            'cash_refunds'     => round($cashRefunds, 2),
+            'cash_in'          => round($cashIn, 2),
+            'cash_out'         => round($cashOut, 2),
+            'expected_amount'  => $expected,
+            'movements'        => $movements,
+        ];
+    }
+
+    /**
+     * Atomikus kasszazárás — közvetlen mintája completeStockTake()-nek:
+     * "UPDATE ... WHERE status = 'open'" + rowCount()===0 ellenőrzés
+     * védi két majdnem egyidejű zárási kérés ellen (dupla kattintás,
+     * hálózati újrapróbálkozás), pontosan ugyanúgy, ahogy egy leltár
+     * dupla lezárása ellen is véd.
+     *
+     * A close-oldali idempotencia SZÁNDÉKOSAN nem a sessions.idempotency_key
+     * oszlopon keresztül megy (az az OPEN-hívás dedup-kulcsa — egyetlen
+     * UNIQUE oszlopon két különböző művelet, két különböző kulcsát
+     * összekeverni hibás modellezés lenne). Egy hálózati-újrapróbálkozás
+     * jellegű duplikált zárás helyes kezelése a hívó (webroot/api/
+     * cash-session-close.php) felelőssége: az atomikus UPDATE-őr itt
+     * mindig "Ez a műszak már le van zárva."-t dob másodszorra — a hívó ezt
+     * elkapva összeveti a beírt closing_amount-tal, és ha egyezik, a MÁR
+     * lezárt sor eredményét adja vissza sikeresen ahelyett, hogy hibát
+     * mutatna egy ténylegesen sikeres (csak a válasz elveszett)
+     * kérésnek.
+     *
+     * @param string[] $cashPaymentMethods
+     * @return array{expected_amount:float, variance:float}
+     */
+    public function closeCashSession(int $id, float $countedAmount, array $cashPaymentMethods): array
+    {
+        $this->beginTransaction();
+        try {
+            $session = $this->getCashSession($id);
+            if (!$session || $session['status'] !== 'open') {
+                throw new RuntimeException('Ez a műszak már le van zárva, vagy nem létezik.');
+            }
+
+            $expected = $this->computeExpectedCash($session, $cashPaymentMethods);
+            $variance = round($countedAmount - $expected, 2);
+
+            $closeStmt = $this->pdo->prepare("
+                UPDATE cash_sessions
+                SET status = 'closed', closing_amount = ?, expected_amount = ?, variance = ?, closed_at = ?
+                WHERE id = ? AND status = 'open'
+            ");
+            $closeStmt->execute([$countedAmount, $expected, $variance, date('Y-m-d H:i:s'), $id]);
+            if ($closeStmt->rowCount() === 0) {
+                throw new RuntimeException('Ez a műszak már le van zárva.');
+            }
+            $this->commit();
+            return ['expected_amount' => $expected, 'variance' => $variance];
+        } catch (Throwable $e) {
+            $this->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * @param array{location_id?:int, cash_register_id?:int, staff_id?:int, status?:string, date_from?:string, date_to?:string} $filters
+     */
+    public function listCashSessions(array $filters = []): array
+    {
+        $where = [];
+        $params = [];
+        if (!empty($filters['cash_register_id'])) {
+            $where[] = 'cs.cash_register_id = ?';
+            $params[] = (int) $filters['cash_register_id'];
+        }
+        if (!empty($filters['location_id'])) {
+            $where[] = 'cr.location_id = ?';
+            $params[] = (int) $filters['location_id'];
+        }
+        if (!empty($filters['staff_id'])) {
+            $where[] = 'cs.staff_id = ?';
+            $params[] = (int) $filters['staff_id'];
+        }
+        if (!empty($filters['status'])) {
+            $where[] = 'cs.status = ?';
+            $params[] = $filters['status'];
+        }
+        if (!empty($filters['date_from'])) {
+            $where[] = 'cs.opened_at >= ?';
+            $params[] = $filters['date_from'];
+        }
+        if (!empty($filters['date_to'])) {
+            $where[] = 'cs.opened_at <= ?';
+            $params[] = $filters['date_to'];
+        }
+        $sql = '
+            SELECT cs.*, cr.name AS register_name, cr.code AS register_code, l.name AS location_name, st.name AS staff_name
+            FROM cash_sessions cs
+            JOIN cash_registers cr ON cr.id = cs.cash_register_id
+            JOIN locations l ON l.id = cr.location_id
+            LEFT JOIN staff st ON st.id = cs.staff_id
+        ';
+        if ($where) {
+            $sql .= ' WHERE ' . implode(' AND ', $where);
+        }
+        $sql .= ' ORDER BY cs.opened_at DESC';
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     public function getDailyRevenueTrend(int $days = 30): array

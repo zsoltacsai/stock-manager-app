@@ -161,6 +161,7 @@ CREATE TABLE IF NOT EXISTS sales (
     idempotency_key          VARCHAR(64) NULL,
     idempotency_fingerprint  VARCHAR(64) NULL,
     invoice_claim_at         DATETIME NULL,
+    cash_session_id          INT UNSIGNED NULL, -- melyik nyitott kasszaműszakhoz tartozik; FK a cash_sessions táblára a fájl végén (az később van definiálva)
     created_at               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     -- The daily zárás report filters by date on every load — this index is
     -- the difference between a table scan and an index range seek once
@@ -169,6 +170,7 @@ CREATE TABLE IF NOT EXISTS sales (
     KEY idx_sales_customer_id (customer_id),
     KEY idx_sales_coupon_id (coupon_id),
     KEY idx_sales_staff_id (staff_id),
+    KEY idx_sales_cash_session_id (cash_session_id),
     UNIQUE KEY uq_sales_idempotency_key (idempotency_key),
     CONSTRAINT fk_sales_customer FOREIGN KEY (customer_id) REFERENCES customers(id),
     CONSTRAINT fk_sales_coupon FOREIGN KEY (coupon_id) REFERENCES coupons(id),
@@ -337,9 +339,11 @@ CREATE TABLE IF NOT EXISTS returns (
     total_refund           DECIMAL(12,2) NOT NULL,
     reason                 VARCHAR(255) NULL,
     credit_invoice_number  VARCHAR(64) NULL,
+    cash_session_id        INT UNSIGNED NULL, -- melyik (a visszatérítés PILLANATÁBAN nyitott) kasszaműszakhoz tartozik; FK a fájl végén, lásd sales.cash_session_id
     created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_returns_sale_id (sale_id),
     KEY idx_returns_created_at (created_at),
+    KEY idx_returns_cash_session_id (cash_session_id),
     CONSTRAINT fk_returns_sale FOREIGN KEY (sale_id) REFERENCES sales(id),
     CONSTRAINT fk_returns_staff FOREIGN KEY (staff_id) REFERENCES staff(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -417,6 +421,64 @@ CREATE TABLE IF NOT EXISTS stock_transfers (
     CONSTRAINT fk_stock_transfers_to FOREIGN KEY (to_location_id) REFERENCES locations(id),
     CONSTRAINT fk_stock_transfers_staff FOREIGN KEY (staff_id) REFERENCES staff(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Kassza / műszakkezelés (kasszanyitás/kasszazárás). Egy pénztárgépnek
+-- legfeljebb EGY nyitott műszakja lehet egyszerre — ezt az alkalmazás-réteg
+-- kényszeríti ki (lásd Database::openCashSession()), nem egy DB-szintű
+-- megkötés (MySQL-ben nincs portábilis partial unique index).
+CREATE TABLE IF NOT EXISTS cash_registers (
+    id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    location_id INT UNSIGNED NOT NULL,
+    name        VARCHAR(191) NOT NULL,
+    code        VARCHAR(32) NOT NULL,
+    is_active   TINYINT(1) NOT NULL DEFAULT 1,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_cash_registers_code (code),
+    KEY idx_cash_registers_location_id (location_id),
+    CONSTRAINT fk_cash_registers_location FOREIGN KEY (location_id) REFERENCES locations(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS cash_sessions (
+    id               INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    cash_register_id INT UNSIGNED NOT NULL,
+    staff_id         INT UNSIGNED NULL,
+    opening_amount   DECIMAL(12,2) NOT NULL,
+    closing_amount   DECIMAL(12,2) NULL,
+    expected_amount  DECIMAL(12,2) NULL,
+    variance         DECIMAL(12,2) NULL,
+    status           VARCHAR(16) NOT NULL DEFAULT 'open',
+    idempotency_key          VARCHAR(64) NULL,
+    idempotency_fingerprint  VARCHAR(64) NULL,
+    opened_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    closed_at        DATETIME NULL,
+    KEY idx_cash_sessions_register_id (cash_register_id),
+    KEY idx_cash_sessions_status (status),
+    UNIQUE KEY uq_cash_sessions_idempotency_key (idempotency_key),
+    CONSTRAINT fk_cash_sessions_register FOREIGN KEY (cash_register_id) REFERENCES cash_registers(id),
+    CONSTRAINT fk_cash_sessions_staff FOREIGN KEY (staff_id) REFERENCES staff(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS cash_movements (
+    id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    cash_session_id INT UNSIGNED NOT NULL,
+    staff_id        INT UNSIGNED NULL,
+    type            VARCHAR(16) NOT NULL,
+    amount          DECIMAL(12,2) NOT NULL,
+    reason          VARCHAR(255) NOT NULL,
+    idempotency_key VARCHAR(64) NULL,
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_cash_movements_session_id (cash_session_id),
+    UNIQUE KEY uq_cash_movements_idempotency_key (idempotency_key),
+    CONSTRAINT fk_cash_movements_session FOREIGN KEY (cash_session_id) REFERENCES cash_sessions(id),
+    CONSTRAINT fk_cash_movements_staff FOREIGN KEY (staff_id) REFERENCES staff(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- A sales.cash_session_id FK csak itt adható hozzá, miután a cash_sessions
+-- tábla (fentebb) már létezik — a sales tábla a fájlban korábban van
+-- definiálva, MySQL-ben pedig egy CONSTRAINT csak már létező táblára mutathat.
+ALTER TABLE sales ADD CONSTRAINT fk_sales_cash_session FOREIGN KEY (cash_session_id) REFERENCES cash_sessions(id);
+ALTER TABLE returns ADD CONSTRAINT fk_returns_cash_session FOREIGN KEY (cash_session_id) REFERENCES cash_sessions(id);
 
 CREATE TABLE IF NOT EXISTS webshop_orders (
     id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

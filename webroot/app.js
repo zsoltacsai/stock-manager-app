@@ -255,13 +255,18 @@ loadStaffFromStorage();
 // telephely (Telephelyek oldal) — egytelephelyes boltnál a select rejtve
 // marad, és a Kassza pontosan úgy viselkedik, mint korábban.
 const locationSelector = document.getElementById('location-selector');
+let allLocationsData = [];
 
 async function initLocationSelector() {
     try {
         const res = await fetch('/api/locations-list.php');
         const data = await res.json();
         const locations = data.locations || [];
-        if (!locations.length) return;
+        allLocationsData = locations;
+        if (!locations.length) {
+            refreshCashRegistersForLocation();
+            return;
+        }
 
         locationSelector.innerHTML = locations.map(l => `<option value="${l.id}">${escapeHtml(l.name)}</option>`).join('');
         locationSelector.classList.remove('hidden');
@@ -273,10 +278,214 @@ async function initLocationSelector() {
 
         locationSelector.addEventListener('change', () => {
             localStorage.setItem('sm_current_location_id', locationSelector.value);
+            refreshCashRegistersForLocation();
         });
     } catch (e) { /* selector just stays hidden on failure */ }
+    refreshCashRegistersForLocation();
 }
 initLocationSelector();
+
+// --- Kassza-panel (pénztárgép-választó + kasszanyitás/-zárás/pénzmozgás) ---
+// A pénztárgépek listája a locations-list.php válaszába van fűzve (lásd ott
+// a docblockot) — nulla plusz HTTP-kérés, ugyanaz a fegyelem, mint a
+// telephely-választónál. Egy boltnál, ahol egyáltalán nincs felvéve
+// pénztárgép, a jelző csendben rejtve marad — minden változatlanul
+// működik, mint a kasszakezelés bevezetése előtt.
+const cashRegisterSelector = document.getElementById('cash-register-selector');
+const cashStatusBtn = document.getElementById('cash-status-btn');
+const cashStatusText = document.getElementById('cash-status-text');
+const cashPanelModal = document.getElementById('cash-panel-modal');
+const cashPanelClosed = document.getElementById('cash-panel-closed');
+const cashPanelOpen = document.getElementById('cash-panel-open');
+const cashOpenAmountInput = document.getElementById('cash-open-amount');
+const cashOpenFeedback = document.getElementById('cash-open-feedback');
+const cashOpenBtn = document.getElementById('cash-open-btn');
+const cashPanelOpenSummary = document.getElementById('cash-panel-open-summary');
+const cashMovementForm = document.getElementById('cash-movement-form');
+const cashMovementAmount = document.getElementById('cash-movement-amount');
+const cashMovementReason = document.getElementById('cash-movement-reason');
+const cashMovementFeedback = document.getElementById('cash-movement-feedback');
+const cashMovementSubmitBtn = document.getElementById('cash-movement-submit-btn');
+const cashMovementCancelBtn = document.getElementById('cash-movement-cancel-btn');
+const cashPanelOpenActions = document.getElementById('cash-panel-open-actions');
+const cashCloseLink = document.getElementById('cash-close-link');
+
+let currentCashSession = null;
+let pendingMovementType = null;
+
+function currentCashRegisterId() {
+    return cashRegisterSelector.value ? parseInt(cashRegisterSelector.value, 10) : null;
+}
+
+function currentLocationRegisters() {
+    const locId = locationSelector.classList.contains('hidden') || !locationSelector.value
+        ? null
+        : parseInt(locationSelector.value, 10);
+    const loc = (locId !== null ? allLocationsData.find(l => l.id === locId) : null) || allLocationsData[0];
+    return (loc && loc.cash_registers) || [];
+}
+
+function updateCashStatusBadge() {
+    const regId = currentCashRegisterId();
+    if (!regId) {
+        cashStatusBtn.classList.add('hidden');
+        return;
+    }
+    cashStatusBtn.classList.remove('hidden');
+    const reg = currentLocationRegisters().find(r => r.id === regId);
+    const isOpen = !!(reg && reg.open);
+    cashStatusText.textContent = isOpen ? 'Kassza: NYITVA' : 'Kassza: ZÁRVA';
+    cashStatusBtn.style.color = isOpen ? 'var(--accent)' : 'var(--danger)';
+}
+
+function refreshCashRegistersForLocation() {
+    const registers = currentLocationRegisters();
+    if (!registers.length) {
+        cashRegisterSelector.classList.add('hidden');
+        cashStatusBtn.classList.add('hidden');
+        return;
+    }
+    cashRegisterSelector.innerHTML = registers.map(r => `<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
+    cashRegisterSelector.classList.toggle('hidden', registers.length <= 1);
+
+    const saved = localStorage.getItem('sm_current_cash_register_id');
+    cashRegisterSelector.value = (saved && registers.some(r => String(r.id) === saved)) ? saved : String(registers[0].id);
+    localStorage.setItem('sm_current_cash_register_id', cashRegisterSelector.value);
+    updateCashStatusBadge();
+}
+
+cashRegisterSelector.addEventListener('change', () => {
+    localStorage.setItem('sm_current_cash_register_id', cashRegisterSelector.value);
+    updateCashStatusBadge();
+});
+
+function renderCashPanel() {
+    if (currentCashSession) {
+        cashPanelClosed.classList.add('hidden');
+        cashPanelOpen.classList.remove('hidden');
+        cashMovementForm.classList.add('hidden');
+        cashPanelOpenActions.classList.remove('hidden');
+        const opened = Math.round(currentCashSession.opening_amount).toLocaleString('hu-HU');
+        cashPanelOpenSummary.textContent = `Nyitva — nyitó összeg: ${opened} Ft`;
+        cashCloseLink.href = `kasszazaras.php?id=${currentCashSession.id}`;
+    } else {
+        cashPanelClosed.classList.remove('hidden');
+        cashPanelOpen.classList.add('hidden');
+        cashOpenAmountInput.value = '';
+        cashOpenFeedback.textContent = '';
+    }
+    updateCashStatusBadge();
+}
+
+async function openCashPanel() {
+    const regId = currentCashRegisterId();
+    if (!regId) return;
+    cashPanelModal.classList.add('open');
+    try {
+        const res = await fetch(`/api/cash-session-status.php?cash_register_id=${regId}`);
+        const data = await res.json();
+        currentCashSession = data.open ? data.session : null;
+    } catch (e) { currentCashSession = null; }
+    renderCashPanel();
+}
+
+function newIdempotencyKey() {
+    return (window.crypto && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+cashStatusBtn.addEventListener('click', openCashPanel);
+document.querySelectorAll('[data-close-cash-panel]').forEach(btn => {
+    btn.addEventListener('click', () => cashPanelModal.classList.remove('open'));
+});
+
+cashOpenBtn.addEventListener('click', async () => {
+    const regId = currentCashRegisterId();
+    const amount = parseFloat(cashOpenAmountInput.value);
+    if (!regId || isNaN(amount) || amount < 0) {
+        cashOpenFeedback.textContent = 'Add meg a nyitó összeget.';
+        cashOpenFeedback.className = 'modal-feedback error';
+        return;
+    }
+    cashOpenBtn.disabled = true;
+    try {
+        const res = await fetch('/api/cash-session-open.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cash_register_id: regId, opening_amount: amount, idempotency_key: newIdempotencyKey() }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            cashOpenFeedback.textContent = data.error || 'Hiba történt.';
+            cashOpenFeedback.className = 'modal-feedback error';
+            return;
+        }
+        currentCashSession = data.session;
+        const reg = currentLocationRegisters().find(r => r.id === regId);
+        if (reg) { reg.open = true; reg.session_id = data.id; }
+        renderCashPanel();
+    } catch (e) {
+        cashOpenFeedback.textContent = 'Hiba: ' + e.message;
+        cashOpenFeedback.className = 'modal-feedback error';
+    } finally {
+        cashOpenBtn.disabled = false;
+    }
+});
+
+document.querySelectorAll('[data-cash-movement-type]').forEach(btn => {
+    btn.addEventListener('click', () => {
+        pendingMovementType = btn.dataset.cashMovementType;
+        cashMovementForm.classList.remove('hidden');
+        cashPanelOpenActions.classList.add('hidden');
+        cashMovementAmount.value = '';
+        cashMovementReason.value = '';
+        cashMovementFeedback.textContent = '';
+        cashMovementAmount.focus();
+    });
+});
+cashMovementCancelBtn.addEventListener('click', () => {
+    cashMovementForm.classList.add('hidden');
+    cashPanelOpenActions.classList.remove('hidden');
+});
+cashMovementSubmitBtn.addEventListener('click', async () => {
+    const amount = parseFloat(cashMovementAmount.value);
+    const reason = cashMovementReason.value.trim();
+    if (isNaN(amount) || amount <= 0) {
+        cashMovementFeedback.textContent = 'Az összegnek pozitívnak kell lennie.';
+        cashMovementFeedback.className = 'modal-feedback error';
+        return;
+    }
+    if (!reason) {
+        cashMovementFeedback.textContent = 'Az indoklás megadása kötelező.';
+        cashMovementFeedback.className = 'modal-feedback error';
+        return;
+    }
+    cashMovementSubmitBtn.disabled = true;
+    try {
+        const res = await fetch('/api/cash-movement.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                cash_session_id: currentCashSession.id, type: pendingMovementType, amount, reason,
+                idempotency_key: newIdempotencyKey(),
+            }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            cashMovementFeedback.textContent = data.error || 'Hiba történt.';
+            cashMovementFeedback.className = 'modal-feedback error';
+            return;
+        }
+        cashMovementForm.classList.add('hidden');
+        cashPanelOpenActions.classList.remove('hidden');
+    } catch (e) {
+        cashMovementFeedback.textContent = 'Hiba: ' + e.message;
+        cashMovementFeedback.className = 'modal-feedback error';
+    } finally {
+        cashMovementSubmitBtn.disabled = false;
+    }
+});
 
 // --- Vásárlói törzs: autocomplete + teljes választó/szerkesztő modal a "Név / Cégnév" mezőnél ---
 const buyerNameResults = document.getElementById('buyer-name-results');
@@ -1068,6 +1277,9 @@ checkoutBtn.addEventListener('click', async () => {
     if (currentStaff) payload.staff_id = currentStaff.id;
     if (!locationSelector.classList.contains('hidden') && locationSelector.value) {
         payload.location_id = parseInt(locationSelector.value, 10);
+    }
+    if (currentCashRegisterId()) {
+        payload.cash_register_id = currentCashRegisterId();
     }
     if (appliedGiftCard) payload.gift_card_code = appliedGiftCard.code;
     if (buyerInput.buyer) {

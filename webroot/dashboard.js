@@ -105,10 +105,18 @@ function renderTodayStatus(data) {
     const closingBadge = s.closing_done
         ? '<span class="stock-badge ok">Lezárva</span>'
         : '<span class="stock-badge warn">Még nincs lezárva</span>';
+    // Csak akkor jelenik meg, ha a bolt ténylegesen használ pénztárgép-
+    // nyilvántartást (van felvéve legalább egy) — egy azt nem használó
+    // boltnál ez a sor egyszerűen hiányzik, ugyanaz a "csendben rejtve
+    // marad, ha nem releváns" elv, mint a telephely-választónál (app.js).
+    const cashRow = s.cash_registers_total > 0
+        ? `<p style="margin-bottom:0;">Kassza: <span class="stock-badge ${s.cash_sessions_open > 0 ? 'ok' : 'warn'}">${s.cash_sessions_open} / ${s.cash_registers_total} nyitva</span> <a href="kassza-riport.php" class="muted">(kassza-riport)</a></p>`
+        : '';
     box.innerHTML = `
         <p>Napi zárás: ${closingBadge} <a href="zaras.php" class="muted">(Napi zárás megnyitása)</a></p>
         <p>Webshop rendelés feldolgozás alatt: <strong>${s.webshop_draft_count}</strong>${s.webshop_draft_count > 0 ? ' <a href="beerkezo-eladasok.php" class="muted">(megtekintés)</a>' : ''}</p>
-        <p style="margin-bottom:0;">Sikertelen számla (7 nap): <strong style="${s.invoice_failures_7d > 0 ? 'color:var(--danger);' : ''}">${s.invoice_failures_7d}</strong></p>
+        <p${cashRow ? '' : ' style="margin-bottom:0;"'}>Sikertelen számla (7 nap): <strong style="${s.invoice_failures_7d > 0 ? 'color:var(--danger);' : ''}">${s.invoice_failures_7d}</strong></p>
+        ${cashRow}
     `;
 }
 

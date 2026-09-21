@@ -17,6 +17,17 @@ $paymentMethod = $input['payment_method'] ?? 'Készpénz';
 $customerId = !empty($input['customer_id']) ? (int) $input['customer_id'] : null;
 $redeemPoints = max(0, (int) ($input['redeem_points'] ?? 0));
 $locationId = !empty($input['location_id']) ? (int) $input['location_id'] : null;
+// Opcionális — csak azoknál a boltoknál releváns, akik ténylegesen
+// használják a kasszakezelést (nyitott/zárt műszakok). Ha nincs megadva,
+// vagy a megadott pénztárgéphez épp nincs nyitott műszak, a sale.cash_session_id
+// NULL marad — teljesen visszafelé kompatibilis, egy ilyen boltnál minden
+// változatlanul működik, mint a kasszakezelés bevezetése előtt.
+$cashRegisterId = !empty($input['cash_register_id']) ? (int) $input['cash_register_id'] : null;
+$cashSessionId = null;
+if ($cashRegisterId) {
+    $openSession = $db->getOpenCashSession($cashRegisterId);
+    $cashSessionId = $openSession ? (int) $openSession['id'] : null;
+}
 // Kliens által generált, a kosár egy adott "leadási kísérletéhez" tartozó
 // kulcs — dupla kattintás, hálózati újrapróbálkozás, vagy egy elveszett
 // válasz utáni manuális újraküldés esetén ez zárja ki, hogy ugyanaz a
@@ -253,7 +264,8 @@ try {
             $giftCardRedeemed,
             Auth::currentStaffId(),
             $idempotencyKey,
-            $idempotencyFingerprint
+            $idempotencyFingerprint,
+            $cashSessionId
         );
         foreach ($lineItems as $item) {
             $db->insertSaleItem($saleId, $item);

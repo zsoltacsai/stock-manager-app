@@ -116,12 +116,21 @@ class Settings
         // Fizetési módok listája (kassza + beérkező webshop-rendelések
         // fizetésimód-választója) — bővíthető a Beállítások alatt, hogy pl.
         // egy webshopban használt "Stripe" is választható legyen helyben.
+        // Az 'is_cash' mező jelöli, melyik érték számít TÉNYLEGES
+        // készpénznek a kasszazárás várható-összeg számításához (lásd
+        // Database::computeExpectedCash()) — SOSE egy hardcodolt
+        // 'Készpénz' string-összehasonlítás, mert egy bolt átnevezheti
+        // vagy törölheti ezt az alapértelmezett bejegyzést. Egy régi
+        // settings.json-ból betöltött, még is_cash mező NÉLKÜLI listát a
+        // read() tölt fel utólag (lásd ott) — az array_merge() ugyanis
+        // csak felső szintű kulcsokat cserél, a payment_methods egész
+        // tömbjét egyben felülírná a tárolt (régi formátumú) tartalom.
         'payment_methods' => [
-            ['value' => 'Készpénz', 'color' => '#16a34a'],
-            ['value' => 'Átutalás', 'color' => '#a855f7'],
-            ['value' => 'Bankkártya', 'color' => '#3b82f6'],
-            ['value' => 'PayPal', 'color' => '#14b8a6'],
-            ['value' => 'Utánvét', 'color' => '#f97316'],
+            ['value' => 'Készpénz', 'color' => '#16a34a', 'is_cash' => true],
+            ['value' => 'Átutalás', 'color' => '#a855f7', 'is_cash' => false],
+            ['value' => 'Bankkártya', 'color' => '#3b82f6', 'is_cash' => false],
+            ['value' => 'PayPal', 'color' => '#14b8a6', 'is_cash' => false],
+            ['value' => 'Utánvét', 'color' => '#f97316', 'is_cash' => false],
         ],
 
         // Melyik szolgáltató állítja ki a számlákat — 'szamlazz' (a
@@ -289,7 +298,32 @@ class Settings
         if (!is_array($data)) {
             throw new RuntimeException('A beállítások fájlja sérült (érvénytelen JSON): ' . $this->path);
         }
-        return array_merge(self::DEFAULTS, $data);
+        return self::backfillPaymentMethodIsCash(array_merge(self::DEFAULTS, $data));
+    }
+
+    /**
+     * array_merge(DEFAULTS, $data) csak felső szintű kulcsokat cserél — egy
+     * 1.5.0 ELŐTTI settings.json-ban tárolt payment_methods tömb (ami MÁR
+     * benne van $data-ban, ha valaha mentettek beállítást) egyben felülírja
+     * a fenti, is_cash-t már tartalmazó alapértelmezést, mezőnkénti
+     * egyesítés nélkül. Ez itt utólag pótolja a hiányzó is_cash kulcsot
+     * minden bejegyzésnél — 'Készpénz' → true (a korábbi, hardcodolt
+     * összehasonlítás alapja volt), minden más → false — hogy egy régi
+     * telepítés frissítés után is helyesen számolja a kasszazárás várható
+     * összegét, admin beavatkozás nélkül.
+     */
+    private static function backfillPaymentMethodIsCash(array $settings): array
+    {
+        if (!isset($settings['payment_methods']) || !is_array($settings['payment_methods'])) {
+            return $settings;
+        }
+        foreach ($settings['payment_methods'] as &$method) {
+            if (is_array($method) && !array_key_exists('is_cash', $method)) {
+                $method['is_cash'] = (($method['value'] ?? '') === 'Készpénz');
+            }
+        }
+        unset($method);
+        return $settings;
     }
 
     /**

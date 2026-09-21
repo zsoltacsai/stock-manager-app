@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS sales (
     idempotency_key          TEXT,                  -- kliens-generált kulcs, duplikált eladás (dupla kattintás/újrapróbálkozás) elleni védelemhez — lásd Database::insertSale()
     idempotency_fingerprint  TEXT,                  -- a kérés üzletileg releváns mezőinek sha256-hash-e — ugyanaz a kulcs, de eltérő ujjlenyomat esetén 409 Conflict, lásd sale.php build_sale_fingerprint()
     invoice_claim_at         TEXT,                  -- atomikus "számla kiállítása folyamatban" foglalás időbélyege — lásd Database::tryClaimInvoiceIssuance()
+    cash_session_id          INTEGER REFERENCES cash_sessions(id), -- melyik nyitott kasszaműszakhoz tartozik — lásd Database::openCashSession()
     created_at               TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -70,6 +71,7 @@ CREATE INDEX IF NOT EXISTS idx_sales_customer_id ON sales(customer_id);
 CREATE INDEX IF NOT EXISTS idx_sales_staff_id ON sales(staff_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_idempotency_key ON sales(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_sales_coupon_id ON sales(coupon_id);
+CREATE INDEX IF NOT EXISTS idx_sales_cash_session_id ON sales(cash_session_id);
 
 -- One row per day a "napi zárás" (daily closing) was run. Re-closing the
 -- same date overwrites the row (INSERT OR REPLACE), useful if a late
@@ -320,10 +322,12 @@ CREATE TABLE IF NOT EXISTS returns (
     total_refund           REAL NOT NULL,
     reason                 TEXT,
     credit_invoice_number  TEXT,
+    cash_session_id        INTEGER REFERENCES cash_sessions(id), -- melyik (a visszatérítés PILLANATÁBAN nyitott) kasszaműszakhoz tartozik — NEM az eredeti eladáséhoz, lásd Database::computeExpectedCash()
     created_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_returns_sale_id ON returns(sale_id);
 CREATE INDEX IF NOT EXISTS idx_returns_created_at ON returns(created_at);
+CREATE INDEX IF NOT EXISTS idx_returns_cash_session_id ON returns(cash_session_id);
 
 CREATE TABLE IF NOT EXISTS return_items (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -393,6 +397,54 @@ CREATE TABLE IF NOT EXISTS stock_transfers (
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_stock_transfers_product_id ON stock_transfers(product_id);
+
+-- Kassza / műszakkezelés (kasszanyitás/kasszazárás). Egy telephelyen több
+-- pénztárgép is lehet; egy pénztárgépnek legfeljebb EGY nyitott műszakja
+-- lehet egyszerre — ezt az alkalmazás-réteg kényszeríti ki (lásd
+-- Database::openCashSession()), nem egy DB-szintű megkötés, mert a
+-- MySQL-sémában nincs portábilis partial unique index.
+CREATE TABLE IF NOT EXISTS cash_registers (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    location_id INTEGER NOT NULL REFERENCES locations(id),
+    name        TEXT NOT NULL,
+    code        TEXT NOT NULL,
+    is_active   INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_registers_code ON cash_registers(code);
+CREATE INDEX IF NOT EXISTS idx_cash_registers_location_id ON cash_registers(location_id);
+
+CREATE TABLE IF NOT EXISTS cash_sessions (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    cash_register_id INTEGER NOT NULL REFERENCES cash_registers(id),
+    staff_id         INTEGER REFERENCES staff(id),
+    opening_amount   REAL NOT NULL,
+    closing_amount   REAL,                 -- a záráskor beírt, ténylegesen megszámolt összeg
+    expected_amount  REAL,                 -- szerver-oldalon számolt várható összeg záráskor — lásd Database::computeExpectedCash()
+    variance         REAL,                 -- closing_amount - expected_amount
+    status           TEXT NOT NULL DEFAULT 'open', -- 'open' | 'closed'
+    idempotency_key         TEXT,
+    idempotency_fingerprint TEXT,
+    opened_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    closed_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cash_sessions_register_id ON cash_sessions(cash_register_id);
+CREATE INDEX IF NOT EXISTS idx_cash_sessions_status ON cash_sessions(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_sessions_idempotency_key ON cash_sessions(idempotency_key);
+
+CREATE TABLE IF NOT EXISTS cash_movements (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    cash_session_id INTEGER NOT NULL REFERENCES cash_sessions(id),
+    staff_id        INTEGER REFERENCES staff(id),
+    type            TEXT NOT NULL,   -- 'cash_in' | 'cash_out'
+    amount          REAL NOT NULL,   -- mindig pozitív; az előjelet a type adja
+    reason          TEXT NOT NULL,
+    idempotency_key TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cash_movements_session_id ON cash_movements(cash_session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_movements_idempotency_key ON cash_movements(idempotency_key);
 
 -- Beérkező webshop-rendelések (WooCommerce webhook) — piszkozatként várnak
 -- emberi ellenőrzésre, mielőtt "leadásra" kerülnének (készletcsökkenés +

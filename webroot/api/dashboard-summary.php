@@ -47,6 +47,17 @@ $draftWebshopOrders = $db->countDraftWebshopOrders();
 $syncFailures24h = $db->countRecentSyncFailures(24);
 $invoiceFailures7d = $db->countRecentInvoiceFailures(7);
 $closingToday = $db->getClosing($today);
+// Kompakt kassza-állapot a rendszerállapot-kártyához — ugyanaz a "nulla
+// plusz HTTP-kérés" fegyelem, mint a today_status többi mezőjénél: a
+// pénztárgépek listája + nyitott-e egy meglévő, itt már amúgy is lefutó
+// összegző kérésbe illesztve, nem egy külön végpontba.
+$cashRegisters = $db->listCashRegisters();
+$openCashSessions = 0;
+foreach ($cashRegisters as $reg) {
+    if ($db->getOpenCashSession((int) $reg['id']) !== null) {
+        $openCashSessions++;
+    }
+}
 // 1.3.0 — a Dashboard "beszerzésre vár" jelzése a MEGLÉVŐ, központi
 // PurchaseDecisionService-en alapuló getPurchaseRecommendations()-t
 // használja (lásd a kör 9. pontja) — ez a WooCommerce-t/számlázást ÉRINTŐ
@@ -128,6 +139,8 @@ send_json([
         'closing_done'         => $closingToday !== null,
         'webshop_draft_count'  => $draftWebshopOrders,
         'invoice_failures_7d'  => $invoiceFailures7d,
+        'cash_registers_total' => count($cashRegisters),
+        'cash_sessions_open'   => $openCashSessions,
     ],
     'today_top_products' => array_map(static fn ($p) => ['name' => $p['name'], 'qty' => $p['qty']], $todayTopProducts),
     'today_payment_methods' => $todaySummary['by_payment_method'],

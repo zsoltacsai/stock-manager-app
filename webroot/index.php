@@ -45,6 +45,11 @@ if (!Auth::isLoggedIn($appSettings)) {
     </div>
     <div class="topbar-actions">
         <select id="location-selector" class="hidden" style="width:auto; margin-bottom:0; padding:8px 30px 8px 12px; font-size:16px;" title="Telephely"></select></select>
+        <select id="cash-register-selector" class="hidden" style="width:auto; margin-bottom:0; padding:8px 30px 8px 12px; font-size:16px;" title="Pénztárgép"></select>
+        <button id="cash-status-btn" class="icon-btn hidden" style="width:auto; padding:0 12px; gap:6px; display:flex; align-items:center;" title="Kassza nyitása/zárása">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;"><rect x="2" y="6" width="20" height="12" rx="2"></rect><circle cx="12" cy="12" r="2"></circle></svg>
+            <span id="cash-status-text">Kassza</span>
+        </button>
         <button id="staff-badge-btn" class="icon-btn" style="width:auto; padding:0 12px; gap:6px; display:flex; align-items:center;" title="Dolgozó váltása">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
             <span id="staff-badge-name">Nincs bejelentkezve</span>
@@ -286,6 +291,45 @@ if (!Auth::isLoggedIn($appSettings)) {
         <div class="modal-actions" style="margin-top:16px;">
             <button class="btn btn-secondary" id="staff-logout-btn" style="flex:1;">Kijelentkezés</button>
             <button class="btn btn-primary" id="staff-login-btn" style="flex:1;">Bejelentkezés</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal-overlay" id="cash-panel-modal">
+    <div class="modal-card" style="max-width:420px;">
+        <h2 id="cash-panel-title">Kassza</h2>
+
+        <div id="cash-panel-closed">
+            <p class="muted" style="margin-top:-8px;">Ehhez a pénztárgéphez jelenleg nincs nyitott műszak.</p>
+            <label for="cash-open-amount">Nyitó összeg (Ft)</label>
+            <input type="number" id="cash-open-amount" min="0" step="1" placeholder="0">
+            <p id="cash-open-feedback" class="modal-feedback"></p>
+            <div class="modal-actions" style="margin-top:16px;">
+                <button class="btn btn-secondary" data-close-cash-panel style="flex:1;">Mégse</button>
+                <button class="btn btn-primary" id="cash-open-btn" style="flex:1;">Kasszanyitás</button>
+            </div>
+        </div>
+
+        <div id="cash-panel-open" class="hidden">
+            <p class="muted" style="margin-top:-8px;" id="cash-panel-open-summary"></p>
+
+            <div id="cash-movement-form" class="hidden">
+                <label for="cash-movement-amount">Összeg (Ft)</label>
+                <input type="number" id="cash-movement-amount" min="0" step="1" placeholder="0">
+                <label for="cash-movement-reason">Indoklás</label>
+                <input type="text" id="cash-movement-reason" placeholder="pl. váltópénz feltöltés, futár kifizetve">
+                <p id="cash-movement-feedback" class="modal-feedback"></p>
+                <div class="modal-actions" style="margin-top:16px;">
+                    <button class="btn btn-secondary" id="cash-movement-cancel-btn" style="flex:1;">Mégse</button>
+                    <button class="btn btn-primary" id="cash-movement-submit-btn" style="flex:1;">Rögzítés</button>
+                </div>
+            </div>
+
+            <div id="cash-panel-open-actions" class="modal-actions" style="margin-top:16px; flex-wrap:wrap;">
+                <button class="btn btn-secondary" data-cash-movement-type="cash_in" style="flex:1;">Pénzbevét</button>
+                <button class="btn btn-secondary" data-cash-movement-type="cash_out" style="flex:1;">Pénzkiadás</button>
+                <a class="btn btn-primary" id="cash-close-link" href="kasszazaras.php" style="flex:1; text-align:center;">Kasszazárás</a>
+            </div>
         </div>
     </div>
 </div>

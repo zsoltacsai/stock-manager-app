@@ -19,12 +19,17 @@ $staffId = Auth::currentStaffId();
 // műszakhoz kötődik, NEM az eredeti eladáséhoz — a pénz fizikailag MOST
 // hagyja el az aktuális kasszát. Opcionális, visszafelé kompatibilis, lásd
 // sale.php ugyanezen mintáját.
+//
+// Release-blocker javítás: KORÁBBAN itt egy külön getOpenCashSession()-
+// lekérdezés kapott session-azonosítót, amit a lenti processReturn()
+// hívásnak adtunk át — ez a lekérdezés a TÉNYLEGES DB-írás pillanatára már
+// elavulhatott (időközben valaki lezárhatta a műszakot), pontosan ugyanaz a
+// race, amit a sale.php-nál a Checkpoint 4-ben már kijavítottunk. A nyers
+// $cashRegisterId-t adjuk tovább — a tényleges session-választás a
+// Database::processReturn() saját, atomikus al-lekérdezésének a dolga, a
+// beszúrás pillanatában, nem egy itteni, külön (és emiatt potenciálisan
+// elavuló) lekérdezés authority-jaként.
 $cashRegisterId = !empty($input['cash_register_id']) ? (int) $input['cash_register_id'] : null;
-$cashSessionId = null;
-if ($cashRegisterId) {
-    $openSession = $db->getOpenCashSession($cashRegisterId);
-    $cashSessionId = $openSession ? (int) $openSession['id'] : null;
-}
 
 if (!$saleId || empty($requestedItems)) {
     send_json(['error' => 'Válassz ki legalább egy visszaveendő tételt.'], 400);
@@ -91,7 +96,7 @@ $rawRefund = array_sum(array_map(static fn ($i) => $i['qty'] * $i['unit_price'],
 $totalRefund = round($rawRefund * $discountRatio, 2);
 
 try {
-    $returnId = $db->processReturn($saleId, $itemsToReturn, $reason, $staffId, $totalRefund, $sale, $cashSessionId);
+    $returnId = $db->processReturn($saleId, $itemsToReturn, $reason, $staffId, $totalRefund, $sale, $cashRegisterId);
 } catch (RuntimeException $e) {
     // A Database::processReturn() saját, kézzel írt, biztonságosan
     // felhasználó elé tárható üzenete (pl. "...tételből időközben már

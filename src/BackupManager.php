@@ -5,6 +5,32 @@ require_once __DIR__ . '/GoogleDriveProvider.php';
 
 class BackupManager
 {
+    /**
+     * Release-blocker javítás — formátum-jelző, ami MINDEN, ettől a
+     * javítástól kezdve készülő titkosított mentés (encryptFileInPlace())
+     * elejére kerül, a korábbi nyers IV||TAG||ciphertext elé. Korábban a
+     * visszaállítás azt feltételezte, hogy egy titkosított mentés fájlneve
+     * mindig '.enc'-re végződik — ez EGY FELTÖLTÖTT fájlnál hamis
+     * feltevés volt: a $_FILES['file']['tmp_name'] egy PHP által
+     * véletlenszerűen generált ideiglenes fájlnév, ami SOSE tartalmazza az
+     * eredeti kiterjesztést, így egy feltöltött titkosított mentés
+     * visszafejtés NÉLKÜL, nyers (még mindig titkosított) bájtokként lett
+     * volna "SQLite adatbázisként" megnyitva — ez mindig hibával bukott
+     * (lásd restoreSqliteFromFile()), nem csendben rossz eredménnyel, de a
+     * visszaállítás magát sosem sikerült elvégezni. Lásd detectEncryption()
+     * — a felismerés mostantól KIZÁRÓLAG a fájl TARTALMÁNAK (nem a
+     * fájlnevének) egyértelmű, fix bájt-aláírásán alapul: ez a jelző saját
+     * formátumunk, VAGY a SQLite fájlformátum saját, kötelező 16 bájtos
+     * aláírása (lásd SQLITE_MAGIC) — egyik sem "találgatás", mindkettő egy
+     * pontosan definiált, egyértelmű bájtsorozat ellenőrzése, ugyanúgy,
+     * ahogy pl. egy PNG/JPEG feltöltésnél is a tényleges tartalom (finfo),
+     * nem a kiterjesztés dönt.
+     */
+    private const ENCRYPTED_MAGIC = "FTBKENC1";
+
+    /** A SQLite fájlformátum saját, kötelező aláírása — https://www.sqlite.org/fileformat.html */
+    private const SQLITE_MAGIC = "SQLite format 3\x00";
+
     private array $dbConfig;
     private string $backupDir;
     private string $driver;
@@ -97,7 +123,7 @@ class BackupManager
         if ($ciphertext === false || $tag === '') {
             throw new RuntimeException('A mentés titkosítása sikertelen.');
         }
-        if (file_put_contents($encPath, $iv . $tag . $ciphertext) === false) {
+        if (file_put_contents($encPath, self::ENCRYPTED_MAGIC . $iv . $tag . $ciphertext) === false) {
             throw new RuntimeException('A titkosított mentés írása sikertelen: ' . $encPath);
         }
         @chmod($encPath, 0600);
@@ -108,7 +134,17 @@ class BackupManager
     private function decryptToTempFile(string $encPath, string $suffix): string
     {
         $raw = file_get_contents($encPath);
-        if ($raw === false || strlen($raw) < 12 + 16) {
+        if ($raw === false) {
+            throw new RuntimeException('A titkosított mentés fájlja sérült vagy nem olvasható: ' . $encPath);
+        }
+        // A formátum-jelző bevezetése (lásd ENCRYPTED_MAGIC docblokkja)
+        // ELŐTT készült, régi .enc fájlok eleve IV||TAG||ciphertext-tel
+        // kezdődnek, jelző nélkül — teljes visszafelé kompatibilitás
+        // érdekében csak akkor vágjuk le, ha ténylegesen jelen van.
+        if (str_starts_with($raw, self::ENCRYPTED_MAGIC)) {
+            $raw = substr($raw, strlen(self::ENCRYPTED_MAGIC));
+        }
+        if (strlen($raw) < 12 + 16) {
             throw new RuntimeException('A titkosított mentés fájlja sérült vagy nem olvasható: ' . $encPath);
         }
         $iv = substr($raw, 0, 12);
@@ -377,7 +413,60 @@ class BackupManager
         }
     }
 
-    public function restoreFromFile(string $sourcePath): array
+    /**
+     * Release-blocker javítás — eldönti, hogy $sourcePath egy titkosított
+     * mentés-e, KIZÁRÓLAG a fájl TARTALMA alapján, sose a nevéből/
+     * kiterjesztéséből (lásd ENCRYPTED_MAGIC docblokkja a pontos indoklásért
+     * — a korábbi, tmp_name-alapú hiba gyökere). A döntés minden ágon
+     * egyértelmű, fix aláírás-ellenőrzés — SOSE a teljes tartalom
+     * megbízhatatlan találgatása:
+     *
+     *   1. ENCRYPTED_MAGIC jelenléte  -> egyértelműen titkosított (új formátum).
+     *   2. SQLITE_MAGIC jelenléte     -> egyértelműen sima SQLite.
+     *   3. $sourceIsServerManagedFile -> a Szerver SAJÁT data/backups
+     *      mappájából, fájlnév szerint (nem feltöltéssel) kiválasztott,
+     *      régi (a jelző bevezetése ELŐTTI) .enc mentés — ez a konkrét,
+     *      eredeti hiba (kliens által feltöltött tmp_name) itt eleve NEM
+     *      állhat fenn, mert ez egy szerver-oldali, nem kliens-vezérelt
+     *      tény (lásd backup-restore.php: basename()+is_file() egy fix
+     *      könyvtáron belül) — ez az EGYETLEN hely, ahol a fájlNÉV egyáltalán
+     *      szerepet kap, és csak azért, mert itt nem a kliens állítja elő.
+     *   4. MySQL driver, egyik jelző sem található -> sima (titkosítatlan)
+     *      mysqldump-szöveg — nincs univerzális bináris aláírása, de egy
+     *      ténylegesen érvénytelen tartalom a mysql-importálásnál
+     *      egyértelmű hibával bukik el (restoreMysqlFromFile()), nem
+     *      csendben rosszul.
+     *   5. Egyik feltétel sem teljesül (jellemzően: feltöltött fájl, ami
+     *      sem a titkosított, sem a sima SQLite aláírással nem egyezik) ->
+     *      EXPLICIT hiba, nem találgatás — a hívó egyértelmű útmutatást kap.
+     */
+    private function detectEncryption(string $sourcePath, bool $sourceIsServerManagedFile): bool
+    {
+        $header = (string) @file_get_contents($sourcePath, false, null, 0, 16);
+        if ($header === '' && !is_readable($sourcePath)) {
+            throw new RuntimeException('A visszaállítandó fájl nem olvasható: ' . $sourcePath);
+        }
+        if (str_starts_with($header, self::ENCRYPTED_MAGIC)) {
+            return true;
+        }
+        if ($header === self::SQLITE_MAGIC) {
+            return false;
+        }
+        if ($sourceIsServerManagedFile && str_ends_with(strtolower($sourcePath), '.enc')) {
+            return true;
+        }
+        if ($this->driver === 'mysql') {
+            return false;
+        }
+        throw new RuntimeException(
+            'A fájl formátuma nem határozható meg egyértelműen (sem sima, sem titkosított ' .
+            'FountainTrade adatbázis-mentésnek nem ismerhető fel). Ha egy RÉGEBBI, még a ' .
+            'formátum-jelző bevezetése előtt készült titkosított mentést próbálsz visszaállítani, ' .
+            'válaszd ki azt inkább a Szerveren tárolt, meglévő mentések listájából — ne feltöltéssel.'
+        );
+    }
+
+    public function restoreFromFile(string $sourcePath, bool $sourceIsServerManagedFile = false): array
     {
         if (!is_file($sourcePath)) {
             throw new RuntimeException('A visszaállítandó fájl nem található.');
@@ -402,10 +491,12 @@ class BackupManager
         // Visszafelé kompatibilis: a data/backups mappából kiválasztott
         // fájl mindig .enc (lásd listLocal()), de egy KÉZZEL feltöltött
         // fájl lehet egy még ebből a funkcióból ("Priority 9") származó
-        // titkosítás előtti, sima mentés is — ilyenkor a visszafejtést
-        // egyszerűen kihagyjuk, a fájlt már eleve sima adatbázisként
-        // kezeljük, ahogy eddig is.
-        $isEncrypted = str_ends_with(strtolower($sourcePath), '.enc');
+        // titkosítás előtti, sima mentés is. A felismerés mostantól a fájl
+        // TARTALMA alapján történik — lásd detectEncryption() docblokkja
+        // (release-blocker javítás: korábban itt egy $sourcePath-fájlnév-
+        // alapú, feltöltésnél SOSE megbízható .enc-kiterjesztés-ellenőrzés
+        // volt).
+        $isEncrypted = $this->detectEncryption($sourcePath, $sourceIsServerManagedFile);
         $decryptedDbPath = null;
         $decryptedSidecarPath = null;
         try {

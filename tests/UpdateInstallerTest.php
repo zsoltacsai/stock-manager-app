@@ -70,7 +70,7 @@ final class ThrowingBackupManager extends BackupManager
 
 final class RestoreFailingBackupManager extends BackupManager
 {
-    public function restoreFromFile(string $sourcePath): array
+    public function restoreFromFile(string $sourcePath, bool $sourceIsServerManagedFile = false): array
     {
         throw new RuntimeException('Szimulált visszaállítási hiba.');
     }

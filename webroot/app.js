@@ -1441,10 +1441,14 @@ undoSaleBtn.addEventListener('click', async () => {
             if (staffRaw) staffId = JSON.parse(staffRaw).id;
         } catch (e) { /* ignore */ }
 
+        // Ugyanaz a mintakövetés, mint a kosár-fizetésnél (lásd
+        // currentCashRegisterId() más hívási helye lentebb) — a jelenleg
+        // kiválasztott pénztárgéphez kötjük a visszavonásból eredő
+        // visszárut is, hogy a kasszaegyenleg helyesen tükrözze.
         const res = await fetch('/api/return-create.php', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sale_id: saleId, items, reason: 'Azonnali visszavonás a Kasszáról', staff_id: staffId }),
+            body: JSON.stringify({ sale_id: saleId, items, reason: 'Azonnali visszavonás a Kasszáról', staff_id: staffId, cash_register_id: currentCashRegisterId() }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');

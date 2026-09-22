@@ -253,7 +253,12 @@ final class UpdateInstaller
                         // újranyitni, nem csak utána lecserélni.
                         $this->db->closeForExternalFileReplacement();
                         try {
-                            $this->backupManager->restoreFromFile($this->appRoot . '/data/backups/' . $backupReference);
+                            // A $backupReference a Szerver SAJÁT, a frissítés
+                            // ELŐTT ugyanezen a gépen, ugyanezzel a kóddal
+                            // készített biztonsági mentésére mutat (nem
+                            // kliens/felhasználó által feltöltött fájl) —
+                            // lásd BackupManager::detectEncryption() docblokkja.
+                            $this->backupManager->restoreFromFile($this->appRoot . '/data/backups/' . $backupReference, true);
                         } finally {
                             $this->db->reconnect();
                         }

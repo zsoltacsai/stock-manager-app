@@ -224,6 +224,115 @@ final class BackupManagerTest extends TestCase
         $this->assertContains($restoreResult['safety_backup'], $localFilenames);
     }
 
+    // ------------------------------------------------------------------
+    // Release-blocker javítás: a titkosítás-felismerés mostantól a fájl
+    // TARTALMA alapján dönt, sose a nevéből/kiterjesztéséből — lásd
+    // BackupManager::detectEncryption() docblokkja. Ezek a tesztek a
+    // döntési logika mind a négy ágát közvetlenül, izoláltan bizonyítják
+    // (a végpontig futó, VALÓDI feltöltéses bizonyíték: tests/
+    // BackupRestoreHttpTest.php).
+    // ------------------------------------------------------------------
+
+    public function testDetectEncryptionRecognizesNewFormatMagicPrefixRegardlessOfFilename(): void
+    {
+        $backupDir = $this->tmpRoot . '/data/backups';
+        $manager = new BackupManager(['driver' => 'sqlite', 'sqlite' => ['path' => $this->tmpRoot . '/unused.sqlite']], $backupDir);
+
+        $plainPath = $backupDir . '/plain-for-detect.txt';
+        file_put_contents($plainPath, 'tartalom, amit titkosítunk');
+        // A fájlNÉV szándékosan NEM '.enc' — a PHP-tmp_name-szerű esetet
+        // szimulálja, ahol a kiterjesztés nem áll rendelkezésre/nem megbízható.
+        $encPathWithoutEncSuffix = $backupDir . '/random-php-tmp-name-abc123';
+        $this->invokePrivate($manager, 'encryptFileInPlace', [$plainPath, $encPathWithoutEncSuffix]);
+
+        $isEncrypted = $this->invokePrivate($manager, 'detectEncryption', [$encPathWithoutEncSuffix, false]);
+        $this->assertTrue($isEncrypted, 'Az ÚJ formátumú titkosított tartalmat a fájlnévtől FÜGGETLENÜL, a tartalom-aláírás alapján kell felismerni.');
+    }
+
+    public function testDetectEncryptionRecognizesPlainSqliteMagicHeaderRegardlessOfFilename(): void
+    {
+        $backupDir = $this->tmpRoot . '/data/backups';
+        $manager = new BackupManager(['driver' => 'sqlite', 'sqlite' => ['path' => $this->tmpRoot . '/unused.sqlite']], $backupDir);
+
+        $livePath = $this->tmpRoot . '/plain-sqlite-for-detect.sqlite';
+        $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $livePath]], dirname(__DIR__));
+        unset($db);
+
+        // Fájlnév itt is szándékosan NEM '.sqlite' — csak a tartalom-
+        // aláírás (SQLITE_MAGIC) alapján kell "sima"-ként felismerni.
+        $renamed = $backupDir . '/random-php-tmp-name-xyz789';
+        copy($livePath, $renamed);
+
+        $isEncrypted = $this->invokePrivate($manager, 'detectEncryption', [$renamed, false]);
+        $this->assertFalse($isEncrypted, 'Egy VALÓDI SQLite fájlt a SQLite-formátum saját aláírása alapján "sima"-ként kell felismerni, a fájlnévtől függetlenül.');
+    }
+
+    public function testDetectEncryptionTrustsEncSuffixOnlyForServerManagedLegacyFiles(): void
+    {
+        $backupDir = $this->tmpRoot . '/data/backups';
+        $manager = new BackupManager(['driver' => 'sqlite', 'sqlite' => ['path' => $this->tmpRoot . '/unused.sqlite']], $backupDir);
+
+        // Régi (a formátum-jelző bevezetése ELŐTTI) titkosított tartalom
+        // szimulálása: nyers IV||TAG||ciphertext, jelző NÉLKÜL.
+        $legacyEncPath = $backupDir . '/stockmanager_backup_legacy.sqlite.enc';
+        file_put_contents($legacyEncPath, random_bytes(12 + 16 + 32));
+
+        $this->assertTrue(
+            $this->invokePrivate($manager, 'detectEncryption', [$legacyEncPath, true]),
+            'Egy régi formátumú, DE a Szerver saját data/backups mappájából fájlnév szerint kiválasztott .enc fájlt titkosítottként kell felismerni (visszafelé kompatibilitás).'
+        );
+
+        $this->expectException(RuntimeException::class);
+        $this->invokePrivate($manager, 'detectEncryption', [$legacyEncPath, false]);
+    }
+
+    public function testDetectEncryptionRejectsAmbiguousUploadedContentWithAClearError(): void
+    {
+        $backupDir = $this->tmpRoot . '/data/backups';
+        $manager = new BackupManager(['driver' => 'sqlite', 'sqlite' => ['path' => $this->tmpRoot . '/unused.sqlite']], $backupDir);
+
+        $randomPath = $backupDir . '/uploaded-random-garbage';
+        file_put_contents($randomPath, 'ez se nem SQLite, se nem a mi titkosított formátumunk');
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/nem határozható meg egyértelműen/');
+        // sourceIsServerManagedFile = false -> pontosan a feltöltési út,
+        // ahol a fájlnév SOSE tekinthető megbízható jelnek.
+        $this->invokePrivate($manager, 'detectEncryption', [$randomPath, false]);
+    }
+
+    public function testLegacyEncryptedFileWithoutMagicPrefixStillDecryptsCorrectly(): void
+    {
+        // Teljes visszafelé kompatibilitás: egy a formátum-jelző bevezetése
+        // ELŐTT készült titkosított mentésnek (nyers IV||TAG||ciphertext,
+        // jelző nélkül) a decryptToTempFile()-on keresztül is helyesen
+        // vissza kell fejtődnie, ha egyszer a detectEncryption() már
+        // titkosítottnak azonosította (lásd fenti teszt).
+        $backupDir = $this->tmpRoot . '/data/backups';
+        $manager = new BackupManager(['driver' => 'sqlite', 'sqlite' => ['path' => $this->tmpRoot . '/unused.sqlite']], $backupDir);
+
+        $plainPath = $backupDir . '/legacy-plain-for-roundtrip.txt';
+        $originalContent = 'ez a tartalom megy át egy RÉGI formátumú (jelző nélküli) titkosításon';
+        file_put_contents($plainPath, $originalContent);
+
+        // encryptFileInPlace()-t hívjuk, majd a MAGIC jelzőt kézzel
+        // levágjuk, hogy pontosan a "jelző bevezetése ELŐTTI" fájlformátumot
+        // szimuláljuk.
+        $encPath = $backupDir . '/legacy-plain-for-roundtrip.txt.enc';
+        $this->invokePrivate($manager, 'encryptFileInPlace', [$plainPath, $encPath]);
+        $magic = (new ReflectionClassConstant(BackupManager::class, 'ENCRYPTED_MAGIC'))->getValue();
+        $withMagic = file_get_contents($encPath);
+        $this->assertStringStartsWith($magic, $withMagic);
+        file_put_contents($encPath, substr($withMagic, strlen($magic)));
+
+        $tmpPath = $this->invokePrivate($manager, 'decryptToTempFile', [$encPath, '.txt']);
+        try {
+            $this->assertSame($originalContent, file_get_contents($tmpPath), 'Egy jelző NÉLKÜLI (régi formátumú) titkosított fájlnak is helyesen kell visszafejtődnie.');
+        } finally {
+            @unlink($tmpPath);
+        }
+    }
+
     public function testRestoreFromCorruptBackupFailsCleanlyWithoutTouchingLiveDatabase(): void
     {
         $livePath = $this->tmpRoot . '/live2.sqlite';

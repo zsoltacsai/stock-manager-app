@@ -147,6 +147,20 @@ async function openDetail(id) {
                     if (staffRaw) staffId = JSON.parse(staffRaw).id;
                 } catch (e) { /* ignore */ }
 
+                // A visszatérítés a JELENLEGI (a visszatérítés PILLANATÁBAN
+                // nyitott) műszakhoz kötődjön (lásd Database::processReturn()
+                // docblokkja) — ugyanazt az app.js-ben már meglévő,
+                // localStorage-ban perzisztált kiválasztást olvassuk ki, amit
+                // a Kassza (index.php) oldal ír (lásd app.js currentCashRegisterId()),
+                // hogy ez az oldal (eladasok.php, aminek nincs saját
+                // pénztárgép-választója) is helyesen jelezze, melyik
+                // pénztárgéphez tartozik a visszáru.
+                let cashRegisterId = null;
+                try {
+                    const storedRegisterId = localStorage.getItem('sm_current_cash_register_id');
+                    if (storedRegisterId) cashRegisterId = parseInt(storedRegisterId, 10) || null;
+                } catch (e) { /* ignore */ }
+
                 const res = await fetch('/api/return-create.php', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -155,6 +169,7 @@ async function openDetail(id) {
                         items,
                         reason: document.getElementById('return-reason').value.trim(),
                         staff_id: staffId,
+                        cash_register_id: cashRegisterId,
                     }),
                 });
                 const resultData = await res.json();

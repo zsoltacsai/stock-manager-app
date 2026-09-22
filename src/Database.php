@@ -5323,7 +5323,24 @@ class Database
      * marad, és a hűségpontok nem módosulnak — ez dokumentált,
      * megfontolt korlát, nem hiba.
      */
-    public function processReturn(int $saleId, array $items, string $reason, ?int $staffId, float $totalRefund, array $sale = [], ?int $cashSessionId = null): int
+    /**
+     * Fázis 2, release-blocker javítás — ugyanaz a kasszaműszak-race, amit
+     * az insertSale()-nél a Checkpoint 4-ben már kijavítottunk (lásd annak
+     * docblokkja): a hívó (webroot/api/return-create.php) KORÁBBAN egy
+     * külön getOpenCashSession()-lekérdezéssel kapott session-azonosítót
+     * adott át ide, ami a TÉNYLEGES INSERT pillanatára (a tranzakció eleji,
+     * fenti "már visszavett mennyiség" ellenőrzés, illetve egy Kliens/
+     * Szerver architektúrában a hálózati kör-idő miatt) már elavulhatott,
+     * ha időközben valaki lezárta a műszakot. Az utolsó paraméter ezért
+     * MOST egy nyers $cashRegisterId — a tényleges session-választást egy
+     * korrelált al-lekérdezés végzi, UGYANEBBEN az INSERT-ben, a tényleges
+     * írás pillanatában (ugyanaz a minta, mint insertSale()-nél). Ha az
+     * INSERT pillanatában NINCS nyitott műszak ezen a pénztárgépen, az
+     * al-lekérdezés NULL-t ad — a visszáru ekkor is sikeresen rögzül, csak
+     * cash_session_id = NULL-lal (ugyanaz, mint amikor a hívó egyáltalán
+     * nem adott meg pénztárgépet).
+     */
+    public function processReturn(int $saleId, array $items, string $reason, ?int $staffId, float $totalRefund, array $sale = [], ?int $cashRegisterId = null): int
     {
         $this->beginTransaction();
         try {
@@ -5356,11 +5373,26 @@ class Database
                 }
             }
 
-            $stmt = $this->pdo->prepare('
-                INSERT INTO returns (sale_id, staff_id, total_refund, reason, cash_session_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ');
-            $stmt->execute([$saleId, $staffId, $totalRefund, $reason, $cashSessionId, date('Y-m-d H:i:s')]);
+            if ($cashRegisterId !== null) {
+                // INSERT ... SELECT — lásd a metódus docblokkja: a
+                // cash_session_id értékét egy korrelált al-lekérdezés adja,
+                // UGYANANNAK a statementnek a végrehajtási pillanatában.
+                $stmt = $this->pdo->prepare('
+                    INSERT INTO returns (sale_id, staff_id, total_refund, reason, cash_session_id, created_at)
+                    SELECT ?, ?, ?, ?, (
+                        SELECT id FROM cash_sessions WHERE cash_register_id = ? AND status = \'open\' LIMIT 1
+                    ), ?
+                ');
+                $stmt->execute([$saleId, $staffId, $totalRefund, $reason, $cashRegisterId, date('Y-m-d H:i:s')]);
+            } else {
+                // Nincs pénztárgép megadva ehhez a visszáruhoz — a régi,
+                // egyszerű VALUES forma, explicit NULL cash_session_id-vel.
+                $stmt = $this->pdo->prepare('
+                    INSERT INTO returns (sale_id, staff_id, total_refund, reason, cash_session_id, created_at)
+                    VALUES (?, ?, ?, ?, NULL, ?)
+                ');
+                $stmt->execute([$saleId, $staffId, $totalRefund, $reason, date('Y-m-d H:i:s')]);
+            }
             $returnId = (int) $this->pdo->lastInsertId();
 
             foreach ($items as $item) {

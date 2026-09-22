@@ -27,6 +27,12 @@ $settings = new Settings(__DIR__ . '/../../data/settings.json');
 // Kétféleképp indulhat: egy meglévő helyi mentés kiválasztásával fájlnév
 // alapján, vagy egy feltöltött fájllal.
 $sourcePath = null;
+// A titkosítás-felismerés (BackupManager::detectEncryption()) csak EBBEN
+// az ágban bízhat a fájlNÉV '.enc' kiterjesztésében is (a fájlnév itt egy
+// szerver-oldali, a data/backups könyvtáron belüli tény — basename() +
+// is_file() —, nem a kliens állítja elő) — feltöltésnél ez SOSE megbízható
+// jel (lásd $_FILES['file']['tmp_name'] release-blocker javítása).
+$sourceIsServerManagedFile = false;
 
 if (!empty($_FILES['file']['tmp_name']) && is_uploaded_file($_FILES['file']['tmp_name'])) {
     $sourcePath = $_FILES['file']['tmp_name'];
@@ -37,6 +43,7 @@ if (!empty($_FILES['file']['tmp_name']) && is_uploaded_file($_FILES['file']['tmp
         send_json(['error' => 'A megadott mentési fájl nem található.'], 404);
     }
     $sourcePath = $candidate;
+    $sourceIsServerManagedFile = true;
 } else {
     send_json(['error' => 'Válassz egy meglévő mentést, vagy tölts fel egy fájlt.'], 400);
 }
@@ -86,7 +93,7 @@ try {
     // újranyitni, nem csak utána lecserélni.
     $db->closeForExternalFileReplacement();
     try {
-        $result = $manager->restoreFromFile($sourcePath);
+        $result = $manager->restoreFromFile($sourcePath, $sourceIsServerManagedFile);
     } finally {
         $db->reconnect();
     }
@@ -111,5 +118,14 @@ try {
     } catch (Throwable $logError) {
         error_log('[fountaintrade] backup-restore.php system_event log sikertelen: ' . $logError->getMessage());
     }
-    send_json(['error' => 'A visszaállítás sikertelen: ' . $e->getMessage()], 500);
+    // Release-blocker javítás: a raw $e->getMessage() korábban közvetlenül
+    // a JSON-válaszba kerülhetett — ez fájlrendszer-útvonalat (pl. az élő
+    // SQLite útvonala egy PDO-hibaüzenetben), kriptográfiai részletet, vagy
+    // egyéb belső PHP-hibát szivárogtathatott ki a válaszban. A diagnosztika
+    // (a fenti logSystemEvent híváson KERESZTÜL, admin "Rendszeresemények"
+    // felületen elérhetően) a teljes, nyers üzenetet megkapja — a
+    // válaszban, ugyanazzal a mintával, mint a projekt többi API
+    // végpontja (lásd send_generic_error_response(), webroot/api/
+    // _bootstrap.php), csak az általános üzenet mehet.
+    send_generic_error_response($e, 'backup-restore.php visszaállítás sikertelen');
 }

@@ -1,15 +1,19 @@
 # FountainTrade — Point of Sale & Inventory
 
-**Verzió: 1.4.1** (production release — Windows telepítő professzionalizálása)
+**Verzió: 1.5.0** (production release — Kasszakezelés + Kliens/Szerver architektúra)
 
 FountainTrade 1.0 volt az első production kiadás, az 1.0 RC
 stabilizációs és biztonsági hardening ciklus lezárása után. Azóta több
 feature release (1.1.0, 1.1.1, 1.2.0, 1.3.0, 1.4.0 — lásd `CHANGELOG.md`)
 bővítette az alkalmazást; az 1.3.1 egy tiszta stabilizációs kör (audit +
-hibajavítás, új funkció nélkül) volt, az 1.4.1 pedig kizárólag a Windows
-telepítő élményét/üzemeltethetőségét javította (nincs benne alkalmazás-
-oldali üzleti funkció) — lásd `CHANGELOG.md` "[1.3.1]" és "[1.4.1]"
-szakaszát.
+hibajavítás, új funkció nélkül) volt, az 1.4.1 kizárólag a Windows
+telepítő élményét/üzemeltethetőségét javította. Az 1.5.0 két nagy
+funkcióterületet hoz: pénztárgép-szintű kasszanyitás/kasszazárás
+(készpénz-elszámolás, műszakonként), és egy opcionális **Kliens/Szerver
+üzemmód**, amivel több terminál (Windows-gép) egyetlen közös boltot,
+egyetlen közös adatbázist kezelhet — lásd lent: "Több-terminálos
+üzemmód: Önálló / Szerver / Kliens", és `CHANGELOG.md` "[1.5.0]"
+szakaszát a teljes részletekért.
 
 Egy önállóan üzemeltethető PHP alkalmazás egy kisbolt/webshop teljes napi
 üzemeltetéséhez: USB vonalkódolvasós kassza, beszerzés és leltár, több
@@ -919,6 +923,117 @@ migrációt (a fenti idempotencia-garancia miatt). Mindkét esetben
 KÖTELEZŐ egy biztonsági mentés készítése a `data/stock.sqlite`-ról
 előtte.
 
+## Több-terminálos üzemmód: Önálló / Szerver / Kliens
+
+**FIGYELEM — ez egy MÁSIK "több eszköz" történet, mint a
+`telepites-tavoli-szerver.txt`-ben leírt Nginx+PHP-FPM útmutató.** Az a
+dokumentum arról szól, hogy EGYETLEN alkalmazás-példányt (Standalone vagy
+Szerver node) hogyan tegyél alkalmassá arra, hogy TÖBB BÖNGÉSZŐ
+egyszerre, gyorsan kiszolgálható legyen ugyanazon a gépen (a beépített
+`php -S` fejlesztői szerver helyett Nginx+PHP-FPM-mel). Az itt leírt
+Kliens/Szerver mód ezzel szemben KÜLÖN FIZIKAI (vagy virtuális) Windows-
+gépekről szól, ahol a Kliens-gépeknek SAJÁT telepítésük van, de SAJÁT
+adatbázisuk NINCS — minden adatot a Szerveren keresztül, hálózaton át
+érnek el. A kettő kombinálható (egy Szerver node maga is futhat
+Nginx+PHP-FPM mögött), de egymástól független döntés.
+
+### A három szerepkör
+
+- **Önálló (Standalone)** — az alapértelmezett, változatlan viselkedés:
+  egy gép, egy adatbázis, semmi hálózati kitettség (`localhost`-ra köt).
+  Ha nem kérsz szerepkört a telepítőtől, ez fut.
+- **Szerver** — egyetlen gép tárolja a TÉNYLEGES adatbázist, és a helyi
+  hálózaton (LAN) elérhetővé teszi magát a Kliens-gépek számára
+  (`0.0.0.0`-ra köt, DHCP-biztos — minden hálózati interfészen hallgat).
+  A telepítő ilyenkor egy, kizárólag a helyi alhálózatra (LocalSubnet)
+  korlátozott Windows Firewall-szabályt hoz létre — a Szerver SOSE válik
+  az internetről közvetlenül elérhetővé emiatt a szabály miatt.
+- **Kliens** — saját telepítés, saját Windows-parancsikon, de **nincs
+  saját adatbázisa**. Minden API-kérés a Szerverre kerül továbbításra:
+
+  ```
+  Kliens (böngésző) → Kliens (helyi FountainTrade) → HTTP/HTTPS → Szerver → Adatbázis
+  ```
+
+  A Kliens-oldali PHP-kód a kérést, mielőtt bármilyen helyi
+  beállítást/adatbázist érintene, byte-transzparensen továbbítja a
+  Szervernek (`src/ClientProxy.php`) — a válasz (beleértve bináris
+  válaszokat, pl. PDF-számlát vagy mentés-fájlt) ugyanígy, változtatás
+  nélkül kerül vissza a böngészőhöz. **A Kliens sose kap közvetlen
+  adatbázis-hozzáférést** — nincs olyan út, amin egy Kliens-gép
+  közvetlenül olvashatná/írhatná a Szerver SQLite/MySQL adatbázisát.
+
+### Hitelesítés a Kliens és a Szerver között
+
+Két, egymástól független réteg:
+
+1. **Gép-szintű**: minden Kliens-kérés egy HMAC-SHA256 aláírást visz
+   (`X-Client-Id`/`X-Client-Timestamp`/`X-Client-Signature`), amit a
+   Szerver egy ~120 másodperces időablakon belül, egyszer-felhasználható
+   nonce-védelemmel ellenőriz (visszajátszás elleni védelem). A Kliens
+   gépet a Szerver admin "Kliensek" oldalán kell regisztrálni — a
+   `client_secret` KIZÁRÓLAG a regisztráció (vagy egy titok-csere)
+   pillanatában jelenik meg, utána a Szerver csak a hash-elt formáját
+   tárolja, soha többé nem kérhető le nyílt szövegként.
+2. **Dolgozói szintű**: a Kliensen végzett PIN-bejelentkezés a Szerveren
+   hoz létre egy `client_sessions` sort, ami egy opak azonosítót köt a
+   ténylegesen bejelentkezett dolgozóhoz — a Szerver SOSE fogad el egy
+   Kliens által közvetlenül beküldött `staff_id`-t hitelesítésként.
+
+Az admin "Kliensek" oldalon minden regisztrált Kliens titka külön
+cserélhető (rotate), a Kliens letiltható/újra engedélyezhető, vagy
+véglegesen visszavonható (revoke) — ez utóbbi azonnal érvényteleníti az
+adott gép minden jövőbeli kérését.
+
+### Állapot-visszajelzés és verzió-kompatibilitás
+
+A Kliens felső sávjában egy állapot-jelvény mutatja, hogy a Szerver
+elérhető-e ("Szerver kapcsolódva" / "Szerver nem elérhető") — kattintva
+egy részletes panel jelenik meg (Szerver URL, verzió, API-elérhetőség,
+utolsó sikeres kapcsolat). Ez a lekérdezés 30 másodpercig cache-elt
+(nem minden kérésnél pingel), és a válasz SOSE tartalmaz nyers
+kivétel-üzenetet, fájlrendszer-útvonalat vagy hitelesítő adatot.
+
+A Kliens és a Szerver verziójának **major.minor** része kell, hogy
+egyezzen — egy patch-szintű eltérés (pl. Kliens 1.5.0 egy 1.5.2
+Szerverrel) önmagában nem gond. Ha a verziók nem kompatibilisek, a
+Kliens minden üzleti API-kérése egyértelmű üzenettel ("A kliens
+frissítése szükséges.") utasítódik el, MIELŐTT a kérés eljutna a Szerver
+tényleges logikájáig — a felület eközben továbbra is betöltődik, csak a
+tényleges adatműveletek állnak.
+
+### Amit tudni érdemes
+
+- **Nyomtatás**: a hálózati (Ethernet/WiFi) hőnyomtató-integráció mindig
+  a SZERVER gépéről küld parancsot a nyomtató IP-jére — egy
+  Kliens-terminálhoz fizikailag csatlakoztatott hálózati nyomtatót ez
+  nem ér el közvetlenül (a böngészős nyomtatás Kliens-oldalon is mindig
+  működik, driver nélkül).
+- **Háttérfolyamatok (cron)**: mind a 6 automatikus feladat
+  (WooCommerce-szinkron, NAV-küldés, mentés, frissítés-ellenőrzés stb.)
+  kizárólag Szerver/Önálló gépen fut/regisztrálódik a Feladatütemezőben
+  — egy Kliens-gépre a telepítő nem tesz fel ilyen feladatot, és egy
+  Kliens node a végpontokat közvetlenül meghívva sem tudná lefuttatni
+  őket (a Szerver ezt elutasítja).
+- **HTTPS az interneten át elérhető Szerverhez**: ha a Szerver nem csak
+  helyi hálózaton, hanem nyílt interneten keresztül lesz elérhető
+  Kliensek számára, MINDENKÉPP állíts be HTTPS-t (lásd
+  `telepites-tavoli-szerver.txt` "5. HTTPS" szakaszát) — HTTP-n átmenő
+  Kliens-hitelesítő adatok és session-sütik lehallgathatók. A telepítő
+  figyelmeztet, ha egy megadott Szerver-cím nem HTTPS-sel kezdődik.
+  Tisztán helyi hálózaton (LAN, nem internet-facing) belüli telepítésnél
+  ez a HTTPS-igény enyhébb, de továbbra is ajánlott.
+- **Offline mód nincs** — ha a Kliens nem éri el a Szervert, a
+  böngésző-felület betölt, de a tényleges adatműveletek nem működnek
+  ("Szerver nem elérhető" állapot). Ez tudatos tervezési döntés, nem
+  hiányzó funkció.
+
+### Telepítés
+
+A szerepkör kiválasztása a Windows telepítőben (`install-windows.ps1` /
+`FountainTrade-Setup.bat`) történik — lásd `install.txt` "Több-terminálos
+üzemmód" szakaszát a pontos lépésekért.
+
 ## Logó és automatikus szinkron (felső sáv beállításai)
 
 Minden oldal felső sávjában van egy logó (bal felül), egy szinkron
@@ -1742,6 +1857,11 @@ bejelentkezett munkamenet elérheti ezt is. Bármelyik úton:
 - Egy megerősítő párbeszédablak jelenik meg, mielőtt bármelyik
   visszaállítási út folytatódna — ez a művelet felülírja az élő
   adatokat.
+- A titkosított (`.enc`) mentések felismerése a fájl TARTALMA alapján
+  történik (egy fix formátum-jelző, illetve a SQLite fájlformátum saját
+  aláírása) — a fájlnév/kiterjesztés önmagában sose dönt, ezért egy
+  feltöltött, titkosított mentés helyesen visszafejtődik akkor is, ha a
+  böngésző/OS a feltöltés közben egy más nevű ideiglenes fájlt használ.
 
 ## Részleges visszáru / sztornó
 

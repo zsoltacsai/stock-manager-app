@@ -4,63 +4,173 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
-## [Unreleased] — Kasszakezelés (1.5.0 — 1. fázis: kasszanyitás/kasszazárás)
+## [1.5.0] — 2026-09-22 (Kasszakezelés + Több-terminálos Kliens/Szerver architektúra)
 
-**Az 1.5.0 spec két nagy területéből ("Multi-terminal & Cash Management")
-kizárólag a kasszakezelés (Fázis 1) készült el ebben a körben — a
-kliens/szerver architektúra (Fázis 2) még NEM kezdődött el.** A tervben
-rögzített, jóváhagyott sorrend szerint a kasszakezelés önmagában is
-értékes, kisebb kockázatú, és a meglévő `completeStockTake()`/
-`insertSale()` mintákat klónozza — a kliens/szerver munka egy stabil
-kasszakezelésre épülhet rá később, külön körben.
+**Két nagy terület: (1) kasszanyitás/kasszazárás/pénzmozgás egy adott
+pénztárgéphez kötve, és (2) egy opcionális Kliens/Szerver üzemmód, ahol
+egy Szerver gép tárolja az egyetlen adatbázist, és tetszőleges számú
+Kliens-terminál (saját adatbázis NÉLKÜL) éri el ugyanazt a boltot a
+hálózaton keresztül.** A Standalone (egygépes) üzemmód változatlan
+alapértelmezett marad — a Kliens/Szerver mód teljesen opcionális, a
+telepítő szerepkör-választásával kapcsolható be.
 
-### Added
+### Added — Kasszakezelés
 
 - **Kasszanyitás/kasszazárás/pénzmozgás** — új `cash_registers`/
-  `cash_sessions`/`cash_movements` táblák (`Database::SCHEMA_VERSION` 26 →
-  27), pénztárgépenként legfeljebb egy nyitott műszak (atomikus
-  `INSERT ... SELECT ... WHERE NOT EXISTS` nyitáskor,
-  `UPDATE ... WHERE status='open'` zárásnál — utóbbi a bevált
-  `completeStockTake()` minta közvetlen klónja). Valódi, 12 párhuzamos
-  OS-folyamatos `proc_open`-teszttel bizonyítva mindkét irányban
-  (`tests/DatabaseTest.php`).
+  `cash_sessions`/`cash_movements` táblák, pénztárgépenként legfeljebb egy
+  nyitott műszak (atomikus `INSERT ... SELECT ... WHERE NOT EXISTS`
+  nyitáskor, `UPDATE ... WHERE status='open'` zárásnál — utóbbi a bevált
+  `completeStockTake()` minta közvetlen klónja). Valódi, párhuzamos
+  OS-folyamatos (`proc_open`) tesztekkel bizonyítva mindkét irányban.
 - **Várható készpénz képlet, kizárólag szerver-oldalon számolva**:
   nyitó + készpénzes eladások − készpénzes visszatérítések + pénzbevét −
   pénzkiadás. `Settings::payment_methods` minden bejegyzése kap egy új
-  `is_cash` mezőt (alapból csak "Készpénz" = igaz) — egy régi
-  `settings.json` erre utólag, olvasáskor kerül feltöltésre
-  (`Settings::backfillPaymentMethodIsCash()`), admin-átnevezés/bővítés
-  esetén sem törik csendben a számítás.
-- `sales`/`returns` táblák új `cash_session_id` oszlopa — a visszatérítés
-  a visszatérítés PILLANATÁBAN nyitott műszakhoz kötődik, nem az eredeti
-  eladáséhoz.
-- Új oldalak: `penztargepek.php` (admin pénztárgép-kezelés,
-  `telephelyek.php` mintája), `kasszazaras.php` (zárás — teljes bontással:
-  nyitó/készpénzes eladás/visszatérítés/be/ki/várható), `kassza-riport.php`
-  (szűrhető lista + CSV export + nyomtatás).
+  `is_cash` mezőt (alapból csak "Készpénz" = igaz), egy régi
+  `settings.json` erre utólag, olvasáskor kerül feltöltésre.
+- `sales`/`returns` táblák új `cash_session_id` oszlopa — mind az eladás,
+  mind a visszatérítés a MŰVELET PILLANATÁBAN ténylegesen nyitott
+  műszakhoz kötődik, egy korrelált al-lekérdezéssel, UGYANABBAN az
+  INSERT-ben, ahol maga a sor létrejön — ez zárja ki azt a
+  versenyhelyzetet, amiben egy korábban (akár csak töredék másodperccel
+  előbb) lekért, azóta esetleg lezárt műszak-azonosító tévesen
+  érvényesülne. Valódi, több egyidejű OS-folyamattal (eladás/visszáru
+  vs. zárás, ugyanazon pénztárgépen) bizonyítva.
+- Új oldalak: `penztargepek.php` (admin pénztárgép-kezelés), `kasszazaras.php`
+  (zárás — teljes bontással: nyitó/készpénzes eladás/visszatérítés/be/ki/
+  várható), `kassza-riport.php` (szűrhető lista + CSV export + nyomtatás).
 - POS fejléc élő kassza-jelző (`Kassza: NYITVA/ZÁRVA`) + Pénzbevét/
   Pénzkiadás/Kasszazárás gyorsműveletek — nulla plusz HTTP-kérés
   (`locations-list.php` válaszába fűzve). Dashboard rendszerállapot-
-  kártya kompakt kassza-sora ugyanezzel a fegyelemmel
-  (`dashboard-summary.php` `today_status` mezője).
+  kártya kompakt kassza-sora ugyanezzel a fegyelemmel.
 - Idempotencia-védelem kasszanyitásnál/pénzmozgásnál (a `sales.idempotency_key`
   bevált mintája) — dupla kattintás/hálózati újrapróbálkozás nem hoz létre
   duplikált műszakot/pénzmozgást.
 - Új audit-log akciók: `cash_register_create/update`, `cash_session_open/close`,
   `cash_in`, `cash_out`.
-- Tesztek: `tests/CashSessionTest.php` (formula-helyesség, validáció,
-  Settings-backfill), `tests/CashSessionEndpointsHttpTest.php` (valódi HTTP
-  végpont-tesztek — auth/CSRF/admin-kapu/teljes életciklus/CSV), plusz a
-  fenti 2 valódi konkurrencia-teszt.
 
-### Known limitations (ebben a körben nem készült el)
+### Added — Kliens/Szerver architektúra
 
-- **Kliens/szerver architektúra (1.5.0 Fázis 2) — nincs elkezdve.**
-  `node_role`/Standalone-Server-Kliens, `ClientProxy`, `registered_clients`,
-  Windows telepítő szerepkör-választó képernyője stb. — mindez külön körben.
+- **`node_role`** (`standalone` | `server` | `client`) a
+  `config/installer-generated.php`-ban — deploy-időben eldöntött,
+  architekturális tény, nem futásidőben módosítható üzleti beállítás.
+  Standalone (az alapértelmezett) viselkedése bit-azonos a korábbi
+  verziókkal.
+- **`ClientProxy`** — Kliens módban `webroot/api/_bootstrap.php` a
+  `node_role` ellenőrzése után azonnal a Szerverre proxyzza a teljes
+  kérést (byte-transzparensen, bináris válaszokat — pl. számla-PDF,
+  mentés-letöltés — is beleértve), mielőtt bármilyen helyi
+  `Settings`/`Auth`/adatbázis-logika lefutna. Egyetlen API-végpontnak
+  sincs `if ($clientMode)` elágazása — a Kliens ugyanazt az API-t hívja,
+  mint a helyi felület.
+- **Két rétegű hitelesítés a Kliens→Szerver kérésen**: gép-szintű
+  HMAC-SHA256 aláírás (`X-Client-Id`/`X-Client-Timestamp`/
+  `X-Client-Signature`, ~120 másodperces replay-ablak, egyszer
+  felhasználható nonce-tár), plusz egy Szerver-oldali `client_sessions`
+  tábla, ami egy opak `client_session_id`-t egy ténylegesen bejelentkezett
+  dolgozóhoz köt — a Szerver SOSE bízik egy Kliens által közvetlenül
+  beküldött `staff_id`-ban.
+- **Admin "Kliensek" oldal** — regisztráció (a `client_secret` KIZÁRÓLAG a
+  regisztráció pillanatában jelenik meg, utána soha többé nem kérhető
+  le), titok-csere (rotate), letiltás/engedélyezés, végleges visszavonás
+  (revoke), utolsó látott időpont és (ha a Kliens jelentette) verzió.
+- **CSRF-híd** — a Szerver a proxyzott, gép-hitelesített kérésekre nem a
+  saját (Kliens-oldalon értelmezhetetlen) session-CSRF-tokent, hanem egy
+  a `client_sessions` sorhoz kötött, külön tokent vár és ellenőriz.
+- **Worker/cron-feladat szétválasztás** — mind a 6 háttérfolyamat
+  (WooCommerce szinkron/push, NAV kimenő/bejövő, mentés,
+  frissítés-ellenőrzés — a korábban hiányzó `wc-queue-run.php` bejegyzés
+  is pótolva) kizárólag Szerver/Standalone módban kerül regisztrálásra a
+  Windows Feladatütemezőben; Kliens módban a telepítő aktívan eltávolítja
+  a korábbi worker-feladatokat, a Szerver-oldali backend-topológia-őr
+  pedig függetlenül is elutasít bármilyen cron/worker-végpont-hívást egy
+  Kliens node-on.
+- **Hálózati kötés** — Szerver mód `0.0.0.0`-ra köt (DHCP-biztos, minden
+  interfészre), Önálló és Kliens mód továbbra is kizárólag `localhost`-ra.
+  Szerver módban a telepítő egy, kizárólag LocalSubnet-re korlátozott
+  (SOSE "Any"/internet) Windows Firewall-szabályt hoz létre/frissít
+  idempotensen.
+- **`ClientServerHealth`** — a Kliens saját, a meglévő (Szerver-oldali,
+  8-komponensű) `HealthMonitor`-tól teljesen elkülönülő kapcsolat-
+  állapota (`server_reachable`, `api_reachable`, `authenticated`,
+  `server_version`, `compatible`, `last_success`, `last_error`), 30
+  másodperces, gép-helyi cache-eléssel (nem minden kérésnél pingel).
+  Topbar státusz-jelvény + részletek-panel ("Szerver kapcsolódva"/"Szerver
+  nem elérhető", Szerver URL/Verzió/API/Utolsó sikeres kapcsolat) — soha
+  nem jelenít meg nyers kivételt, fájlrendszer-útvonalat, hitelesítő
+  adatot vagy belső konfigurációt.
+- **Verzió-kompatibilitás** — `AppVersion::isMajorMinorCompatible()`
+  centrális, egyetlen forrás; csak major.minor számít, egy patch-szintű
+  eltérés önmagában nem tiltó ok. Inkompatibilis Kliens minden proxyzott
+  üzleti kérése egyértelmű, technikai részlet nélküli hibával (HTTP 409,
+  `"A kliens frissítése szükséges."`) utasítódik el, MIELŐTT a kérés
+  egyáltalán eljutna a Szerver üzleti logikájáig.
+- **Multipart/form-data (fájlfeltöltés) proxyzás** — a Kliens a saját
+  `$_POST`/`$_FILES`-ából újraépíti a kimenő multipart törzset, és egy
+  tartalom-alapú (nem nyers `php://input`-alapú, ott ugyanis multipart
+  esetén mindkét oldalon üres) HMAC-digestet számol, amit a Szerver
+  ugyanígy, függetlenül reprodukál a hitelesítéshez — valódi bináris
+  fájlfeltöltésekkel (logó, termékkép, biztonsági mentés, import-fájl)
+  végponttól végpontig bizonyítva.
+- Windows telepítő: szerepkör-választó képernyő (Önálló/Szerver/Kliens),
+  a Kliens saját parancsikonja mindig a helyi Kliens Dashboardjára mutat
+  (sose a konfigurált távoli Szerver-címre — nem kerüli meg a
+  `ClientProxy`-t), a Kliens Client Secret bekérése `-AsSecureString`-gel
+  (sose nyílt szövegként visszhangozva), HTTP figyelmeztetés, ha a
+  megadott Szerver-cím nem HTTPS.
+
+### Fixed — release-blocker javítások
+
+- **Kasszaműszak-race, eladásnál ÉS visszárunál** — mindkét helyen egy
+  korábban külön lekért, a tényleges DB-írás pillanatára potenciálisan
+  elavuló nyitott-műszak-azonosítót adott át a hívó; mindkettő javítva egy
+  a tényleges INSERT-tel egyidejű, korrelált al-lekérdezésre — lásd fent.
+- **Feltöltött, titkosított biztonsági mentés visszaállítása** — a
+  titkosítás-felismerés korábban a feltöltött fájl PHP által generált,
+  soha nem `.enc`-re végződő ideiglenes fájlnevéből dőlt el, ezért egy
+  feltöltött titkosított mentés sose fejtődött vissza helyesen. Mostantól
+  kizárólag a fájl TARTALMA (egy fix formátum-jelző, illetve a SQLite
+  fájlformátum saját aláírása) dönt — sose a fájlnévből/kiterjesztésből,
+  és sose megbízhatatlan tartalom-találgatással.
+- **Nyers kivétel-üzenet a mentés-visszaállítás hibaválaszában** — a
+  `backup-restore.php` mostantól a projekt 1.3.1 óta bevált, egységes
+  hibaüzenet-mintáját követi (`send_generic_error_response()`): a
+  felhasználó csak egy általános hibaüzenetet kap, a technikai részlet
+  kizárólag a belső rendszeresemény-naplóba kerül.
+
+### Tests
+
+- `tests/CashSessionTest.php`, `tests/CashSessionEndpointsHttpTest.php`,
+  `tests/CashSessionSaleRaceTest.php`,
+  `tests/CashSessionSaleRaceConcurrencyTest.php`,
+  `tests/ReturnCashSessionRaceTest.php`,
+  `tests/ReturnCashSessionRaceConcurrencyTest.php` — kasszakezelés +
+  mindkét race-javítás, egységszinten és valódi többfolyamatos
+  konkurrenciával is.
+- `tests/ClientProxyTest.php`, `tests/ClientProxyHttpTest.php`,
+  `tests/ClientAuthenticatorTest.php`, `tests/ClientHmacTest.php`,
+  `tests/ClientNonceStoreTest.php`, `tests/ClientServerHealthTest.php`,
+  `tests/ClientProxyVersionGateHttpTest.php`,
+  `tests/ClientProxyMultipartHttpTest.php`,
+  `tests/ClientLastSeenVersionHttpTest.php`,
+  `tests/ClientWorkerGatingHttpTest.php` — a teljes Kliens/Szerver réteg,
+  valódi HTTP-n, valódi két-folyamatos Kliens+Szerver felállással.
+- `tests/BackupManagerTest.php` (bővítve), `tests/BackupRestoreHttpTest.php`
+  — a titkosítás-felismerés és a hibaüzenet-javítás, valódi HTTP-
+  feltöltéssel.
+- Windows telepítő: `tests/Install-WindowsTests.ps1` (Pester) — 54 teszt,
+  a szerepkör-választás, hálózati kötés és tűzfal-szabály döntési
+  logikájával bővítve.
+
+### Known limitations
+
+- A hálózati (Ethernet/WiFi) hőnyomtató-integráció mindig a Szerver
+  gépéről küld ESC/POS parancsot a nyomtató IP-jére — Kliens-terminálról
+  nincs közvetlen nyomtató-elérés (a böngészős nyomtatás Kliens-oldalon
+  is mindig működik, driver nélkül).
+- Offline mód (Kliens működése Szerver-kapcsolat nélkül) továbbra sincs —
+  ez tudatosan nem célja az 1.5.0-nak.
 - A pénztárgép-választó a POS fejlécben csak akkor jelenik meg, ha egy
-  telephelyhez több pénztárgép is tartozik — egy-pénztárgépes telephelynél
-  automatikusan az egyetlen pénztárgép van kiválasztva.
+  telephelyhez több pénztárgép is tartozik.
 
 ## [1.4.1] — 2026-09-21 (Windows telepítő professzionalizálása)
 

@@ -2,11 +2,14 @@
  FOUNTAINTRADE — TELEPÍTÉSI ÚTMUTATÓ (Windows)
 ===============================================================
 
-Ez egy helyi (localhost) PHP alkalmazás vonalkódos pénztárgéphez /
-készletkezeléshez. Nincs szükség internetre, felhő-szolgáltatásra vagy
-adatbázis-szerverre — mindent egyetlen gépen, egyetlen SQLite fájlban
-tárol. Nem kell hozzá Composer és semmilyen külső program (LibreOffice
-sem, az Excel-import saját maga olvassa be az .xls/.xlsx fájlokat).
+Ez egy PHP alkalmazás vonalkódos pénztárgéphez / készletkezeléshez.
+Alapértelmezett (Önálló) módban helyi (localhost) telepítés — nincs
+szükség internetre, felhő-szolgáltatásra vagy adatbázis-szerverre,
+mindent egyetlen gépen, egyetlen SQLite fájlban tárol. Nem kell hozzá
+Composer és semmilyen külső program (LibreOffice sem, az Excel-import
+saját maga olvassa be az .xls/.xlsx fájlokat). 1.5.0-tól opcionálisan
+egy Szerver + több Kliens-gépes elrendezés is választható — lásd lent:
+"0b. TÖBB-TERMINÁLOS ÜZEMMÓD".
 
 
 ---------------------------------------------------------------
@@ -40,6 +43,82 @@ szakaszát, vagy a részletes, kézi telepítési lépéseket alább (1-8. pont)
 — ezek akkor is hasznosak, ha csak ellenőrizni szeretnéd, mit csinál a
 gyors telepítő a háttérben, vagy ha valamiért kézzel, lépésről lépésre
 szeretnéd elvégezni ugyanezt.
+
+
+---------------------------------------------------------------
+0b. TÖBB-TERMINÁLOS ÜZEMMÓD (Önálló / Szerver / Kliens) — 1.5.0
+---------------------------------------------------------------
+
+A FountainTrade-Setup.bat / install-windows.ps1 telepítő a fájlok
+másolása közben megkérdezi:
+
+    Milyen szerepet kap ez a számítógép?
+
+      1) Önálló gép
+      2) Szerver
+      3) Kliens
+
+    Jelenlegi beállítás: Önálló gép — Enter = ezt tartja meg.
+    Választás (1/2/3, vagy Enter):
+
+  1) Önálló gép — az alapértelmezett. Válaszd ezt, ha egyetlen gépen,
+     egyetlen kasszán fut az egész üzlet. Semmi hálózati változás nem
+     történik, a viselkedés ugyanaz, mint korábbi verziókban.
+
+  2) Szerver — válaszd EZT arra az EGY gépre, amelyik a TÉNYLEGES
+     adatbázist tárolja, és amit a többi (Kliens) gép el fog érni a
+     helyi hálózaton. A telepítő ilyenkor:
+       - a beépített PHP szervert minden hálózati interfészre
+         (0.0.0.0) köti, nem csak localhost-ra;
+       - létrehoz/frissít egy Windows Firewall-szabályt, ami
+         KIZÁRÓLAG a helyi alhálózatról (LocalSubnet) engedélyez
+         bejövő kapcsolatot — internetről közvetlenül SOSE lesz
+         emiatt elérhető;
+       - az admin "Kliensek" oldalon (Beállítások menü) tudsz majd
+         Kliens-gépeket regisztrálni (ott kapod meg az egyszeri
+         Client ID / Client Secret párost, amit a következő pontban
+         a Kliens telepítőjének meg kell adnod).
+     Ha a Szervert az internetről is el kell érni (nem csak a boltod
+     helyi hálózatáról), MINDENKÉPP állíts be HTTPS-t elé — lásd
+     `telepites-tavoli-szerver.txt` "5. HTTPS" szakaszát. Tisztán
+     helyi hálózaton belül ez enyhébb, de továbbra is ajánlott.
+
+  3) Kliens — egy TERMINÁL-gép, aminek NINCS saját adatbázisa: minden
+     adatot a fenti Szervertől kér le, a hálózaton keresztül:
+
+         Kliens (böngésző) -> Kliens (helyi FountainTrade)
+                            -> HTTP/HTTPS -> Szerver -> Adatbázis
+
+     Ehhez a telepítő bekéri:
+       - a Szerver címét (pl. http://192.168.1.10:8000 vagy egy
+         HTTPS-cím, ha a Szerver azon keresztül lett közzétéve),
+       - a Client ID-t és Client Secret-et (a Szerver admin
+         "Kliensek" oldalán kapod meg — a Secret csak EGYSZER
+         jelenik meg ott, jegyezd fel azonnal),
+     A Client Secret bekérése rejtett bevitellel történik (nem
+     jelenik meg a képernyőn/naplóban nyílt szövegként). Ha a megadott
+     Szerver-cím nem HTTPS-sel kezdődik, a telepítő egy figyelmeztetést
+     ír ki, de nem tiltja le a telepítést (helyi hálózaton belül ez
+     elfogadható lehet).
+
+  A szerepkör bármikor módosítható a telepítő ÚJRAFUTTATÁSÁVAL — a
+  telepítő ilyenkor a jelenlegi beállítást ajánlja fel alapértelmezettként
+  (Enter = megtartás). Ha egy korábban Önálló/Szerver gépet Kliensre
+  váltasz, és a gépen már van saját (nem üres) adatbázis, a telepítő
+  egy explicit FIGYELMEZTETÉST ír ki és megerősítést kér — a HELYI
+  adatbázis a lemezen MARAD (nem törlődik), de az alkalmazás onnantól
+  nem azt használja, minden adat a Szerveren jelenik meg.
+
+  Kézi/utólagos szerepkör-módosításhoz (a telepítő újrafuttatása
+  nélkül) a `tools\installer-set-topology.php` PHP CLI-eszköz is
+  elérhető közvetlenül a telepített mappában — ez ugyanaz az eszköz,
+  amit maga a telepítő is használ.
+
+  FONTOS: ez a szerepkör-választás EGY MÁSIK "több eszköz" történet,
+  mint a `telepites-tavoli-szerver.txt` (Linux/Nginx, egyetlen node
+  gyorsabb kiszolgálása több böngészőnek). A kettő nem ugyanaz, de
+  kombinálható — lásd a README.md "Több-terminálos üzemmód: Önálló /
+  Szerver / Kliens" szakaszát a teljes részletekért.
 
 
 ---------------------------------------------------------------

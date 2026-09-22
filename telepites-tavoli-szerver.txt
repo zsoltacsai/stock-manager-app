@@ -12,6 +12,18 @@ próbálja használni, a kérések sorba állnak, és a program lassúnak vagy
 akadozónak tűnik. Erre a célra Nginx + PHP-FPM kell, ami valódi
 egyidejű kiszolgálásra való.
 
+FONTOS, EGY MÁSIK "több eszköz" TÖRTÉNET: ez a dokumentum arról szól,
+hogyan tegyél EGYETLEN FountainTrade-példányt (Önálló vagy Szerver
+node) alkalmassá arra, hogy TÖBB BÖNGÉSZŐ egyszerre, gyorsan elérje —
+minden böngésző UGYANAZT a gépet nyitja meg. Az 1.5.0-ban bevezetett
+Windows-oldali "Kliens" szerepkör (lásd install.txt "0b. TÖBB-
+TERMINÁLOS ÜZEMMÓD" és README.md "Több-terminálos üzemmód: Önálló /
+Szerver / Kliens") egy MÁSIK dolog: ott KÜLÖN Windows-gépeknek van
+SAJÁT telepítésük, de SAJÁT adatbázisuk nincs — mindent egy Szerver
+node-on keresztül, HTTP(S)-en át érnek el. A kettő kombinálható (egy
+Szerver node maga is futhat itt lent leírt Nginx+PHP-FPM mögött), de
+egymástól teljesen független döntés — ne keverd össze őket.
+
 Célgép feltételezve: Ubuntu vagy Debian szerver, root/sudo joggal.
 
 

@@ -1933,3 +1933,101 @@ if ('serviceWorker' in navigator) {
         last.classList.remove('open');
     });
 })();
+
+// =========================================================================
+// FÁZIS 2, CHECKPOINT 4 — Kliens saját Szerver-kapcsolat állapot-jelzője.
+// KIZÁRÓLAG Kliens node-on jelenik meg (lásd api/client-health.php —
+// Standalone/Szerver módban {"applicable": false} jön vissza, ilyenkor ez a
+// blokk egyszerűen rejtve hagyja a jelvényt, nem hibázik). A tényleges
+// frissítést/gyorsítótárazást a Szerver-oldali TTL vezérli (lásd
+// src/ClientServerHealth.php) — ez itt csak egyetlen, oldalbetöltéskori
+// lekérdezés, NEM egy saját, külön polling-ciklus (a design 3. pontjának
+// explicit követelménye: "ne legyen minden API-kéréshez külön ping").
+// =========================================================================
+(function () {
+    const topbarActions = document.querySelector('.topbar-actions');
+    if (!topbarActions) return;
+
+    const badge = document.createElement('button');
+    badge.className = 'icon-btn';
+    badge.id = 'client-health-badge';
+    badge.style.display = 'none';
+    badge.style.width = 'auto';
+    badge.style.padding = '0 10px';
+    badge.style.gap = '6px';
+    badge.innerHTML = '<span id="client-health-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0;"></span>'
+        + '<span id="client-health-label" style="font-size:13px;"></span>';
+    topbarActions.insertBefore(badge, topbarActions.firstChild);
+
+    const detailsModal = document.createElement('div');
+    detailsModal.className = 'modal-overlay';
+    detailsModal.id = 'client-health-modal';
+    detailsModal.innerHTML = `
+        <div class="modal-card" style="max-width:420px;">
+            <h2 id="ch-title">Szerver-kapcsolat</h2>
+            <p class="muted" style="margin-top:-8px; margin-bottom:4px;">Szerver:</p>
+            <p style="margin-top:0;"><strong id="ch-server-url">—</strong></p>
+            <p class="muted" style="margin-bottom:4px;">Verzió:</p>
+            <p style="margin-top:0;"><strong id="ch-version">—</strong></p>
+            <p class="muted" style="margin-bottom:4px;">API:</p>
+            <p style="margin-top:0;"><strong id="ch-api">—</strong></p>
+            <p class="muted" style="margin-bottom:4px;">Utolsó sikeres kapcsolat:</p>
+            <p style="margin-top:0;"><strong id="ch-last-success">—</strong></p>
+            <p class="feedback error" id="ch-error" style="display:none;"></p>
+            <div class="modal-actions" style="margin-top:16px;">
+                <button class="btn btn-secondary" id="client-health-modal-close" style="flex:1;">Bezárás</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(detailsModal);
+    document.getElementById('client-health-modal-close').addEventListener('click', () => detailsModal.classList.remove('open'));
+    detailsModal.addEventListener('click', (e) => { if (e.target === detailsModal) detailsModal.classList.remove('open'); });
+
+    let lastState = null;
+
+    // A hibaüzenet (last_error) itt MÁR a Szerver-oldali ClientServerHealth
+    // SAJÁT, előre megfogalmazott, felhasználóbarát mondata (pl. "A kliens
+    // és a Szerver verziója nem kompatibilis.") — SOSE nyers kivétel,
+    // fájlelérési út, hitelesítő adat vagy aláírás (lásd ClientServerHealth
+    // refresh()-e: minden ág egy kézzel írt, ember-olvasható üzenetet ad).
+    function renderDetails(state) {
+        document.getElementById('ch-server-url').textContent = state.server_url || '—';
+        document.getElementById('ch-version').textContent = state.server_version || '—';
+        document.getElementById('ch-api').textContent = state.api_reachable ? 'Elérhető' : 'Nem elérhető';
+        document.getElementById('ch-last-success').textContent = state.last_success
+            ? new Date(state.last_success).toLocaleString('hu-HU')
+            : 'még sose';
+        const errEl = document.getElementById('ch-error');
+        if (state.last_error) {
+            errEl.textContent = state.last_error;
+            errEl.style.display = '';
+        } else {
+            errEl.style.display = 'none';
+        }
+    }
+
+    badge.addEventListener('click', () => {
+        if (!lastState) return;
+        renderDetails(lastState);
+        detailsModal.classList.add('open');
+    });
+
+    function renderBadge(state) {
+        lastState = state;
+        const dot = document.getElementById('client-health-dot');
+        const label = document.getElementById('client-health-label');
+        const connected = state.server_reachable && state.api_reachable && state.compatible !== false;
+        dot.style.background = connected ? 'var(--accent)' : 'var(--danger)';
+        label.textContent = connected ? 'Szerver kapcsolódva' : 'Szerver nem elérhető';
+        badge.title = 'Kattints a részletekért';
+        badge.style.display = '';
+    }
+
+    fetch('/api/client-health.php')
+        .then(r => r.json())
+        .then(data => {
+            if (!data || data.applicable !== true) return; // Standalone/Szerver node — nincs mit mutatni
+            renderBadge(data);
+        })
+        .catch(() => { /* Kliens módban is előfordulhat átmeneti hiba a lekérdezésben — a jelvény ilyenkor egyszerűen rejtve marad, nem téveszt meg hamis állapottal */ });
+})();

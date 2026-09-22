@@ -53,7 +53,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         </div>
         <div class="sample-table-wrap">
 <table class="sample-table">
-            <thead><tr><th>Címke</th><th>Client ID</th><th>Állapot</th><th>Utoljára látva</th><th></th></tr></thead>
+            <thead><tr><th>Címke</th><th>Client ID</th><th>Állapot</th><th>Utoljára látva</th><th>Kliens verzió</th><th></th></tr></thead>
             <tbody id="clients-body"></tbody>
         </table>
 </div>

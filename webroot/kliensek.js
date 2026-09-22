@@ -36,9 +36,10 @@ function renderClients() {
             <td><code>${escapeHtml(c.client_id)}</code></td>
             <td>${statusBadge(c)}</td>
             <td>${c.last_seen_at ? escapeHtml(c.last_seen_at) : '<span class="muted">még sose</span>'}</td>
+            <td>${c.last_seen_version ? escapeHtml(c.last_seen_version) : '<span class="muted">—</span>'}</td>
             <td class="actions-cell">${renderActions(c)}</td>
         </tr>
-    `).join('') : '<tr><td colspan="5" class="muted" style="text-align:center; padding:24px;">Még nincs regisztrálva kliens.</td></tr>';
+    `).join('') : '<tr><td colspan="6" class="muted" style="text-align:center; padding:24px;">Még nincs regisztrálva kliens.</td></tr>';
 
     clientsBody.querySelectorAll('[data-action]').forEach(btn => {
         btn.addEventListener('click', () => handleAction(Number(btn.dataset.id), btn.dataset.action));

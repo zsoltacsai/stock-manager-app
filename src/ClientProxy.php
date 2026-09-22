@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/ClientHmac.php';
 require_once __DIR__ . '/Auth.php';
+require_once __DIR__ . '/ClientServerHealth.php';
+require_once __DIR__ . '/AppVersion.php';
 
 /**
  * A teljes Kliens-módú (`node_role === 'client'`) API-kódútvonal —
@@ -64,6 +66,26 @@ final class ClientProxy
             return;
         }
 
+        // Fázis 2, Checkpoint 4 — verzió-kompatibilitás/health kapu, MINDEN
+        // továbbítás előtt. TTL-cache mögött áll (lásd ClientServerHealth —
+        // NEM ping minden egyes kérésnél), és PONTOSAN a design 8. pontjának
+        // megfelelő három, egymástól élesen elkülönített kimenetet ad: a
+        // Szerver ténylegesen elérhetetlen (a MEGLÉVŐ "Szerver nem elérhető"
+        // válasz, változatlanul — lásd respondWithNetworkError()) VS a
+        // Szerver elérhető, de a verziója NEM kompatibilis (ÚJ,
+        // version_mismatch válasz) VS minden rendben, folytatódik a normál
+        // HMAC-proxy. Egyik ág SEM állít be hamisan "compatible" állapotot
+        // egy ismeretlen/elérhetetlen esetben.
+        $health = ClientServerHealth::check($this->clientConfig);
+        if (!$health['server_reachable'] || !$health['api_reachable']) {
+            $this->respondWithNetworkError('health-check: ' . ($health['last_error'] ?? 'ismeretlen ok'));
+            return;
+        }
+        if ($health['compatible'] === false) {
+            $this->respondWithVersionMismatch();
+            return;
+        }
+
         $scriptName = basename((string) ($_SERVER['SCRIPT_NAME'] ?? ''));
         if ($scriptName === '' || !str_ends_with($scriptName, '.php')) {
             $this->respondWithError(400, 'Érvénytelen kérés.');
@@ -73,9 +95,37 @@ final class ClientProxy
         $targetUrl = $serverUrl . '/api/' . $scriptName . ($queryString !== '' ? '?' . $queryString : '');
 
         $method = (string) ($_SERVER['REQUEST_METHOD'] ?? 'GET');
-        $body = file_get_contents('php://input') ?: '';
 
-        $headers = $this->buildOutboundHeaders($method, $body);
+        // Fázis 2, Checkpoint 4 — multipart/form-data (fájlfeltöltés)
+        // támogatás. A php://input NEM olvasható multipart kéréseknél — PHP
+        // a beérkező kéréstörzset MÁR feldolgozta $_FILES/$_POST-ba, mire ez
+        // a kód lefut (lásd a PHP dokumentáció php://input szakasza). Ezért
+        // egy multipart kérésnél NEM a (üres) php://input-ot továbbítjuk,
+        // hanem $_POST/$_FILES-ból ÚJRAÉPÍTJÜK a kéréstörzset, SAJÁT, itt
+        // generált boundary-vel (lásd buildMultipartBody()).
+        //
+        // A HMAC body-hash-hez viszont NEM a nyers (újraépített) bájtokat
+        // adjuk — ÉLŐ TESZTELÉSSEL FELFEDEZETT PROBLÉMA: a Szerver oldalán
+        // is UGYANEZ a php://input-korlát érvényes a BEÉRKEZŐ (proxyzott)
+        // multipart kérésre, tehát a Szerver SOSE tudná visszaellenőrizni
+        // egy nyers bájtok feletti hash-t (a Szerver saját php://input-ja
+        // is üres lenne). Ehelyett $_POST/$_FILES TARTALMÁBÓL számolt,
+        // mindkét oldalon FÜGGETLENÜL, azonosan reprodukálható emésztvényt
+        // (lásd ClientHmac::multipartBodyDigest()) adunk a canonicalString()-nek
+        // — ez NEM változtatja meg a canonicalString() SAJÁT szerződését
+        // (továbbra is hash('sha256', $body) fut le rajta), csak azt, hogy
+        // multipart esetén MIT kap "$body"-ként.
+        $multipartContentTypeOverride = null;
+        $bodyForSigning = null;
+        $inboundContentType = (string) ($_SERVER['CONTENT_TYPE'] ?? '');
+        if ($method === 'POST' && str_starts_with(strtolower($inboundContentType), 'multipart/form-data')) {
+            [$body, $multipartContentTypeOverride] = $this->buildMultipartBody();
+            $bodyForSigning = ClientHmac::multipartBodyDigest($_POST, $_FILES);
+        } else {
+            $body = file_get_contents('php://input') ?: '';
+        }
+
+        $headers = $this->buildOutboundHeaders($method, $bodyForSigning ?? $body, $multipartContentTypeOverride);
 
         $ch = curl_init($targetUrl);
         if ($ch === false) {
@@ -111,6 +161,23 @@ final class ClientProxy
         $rawHeaders = substr($raw, 0, $headerSize);
         $responseBody = substr($raw, $headerSize);
 
+        // Fázis 2, Checkpoint 4 — a "authenticated" health-mező a VALÓDI
+        // forgalom kimeneteléből frissül (lásd ClientServerHealth docblokkja
+        // — ez NEM egy külön, szintetikus próba-hívás). Egy 401 válasz,
+        // aminek a törzse pontosan a ClientAuthenticator egységes hibaüzenete
+        // (lásd _bootstrap.php/ClientAuthenticator.php), a gépszintű
+        // HMAC-hitelesítés tényleges elutasítását jelzi — MINDEN más válasz
+        // (2xx, 4xx üzleti hiba, akár egy staff-login.php-s "hibás PIN" 401
+        // is, ami NEM a gép-szintű rétegből jön) azt bizonyítja, hogy a
+        // Kliens gép-identitása ÉRVÉNYES volt, csak az ÜZLETI kérés végződött
+        // másképp.
+        $isMachineAuthRejection = $status === 401 && str_contains($responseBody, 'Hitelesítés sikertelen.');
+        ClientServerHealth::recordRequestOutcome(
+            $this->clientConfig,
+            !$isMachineAuthRejection,
+            $isMachineAuthRejection ? 'A Szerver elutasította a Kliens gép-szintű hitelesítését.' : null
+        );
+
         http_response_code($status);
         $this->relayResponseHeaders($rawHeaders);
         echo $responseBody;
@@ -137,6 +204,64 @@ final class ClientProxy
     }
 
     /**
+     * Fázis 2, Checkpoint 4 — multipart/form-data kéréstörzs ÚJRAÉPÍTÉSE
+     * $_POST/$_FILES-ból, SAJÁT, frissen generált boundary-vel. Erre azért
+     * van szükség (és NEM elég a meglévő, `php://input`-ot egyszerűen
+     * továbbító kódútvonal), mert PHP a multipart kéréstörzset MÁR
+     * feldolgozta $_POST/$_FILES-ba, MIRE ez a kód lefut — a `php://input`
+     * ilyenkor üres (ez dokumentált PHP-viselkedés, nem hiba). A törzset
+     * KÉZZEL, string-ként építjük fel (NEM egy CURLFile-tömböt adunk át a
+     * curl-nek, ami a SAJÁT boundary-jét generálná) — ennek a lényege, hogy
+     * a HMAC-aláírás body-hash-e (lásd forward()) PONTOSAN a ténylegesen
+     * elküldött bájtok felett számolhasson, még a küldés ELŐTT ismert
+     * módon. Csak EGYSZERŰ, egy-fájlos mezőket kezel (logo-upload.php,
+     * product-image-upload.php, print-logo-upload.php, backup-restore.php,
+     * import-preview.php — az ÖSSZES jelenlegi multipart végpont pontosan
+     * ilyen, lásd a Fázis 2 Checkpoint 4 elemzését), NEM tömbös
+     * ("files[]") mezőket — ha egy jövőbeli végpont ilyet igényelne, ide
+     * kell bővíteni.
+     *
+     * @return array{0: string, 1: string} [törzs, "multipart/form-data; boundary=..." Content-Type]
+     */
+    private function buildMultipartBody(): array
+    {
+        $boundary = '----FountainTradeClientProxy' . bin2hex(random_bytes(16));
+        $parts = '';
+
+        foreach ($_POST as $name => $value) {
+            if (!is_string($value) && !is_numeric($value)) {
+                continue; // tömbös mezőt (pl. "tags[]") ez a kör szándékosan nem támogat
+            }
+            $parts .= "--$boundary\r\n"
+                . 'Content-Disposition: form-data; name="' . str_replace('"', '\\"', (string) $name) . "\"\r\n\r\n"
+                . $value . "\r\n";
+        }
+
+        foreach ($_FILES as $name => $file) {
+            if (!is_array($file) || !isset($file['error']) || $file['error'] !== UPLOAD_ERR_OK) {
+                continue; // hiányzó/hibás fájl — a Szerver-oldali végpont a hiányzó $_FILES-kulcsból ugyanúgy "nincs fájl"-t lát
+            }
+            if (!is_uploaded_file((string) $file['tmp_name'])) {
+                continue; // védelmi mélység — sose olvassunk ki tetszőleges fájlrendszer-útvonalat
+            }
+            $content = file_get_contents((string) $file['tmp_name']);
+            if ($content === false) {
+                continue;
+            }
+            $originalName = str_replace('"', '\\"', (string) ($file['name'] ?? 'file'));
+            $mime = (string) ($file['type'] ?: 'application/octet-stream');
+            $parts .= "--$boundary\r\n"
+                . 'Content-Disposition: form-data; name="' . str_replace('"', '\\"', (string) $name) . '"; filename="' . $originalName . "\"\r\n"
+                . "Content-Type: $mime\r\n\r\n"
+                . $content . "\r\n";
+        }
+
+        $parts .= "--$boundary--\r\n";
+
+        return [$parts, "multipart/form-data; boundary=$boundary"];
+    }
+
+    /**
      * A böngésző→Kliens kérés fejléceiből építi fel a Kliens→Szerver
      * kimenő fejléclistát — test-átlátszó, de NEM vak: a `Host`-ot sosem
      * másolja (a curl a valódi célhoz állítja be magától), a hop-by-hop
@@ -148,9 +273,14 @@ final class ClientProxy
      * fejléceit (§ClientHmac.php), és — ha van elmentve — a dolgozói
      * munkamenet-hidat is.
      *
+     * @param ?string $contentTypeOverride Fázis 2, Checkpoint 4 — multipart
+     *        kérésnél a saját, ÚJRAÉPÍTETT törzshöz tartozó, ÚJ boundary-t
+     *        tartalmazó Content-Type (lásd buildMultipartBody()) — ilyenkor
+     *        ez váltja fel a böngésző EREDETI Content-Type-ját (aminek a
+     *        boundary-je a mi újraépített törzsünkhöz már nem illik).
      * @return string[]
      */
-    private function buildOutboundHeaders(string $method, string $body): array
+    private function buildOutboundHeaders(string $method, string $body, ?string $contentTypeOverride = null): array
     {
         $headers = [];
         foreach ($_SERVER as $key => $value) {
@@ -167,7 +297,25 @@ final class ClientProxy
             // alakban összefésülve látna — valódi, élesen megfigyelt hiba
             // volt, nem elméleti. Lentebb, a CONTENT_TYPE ágban egyszer,
             // egyértelműen kerül be.
-            if ($lower === 'host' || $lower === 'cookie' || $lower === 'content-type' || in_array($lower, self::HOP_BY_HOP_HEADERS, true)) {
+            //
+            // A 'content-length' KIHAGYÁSA (Fázis 2 Checkpoint 4 — élő
+            // teszteléssel felfedezett hiba javítása): a PHP beépített
+            // szervere UGYANÚGY megduplázza ezt is ('HTTP_CONTENT_LENGTH'
+            // ÉS 'CONTENT_LENGTH' — lásd fent a content-type analóg esetét).
+            // Eddig ez REJTVE maradt, mert minden eddigi kérésnél a
+            // továbbított törzs bájt-pontosan MEGEGYEZETT a beérkezővel
+            // (php://input változtatás nélkül tovább), így egy átmásolt
+            // RÉGI Content-Length véletlenül helyes volt. A multipart
+            // ÚJRAÉPÍTETT törzse (lásd buildMultipartBody()) viszont MÁS
+            // hosszú, mint az eredeti — egy átmásolt, elavult
+            // Content-Length itt már ténylegesen ELTÉRŐ (kisebb) értéket
+            // adott volna, mint a ténylegesen kiküldött bájtok száma, amit
+            // a fogadó PHP beépített szervere "Malformed HTTP request"-ként
+            // utasított el (a kliens szemszögéből "Empty reply from
+            // server"-ként jelentkezett). A curl MINDIG a ténylegesen
+            // átadott CURLOPT_POSTFIELDS hosszából számol helyes
+            // Content-Length-et — sose egy átmásolt fejlécből.
+            if ($lower === 'host' || $lower === 'cookie' || $lower === 'content-type' || $lower === 'content-length' || in_array($lower, self::HOP_BY_HOP_HEADERS, true)) {
                 continue;
             }
             $headers[] = $this->headerCaseFromServerKey($name) . ': ' . $value;
@@ -179,7 +327,9 @@ final class ClientProxy
         // elküldött CURLOPT_POSTFIELDS hosszából maga számolja ki a
         // helyeset — egy kézzel átmásolt, esetleg eltérő érték csendben
         // csonkított/hibás kéréstörzset eredményezhetne.
-        if (!empty($_SERVER['CONTENT_TYPE'])) {
+        if ($contentTypeOverride !== null) {
+            $headers[] = 'Content-Type: ' . $contentTypeOverride;
+        } elseif (!empty($_SERVER['CONTENT_TYPE'])) {
             $headers[] = 'Content-Type: ' . $_SERVER['CONTENT_TYPE'];
         }
 
@@ -199,6 +349,11 @@ final class ClientProxy
         $headers[] = 'X-Client-Timestamp: ' . $timestamp;
         $headers[] = 'X-Client-Nonce: ' . $nonce;
         $headers[] = 'X-Client-Signature: ' . $signature;
+        // Fázis 2, Checkpoint 4 — TISZTÁN diagnosztikai adat (lásd
+        // Database::touchClientLastSeen() docblokkja), NEM része az aláírt
+        // kanonikus sztringnek — a Szerver admin "Kliensek" oldalán
+        // megjeleníthesse, melyik verziójú Kliens jelentkezett utoljára.
+        $headers[] = 'X-Client-App-Version: ' . AppVersion::CURRENT;
 
         // Dolgozói munkamenet-híd — csak akkor, ha a Kliens saját helyi
         // session-jében már van (egy korábbi sikeres staff-login.php
@@ -210,6 +365,16 @@ final class ClientProxy
         if ($localSession['client_csrf_token'] !== '') {
             $headers[] = 'X-Client-Csrf-Token: ' . $localSession['client_csrf_token'];
         }
+
+        // A curl ~1 KB feletti kéréstörzsnél automatikusan hozzáadna egy
+        // "Expect: 100-continue" fejlécet — élő teszteléssel felfedezett
+        // hiba: a PHP beépített fejlesztői szervere (SEM a Kliens, SEM a
+        // Szerver oldalán) ezt nem kezeli helyesen, "Malformed HTTP
+        // request"-et eredményezve (jellemzően a nagyobb multipart
+        // fájlfeltöltéseknél éri el ezt a méretet, lásd a Fázis 2
+        // Checkpoint 4 multipart-támogatása). Az explicit üres 'Expect:'
+        // fejléc ezt kikapcsolja — ártalmatlan a kisebb kéréseknél is.
+        $headers[] = 'Expect:';
 
         return $headers;
     }
@@ -340,5 +505,22 @@ final class ClientProxy
         http_response_code($status);
         header('Content-Type: application/json; charset=utf-8');
         echo json_encode(['error' => $message], JSON_UNESCAPED_UNICODE);
+    }
+
+    /**
+     * Fázis 2, Checkpoint 4 — a design 5. pontjának PONTOS válasz-alakja.
+     * SOSE tartalmazza a tényleges Kliens/Szerver verziószámokat (azok a
+     * client-health.php diagnosztikai végponton érhetők el, admin/Kliens
+     * saját felületén) — a böngésző felé csak az egyértelmű, cselekvésre
+     * ösztönző üzenet megy.
+     */
+    private function respondWithVersionMismatch(): void
+    {
+        http_response_code(409);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([
+            'error' => 'A kliens frissítése szükséges.',
+            'version_mismatch' => true,
+        ], JSON_UNESCAPED_UNICODE);
     }
 }

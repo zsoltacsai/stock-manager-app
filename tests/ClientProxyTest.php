@@ -149,6 +149,13 @@ final class ClientProxyTest extends TestCase
 
         $byName = [];
         foreach ($headers as $h) {
+            // A Fázis 2 Checkpoint 4-ben hozzáadott "Expect:" fejléc
+            // SZÁNDÉKOSAN érték nélküli (a curl 100-continue-elnyomó
+            // szokásos alakja) — ez nem "Név: Érték" formátumú, ezért itt
+            // kihagyjuk, nem próbáljuk szétbontani.
+            if (!str_contains($h, ': ')) {
+                continue;
+            }
             [$name, $value] = explode(': ', $h, 2);
             $byName[$name] = $value;
         }

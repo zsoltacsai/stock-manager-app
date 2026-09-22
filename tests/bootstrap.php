@@ -36,6 +36,8 @@ require_once __DIR__ . '/../src/ClientNonceStore.php';
 require_once __DIR__ . '/../src/ClientAuthenticator.php';
 require_once __DIR__ . '/../src/ClientSessionBridge.php';
 require_once __DIR__ . '/../src/ClientProxy.php';
+require_once __DIR__ . '/../src/AppVersion.php';
+require_once __DIR__ . '/../src/ClientServerHealth.php';
 
 /**
  * Minden tesztfüggvény saját, egyszer használatos SQLite fájllal dolgozik

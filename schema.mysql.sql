@@ -492,6 +492,7 @@ CREATE TABLE IF NOT EXISTS registered_clients (
     revoked_at   DATETIME NULL,
     rotated_at   DATETIME NULL,
     last_seen_at DATETIME NULL,
+    last_seen_version VARCHAR(20) NULL,  -- Fázis 2 Checkpoint 4 — diagnosztikai célra, SOSE biztonsági döntés forrása
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_registered_clients_client_id (client_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

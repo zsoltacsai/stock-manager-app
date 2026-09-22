@@ -51,4 +51,40 @@ final class AppVersionTest extends TestCase
     {
         $this->assertTrue(AppVersion::isValidSemver(AppVersion::CURRENT));
     }
+
+    // -----------------------------------------------------------------
+    // Fázis 2, Checkpoint 4 — isMajorMinorCompatible() (Kliens/Szerver
+    // verzió-kompatibilitás KÖZPONTI, egyetlen forrása)
+    // -----------------------------------------------------------------
+
+    public function testIsMajorMinorCompatibleAcceptsIdenticalVersions(): void
+    {
+        $this->assertTrue(AppVersion::isMajorMinorCompatible('1.5.0', '1.5.0'));
+    }
+
+    public function testIsMajorMinorCompatibleIgnoresPatchDifference(): void
+    {
+        $this->assertTrue(AppVersion::isMajorMinorCompatible('1.5.0', '1.5.7'));
+        $this->assertTrue(AppVersion::isMajorMinorCompatible('1.5.9', '1.5.0'));
+    }
+
+    public function testIsMajorMinorCompatibleRejectsDifferentMinor(): void
+    {
+        $this->assertFalse(AppVersion::isMajorMinorCompatible('1.4.1', '1.5.0'));
+        $this->assertFalse(AppVersion::isMajorMinorCompatible('1.5.0', '1.4.1'));
+    }
+
+    public function testIsMajorMinorCompatibleRejectsDifferentMajor(): void
+    {
+        $this->assertFalse(AppVersion::isMajorMinorCompatible('1.5.0', '2.5.0'));
+        $this->assertFalse(AppVersion::isMajorMinorCompatible('2.0.0', '1.0.0'));
+    }
+
+    public function testIsMajorMinorCompatibleThrowsOnMalformedInput(): void
+    {
+        // A hívó (ClientServerHealth) felelőssége az isValidSemver()
+        // előzetes ellenőrzése — ugyanaz a szerződés, mint compare()-nél.
+        $this->expectException(InvalidArgumentException::class);
+        AppVersion::isMajorMinorCompatible('not-a-version', '1.5.0');
+    }
 }

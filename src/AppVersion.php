@@ -57,4 +57,22 @@ final class AppVersion
     {
         return self::compare($target, $installed) < 0;
     }
+
+    /**
+     * Fázis 2, Checkpoint 4 — Kliens/Szerver verzió-kompatibilitás
+     * KÖZPONTI, EGYETLEN forrása (lásd ClientServerHealth/ClientProxy —
+     * egyik sem tartalmaz saját, párhuzamos verzió-összehasonlítást). A
+     * design szerint a major.minor páros dönt — egy patch-szintű eltérés
+     * (pl. 1.5.0 Kliens egy 1.5.2 Szerverrel) ÖNMAGÁBAN nem tiltó ok.
+     * Mindkét oldalnak érvényes SemVer kell legyen — egy hibásan
+     * formázott verziószámot a hívónak (ClientServerHealth) explicit,
+     * "nem kompatibilis"-ként kell kezelnie, NEM ide bedobott
+     * kivétellel elszállnia.
+     */
+    public static function isMajorMinorCompatible(string $a, string $b): bool
+    {
+        [$aMaj, $aMin] = self::parse($a);
+        [$bMaj, $bMin] = self::parse($b);
+        return $aMaj === $bMaj && $aMin === $bMin;
+    }
 }

@@ -28,7 +28,7 @@ final class ClientServerSchemaTest extends TestCase
 
         $registeredClientsCols = array_column($pdo->query("PRAGMA table_info(registered_clients)")->fetchAll(PDO::FETCH_ASSOC), 'name');
         $this->assertEquals(
-            ['id', 'client_id', 'label', 'secret_hash', 'is_active', 'revoked_at', 'rotated_at', 'last_seen_at', 'created_at'],
+            ['id', 'client_id', 'label', 'secret_hash', 'is_active', 'revoked_at', 'rotated_at', 'last_seen_at', 'last_seen_version', 'created_at'],
             $registeredClientsCols
         );
 
@@ -39,7 +39,7 @@ final class ClientServerSchemaTest extends TestCase
         );
     }
 
-    public function testSchemaVersionIs28AfterFreshInstall(): void
+    public function testSchemaVersionIs29AfterFreshInstall(): void
     {
         $db = tests_new_database();
         $pdoProp = new ReflectionProperty(Database::class, 'pdo');
@@ -47,7 +47,7 @@ final class ClientServerSchemaTest extends TestCase
         $pdo = $pdoProp->getValue($db);
 
         $version = (int) $pdo->query('SELECT version FROM schema_version LIMIT 1')->fetchColumn();
-        $this->assertSame(28, $version);
+        $this->assertSame(29, $version);
     }
 
     public function testClientIdAndSessionIdAreUniquelyIndexed(): void
@@ -101,7 +101,7 @@ final class ClientServerSchemaTest extends TestCase
         $this->assertNotEmpty($clientSessionsCols);
 
         $version = (int) $pdo2->query('SELECT version FROM schema_version LIMIT 1')->fetchColumn();
-        $this->assertSame(28, $version);
+        $this->assertSame(29, $version);
     }
 
     public function testReRunningMigrationAgainstAnAlreadyMigratedDatabaseIsANoOp(): void

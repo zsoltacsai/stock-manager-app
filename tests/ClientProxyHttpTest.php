@@ -30,14 +30,28 @@ final class ClientProxyHttpTest extends TestCase
     {
         $projectRoot = dirname(__DIR__);
 
-        // --- "Szerver" oldal: minimális, kontrollált fixture — NEM a valódi app. ---
+        // --- "Szerver" oldal: minimális, kontrollált fixture — NEM a valódi app.
+        // A webroot/api/ + src/ mélységi szerkezet PONTOSAN a valódi app-ot
+        // tükrözi (lásd lentebb) — ez azért szükséges, mert a Fázis 2,
+        // Checkpoint 4-ben bemásolt VALÓDI server-ping.php saját, relatív
+        // '../../src/AppVersion.php' require-ja erre a mélységre számít. ---
         self::$serverRoot = sys_get_temp_dir() . '/sm_proxy_server_' . bin2hex(random_bytes(6));
-        mkdir(self::$serverRoot . '/api', 0775, true);
-        file_put_contents(self::$serverRoot . '/api/_test-fixture.php', self::fixtureSource());
+        mkdir(self::$serverRoot . '/webroot/api', 0775, true);
+        file_put_contents(self::$serverRoot . '/webroot/api/_test-fixture.php', self::fixtureSource());
+        // Fázis 2, Checkpoint 4 — a ClientProxy::forward() MOST minden
+        // továbbítás előtt egy server-ping.php health/verzió-ellenőrzést
+        // végez (lásd ClientServerHealth) — enélkül a fixture-nek ez a
+        // teljes fájl (és minden RÁ épülő teszt) "Szerver nem elérhető"-t
+        // kapna, mielőtt a tényleges szállítási-réteg logika egyáltalán
+        // lefutna. A valódi webroot/api/server-ping.php PONTOS másolata —
+        // nem egy párhuzamos, kézzel írt duplikátum.
+        copy($projectRoot . '/webroot/api/server-ping.php', self::$serverRoot . '/webroot/api/server-ping.php');
+        mkdir(self::$serverRoot . '/src', 0775, true);
+        copy($projectRoot . '/src/AppVersion.php', self::$serverRoot . '/src/AppVersion.php');
 
         self::$serverPort = self::findFreePort();
         self::$serverProcess = proc_open(
-            [PHP_BINARY, '-S', '127.0.0.1:' . self::$serverPort, '-t', self::$serverRoot],
+            [PHP_BINARY, '-S', '127.0.0.1:' . self::$serverPort, '-t', self::$serverRoot . '/webroot'],
             [1 => ['file', self::$serverRoot . '/server.log', 'w'], 2 => ['file', self::$serverRoot . '/server.log', 'w']],
             $pipes,
             self::$serverRoot

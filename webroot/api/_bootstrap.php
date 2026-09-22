@@ -107,7 +107,11 @@ if (($config['node_role'] ?? 'standalone') === 'client' && in_array($currentScri
 // hozza (a valódi bejelentkezés/CSRF/jogosultság a Szerveren dől el, lásd a
 // Fázis 2 tervdokumentum §5 Authentication design szakaszát). Egyetlen
 // végpont-fájl és egyetlen src/*.php üzleti logika SEM kap "if clientMode"
-// elágazást — ez az EGYETLEN hely, ahol a döntés megtörténik.
+// elágazást — ez az EGYETLEN hely, ahol a döntés megtörténik. (Az EGYETLEN
+// fájlszintű kivétel a client-health.php — Fázis 2 Checkpoint 4 —, ami
+// SZÁNDÉKOSAN SOSE requireolja ezt a _bootstrap.php-t, pontosan azért, hogy
+// a Kliens SAJÁT connectivity-állapotát mindkét node-típuson önállóan,
+// biztonságosan ki tudja szolgálni — lásd a saját docblokkja.)
 //
 // node_role !== 'client' esetén ez az egész blokk no-op — a meglévő
 // Standalone/Szerver viselkedés bit-pontosan változatlan.
@@ -212,7 +216,22 @@ if ($isCronScript) {
     // hibaüzenetet adunk vissza a hívónak, függetlenül attól, MELYIK lépés
     // bukott el.
     $clientPathAndQuery = ClientHmac::pathAndQueryFromServerSuperglobal();
-    $clientRequestBody = file_get_contents('php://input') ?: '';
+    // Fázis 2, Checkpoint 4 — multipart/form-data kéréseknél a php://input
+    // a Szerveren IS üres (PHP már $_POST/$_FILES-ba dolgozta fel, mielőtt
+    // idáig futnánk) — ugyanaz a korlát, mint a Kliens oldalán (lásd
+    // ClientProxy::forward() docblokkja). A Kliens ilyenkor NEM a nyers
+    // bájtok hash-ét írta alá, hanem a $_POST/$_FILES TARTALMÁBÓL számolt,
+    // mindkét oldalon függetlenül reprodukálható emésztvényt (lásd
+    // ClientHmac::multipartBodyDigest()) — itt, ellenőrzéskor, UGYANÍGY,
+    // a Szerver SAJÁT (a proxyzott kérésből PHP által feldolgozott)
+    // $_POST/$_FILES-ából kell számolnia, különben a signature soha nem
+    // egyezne.
+    $clientContentType = (string) ($_SERVER['CONTENT_TYPE'] ?? '');
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && str_starts_with(strtolower($clientContentType), 'multipart/form-data')) {
+        $clientRequestBody = ClientHmac::multipartBodyDigest($_POST, $_FILES);
+    } else {
+        $clientRequestBody = file_get_contents('php://input') ?: '';
+    }
     $clientAuthResult = (new ClientAuthenticator($db))->authenticate(
         (string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'),
         $clientPathAndQuery,

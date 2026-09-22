@@ -22,12 +22,17 @@ $locationId = !empty($input['location_id']) ? (int) $input['location_id'] : null
 // vagy a megadott pénztárgéphez épp nincs nyitott műszak, a sale.cash_session_id
 // NULL marad — teljesen visszafelé kompatibilis, egy ilyen boltnál minden
 // változatlanul működik, mint a kasszakezelés bevezetése előtt.
+//
+// Fázis 2, Checkpoint 4 — SZÁNDÉKOSAN NINCS itt egy előzetes
+// getOpenCashSession()-lekérdezés, aminek az eredményét később (a tényleges
+// insertSale()-ig, jelentős, kupon-/hűségpont-ellenőrzést és egy teljes
+// tranzakció-kezdést is tartalmazó kód után) magunkkal cipelnénk — egy ilyen
+// korábban lekért érték a tényleges INSERT pillanatára már egy időközben
+// lezárt műszakra mutathatna (lásd Database::insertSale() docblokkja a
+// pontos versenyhelyzet-leírásért). Ehelyett a NYERS $cashRegisterId megy
+// tovább — a TÉNYLEGES nyitott műszakot az insertSale() saját, atomikus
+// al-lekérdezése azonosítja, a tényleges írás pillanatában.
 $cashRegisterId = !empty($input['cash_register_id']) ? (int) $input['cash_register_id'] : null;
-$cashSessionId = null;
-if ($cashRegisterId) {
-    $openSession = $db->getOpenCashSession($cashRegisterId);
-    $cashSessionId = $openSession ? (int) $openSession['id'] : null;
-}
 // Kliens által generált, a kosár egy adott "leadási kísérletéhez" tartozó
 // kulcs — dupla kattintás, hálózati újrapróbálkozás, vagy egy elveszett
 // válasz utáni manuális újraküldés esetén ez zárja ki, hogy ugyanaz a
@@ -265,7 +270,7 @@ try {
             Auth::currentStaffId(),
             $idempotencyKey,
             $idempotencyFingerprint,
-            $cashSessionId
+            $cashRegisterId
         );
         foreach ($lineItems as $item) {
             $db->insertSaleItem($saleId, $item);

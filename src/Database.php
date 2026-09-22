@@ -8,7 +8,7 @@ require_once __DIR__ . '/ClientHmac.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 28;
+    private const SCHEMA_VERSION = 29;
 
     private PDO $pdo;
     private string $driver;
@@ -207,6 +207,9 @@ class Database
             }
             if ($version < 28) {
                 $this->migrateV28ClientServer();
+            }
+            if ($version < 29) {
+                $this->migrateV29ClientLastSeenVersion();
             }
         }
 
@@ -1757,6 +1760,23 @@ class Database
         }
     }
 
+    /**
+     * Fázis 2, Checkpoint 4 — az admin "Kliensek" oldal utolsó ismert
+     * Kliens-verziót is megjeleníthessen (lásd a kör 9. pontja). Ez a mező
+     * SOSE biztonsági döntés forrása (ugyanaz az elv, mint a már meglévő
+     * last_seen_at-nél) — kizárólag diagnosztikai/megjelenítési célra.
+     */
+    private function migrateV29ClientLastSeenVersion(): void
+    {
+        try {
+            $this->pdo->exec('ALTER TABLE registered_clients ADD COLUMN last_seen_version VARCHAR(20)');
+        } catch (PDOException $e) {
+            if (!$this->isBenignSchemaError($e)) {
+                throw $e;
+            }
+        }
+    }
+
     // ---------------------------------------------------------------
     // Kliens/szerver architektúra (Fázis 2) — regisztrált kliens gépek
     // ---------------------------------------------------------------
@@ -1791,14 +1811,14 @@ class Database
     public function listRegisteredClients(): array
     {
         return $this->pdo->query('
-            SELECT id, client_id, label, is_active, revoked_at, rotated_at, last_seen_at, created_at
+            SELECT id, client_id, label, is_active, revoked_at, rotated_at, last_seen_at, last_seen_version, created_at
             FROM registered_clients ORDER BY created_at DESC
         ')->fetchAll(PDO::FETCH_ASSOC);
     }
 
     public function findRegisteredClientById(int $id): ?array
     {
-        $stmt = $this->pdo->prepare('SELECT id, client_id, label, is_active, revoked_at, rotated_at, last_seen_at, created_at FROM registered_clients WHERE id = ?');
+        $stmt = $this->pdo->prepare('SELECT id, client_id, label, is_active, revoked_at, rotated_at, last_seen_at, last_seen_version, created_at FROM registered_clients WHERE id = ?');
         $stmt->execute([$id]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
@@ -1889,9 +1909,18 @@ class Database
     }
 
     /** Best-effort, biztonsági döntés forrásaként SOSE használt — csak "mikor látta a Szerver utoljára ezt a klienst" megjelenítésre. */
-    public function touchClientLastSeen(int $id): void
+    /**
+     * $reportedVersion — a Kliens SAJÁT AppVersion::CURRENT-je, amit az
+     * X-Client-App-Version fejlécben küld minden proxyzott kérésnél (lásd
+     * ClientProxy::buildOutboundHeaders()) — TISZTÁN diagnosztikai/
+     * megjelenítési célra (admin "Kliensek" oldal), SOSE biztonsági döntés
+     * forrása (ugyanaz az elv, mint last_seen_at-nél). Egy hiányzó/
+     * érvénytelen érték egyszerűen NULL-ként tárolódik, nem hiba.
+     */
+    public function touchClientLastSeen(int $id, ?string $reportedVersion = null): void
     {
-        $this->pdo->prepare('UPDATE registered_clients SET last_seen_at = ? WHERE id = ?')->execute([date('Y-m-d H:i:s'), $id]);
+        $this->pdo->prepare('UPDATE registered_clients SET last_seen_at = ?, last_seen_version = ? WHERE id = ?')
+            ->execute([date('Y-m-d H:i:s'), ($reportedVersion !== null && $reportedVersion !== '') ? $reportedVersion : null, $id]);
     }
 
     // ---------------------------------------------------------------
@@ -2787,6 +2816,24 @@ class Database
      *         kapnia, és findSaleByIdempotencyKey()-jel visszaadnia az
      *         (időközben a MÁSIK kérés által létrehozott) eredeti eladást
      *         újrafuttatás helyett.
+     *
+     * Fázis 2, Checkpoint 4 — kasszaműszak-race javítás. Az utolsó paraméter
+     * NEM egy korábban lekért cash_session_id (ahogy 1.5.0 Phase 1-ben
+     * eredetileg volt), hanem a $cashRegisterId — a TÉNYLEGES nyitott
+     * műszak azonosítását egy korrelált al-lekérdezés végzi, UGYANEBBEN az
+     * INSERT-ben, a tényleges írás pillanatában. Ez zárja ki azt a
+     * TOCTOU-versenyhelyzetet, amiben egy korábban (akár csak pár száz
+     * milliszekundummal koábban, pl. egy kupon-/hűségpont-ellenőrzés vagy
+     * hálózati késés miatt) lekért session-azonosító a tényleges INSERT
+     * pillanatára már lezárt műszakra mutathatott volna (Kliens/Szerver
+     * architektúrában ez a két hívás akár KÉT KÜLÖN gépről, egymással
+     * versenyezve is érkezhet — lásd a Fázis 2 tervdokumentum "HIGH"
+     * kockázatként azonosított cash-session race-ét). Ha az INSERT
+     * pillanatában NINCS nyitott műszak ezen a pénztárgépen (közben lezárták,
+     * vagy sose is volt nyitva), az al-lekérdezés NULL-t ad — az eladás ekkor
+     * is sikeresen rögzül, csak cash_session_id = NULL-lal (ugyanaz az
+     * egyértelmű, "nincs kasszakezelés ehhez az eladáshoz" eredmény, mint
+     * amikor a hívó egyáltalán nem adott meg pénztárgépet).
      */
     public function insertSale(
         float $total,
@@ -2801,25 +2848,51 @@ class Database
         ?int $staffId = null,
         ?string $idempotencyKey = null,
         ?string $idempotencyFingerprint = null,
-        ?int $cashSessionId = null
+        ?int $cashRegisterId = null
     ): int {
         // A token a nyugta bejelentkezés nélküli (QR-kódos) megtekintéséhez
         // kell — kitalálhatatlan, ellentétben magával a sorszámozott
         // eladás-azonosítóval.
         $receiptToken = bin2hex(random_bytes(24));
+        $now = date('Y-m-d H:i:s');
+        $idempotencyKeyValue = ($idempotencyKey !== null && $idempotencyKey !== '') ? $idempotencyKey : null;
+        $idempotencyFingerprintValue = ($idempotencyFingerprint !== null && $idempotencyFingerprint !== '') ? $idempotencyFingerprint : null;
 
-        $stmt = $this->pdo->prepare('
-            INSERT INTO sales (total, payment_method, buyer_name, customer_id, loyalty_points_earned, loyalty_points_redeemed, coupon_id, coupon_discount, gift_card_redeemed, staff_id, status, receipt_token, idempotency_key, idempotency_fingerprint, cash_session_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ');
-        $stmt->execute([
-            $total, $paymentMethod, $buyerName, $customerId, $loyaltyPointsEarned, $loyaltyPointsRedeemed,
-            $couponId, $couponDiscount, $giftCardRedeemed, $staffId, 'completed', $receiptToken,
-            ($idempotencyKey !== null && $idempotencyKey !== '') ? $idempotencyKey : null,
-            ($idempotencyFingerprint !== null && $idempotencyFingerprint !== '') ? $idempotencyFingerprint : null,
-            $cashSessionId,
-            date('Y-m-d H:i:s'),
-        ]);
+        if ($cashRegisterId !== null) {
+            // INSERT ... SELECT — a cash_session_id értékét egy korrelált
+            // al-lekérdezés adja, UGYANANNAK a statementnek a végrehajtási
+            // pillanatában (nem egy korábbi, külön SELECT eredményeként
+            // átadva) — ez zárja ki a fenti docblokkban leírt versenyt.
+            $stmt = $this->pdo->prepare('
+                INSERT INTO sales (total, payment_method, buyer_name, customer_id, loyalty_points_earned, loyalty_points_redeemed, coupon_id, coupon_discount, gift_card_redeemed, staff_id, status, receipt_token, idempotency_key, idempotency_fingerprint, cash_session_id, created_at)
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (
+                    SELECT id FROM cash_sessions WHERE cash_register_id = ? AND status = \'open\' LIMIT 1
+                ), ?
+            ');
+            $stmt->execute([
+                $total, $paymentMethod, $buyerName, $customerId, $loyaltyPointsEarned, $loyaltyPointsRedeemed,
+                $couponId, $couponDiscount, $giftCardRedeemed, $staffId, 'completed', $receiptToken,
+                $idempotencyKeyValue, $idempotencyFingerprintValue,
+                $cashRegisterId,
+                $now,
+            ]);
+        } else {
+            // Nincs pénztárgép megadva ehhez az eladáshoz — a régi, egyszerű
+            // VALUES forma, explicit NULL cash_session_id-vel. Ugyanaz a
+            // viselkedés, mint kasszakezelés bevezetése előtt (teljesen
+            // visszafelé kompatibilis azoknál a boltoknál, amik nem
+            // használják a kasszakezelést).
+            $stmt = $this->pdo->prepare('
+                INSERT INTO sales (total, payment_method, buyer_name, customer_id, loyalty_points_earned, loyalty_points_redeemed, coupon_id, coupon_discount, gift_card_redeemed, staff_id, status, receipt_token, idempotency_key, idempotency_fingerprint, cash_session_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+            ');
+            $stmt->execute([
+                $total, $paymentMethod, $buyerName, $customerId, $loyaltyPointsEarned, $loyaltyPointsRedeemed,
+                $couponId, $couponDiscount, $giftCardRedeemed, $staffId, 'completed', $receiptToken,
+                $idempotencyKeyValue, $idempotencyFingerprintValue,
+                $now,
+            ]);
+        }
         return (int) $this->pdo->lastInsertId();
     }
 

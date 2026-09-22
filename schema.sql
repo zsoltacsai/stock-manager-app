@@ -459,6 +459,7 @@ CREATE TABLE IF NOT EXISTS registered_clients (
     revoked_at   TEXT,
     rotated_at   TEXT,
     last_seen_at TEXT,
+    last_seen_version TEXT,  -- Fázis 2 Checkpoint 4 — diagnosztikai célra, SOSE biztonsági döntés forrása
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_registered_clients_client_id ON registered_clients(client_id);

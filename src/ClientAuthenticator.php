@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/ClientHmac.php';
 require_once __DIR__ . '/ClientNonceStore.php';
+require_once __DIR__ . '/AppVersion.php';
 
 /**
  * Egy proxyzott (ClientProxy-n keresztül érkező) kérés gépszintű
@@ -88,7 +89,16 @@ final class ClientAuthenticator
         }
 
         // 8) minden ellenőrzés sikeres — a hívó innentől folytathatja.
-        $this->db->touchClientLastSeen((int) $client['id']);
+        // Az X-Client-App-Version fejléc TISZTÁN diagnosztikai adat (lásd
+        // Database::touchClientLastSeen() docblokkja) — NEM része az
+        // aláírt kanonikus sztringnek, tehát a hitelesítési döntésre
+        // semmilyen hatással nincs; egy hiányzó/érvénytelen SemVer-t
+        // egyszerűen figyelmen kívül hagyunk.
+        $reportedVersion = (string) ($_SERVER['HTTP_X_CLIENT_APP_VERSION'] ?? '');
+        $this->db->touchClientLastSeen(
+            (int) $client['id'],
+            AppVersion::isValidSemver($reportedVersion) ? $reportedVersion : null
+        );
         return ['ok' => true, 'registeredClient' => $client, 'reason' => null];
     }
 

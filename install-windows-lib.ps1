@@ -206,3 +206,97 @@ function Test-ScheduledTaskRegistration {
     }
     return @{ Ok = $true; Reason = '' }
 }
+
+# ---------------------------------------------------------------------
+# Fázis 2, Checkpoint 3 — node-szerepkör (Önálló gép/Szerver/Kliens)
+# kiválasztás + a config/installer-generated.php írásáért felelős
+# tools/installer-set-topology.php PHP CLI-eszköz meghívása.
+# ---------------------------------------------------------------------
+
+# Pure — egy már beolvasott nyers választ (menüsorszám VAGY szó) alakít
+# kanonikus szerepkörré. KÜLÖN a tényleges Read-Host hívástól (lásd
+# install-windows.ps1 "Node-szerepkör kiválasztása" szakasza), hogy Pester
+# konzol-I/O nélkül tesztelhesse a válasz-értelmezést.
+function Resolve-NodeRoleChoice {
+    param([string]$RawInput, [string]$DefaultRole = 'standalone')
+    $trimmed = $RawInput
+    if ($null -eq $trimmed) { $trimmed = '' }
+    $trimmed = $trimmed.Trim()
+    if ($trimmed -eq '') { return $DefaultRole }
+    if ($trimmed -eq '1') { return 'standalone' }
+    if ($trimmed -eq '2') { return 'server' }
+    if ($trimmed -eq '3') { return 'client' }
+    $lower = $trimmed.ToLowerInvariant()
+    if (@('standalone', 'server', 'client') -contains $lower) { return $lower }
+    return $null
+}
+
+# A tools/installer-set-topology.php CLI-eszköz vékony, argumentum-építő +
+# JSON-parszoló hívóburka — MAGA a PHP-eszköz végzi a tényleges
+# olvasást/írást/UrlSafety-ellenőrzést (lásd annak docblokkja: "NE egy
+# PowerShell-oldali, saját PHP-array-szerializálás" — ugyanaz az elv, mint a
+# GitHub Release-ellenőrzésnél, csak itt egyenesen a valódi PHP-kódot hívjuk
+# meg, nem a szabályait másoljuk).
+function Invoke-FountainTradeTopologyTool {
+    param(
+        [Parameter(Mandatory)][string]$PhpExe,
+        [Parameter(Mandatory)][string]$ToolPath,
+        [Parameter(Mandatory)][string]$Action,
+        [string]$NodeRole,
+        [string]$ServerUrl,
+        [string]$ClientId,
+        [string]$ClientSecret
+    )
+    $argList = @($ToolPath, "--action=$Action")
+    if ($NodeRole) { $argList += "--node-role=$NodeRole" }
+    if ($PSBoundParameters.ContainsKey('ServerUrl')) { $argList += "--server-url=$ServerUrl" }
+    if ($PSBoundParameters.ContainsKey('ClientId')) { $argList += "--client-id=$ClientId" }
+    if ($PSBoundParameters.ContainsKey('ClientSecret')) { $argList += "--client-secret=$ClientSecret" }
+
+    $output = & $PhpExe @argList
+    $exitCode = $LASTEXITCODE
+    $rawText = ($output -join "`n")
+    $json = $null
+    try { $json = $rawText | ConvertFrom-Json } catch { }
+    return @{ ExitCode = $exitCode; Json = $json; Raw = $rawText }
+}
+
+# Pure — eldönti, hogy egy VISSZAOLVASOTT tűzfalszabály (LocalPort/Protocol/
+# RemoteAddress/Enabled, ahogy egy Get-NetFirewallRule + Get-
+# NetFirewallPortFilter/Get-NetFirewallAddressFilter páros visszaadná) a
+# Fázis 2 Szerver-mód elvárt alakjának felel-e meg — KÜLÖN a tényleges
+# New-NetFirewallRule/Get-NetFirewallRule hívásoktól (ADMIN jogot igényelnek,
+# lásd install-windows.ps1), hogy a döntési logika admin nélkül, tisztán
+# tesztelhető legyen.
+function Test-FirewallRuleMatchesExpected {
+    param(
+        [string]$LocalPort,
+        [string]$Protocol,
+        [object]$RemoteAddress,
+        [string]$Enabled,
+        [Parameter(Mandatory)][int]$ExpectedPort
+    )
+    if ($Enabled -ne 'True') {
+        return @{ Ok = $false; Reason = 'A szabály le van tiltva (Enabled != True).' }
+    }
+    if ($Protocol -ne 'TCP') {
+        return @{ Ok = $false; Reason = "A protokoll eltér a várttól (talált: '$Protocol', várt: 'TCP')." }
+    }
+    if ($LocalPort -ne "$ExpectedPort") {
+        return @{ Ok = $false; Reason = "A port eltér a várttól (talált: '$LocalPort', várt: '$ExpectedPort')." }
+    }
+    if ($RemoteAddress -notcontains 'LocalSubnet') {
+        return @{ Ok = $false; Reason = "A távoli cím nincs LocalSubnetre korlátozva (talált: '$($RemoteAddress -join ', ')')." }
+    }
+    return @{ Ok = $true; Reason = '' }
+}
+
+# Pure — a node-szerepkör alapján eldönti, mire kösse a beépített PHP
+# szervert. Szerver: 0.0.0.0 (minden interfész — DHCP miatt a LAN-IP később
+# változhat, lásd a kör 3. pontja). Önálló/Kliens: localhost (SOSE nyílik
+# hálózati port, ha nincs rá szükség).
+function Get-FountainTradeBindHost {
+    param([Parameter(Mandatory)][string]$NodeRole)
+    if ($NodeRole -eq 'server') { return '0.0.0.0' }
+    return 'localhost'
+}

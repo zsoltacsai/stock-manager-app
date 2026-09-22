@@ -77,6 +77,27 @@ require_once __DIR__ . '/../../src/Auth.php';
 
 $config = require __DIR__ . '/../../config/config.php';
 
+// Fázis 2, Checkpoint 3 — topology guard a worker/cron-végpontokra. EGY
+// Kliensnek STRUKTURÁLISAN nincs saját adatbázisa, amin egy WooCommerce/NAV/
+// backup/frissítés-ellenőrző worker dolgozhatna — ez a telepítő oldalán is
+// biztosított (Kliens módban a Feladatütemező EGYIKET sem regisztrálja, lásd
+// install-windows.ps1), de ez itt egy FÜGGETLEN, szerver-oldali védőháló arra
+// az esetre, ha egy régi (pl. korábbi Szerver-módból visszamaradt)
+// Feladatütemező-bejegyzés MÉGIS megpróbálná meghívni. EZ NEM hitelesítési
+// réteg (nem helyettesíti a lenti X-Cron-Token ellenőrzést Szerver/Standalone
+// módban) — csak egy topológiai KAPU, ami MIELŐTT bármi más eldőlne (a
+// ClientProxy-továbbítás előtt is!), egyszerűen elutasítja a kérést, hogy egy
+// Kliens SOSE továbbítsa a Szerver felé (még egy véletlenül érvényes
+// cron-tokennel érkező kérést se).
+$cronScripts = ['auto-backup-run.php', 'auto-sync-run.php', 'nav-queue-run.php', 'nav-incoming-sync-run.php', 'update-check-run.php', 'wc-queue-run.php'];
+$currentScript = basename($_SERVER['SCRIPT_NAME'] ?? '');
+if (($config['node_role'] ?? 'standalone') === 'client' && in_array($currentScript, $cronScripts, true)) {
+    http_response_code(403);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['error' => 'Ez a végpont Kliens módban nem elérhető.', 'client_mode_unavailable' => true], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 // Fázis 2 — kliens/szerver architektúra. EZ a teljes Kliens-módú kódútvonal:
 // ha node_role==='client', a kérés a Szerverre kerül továbbításra, MIELŐTT
 // bármi más itt lentebb lefutna (Settings::read(), GeoBlocker, a helyi
@@ -150,7 +171,6 @@ $db = new Database($config['db'], __DIR__ . '/../..');
 // már NEM kap kivételt, lásd $csrfWhitelist.
 $authWhitelist = ['login.php', 'logout.php', 'auth-status.php', 'install-status.php', 'receipt-detail.php', 'webhook.php'];
 $csrfWhitelist = ['login.php', 'auth-status.php', 'install-status.php', 'receipt-detail.php', 'webhook.php'];
-$currentScript = basename($_SERVER['SCRIPT_NAME'] ?? '');
 
 // Az automatikus mentés/szinkron (auto-backup-run.php, auto-sync-run.php)
 // dokumentáltan egy rendszer cron bejegyzésről indul (lásd README/telepítési
@@ -162,8 +182,9 @@ $currentScript = basename($_SERVER['SCRIPT_NAME'] ?? '');
 // nélküli, teljes katalógus-felülírásra/mentésre képes) utat is
 // felhasználni, és fordítva. A token KIZÁRÓLAG az X-Cron-Token fejlécben
 // fogadott el — SOSE query-stringben —, mert egy URL-be írt titok
-// szerver-/proxy-naplókba, böngésző-előzményekbe kerülhet.
-$cronScripts = ['auto-backup-run.php', 'auto-sync-run.php', 'nav-queue-run.php', 'nav-incoming-sync-run.php', 'update-check-run.php', 'wc-queue-run.php'];
+// szerver-/proxy-naplókba, böngésző-előzményekbe kerülhet. ($cronScripts/
+// $currentScript már a fájl elején, a Fázis 2 topológia-kapunál
+// deklarálva — itt csak újrahasznosítjuk, nem duplikáljuk a listát.)
 $isCronScript = in_array($currentScript, $cronScripts, true);
 
 // Fázis 2 — egy proxyzott (ClientProxy-n keresztül érkező) kérést az

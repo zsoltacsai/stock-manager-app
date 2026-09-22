@@ -229,6 +229,170 @@ Describe 'install-windows-lib — Test-ScheduledTaskRegistration (regisztráció
     }
 }
 
+Describe 'install-windows-lib — Resolve-NodeRoleChoice (Fázis 2 Checkpoint 3 — szerepkör-menü értelmezése)' {
+    It 'Üres bemenetnél az alapértelmezett szerepkört adja vissza' {
+        Resolve-NodeRoleChoice -RawInput '' -DefaultRole 'standalone' | Should Be 'standalone'
+    }
+    It 'Csak whitespace bemenetnél is az alapértelmezettet adja vissza' {
+        Resolve-NodeRoleChoice -RawInput '   ' -DefaultRole 'server' | Should Be 'server'
+    }
+    It "'1'/'2'/'3' menüsorszámokat helyesen fordítja le" {
+        Resolve-NodeRoleChoice -RawInput '1' | Should Be 'standalone'
+        Resolve-NodeRoleChoice -RawInput '2' | Should Be 'server'
+        Resolve-NodeRoleChoice -RawInput '3' | Should Be 'client'
+    }
+    It 'A szerepkör NEVÉT (kis/nagybetű-független) is elfogadja' {
+        Resolve-NodeRoleChoice -RawInput 'Server' | Should Be 'server'
+        Resolve-NodeRoleChoice -RawInput 'KLIENS' -DefaultRole 'standalone' | Should Be $null
+        Resolve-NodeRoleChoice -RawInput 'client' | Should Be 'client'
+        Resolve-NodeRoleChoice -RawInput '  STANDALONE  ' | Should Be 'standalone'
+    }
+    It 'Érvénytelen bemenetnél $null-t ad vissza (a hívó ekkor újra kérdez/hibát jelez)' {
+        Resolve-NodeRoleChoice -RawInput '4' | Should Be $null
+        Resolve-NodeRoleChoice -RawInput 'szerver' | Should Be $null
+    }
+}
+
+Describe 'install-windows-lib — Get-FountainTradeBindHost (Szerver = 0.0.0.0, Önálló/Kliens = localhost)' {
+    It "Szerver módban '0.0.0.0'-t ad vissza (DHCP-biztos, minden interfészre köt)" {
+        Get-FountainTradeBindHost -NodeRole 'server' | Should Be '0.0.0.0'
+    }
+    It "Önálló módban 'localhost'-ot ad vissza" {
+        Get-FountainTradeBindHost -NodeRole 'standalone' | Should Be 'localhost'
+    }
+    It "Kliens módban is 'localhost'-ot ad vissza (a Kliens saját szervere sose hallgat hálózati interfészen)" {
+        Get-FountainTradeBindHost -NodeRole 'client' | Should Be 'localhost'
+    }
+}
+
+Describe 'install-windows-lib — Test-FirewallRuleMatchesExpected (tiszta döntési logika, admin-jog nélkül tesztelhető)' {
+    It 'Ok=$true, ha minden mező pontosan egyezik' {
+        $r = Test-FirewallRuleMatchesExpected -LocalPort '8000' -Protocol 'TCP' -RemoteAddress @('LocalSubnet') -Enabled 'True' -ExpectedPort 8000
+        $r.Ok | Should Be $true
+    }
+    It 'Ok=$false, ha a szabály le van tiltva' {
+        $r = Test-FirewallRuleMatchesExpected -LocalPort '8000' -Protocol 'TCP' -RemoteAddress @('LocalSubnet') -Enabled 'False' -ExpectedPort 8000
+        $r.Ok | Should Be $false
+    }
+    It 'Ok=$false, ha a port eltér' {
+        $r = Test-FirewallRuleMatchesExpected -LocalPort '9000' -Protocol 'TCP' -RemoteAddress @('LocalSubnet') -Enabled 'True' -ExpectedPort 8000
+        $r.Ok | Should Be $false
+        $r.Reason | Should Not BeNullOrEmpty
+    }
+    It 'Ok=$false, ha a protokoll nem TCP' {
+        $r = Test-FirewallRuleMatchesExpected -LocalPort '8000' -Protocol 'UDP' -RemoteAddress @('LocalSubnet') -Enabled 'True' -ExpectedPort 8000
+        $r.Ok | Should Be $false
+    }
+    It "Ok=`$false, ha a távoli cím NEM LocalSubnetre korlátozott (pl. 'Any' — internet felőli elérés)" {
+        $r = Test-FirewallRuleMatchesExpected -LocalPort '8000' -Protocol 'TCP' -RemoteAddress @('Any') -Enabled 'True' -ExpectedPort 8000
+        $r.Ok | Should Be $false
+    }
+}
+
+Describe 'install-windows-lib — Invoke-FountainTradeTopologyTool (tools/installer-set-topology.php valódi PHP-hívása)' {
+    # A $phpExe felderítésnek a Describe-blokk SAJÁT (nem BeforeEach-en
+    # belüli) törzsében kell futnia — a lenti "-Skip:(-not $phpExe)"
+    # kifejezés MÁR a blokk ÖSSZEGYŰJTÉSEKOR kiértékelődik, tehát egy
+    # BeforeEach-be tett felderítés MINDIG $null-t látna (a BeforeEach még
+    # nem futott le akkor), és minden tesztet hamisan kihagyna.
+    $candidates = @('C:\tools\php83\php.exe', (Get-Command php.exe -ErrorAction SilentlyContinue).Source)
+    $phpExe = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+    $toolPath = Join-Path $PSScriptRoot '..\tools\installer-set-topology.php'
+    $tempRoot = $null
+
+    BeforeEach {
+        $tempRoot = Join-Path $env:TEMP "ft-topology-invoke-test-$(Get-Random)"
+        New-Item -ItemType Directory -Path (Join-Path $tempRoot 'config') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $tempRoot 'src') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $tempRoot 'tools') -Force | Out-Null
+        Copy-Item (Join-Path $PSScriptRoot '..\src\UrlSafety.php') (Join-Path $tempRoot 'src\UrlSafety.php')
+        Copy-Item $toolPath (Join-Path $tempRoot 'tools\installer-set-topology.php')
+    }
+    AfterEach {
+        if ($tempRoot -and (Test-Path $tempRoot)) { Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'Get: üres telepítésnél standalone alapértelmezést ad vissza' -Skip:(-not $phpExe) {
+        Push-Location $tempRoot
+        try {
+            $r = Invoke-FountainTradeTopologyTool -PhpExe $phpExe -ToolPath (Join-Path $tempRoot 'tools\installer-set-topology.php') -Action 'get'
+        } finally { Pop-Location }
+        $r.ExitCode | Should Be 0
+        $r.Json.ok | Should Be $true
+        $r.Json.node_role | Should Be 'standalone'
+    }
+
+    It 'Set: server szerepkört ír, és a Get ezt utána visszaigazolja' -Skip:(-not $phpExe) {
+        Push-Location $tempRoot
+        try {
+            $set = Invoke-FountainTradeTopologyTool -PhpExe $phpExe -ToolPath (Join-Path $tempRoot 'tools\installer-set-topology.php') -Action 'set' -NodeRole 'server'
+            $get = Invoke-FountainTradeTopologyTool -PhpExe $phpExe -ToolPath (Join-Path $tempRoot 'tools\installer-set-topology.php') -Action 'get'
+        } finally { Pop-Location }
+        $set.ExitCode | Should Be 0
+        $set.Json.ok | Should Be $true
+        $get.Json.node_role | Should Be 'server'
+    }
+
+    It 'Set: kliens szerepkör érvénytelen server-url esetén hibát ad, nem-nulla kilépési kóddal' -Skip:(-not $phpExe) {
+        Push-Location $tempRoot
+        try {
+            $r = Invoke-FountainTradeTopologyTool -PhpExe $phpExe -ToolPath (Join-Path $tempRoot 'tools\installer-set-topology.php') -Action 'set' -NodeRole 'client' -ServerUrl 'nem-egy-url' -ClientId 'cl_x' -ClientSecret 'sekret'
+        } finally { Pop-Location }
+        $r.ExitCode | Should Not Be 0
+        $r.Json.ok | Should Be $false
+        $r.Json.error | Should Not BeNullOrEmpty
+    }
+
+    It 'Set: érvényes kliens hitelesítő adatokat helyesen ír és olvas vissza' -Skip:(-not $phpExe) {
+        Push-Location $tempRoot
+        try {
+            $set = Invoke-FountainTradeTopologyTool -PhpExe $phpExe -ToolPath (Join-Path $tempRoot 'tools\installer-set-topology.php') -Action 'set' -NodeRole 'client' -ServerUrl 'http://192.168.1.10:8000' -ClientId 'cl_abc' -ClientSecret 'raw-secret'
+            $get = Invoke-FountainTradeTopologyTool -PhpExe $phpExe -ToolPath (Join-Path $tempRoot 'tools\installer-set-topology.php') -Action 'get'
+        } finally { Pop-Location }
+        $set.Json.ok | Should Be $true
+        $get.Json.client.server_url | Should Be 'http://192.168.1.10:8000'
+        $get.Json.client.client_id | Should Be 'cl_abc'
+        $get.Json.client.client_secret | Should Be 'raw-secret'
+    }
+}
+
+Describe 'install-windows.ps1 — Fázis 2 Checkpoint 3 szerkezeti garanciák (statikus forrás-ellenőrzés)' {
+    $mainScriptText = Get-Content (Join-Path $PSScriptRoot '..\install-windows.ps1') -Raw
+
+    It "A wc-queue-run.php szerepel a `$cronJobs listában (korábban hiányzó bejegyzés javítva)" {
+        $mainScriptText | Should Match "Endpoint = 'wc-queue-run\.php'"
+    }
+    It 'Mind a hat worker-végpont szerepel a cron-listában' {
+        foreach ($ep in @('auto-backup-run.php', 'auto-sync-run.php', 'nav-queue-run.php', 'nav-incoming-sync-run.php', 'update-check-run.php', 'wc-queue-run.php')) {
+            $mainScriptText | Should Match "Endpoint = '$([regex]::Escape($ep))'"
+        }
+    }
+    It 'Kliens módban a szkript AKTÍVAN eltávolítja (Unregister-ScheduledTask) a korábbi worker-feladatokat' {
+        $mainScriptText | Should Match "NodeRole -eq 'client'[\s\S]{0,1200}Unregister-ScheduledTask"
+    }
+    It "A szerver-indítás a `$bindHost változót használja, NEM egy kőbe vésett 'localhost'-ot" {
+        $mainScriptText | Should Match '-S \$\{bindHost\}:\$Port'
+        $mainScriptText | Should Not Match '-S localhost:\$Port -t'
+    }
+    It 'Szerver módban a szkript ténylegesen létrehoz egy New-NetFirewallRule hívást' {
+        $mainScriptText | Should Match "NodeRole -eq 'server'[\s\S]{0,2000}New-NetFirewallRule"
+    }
+    It 'A tűzfalszabály kizárólag LocalSubnetre korlátozott, sose "Any"-re' {
+        $mainScriptText | Should Match "-RemoteAddress LocalSubnet"
+        $mainScriptText | Should Not Match "-RemoteAddress\s+Any"
+    }
+    It 'A parancsikon a Kliens saját localhost Dashboardjára mutat, SOSE a konfigurált távoli -ServerUrl-re (nem kerüli meg a ClientProxy-t)' {
+        $mainScriptText | Should Match '\$dashboardUrl = "http://localhost:\$Port/dashboard\.php"'
+        $mainScriptText | Should Not Match '\$dashboardUrl\s*=\s*\$(clientServerUrl|ServerUrl)'
+    }
+    It 'A Kliens Client Secret bekérése -AsSecureString-gel történik (nem sima szövegként visszhangozva)' {
+        $mainScriptText | Should Match 'Read-Host "Client Secret" -AsSecureString'
+    }
+    It 'HTTP figyelmeztetés jelenik meg, ha a Kliens konfigurált szerver-címe sima HTTP' {
+        $mainScriptText | Should Match 'A kapcsolat nem titkosított\. Internetes használathoz HTTPS szükséges\.'
+    }
+}
+
 Describe 'Kassza .ico — jelenlét és shortcut-integráció (regresszió: korábban .svg volt az IconLocation-ben)' {
     $icoPath = Join-Path $PSScriptRoot '..\webroot\assets\fountaintrade-kassa.ico'
     $mainScriptText = Get-Content (Join-Path $PSScriptRoot '..\install-windows.ps1') -Raw

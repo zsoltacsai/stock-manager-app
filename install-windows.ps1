@@ -107,7 +107,22 @@ param(
     [switch]$SkipScheduledTasks,
     [switch]$SkipPhpInstall,
     [switch]$SkipShortcuts,
-    [switch]$SkipDownload
+    [switch]$SkipDownload,
+    # Fázis 2, Checkpoint 3 — node-szerepkör (Önálló gép/Szerver/Kliens).
+    # Ha nincs megadva: nem-interaktív módban ($env:FOUNTAINTRADE_NONINTERACTIVE)
+    # az alapértelmezett 'standalone' (VAGY a már meglévő installer-generated.php
+    # aktuális szerepköre, ha a gép már be van állítva — lásd a szkript törzse),
+    # interaktív módban a szkript egy konzol-menüt jelenít meg.
+    [ValidateSet('', 'standalone', 'server', 'client')]
+    [string]$NodeRole = '',
+    # Kliens módhoz — a távoli FountainTrade Szerver címe/hitelesítő adatai.
+    [string]$ServerUrl,
+    [string]$ClientId,
+    [string]$ClientSecret,
+    # Explicit megerősítés egy "veszélyes" szerepkör-váltáshoz (bármilyen
+    # módból Kliensre — lásd a kör 16. pontja: a helyi adatbázis ilyenkor a
+    # lemezen marad, de az alkalmazás többé nem ezt használja).
+    [switch]$ConfirmModeSwitch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -573,6 +588,159 @@ if ($loadedModules -notcontains 'Zend OPcache') {
 }
 
 # -------------------------------------------------------------------
+# Node-szerepkör (Fázis 2, Checkpoint 3) — Önálló gép / Szerver / Kliens.
+# A tényleges olvasás/írás a config/installer-generated.php-ba a
+# tools/installer-set-topology.php PHP CLI-eszközön keresztül történik
+# (lásd annak docblokkja) — SOSE egy PowerShell-oldali, saját
+# PHP-array-szerializálással. A 'tools' mappa MINDIG része egy valódi
+# telepítésnek (a self-frissítés is erre épül, lásd README "Önfrissítés"
+# szakasza), tehát friss GitHub Release-telepítésnél is garantáltan jelen
+# van, nem kell külön tartalék-forrást keresni.
+# -------------------------------------------------------------------
+Write-Step "Node-szerepkör (Önálló gép / Szerver / Kliens)"
+
+$topologyToolPath = Join-Path $InstallPath 'tools\installer-set-topology.php'
+if (-not (Test-Path $topologyToolPath)) {
+    Exit-WithFailureSummary "Hiányzik a tools\installer-set-topology.php a telepített FountainTrade-ből." "A letöltött/másolt csomag hiányos lehet — próbáld újra a telepítést."
+}
+
+$existingTopology = Invoke-FountainTradeTopologyTool -PhpExe $phpExe -ToolPath $topologyToolPath -Action 'get'
+if ($existingTopology.ExitCode -ne 0 -or -not $existingTopology.Json -or -not $existingTopology.Json.ok) {
+    Exit-WithFailureSummary "Nem sikerült beolvasni a jelenlegi node-szerepkört: $($existingTopology.Raw)" "Ellenőrizd a PHP telepítést, majd futtasd újra a telepítőt."
+}
+$existingNodeRole = $existingTopology.Json.node_role
+$existingClient = $existingTopology.Json.client
+
+$resolvedNodeRole = $null
+if ($NodeRole) {
+    $resolvedNodeRole = $NodeRole
+} elseif ($env:FOUNTAINTRADE_NONINTERACTIVE) {
+    # Nem-interaktív rerun: a MÁR beállított szerepkört tartjuk meg — lásd a
+    # kör 15. pontja (idempotencia) és 12. pontja (node_role hiányában
+    # 'standalone', amit Invoke-FountainTradeTopologyTool 'get'-je már
+    # magától visszaad).
+    $resolvedNodeRole = $existingNodeRole
+} else {
+    $currentLabel = switch ($existingNodeRole) { 'server' { 'Szerver' } 'client' { 'Kliens' } default { 'Önálló gép' } }
+    Write-Host ""
+    Write-Host "Milyen szerepet kap ez a számítógép?" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  1) Önálló gép" -ForegroundColor White
+    Write-Host "  2) Szerver" -ForegroundColor White
+    Write-Host "  3) Kliens" -ForegroundColor White
+    Write-Host ""
+    Write-Host "Jelenlegi beállítás: $currentLabel — Enter = ezt tartja meg." -ForegroundColor DarkGray
+    $rawChoice = Read-Host "Választás (1/2/3, vagy Enter)"
+    $resolvedNodeRole = Resolve-NodeRoleChoice -RawInput $rawChoice -DefaultRole $existingNodeRole
+    if (-not $resolvedNodeRole) {
+        Exit-WithFailureSummary "Érvénytelen szerepkör-választás: '$rawChoice'" "Futtasd újra a telepítőt, és válassz 1/2/3 közül (vagy hagyd üresen a jelenlegi megtartásához)."
+    }
+}
+
+$isModeSwitch = $resolvedNodeRole -ne $existingNodeRole
+if ($isModeSwitch) {
+    Write-Warn2 "Szerepkör-váltás: '$existingNodeRole' -> '$resolvedNodeRole'."
+    # A kör 16. pontjának explicit követelménye: a Kliens irányba váltás a
+    # "veszélyes" eset — a gép saját, HELYI adatbázisa (ha eddig Önálló vagy
+    # Szerver volt, és van benne valódi adat) a lemezen MARAD, de az
+    # alkalmazás onnantól nem ezt használja, mert minden adat a távoli
+    # Szerveren jelenik meg. Ez könnyen "eltűnt adatnak" tűnhet egy nem
+    # figyelmeztetett üzemeltetőnek.
+    $localDbPath = Join-Path $InstallPath 'data\stock.sqlite'
+    $hasLocalData = ($existingNodeRole -ne 'client') -and (Test-Path $localDbPath) -and ((Get-Item $localDbPath).Length -gt 0)
+    if ($resolvedNodeRole -eq 'client' -and $hasLocalData) {
+        Write-Host ""
+        Write-Host "FIGYELEM: ez a gép jelenleg '$existingNodeRole' módban fut, SAJÁT (nem üres) adatbázissal." -ForegroundColor Yellow
+        Write-Host "Kliens módra váltás után a HELYI adatbázis a lemezen marad, de az alkalmazás" -ForegroundColor Yellow
+        Write-Host "mostantól NEM ezt használja — minden adat a távoli Szerveren jelenik meg." -ForegroundColor Yellow
+        Write-Host ""
+        if ($ConfirmModeSwitch) {
+            Write-Ok "A -ConfirmModeSwitch kapcsoló jelen van — a váltás megerősítve."
+        } elseif ($env:FOUNTAINTRADE_NONINTERACTIVE) {
+            Exit-WithFailureSummary "Veszélyes szerepkör-váltás ('$existingNodeRole' -> 'client') nem-interaktív módban, megerősítés nélkül." "Add meg a -ConfirmModeSwitch kapcsolót, ha ez tényleg szándékos, vagy futtasd a telepítőt interaktívan."
+        } else {
+            $confirm = Read-Host "Biztosan folytatod? (írd be: igen)"
+            if ($confirm.Trim().ToLowerInvariant() -ne 'igen') {
+                Exit-WithFailureSummary "A szerepkör-váltás megszakítva (nincs explicit megerősítés)." "Futtasd újra a telepítőt, és erősítsd meg 'igen'-nel, ha valóban Kliens módra szeretnél váltani."
+            }
+        }
+    }
+}
+
+$clientServerUrl = $ServerUrl
+$clientId = $ClientId
+$clientSecret = $ClientSecret
+if ($resolvedNodeRole -eq 'client') {
+    $needPrompt = (-not $clientServerUrl) -or (-not $clientId) -or (-not $clientSecret)
+    if ($needPrompt -and -not $isModeSwitch -and $existingNodeRole -eq 'client' -and $existingClient.client_id) {
+        # Idempotens rerun ugyanabban a szerepkörben — a MÁR eltárolt
+        # hitelesítő adatokat használjuk újra, nem kérdezünk (és NEM
+        # töröljük/üresítjük egy hiányos paraméterezésű rerunnal — lásd a
+        # kör 15. pontja: "elvesző client secret" tilos).
+        if (-not $clientServerUrl) { $clientServerUrl = $existingClient.server_url }
+        if (-not $clientId) { $clientId = $existingClient.client_id }
+        if (-not $clientSecret) { $clientSecret = $existingClient.client_secret }
+        $needPrompt = (-not $clientServerUrl) -or (-not $clientId) -or (-not $clientSecret)
+    }
+    if ($needPrompt) {
+        if ($env:FOUNTAINTRADE_NONINTERACTIVE) {
+            Exit-WithFailureSummary "Kliens módhoz -ServerUrl/-ClientId/-ClientSecret paraméterek szükségesek nem-interaktív módban." "Add meg mindhárom paramétert, vagy futtasd a telepítőt interaktívan."
+        }
+        Write-Host ""
+        Write-Host "Ez a gép Kliens terminálként fog futni — egy MÁR REGISZTRÁLT FountainTrade" -ForegroundColor Cyan
+        Write-Host "Szerver címére és hitelesítő adataira van szükség (lásd a Szerveren a Kliensek oldalt)." -ForegroundColor Cyan
+        Write-Host ""
+        if (-not $clientServerUrl) {
+            $clientServerUrl = Read-Host "FountainTrade szerver címe (pl. http://192.168.1.10:8000)"
+        }
+        if (-not $clientId) {
+            $clientId = Read-Host "Client ID (cl_...)"
+        }
+        if (-not $clientSecret) {
+            # A titok NE jelenjen meg visszhangozva a képernyőn/naplóban.
+            $secureSecret = Read-Host "Client Secret" -AsSecureString
+            $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureSecret)
+            try {
+                $clientSecret = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+            } finally {
+                [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+            }
+        }
+    }
+
+    # A kör 5. pontja — nem blokkoló figyelmeztetés, HA a Kliens
+    # konfigurált Szerver-címe sima HTTP. A HMAC-aláírás hitelesíti a
+    # kérést (bizonyítja, hogy a KLIENS küldte), de NEM titkosítja — ez
+    # NEM TLS-helyettesítő. LAN-on belüli telepítésnél ez 1.5.0-ban
+    # SZÁNDÉKOSAN megengedett marad (nincs automatikus letiltás), csak
+    # egyértelműen jelezzük.
+    if ($clientServerUrl -and $clientServerUrl -match '^(?i)http://') {
+        Write-Warn2 "A kapcsolat nem titkosított. Internetes használathoz HTTPS szükséges. LAN deployment ettől még működhet."
+    }
+}
+
+$topologySetArgs = @{ PhpExe = $phpExe; ToolPath = $topologyToolPath; Action = 'set'; NodeRole = $resolvedNodeRole }
+if ($resolvedNodeRole -eq 'client') {
+    $topologySetArgs.ServerUrl = $clientServerUrl
+    $topologySetArgs.ClientId = $clientId
+    $topologySetArgs.ClientSecret = $clientSecret
+}
+$topologySetResult = Invoke-FountainTradeTopologyTool @topologySetArgs
+if ($topologySetResult.ExitCode -ne 0 -or -not $topologySetResult.Json -or -not $topologySetResult.Json.ok) {
+    $topologyError = if ($topologySetResult.Json) { $topologySetResult.Json.error } else { $topologySetResult.Raw }
+    Exit-WithFailureSummary "A node-szerepkör beállítása sikertelen: $topologyError" "Ellenőrizd a megadott szerver-címet/hitelesítő adatokat, majd futtasd újra a telepítőt."
+}
+$NodeRole = $resolvedNodeRole
+# A titok a SAJÁT forrásunkba/naplóba SOSE kerül — a fenti Invoke hívás is
+# csak a config/installer-generated.php-ba írja (lásd tools/installer-set-
+# topology.php docblokkja), a PowerShell-transzkript-napló pedig a Read-Host
+# -AsSecureString miatt sose látja a nyers értéket visszhangozva.
+$roleLabel = switch ($NodeRole) { 'server' { 'Szerver' } 'client' { 'Kliens' } default { 'Önálló gép' } }
+Write-Ok "Node-szerepkör: $roleLabel"
+
+$bindHost = Get-FountainTradeBindHost -NodeRole $NodeRole
+
+# -------------------------------------------------------------------
 # 4. Mappák — létezés + írhatóság (valódi írás-teszttel)
 # -------------------------------------------------------------------
 Write-Step "Mappák ellenőrzése ($InstallPath)"
@@ -648,8 +816,15 @@ if (-not $SkipScheduledTasks) {
     }
 
     $serverTaskName = 'FountainTrade - Szerver'
-    # Csak localhost/loopback — SOSE minden hálózati interfészre (lásd
-    # 11. és 22. pont: "ne nyisson szükségtelen hálózati portot").
+    # A kötési cím a node-szerepkörtől függ (lásd Get-FountainTradeBindHost,
+    # Fázis 2 Checkpoint 3): Önálló/Kliens node ESETÉN localhost/loopback —
+    # SOSE minden hálózati interfészre (lásd 11. és 22. pont: "ne nyisson
+    # szükségtelen hálózati portot"). Szerver node esetén SZÁNDÉKOSAN
+    # 0.0.0.0 — a LAN-on lévő Kliens gépeknek el kell érniük, és egy
+    # konkrét, installkor lekért LAN-IP-re kötés a DHCP miatt később
+    # érvénytelenné válhatna (lásd a kör 3. pontja). A tényleges hozzáférés-
+    # korlátozás LAN-ra a Windows Tűzfal szabálya (lásd lentebb), NEM a
+    # bind-cím — a bind-cím önmagában sose helyettesíti a tűzfalat.
     #
     # REJTETT ABLAK (élő teszteléssel felfedezett, release-blocking UX-hiba
     # javítása): a php.exe konzol-alkalmazás — közvetlenül Feladatütemező-
@@ -661,7 +836,7 @@ if (-not $SkipScheduledTasks) {
     # folyamat maga változatlanul, teljes értékűen fut a háttérben, csak
     # az ablaka nem jelenik meg.
     $serverVbsPath = Join-Path $toolsDir 'run-server-hidden.vbs'
-    New-HiddenLauncherVbs -VbsPath $serverVbsPath -ExePath $phpExe -Arguments "-S localhost:$Port -t `"$webrootPath`""
+    New-HiddenLauncherVbs -VbsPath $serverVbsPath -ExePath $phpExe -Arguments "-S ${bindHost}:$Port -t `"$webrootPath`""
     $serverAction = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //NoLogo `"$serverVbsPath`"" -WorkingDirectory $InstallPath
     # Élő teszteléssel elkülönítve igazolva (izolált Register-ScheduledTask
     # próbákkal, 2026-09-21): pontosan az "-AtLogOn" trigger-TÍPUS igényel
@@ -690,7 +865,8 @@ if (-not $SkipScheduledTasks) {
         if ($existingServerTask) {
             Set-ScheduledTask -TaskName $serverTaskName -Action $serverAction -Trigger $serverTrigger -Settings $serverSettings -ErrorAction Stop | Out-Null
         } else {
-            Register-ScheduledTask -TaskName $serverTaskName -Action $serverAction -Trigger $serverTrigger -Settings $serverSettings -Description 'FountainTrade beépített PHP szerver indítása bejelentkezéskor (csak localhost).' -ErrorAction Stop | Out-Null
+            $serverTaskDescription = if ($NodeRole -eq 'server') { 'FountainTrade beépített PHP szerver indítása bejelentkezéskor (0.0.0.0 — LAN-ról is elérhető, lásd a Windows Tűzfal szabályát).' } else { 'FountainTrade beépített PHP szerver indítása bejelentkezéskor (csak localhost).' }
+            Register-ScheduledTask -TaskName $serverTaskName -Action $serverAction -Trigger $serverTrigger -Settings $serverSettings -Description $serverTaskDescription -ErrorAction Stop | Out-Null
         }
         # Visszaolvasás + tényleges ellenőrzés (lásd a kör 8. pontja) — a
         # hívás sikeres visszatérése MAGÁBAN nem elég egy "[OK]"-hoz.
@@ -702,7 +878,7 @@ if (-not $SkipScheduledTasks) {
             Write-Err2 "A(z) '$serverTaskName' bejegyzés a regisztráció UTÁN, visszaolvasáskor NEM felel meg az elvártnak: $($verify.Reason)" "Ellenőrizd kézzel a Feladatütemezőben ('taskschd.msc'), vagy futtasd újra a telepítőt."
         }
     } catch {
-        Write-Err2 "A(z) '$serverTaskName' Feladatütemező-bejegyzés létrehozása/frissítése sikertelen: $($_.Exception.Message)" "Ellenőrizd, hogy rendszergazdai jogban fut-e a telepítő, és hogy a Feladatütemező szolgáltatás (Task Scheduler) elérhető-e. Kézi indítás: `"$phpExe`" -S localhost:$Port -t `"$webrootPath`""
+        Write-Err2 "A(z) '$serverTaskName' Feladatütemező-bejegyzés létrehozása/frissítése sikertelen: $($_.Exception.Message)" "Ellenőrizd, hogy rendszergazdai jogban fut-e a telepítő, és hogy a Feladatütemező szolgáltatás (Task Scheduler) elérhető-e. Kézi indítás: `"$phpExe`" -S ${bindHost}:$Port -t `"$webrootPath`""
     }
 
     if ($serverTaskCreated -and -not $listener) {
@@ -718,18 +894,121 @@ if (-not $SkipScheduledTasks) {
 }
 
 # -------------------------------------------------------------------
+# Windows Tűzfal (Fázis 2, Checkpoint 3) — Szerver módban egy bejövő
+# szabály engedélyezi a LAN-ról érkező kapcsolódást a $Port-ra; MINDEN más
+# módban ez a szabály (ha egy korábbi Szerver-módú telepítésből maradt)
+# eltávolításra kerül. A döntési logika (Test-FirewallRuleMatchesExpected)
+# admin-jog nélkül is tesztelhető — lásd install-windows-lib.ps1.
+# -------------------------------------------------------------------
+Write-Step "Windows Tűzfal"
+
+$fwRuleName = 'FountainTrade - Szerver bejövő (LAN)'
+if ($NodeRole -eq 'server') {
+    try {
+        $existingRule = Get-NetFirewallRule -DisplayName $fwRuleName -ErrorAction SilentlyContinue
+        $needsCreate = $true
+        if ($existingRule) {
+            $portFilter = $existingRule | Get-NetFirewallPortFilter
+            $addrFilter = $existingRule | Get-NetFirewallAddressFilter
+            $ruleCheck = Test-FirewallRuleMatchesExpected -LocalPort $portFilter.LocalPort -Protocol $portFilter.Protocol -RemoteAddress $addrFilter.RemoteAddress -Enabled $existingRule.Enabled -ExpectedPort $Port
+            if ($ruleCheck.Ok) {
+                Write-Ok "A tűzfalszabály már létezik és helyes — nem módosítva: '$fwRuleName' (TCP $Port, csak LocalSubnet)."
+                $needsCreate = $false
+            } else {
+                Remove-NetFirewallRule -DisplayName $fwRuleName -ErrorAction Stop
+                Write-Warn2 "A meglévő tűzfalszabály eltért az elvárttól ($($ruleCheck.Reason)) — újra létrehozva: '$fwRuleName'."
+            }
+        }
+        if ($needsCreate) {
+            New-NetFirewallRule -DisplayName $fwRuleName -Direction Inbound -Protocol TCP -LocalPort $Port -RemoteAddress LocalSubnet -Action Allow -Profile Any -ErrorAction Stop | Out-Null
+        }
+        # Visszaolvasás + tényleges ellenőrzés — egy sikeres New-/nem-
+        # dobott hívás MAGÁBAN itt sem elég egy "[OK]"-hoz (lásd a kör 4.
+        # pontja: "ha a tűzfal módosítása sikertelen, ne írjon [OK]-t").
+        $verifyRule = Get-NetFirewallRule -DisplayName $fwRuleName -ErrorAction Stop
+        $verifyPort = $verifyRule | Get-NetFirewallPortFilter
+        $verifyAddr = $verifyRule | Get-NetFirewallAddressFilter
+        $verifyCheck = Test-FirewallRuleMatchesExpected -LocalPort $verifyPort.LocalPort -Protocol $verifyPort.Protocol -RemoteAddress $verifyAddr.RemoteAddress -Enabled $verifyRule.Enabled -ExpectedPort $Port
+        if ($verifyCheck.Ok) {
+            Write-Ok "Tűzfalszabály létrehozva/ellenőrizve: '$fwRuleName' (TCP $Port, kizárólag a helyi alhálózatról — internet felől NEM elérhető)."
+        } else {
+            Write-Err2 "A tűzfalszabály a létrehozás UTÁN, visszaolvasáskor NEM felel meg az elvártnak: $($verifyCheck.Reason)" "Ellenőrizd kézzel a Windows Defender Tűzfalban ('wf.msc'), vagy futtasd újra a telepítőt rendszergazdai jogban."
+        }
+    } catch {
+        Write-Err2 "A tűzfalszabály létrehozása/ellenőrzése sikertelen: $($_.Exception.Message)" "Hozd létre kézzel: Windows Defender Tűzfal -> Bejövő szabályok -> Új szabály -> Port -> TCP $Port -> Csak a helyi alhálózatról (LocalSubnet) -> Engedélyezés."
+    }
+} else {
+    try {
+        $staleRule = Get-NetFirewallRule -DisplayName $fwRuleName -ErrorAction SilentlyContinue
+        if ($staleRule) {
+            Remove-NetFirewallRule -DisplayName $fwRuleName -ErrorAction Stop
+            Write-Warn2 "Egy korábbi Szerver-módú tűzfalszabály eltávolítva (a node mostantól '$NodeRole'): '$fwRuleName'."
+        } else {
+            Write-Ok "Nincs szükség tűzfalszabályra ('$NodeRole' node csak localhost-on hallgat)."
+        }
+    } catch {
+        Write-Warn2 "Egy korábbi tűzfalszabály eltávolítása sikertelen: $($_.Exception.Message) — ellenőrizd/töröld kézzel a Windows Defender Tűzfalban, ha már nincs rá szükség."
+    }
+}
+
+# A kör 14. pontja: a bind-cím és a tűzfal-konfiguráció EGYMÁSSAL, a
+# node-szerepkörrel konzisztensnek kell lennie — mivel mindkettő UGYANABBÓL
+# az egyetlen $NodeRole értékből származik (lásd fent Get-FountainTradeBindHost
+# és a közvetlenül felette lévő if/else ág), ez szerkezetileg garantált, nem
+# csak véletlenül igaz. Az alábbi sor ezt EXPLICIT, ellenőrizhető formában is
+# rögzíti a telepítő kimenetében/összegzésében.
+$fwStateLabel = if ($NodeRole -eq 'server') { 'létrehozva/ellenőrizve (TCP ' + $Port + ', LocalSubnet)' } else { 'nincs (korábbi eltávolítva, ha volt)' }
+Write-Ok "Bind/tűzfal összhang: node='$NodeRole' -> kötés='$bindHost' + tűzfalszabály=$fwStateLabel."
+
+# -------------------------------------------------------------------
 # 7. Cron-feladatok (idempotens létrehozás/frissítés)
 # -------------------------------------------------------------------
-if (-not $SkipScheduledTasks -and $CronToken) {
-    Write-Step "Automatikus háttérfeladatok (cron) beállítása"
+# A hat FountainTrade worker/cron-feladat listája — Szerver/Önálló módban
+# EZ mind regisztrálva lesz, Kliens módban EGYIK SEM (lásd lentebb). A
+# 'FountainTrade - WooCommerce push queue' bejegyzés a kör 9. pontjának
+# javítása: korábban hiányzott ebből a listából, tehát wc-queue-run.php
+# SOSE futott le automatikusan egyetlen telepítésen sem, csak kézi
+# meghívással — a README saját ajánlása szerinti "percenként vagy néhány
+# percenként" gyakorisággal, ugyanúgy, mint a testvér nav-queue-run.php.
+$cronJobs = @(
+    @{ Name = 'FountainTrade - WooCommerce szinkron'; Endpoint = 'auto-sync-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650) } },
+    @{ Name = 'FountainTrade - Biztonsagi mentes'; Endpoint = 'auto-backup-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650) } },
+    @{ Name = 'FountainTrade - NAV kimeno queue'; Endpoint = 'nav-queue-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650) } },
+    @{ Name = 'FountainTrade - NAV bejovo szinkron'; Endpoint = 'nav-incoming-sync-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 3650) } },
+    @{ Name = 'FountainTrade - Frissites ellenorzes'; Endpoint = 'update-check-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration (New-TimeSpan -Days 3650) } },
+    @{ Name = 'FountainTrade - WooCommerce push queue'; Endpoint = 'wc-queue-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650) } }
+)
 
-    $cronJobs = @(
-        @{ Name = 'FountainTrade - WooCommerce szinkron'; Endpoint = 'auto-sync-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650) } },
-        @{ Name = 'FountainTrade - Biztonsagi mentes'; Endpoint = 'auto-backup-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650) } },
-        @{ Name = 'FountainTrade - NAV kimeno queue'; Endpoint = 'nav-queue-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650) } },
-        @{ Name = 'FountainTrade - NAV bejovo szinkron'; Endpoint = 'nav-incoming-sync-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 3650) } },
-        @{ Name = 'FountainTrade - Frissites ellenorzes'; Endpoint = 'update-check-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration (New-TimeSpan -Days 3650) } }
-    )
+if ($NodeRole -eq 'client') {
+    if (-not $SkipScheduledTasks) {
+        Write-Step "Automatikus háttérfeladatok (cron) — Kliens módban nincs egyik sem regisztrálva"
+        # A kör 8. pontjának explicit követelménye: ez NEM egy futásidejű
+        # figyelmeztetés, hanem SZERKEZETI biztosíték — egy Kliens node-nak
+        # nincs saját adatbázisa, amin bármelyik worker dolgozhatna. Ha ez a
+        # gép KORÁBBAN Szerver módban volt, az akkor létrejött worker-
+        # feladatokat itt AKTÍVAN eltávolítjuk (nem csak kihagyjuk az
+        # újralétrehozásukat) — lásd a kör 16. pontja: "ne maradjanak régi
+        # worker taskok" egy szerepkör-váltás után.
+        $anyRemoved = $false
+        foreach ($job in $cronJobs) {
+            try {
+                $existing = Get-ScheduledTask -TaskName $job.Name -ErrorAction SilentlyContinue
+                if ($existing) {
+                    Unregister-ScheduledTask -TaskName $job.Name -Confirm:$false -ErrorAction Stop
+                    Write-Warn2 "Korábbi worker-feladat eltávolítva (Kliens node nem futtathat workert): '$($job.Name)'."
+                    $anyRemoved = $true
+                }
+            } catch {
+                Write-Err2 "A(z) '$($job.Name)' korábbi worker-feladat eltávolítása sikertelen: $($_.Exception.Message)" "Töröld kézzel a Feladatütemezőben ('taskschd.msc'), vagy futtasd újra a telepítőt rendszergazdai jogban."
+            }
+        }
+        if (-not $anyRemoved) {
+            Write-Ok "Nincs eltávolítandó régi worker-feladat — a node eddig is Kliens (vagy nem volt még beállítva)."
+        }
+        Write-Ok "Kliens node — egyik worker/cron-feladat sincs (és nem is lesz) regisztrálva; ez szerkezeti biztosíték, nem futásidejű döntés."
+    }
+} elseif (-not $SkipScheduledTasks -and $CronToken) {
+    Write-Step "Automatikus háttérfeladatok (cron) beállítása"
 
     $curlPath = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
     if (-not $curlPath) {
@@ -908,9 +1187,57 @@ for ($i = 0; $i -lt 10; $i++) {
 }
 
 if (-not $serverReady) {
-    Exit-WithFailureSummary "A szerver nem válaszol 10 másodperc után sem (http://localhost:$Port/)." "Indítsd el kézzel: `"$phpExe`" -S localhost:$Port -t `"$webrootPath`", és ellenőrizd a hibaüzenetet."
+    Exit-WithFailureSummary "A szerver nem válaszol 10 másodperc után sem (http://localhost:$Port/)." "Indítsd el kézzel: `"$phpExe`" -S ${bindHost}:$Port -t `"$webrootPath`", és ellenőrizd a hibaüzenetet."
 }
 Write-Ok "A szerver válaszol — http://localhost:$Port/"
+
+# -------------------------------------------------------------------
+# Kliens kapcsolat-ellenőrzés (Fázis 2, Checkpoint 3, 7. pont) — a fenti
+# ellenőrzés csak azt bizonyítja, hogy a Kliens SAJÁT, helyi PHP szervere
+# fut (a "/" egy statikus oldalsablon, NEM megy át a ClientProxy-n). Ez itt
+# KÉT TOVÁBBI, Kliens-specifikus réteget bizonyít: (1) a konfigurált
+# távoli Szerver ténylegesen elérhető-e a hálózaton, ÉS (2) a Kliens saját
+# HMAC-hitelesítő adatai ténylegesen elfogadhatók-e a Szerveren keresztül
+# — ez utóbbi a valódi ClientProxy-láncon FUT ÁT (localhost -> _bootstrap.php
+# -> ClientProxy -> HMAC -> távoli Szerver -> vissza), tehát a teljes
+# kódútvonalat bizonyítja, nem csak a nyers hálózati elérhetőséget. Ha
+# BÁRMELYIK réteg hibázik, a telepítés NEM tekinthető sikeresnek (lásd a
+# kör 7. pontja) — Write-Err2-vel jelezve (a végső összegzés emiatt
+# "NEM fejeződött be sikeresen"-t fog mutatni), de a szkript hátralévő
+# lépései (parancsikonok stb.) még lefutnak, hogy a felhasználónak legyen
+# mit javítania/újrapróbálnia.
+if ($NodeRole -eq 'client') {
+    Write-Step "Kliens kapcsolat-ellenőrzés (távoli Szerver)"
+
+    $remoteReachable = $false
+    try {
+        $remoteInstallStatus = Invoke-RestMethod -Uri ("$clientServerUrl".TrimEnd('/') + '/api/install-status.php') -TimeoutSec 8 -ErrorAction Stop
+        $remoteReachable = $true
+        Write-Ok "A konfigurált Szerver elérhető a hálózaton: $clientServerUrl"
+    } catch {
+        Write-Err2 "A konfigurált Szerver NEM érhető el: $clientServerUrl ($($_.Exception.Message))" "Ellenőrizd, hogy a Szerver gép fut-e, a -ServerUrl helyes-e, és hogy a Szerver Windows Tűzfala engedélyezi-e ezt a LAN-alhálózatot."
+    }
+
+    if ($remoteReachable) {
+        $authProxyOk = $false
+        try {
+            $proxied = Invoke-RestMethod -Uri "http://localhost:$Port/api/auth-status.php" -TimeoutSec 8 -ErrorAction Stop
+            # Egy sikeres HTTP 200 (kivétel nélkül) MÁR önmagában bizonyítja,
+            # hogy a HMAC-aláírás elfogadásra került a Szerveren — egy
+            # érvénytelen client_id/secret esetén a Szerver 401-et adna,
+            # amit Invoke-RestMethod kivételként dobna.
+            $authProxyOk = $true
+            Write-Ok "A Kliens saját HMAC-hitelesítő adatai elfogadva a Szerveren (a ClientProxy-láncon keresztül ellenőrizve)."
+        } catch {
+            Write-Err2 "A Kliens HMAC-hitelesítése sikertelen a Szerveren keresztül: $($_.Exception.Message)" "Ellenőrizd, hogy a -ClientId/-ClientSecret helyes és a Szerveren MÉG AKTÍV (nem letiltott/visszavont) — lásd a Szerveren a Kliensek oldalt."
+        }
+        if (-not $authProxyOk) {
+            Write-Err2 "A Kliens telepítése emiatt NEM tekinthető sikeresnek — a helyi szerver fut, de a Szerverhez való hitelesített kapcsolat nem működik." ''
+        }
+    } else {
+        Write-Err2 "A Kliens telepítése emiatt NEM tekinthető sikeresnek — a konfigurált Szerver nem érhető el." ''
+    }
+}
 
 $launchUrl = "http://localhost:$Port/dashboard.php"
 try {

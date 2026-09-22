@@ -77,6 +77,63 @@ final class UrlSafetyTest extends TestCase
         $this->assertFalse(UrlSafety::isSafe(''));
     }
 
+    // -----------------------------------------------------------------
+    // checkServerUrl() — Fázis 2, a FountainTrade Kliens saját server_url
+    // beállítása. Szándékosan a check()-kel ELLENTÉTES elbírálás a
+    // privát/loopback tartományra — egy valódi Szerver LAN-címe (vagy,
+    // ugyanazon gépen tesztelve, localhost) itt a VÁRT, normális eset, nem
+    // egy SSRF-gyanús cél. Lásd UrlSafety::checkServerUrl() docblockja.
+    // -----------------------------------------------------------------
+
+    public function testCheckServerUrlAllowsPrivateLanIp(): void
+    {
+        [$ok, $error] = UrlSafety::checkServerUrl('http://192.168.1.10:8000');
+        $this->assertTrue($ok, $error);
+    }
+
+    public function testCheckServerUrlAllowsLocalhost(): void
+    {
+        // localhost nincs élő DNS A-rekorddal — explicit loopback-ként
+        // kezelendő, különben egy ugyanazon gépen tesztelt Kliens/Szerver
+        // pár hamis "nem oldható fel" hibát kapna.
+        [$ok, $error, $ip] = UrlSafety::checkServerUrl('http://localhost:8000');
+        $this->assertTrue($ok, $error);
+        $this->assertSame('127.0.0.1', $ip);
+    }
+
+    public function testCheckServerUrlAllowsLoopbackIpLiteral(): void
+    {
+        [$ok, $error] = UrlSafety::checkServerUrl('http://127.0.0.1:8000');
+        $this->assertTrue($ok, $error);
+    }
+
+    public function testCheckServerUrlStillRejectsNonHttpScheme(): void
+    {
+        $this->assertFalse(UrlSafety::checkServerUrl('ftp://192.168.1.10')[0]);
+    }
+
+    public function testCheckServerUrlStillRejectsEmbeddedCredentials(): void
+    {
+        $this->assertFalse(UrlSafety::checkServerUrl('http://user:pass@192.168.1.10')[0]);
+    }
+
+    public function testCheckServerUrlStillRejectsMalformedUrl(): void
+    {
+        $this->assertFalse(UrlSafety::checkServerUrl('not a url')[0]);
+        $this->assertFalse(UrlSafety::checkServerUrl('')[0]);
+    }
+
+    public function testCheckDoesNotRegressAfterCheckServerUrlWasAdded(): void
+    {
+        // A közös belső logika (checkInternal()) kiemelése után a sima
+        // check() (SSRF-védelem, kimenő hívásokhoz) viselkedésének
+        // bit-pontosan változatlannak kell maradnia.
+        $this->assertFalse(UrlSafety::isSafe('http://192.168.1.5/'));
+        $this->assertFalse(UrlSafety::isSafe('http://localhost/'));
+        [$safe, $error] = UrlSafety::check('https://93.184.216.34/webhook');
+        $this->assertTrue($safe, $error);
+    }
+
     public function testPinnedCurlOptionsDisablesRedirectFollowing(): void
     {
         // Ez a mechanizmus zárja ki, hogy egy eleinte biztonságosnak

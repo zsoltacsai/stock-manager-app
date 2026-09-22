@@ -446,6 +446,37 @@ CREATE TABLE IF NOT EXISTS cash_movements (
 CREATE INDEX IF NOT EXISTS idx_cash_movements_session_id ON cash_movements(cash_session_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_movements_idempotency_key ON cash_movements(idempotency_key);
 
+-- Kliens/szerver architektúra (Fázis 2) — regisztrált kliens gépek + a
+-- proxyzott kérésekben azonosított dolgozói munkamenetek. Csak a Szerver/
+-- Önálló gép szerepkör használja ténylegesen; egy Kliens szerepkörű gép
+-- SOSE hoz létre saját helyi adatbázist, tehát nála ez üresen sem jön létre.
+CREATE TABLE IF NOT EXISTS registered_clients (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id    TEXT NOT NULL,
+    label        TEXT NOT NULL,
+    secret_hash  TEXT NOT NULL,       -- sha256(client_secret) — a nyers titok sose kerül tárolásra
+    is_active    INTEGER NOT NULL DEFAULT 1,
+    revoked_at   TEXT,
+    rotated_at   TEXT,
+    last_seen_at TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_registered_clients_client_id ON registered_clients(client_id);
+
+CREATE TABLE IF NOT EXISTS client_sessions (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_session_id     TEXT NOT NULL,             -- a Kliens csak ezt az átlátszatlan azonosítót tárolja, sose a staff_id-t
+    registered_client_id  INTEGER NOT NULL REFERENCES registered_clients(id),
+    staff_id              INTEGER NOT NULL REFERENCES staff(id),
+    csrf_token_hash       TEXT NOT NULL,             -- sha256(csrf token) — a proxyzott forgalom CSRF-hídja, lásd Auth.php
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at            TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_client_sessions_session_id ON client_sessions(client_session_id);
+CREATE INDEX IF NOT EXISTS idx_client_sessions_registered_client_id ON client_sessions(registered_client_id);
+CREATE INDEX IF NOT EXISTS idx_client_sessions_staff_id ON client_sessions(staff_id);
+CREATE INDEX IF NOT EXISTS idx_client_sessions_expires_at ON client_sessions(expires_at);
+
 -- Beérkező webshop-rendelések (WooCommerce webhook) — piszkozatként várnak
 -- emberi ellenőrzésre, mielőtt "leadásra" kerülnének (készletcsökkenés +
 -- valódi eladás-rekord). Lásd api/webhook.php és api/webshop-order-*.php.

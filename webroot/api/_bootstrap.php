@@ -77,6 +77,25 @@ require_once __DIR__ . '/../../src/Auth.php';
 
 $config = require __DIR__ . '/../../config/config.php';
 
+// Fázis 2 — kliens/szerver architektúra. EZ a teljes Kliens-módú kódútvonal:
+// ha node_role==='client', a kérés a Szerverre kerül továbbításra, MIELŐTT
+// bármi más itt lentebb lefutna (Settings::read(), GeoBlocker, a helyi
+// bejelentkezés-ellenőrzés, a CSRF-ellenőrzés, vagy a new Database()) — ezek
+// mind a HELYI (Kliens-oldali) állapotra vonatkoznának, ami egy Kliensnél
+// vagy nem is létezik (nincs helyi adatbázis), vagy nem a tényleges döntést
+// hozza (a valódi bejelentkezés/CSRF/jogosultság a Szerveren dől el, lásd a
+// Fázis 2 tervdokumentum §5 Authentication design szakaszát). Egyetlen
+// végpont-fájl és egyetlen src/*.php üzleti logika SEM kap "if clientMode"
+// elágazást — ez az EGYETLEN hely, ahol a döntés megtörténik.
+//
+// node_role !== 'client' esetén ez az egész blokk no-op — a meglévő
+// Standalone/Szerver viselkedés bit-pontosan változatlan.
+if (($config['node_role'] ?? 'standalone') === 'client') {
+    require_once __DIR__ . '/../../src/ClientProxy.php';
+    (new ClientProxy($config['client'] ?? []))->forward();
+    exit; // a forward() már elküldte a teljes választ — ide sosem jutunk el ténylegesen
+}
+
 // A Beállítások alatt mentett értékek (Számlázz.hu / WooCommerce fülek)
 // felülírják a config.php statikus értékeit, ha be vannak állítva, így
 // minden végpont, ami SzamlazzClient/WooCommerceClient-et épít, automatikusan

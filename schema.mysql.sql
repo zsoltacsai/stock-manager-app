@@ -480,6 +480,38 @@ CREATE TABLE IF NOT EXISTS cash_movements (
 ALTER TABLE sales ADD CONSTRAINT fk_sales_cash_session FOREIGN KEY (cash_session_id) REFERENCES cash_sessions(id);
 ALTER TABLE returns ADD CONSTRAINT fk_returns_cash_session FOREIGN KEY (cash_session_id) REFERENCES cash_sessions(id);
 
+-- Kliens/szerver architektúra (Fázis 2) — regisztrált kliens gépek + a
+-- proxyzott kérésekben azonosított dolgozói munkamenetek. Csak a Szerver/
+-- Önálló gép szerepkör használja ténylegesen.
+CREATE TABLE IF NOT EXISTS registered_clients (
+    id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    client_id    VARCHAR(64) NOT NULL,
+    label        VARCHAR(191) NOT NULL,
+    secret_hash  VARCHAR(191) NOT NULL,
+    is_active    TINYINT(1) NOT NULL DEFAULT 1,
+    revoked_at   DATETIME NULL,
+    rotated_at   DATETIME NULL,
+    last_seen_at DATETIME NULL,
+    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_registered_clients_client_id (client_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS client_sessions (
+    id                    INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    client_session_id     VARCHAR(64) NOT NULL,
+    registered_client_id  INT UNSIGNED NOT NULL,
+    staff_id              INT UNSIGNED NOT NULL,
+    csrf_token_hash       VARCHAR(191) NOT NULL,
+    created_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at            DATETIME NOT NULL,
+    UNIQUE KEY uq_client_sessions_session_id (client_session_id),
+    KEY idx_client_sessions_registered_client_id (registered_client_id),
+    KEY idx_client_sessions_staff_id (staff_id),
+    KEY idx_client_sessions_expires_at (expires_at),
+    CONSTRAINT fk_client_sessions_registered_client FOREIGN KEY (registered_client_id) REFERENCES registered_clients(id),
+    CONSTRAINT fk_client_sessions_staff FOREIGN KEY (staff_id) REFERENCES staff(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS webshop_orders (
     id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     wc_order_id     INT UNSIGNED NOT NULL,

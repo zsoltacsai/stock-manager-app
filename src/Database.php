@@ -7,7 +7,7 @@ require_once __DIR__ . '/PurchaseDecisionService.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 27;
+    private const SCHEMA_VERSION = 28;
 
     private PDO $pdo;
     private string $driver;
@@ -203,6 +203,9 @@ class Database
             }
             if ($version < 27) {
                 $this->migrateV27CashManagement();
+            }
+            if ($version < 28) {
+                $this->migrateV28ClientServer();
             }
         }
 
@@ -1657,6 +1660,85 @@ class Database
                          : 'CREATE INDEX IF NOT EXISTS idx_sales_cash_session_id ON sales(cash_session_id)',
                 $isMysql ? 'ALTER TABLE returns ADD KEY idx_returns_cash_session_id (cash_session_id)'
                          : 'CREATE INDEX IF NOT EXISTS idx_returns_cash_session_id ON returns(cash_session_id)',
+            ] as $sql) {
+                try {
+                    $this->pdo->exec($sql);
+                } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+            }
+
+            if (!$wasInTransaction) {
+                $this->pdo->commit();
+            }
+        } catch (Throwable $e) {
+            if (!$wasInTransaction && $this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    /**
+     * Kliens/szerver architektúra (Fázis 2) — regisztrált kliens gépek és a
+     * hozzájuk tartozó, proxyzott kérésekben azonosított dolgozói
+     * munkamenetek. Kizárólag a Szerver/Önálló gép szerepkörű telepítések
+     * használják ténylegesen — egy Kliens szerepkörű gép SOSE hoz létre
+     * saját helyi adatbázist (a `_bootstrap.php` a `ClientProxy`-nak adja át
+     * az irányítást, mielőtt `new Database()` egyáltalán lefutna), tehát ez
+     * a migráció nála sose fut le. Egy Önálló gép/Szerver telepítésen
+     * viszont ugyanúgy, feltétel nélkül létrejön, mint a Fázis 1 kassza-
+     * táblái — üresen ártalmatlan, amíg tényleg nincs regisztrált kliens.
+     */
+    private function migrateV28ClientServer(): void
+    {
+        $isMysql = $this->driver === 'mysql';
+        $pk = $isMysql ? 'INT UNSIGNED AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
+        $intColRequired = $isMysql ? 'INT UNSIGNED NOT NULL' : 'INTEGER NOT NULL';
+        $ts = $isMysql ? 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' : "TEXT NOT NULL DEFAULT (datetime('now'))";
+        $tsNull = $isMysql ? 'DATETIME NULL' : 'TEXT';
+        $engine = $isMysql ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : '';
+
+        $wasInTransaction = $this->pdo->inTransaction();
+        if (!$wasInTransaction) {
+            $this->pdo->beginTransaction();
+        }
+        try {
+            try {
+                $this->pdo->exec("CREATE TABLE IF NOT EXISTS registered_clients (
+                    id           $pk,
+                    client_id    VARCHAR(64) NOT NULL,
+                    label        VARCHAR(191) NOT NULL,
+                    secret_hash  VARCHAR(191) NOT NULL,
+                    is_active    INTEGER NOT NULL DEFAULT 1,
+                    revoked_at   $tsNull,
+                    rotated_at   $tsNull,
+                    last_seen_at $tsNull,
+                    created_at   $ts
+                )$engine");
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+            try {
+                $this->pdo->exec("CREATE TABLE IF NOT EXISTS client_sessions (
+                    id                    $pk,
+                    client_session_id     VARCHAR(64) NOT NULL,
+                    registered_client_id  $intColRequired,
+                    staff_id              $intColRequired,
+                    csrf_token_hash       VARCHAR(191) NOT NULL,
+                    created_at            $ts,
+                    expires_at            $ts
+                )$engine");
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+            foreach ([
+                $isMysql ? 'ALTER TABLE registered_clients ADD UNIQUE KEY uq_registered_clients_client_id (client_id)'
+                         : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_registered_clients_client_id ON registered_clients(client_id)',
+                $isMysql ? 'ALTER TABLE client_sessions ADD UNIQUE KEY uq_client_sessions_session_id (client_session_id)'
+                         : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_client_sessions_session_id ON client_sessions(client_session_id)',
+                $isMysql ? 'ALTER TABLE client_sessions ADD KEY idx_client_sessions_registered_client_id (registered_client_id)'
+                         : 'CREATE INDEX IF NOT EXISTS idx_client_sessions_registered_client_id ON client_sessions(registered_client_id)',
+                $isMysql ? 'ALTER TABLE client_sessions ADD KEY idx_client_sessions_staff_id (staff_id)'
+                         : 'CREATE INDEX IF NOT EXISTS idx_client_sessions_staff_id ON client_sessions(staff_id)',
+                $isMysql ? 'ALTER TABLE client_sessions ADD KEY idx_client_sessions_expires_at (expires_at)'
+                         : 'CREATE INDEX IF NOT EXISTS idx_client_sessions_expires_at ON client_sessions(expires_at)',
             ] as $sql) {
                 try {
                     $this->pdo->exec($sql);

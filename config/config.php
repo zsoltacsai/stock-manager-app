@@ -47,6 +47,32 @@ return [
     ],
 
     // ------------------------------------------------------------------
+    // Csomóponti szerepkör (Fázis 2 — kliens/szerver architektúra).
+    // SZÁNDÉKOSAN itt, az installer-generated.php-n keresztül, NEM a
+    // Beállítások/settings.json alatt — ugyanaz az elv, mint a fenti
+    // 'shop'/'db'-nél: ez egy DEPLOY-idejű topológiai tény, nem egy
+    // admin-által futásidőben (a Beállítások webes felületéről)
+    // átkapcsolható érték. Egy futó Szerver véletlen "Kliensre" állítása a
+    // Beállítások alól helyrehozhatatlan lenne — ezért ide, az installer
+    // egyszeri írásába kerül, nem a Settings::save() útjába.
+    //
+    // Egy MEGLÉVŐ (Fázis 2 előtti) telepítésnél az installer-generated.php
+    // sose fog 'node_role' kulcsot tartalmazni — a lenti '?? 'standalone''
+    // ilyenkor automatikusan, csendben 'standalone'-ra esik vissza, tehát
+    // egy meglévő telepítés viselkedése ezzel a változtatással semmilyen
+    // formában nem módosul.
+    //
+    // 'client' tömb csak 'node_role' === 'client' esetén releváns —
+    // 'server_url' formai ellenőrzéséhez lásd UrlSafety::checkServerUrl().
+    // ------------------------------------------------------------------
+    'node_role' => $installerConfig['node_role'] ?? 'standalone', // 'standalone' | 'server' | 'client'
+    'client' => $installerConfig['client'] ?? [
+        'server_url'    => '',
+        'client_id'     => '',
+        'client_secret' => '',
+    ],
+
+    // ------------------------------------------------------------------
     // WooCommerce REST API (Woo > Settings > Advanced > REST API)
     // Needs Read/Write permissions.
     // ------------------------------------------------------------------

@@ -65,6 +65,11 @@ $__smSidebarLinks = [
         'title' => 'Kliensek',
         'icon' => '<rect x="2" y="4" width="8" height="16" rx="1"></rect><rect x="14" y="4" width="8" height="16" rx="1"></rect><line x1="6" y1="8" x2="6" y2="8.01"></line><line x1="18" y1="8" x2="18" y2="8.01"></line>',
     ],
+    [
+        'href' => 'ai-asszisztens.php',
+        'title' => 'AI Asszisztens',
+        'icon' => '<rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line>',
+    ],
 ];
 ?>
 <nav class="icon-sidebar">

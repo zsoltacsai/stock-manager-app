@@ -3270,3 +3270,130 @@ szerint — egyetlen gépen egyetlen FountainTrade-példány futtatására lett
 tervezve (ami megfelel a valós, egy-kasszás használati esetnek). Két
 külön célkönyvtárba telepített példány UGYANAZOKAT a Feladatütemező-
 bejegyzéseket használná, és az egyik telepítés átírná a másikét.
+
+## AI Asszisztens (Inventory Agent — helyi Ollama)
+
+Az első FountainTrade AI-réteg: egy **provider-független AI-absztrakció**
+(`src/Ai/`), aminek az első, ténylegesen bekötött megvalósítása egy
+**helyi [Ollama](https://ollama.com)**-példányt használ, és az első
+agent egy **kizárólag olvasás-jogú Készlet-asszisztens** (Inventory
+Agent). Semmilyen adat nem megy külső, internetes AI-szolgáltatáshoz —
+minden a saját géped (vagy a helyi hálózaton belüli, általad megadott
+gép) Ollama-példányán fut.
+
+### Architektúra
+
+```
+Felhasználó → AgentRunner → AiProviderInterface → LocalProvider
+            → Ollama HTTP API → LLM eszköz-hívás → ToolRegistry
+            → FountainTrade olvasás-kizárólagos eszköz → eredmény
+            → LLM → végleges válasz
+```
+
+- **`AiProviderInterface`** — az EGYETLEN szerződés, amin keresztül az
+  `AgentRunner` bármelyik providerrel beszél. Jelenleg egyetlen
+  megvalósítás létezik (`LocalProvider`/Ollama) — a felület úgy lett
+  tervezve, hogy egy jövőbeli `AnthropicProvider`/`OpenAiProvider` az
+  `AgentRunner` módosítása NÉLKÜL bekapcsolható legyen.
+- **`LocalProvider`** — Ollama `/api/chat` (beszélgetés + eszköz-hívás)
+  és `/api/tags` (elérhetőség/modell-lista) HTTP API-n keresztül,
+  konfigurálható base URL-lel, modellel és időkorláttal. Nem igényel
+  API-kulcsot.
+- **`ToolRegistry`** — a modell KIZÁRÓLAG a fordítási időben regisztrált
+  eszközök nevei közül választhat; egy ismeretlen eszköznév sose fut le
+  (biztonságos hibaüzenettel tér vissza). A modell SOSE kap közvetlen
+  adatbázis-hozzáférést, PDO-kapcsolatot, vagy nyers SQL-végrehajtási
+  lehetőséget.
+- **`AgentRunner`** — generikus, agent-független végrehajtó: elküldi az
+  üzeneteket a providernek, végrehajtja a kért eszköz-hívásokat, majd
+  visszaküldi az eredményt a modellnek — egy explicit, konfigurálható
+  maximális lépésszámig (véd a végtelen eszköz-hívási ciklus ellen).
+- **`ConversationManager`** — könnyű, KIZÁRÓLAG egyetlen kérdés-válasz
+  futás időtartamára élő üzenet-lista, nincs tartós beszélgetés-
+  előzmény ebben a körben.
+
+### Konfiguráció (Beállítások → AI asszisztens)
+
+| Beállítás | Alapérték |
+|---|---|
+| AI asszisztens bekapcsolva | **Kikapcsolva** (mint minden más opcionális automatizmus) |
+| Ollama URL | `http://127.0.0.1:11434` |
+| Modell | `qwen3:8b` |
+| Időkorlát | 30 másodperc |
+| Max. lépésszám (eszköz-hívási kör) | 5 |
+| Max. válasz-hossz (token, opcionális) | nincs korlátozva |
+
+Az Ollama telepítése/futtatása a FountainTrade-től FÜGGETLEN lépés — lásd
+[ollama.com](https://ollama.com), majd `ollama pull qwen3:8b`. A
+FountainTrade sose telepíti vagy indítja el az Ollamát saját maga.
+
+### Client/Szerver viselkedés
+
+Az AI-réteg (és maga az Ollama-hívás) **KIZÁRÓLAG a Szerver/Önálló
+oldalon fut** — egy Kliens node SOSE hív Ollamát közvetlenül, és nincs
+külön, párhuzamos AI-specifikus Kliens-API: az `/api/ai-inventory.php`
+végpont a MEGLÉVŐ `ClientProxy`-n keresztül megy, pontosan úgy, mint
+minden más API-végpont. Egy Kliens-gépen a settings.json-nak nincs is
+szüksége AI-beállításra — a kérés a Szerverig ér, ott dől el minden.
+
+### Biztonsági modell
+
+- A modell **SOSE kap** közvetlen adatbázis-hozzáférést, PDO-kapcsolatot
+  vagy nyers SQL-végrehajtási lehetőséget — kizárólag a regisztrált,
+  olvasás-kizárólagos eszközökön keresztül férhet hozzá adatokhoz.
+  Minden tényleges számítást (készlet, eladási sebesség, előrejelzés) a
+  meglévő `Database`-réteg végez el determinisztikusan — a modell nem
+  "talál ki" számokat.
+- Az `/api/ai-inventory.php` végpont vezetői (admin) jogszinthez kötött,
+  ugyanazzal a `require_admin()`/CSRF-mintával, mint minden más
+  üzletileg érzékeny végpont.
+- Minden agent-futás naplózva van a MEGLÉVŐ tevékenységnapló
+  (`audit_log`) és rendszeresemény-napló (`system_events`, `ai`
+  kategória) mechanizmuson keresztül — mikor, melyik agent/provider/
+  modell, a kérdés (bounded, 500 karakterig), a használt eszközök,
+  sikeres volt-e, mennyi ideig tartott. Nyers modell-válasz, API-kulcs
+  vagy egyéb titok SOSE kerül naplózásra.
+- Hibaválaszok (pl. az Ollama nem elérhető) SOSE tartalmaznak nyers
+  kivétel-szöveget, fájlrendszer-útvonalat vagy technikai részletet — a
+  felhasználó mindig egy előre megírt, biztonságos üzenetet kap.
+
+### Elérhető Inventory eszközök (Phase 1)
+
+| Eszköz | Mit ad vissza |
+|---|---|
+| `get_product` | Termék adatai id/vonalkód/név-részlet alapján |
+| `get_stock_status` | Egy termék jelenlegi készlete + riasztási küszöb |
+| `get_low_stock_products` | Alacsony készletű / elfogyott termékek listája |
+| `get_product_sales_velocity` | Átlagos napi fogyás + becsült hátralévő napok (a meglévő `Database::getStockForecastBulk()` determinisztikus számítása) |
+| `get_inventory_movements` | Készletmozgások (eladás/beszerzés/visszáru/leltár) egy dátumtartományban |
+
+### Felület
+
+**Beállítások → AI asszisztens** fül: be/kikapcsolás, Ollama URL/modell/
+időkorlát/lépésszám beállítása, "Kapcsolat tesztelése" gomb. **AI
+Asszisztens** oldal (bal oldali menü): egyetlen kérdés-mező, "Kérdezd a
+FountainTrade-et" gomb, a válasz + a ténylegesen használt eszközök
+listája. Az állapot-jelzés (AI kikapcsolva / Ollama nem érhető el /
+modell hiányzik / elérhető) 30 másodpercig cache-elt — nem indít
+hálózati hívást minden oldalbetöltéskor, és az Ollama elérhetetlensége
+SOSE befolyásolja a kassza vagy a többi FountainTrade-funkció működését.
+
+### Ismert korlátok (Phase 1)
+
+- **Kizárólag olvasás** — az Inventory Agent nem módosíthat készletet,
+  nem hozhat létre beszerzést, nem változtathat árat, és nem indíthat
+  semmilyen pénzügyi műveletet. Bármilyen ajánlása (pl. "érdemes lenne
+  rendelni") javaslat, nem végrehajtott döntés.
+- **Nincs tartós beszélgetés-előzmény** — minden kérdés egy önálló,
+  friss agent-futás; a `ConversationManager` szándékosan csak egyetlen
+  futás idejére tárol üzeneteket.
+- **Egyetlen agent, egyetlen provider van ténylegesen bekötve** ebben a
+  körben (Inventory Agent, LocalProvider/Ollama) — az architektúra
+  további agenteket (pl. Sales/Anomaly/WooCommerce) és providereket
+  (Anthropic/OpenAI) tesz lehetővé később, de ezek jelenleg NINCSENEK
+  implementálva.
+- **Jövőbeli írási műveletek** (pl. "hozz létre egy beszerzési
+  javaslatot") tervezetten mindig egy explicit emberi jóváhagyási lépésen
+  mennének át (AI javaslat → emberi jóváhagyás → validált backend
+  művelet → audit log) — ez a mechanizmus még nincs megépítve, Phase 1
+  szigorúan csak olvasás.

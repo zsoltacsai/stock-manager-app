@@ -191,7 +191,7 @@ function renderHealthComponents(components) {
 
 const EVENT_CATEGORY_LABELS = {
     backup: 'Backup', woocommerce: 'WooCommerce', nav: 'NAV', updater: 'Frissítés',
-    printer: 'Nyomtató', smtp: 'Email', auth: 'Belépés', database: 'Adatbázis',
+    printer: 'Nyomtató', smtp: 'Email', auth: 'Belépés', database: 'Adatbázis', ai: 'AI asszisztens',
 };
 
 function renderEventsLog(events) {

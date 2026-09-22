@@ -56,6 +56,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <button class="tab-btn" data-tab="tab-import-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>Importálás</button>
             <button class="tab-btn" data-tab="tab-security-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>Biztonság</button>
             <button class="tab-btn" data-tab="tab-update-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>Frissítések</button>
+            <button class="tab-btn" data-tab="tab-ai-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>AI asszisztens</button>
         </div>
 
         <div id="tab-sync-settings" class="tab-panel active">
@@ -928,6 +929,46 @@ if (!Auth::isLoggedIn($appSettings)) {
                     <thead><tr><th>Dátum</th><th>Honnan</th><th>Mire</th><th>Indította</th><th>Eredmény</th></tr></thead>
                     <tbody id="update-history-body"><tr><td colspan="5" class="muted">Betöltés...</td></tr></tbody>
                 </table>
+            </div>
+        </div>
+
+        <div id="tab-ai-settings" class="tab-panel">
+            <p class="muted" style="margin-top:0;">
+                Az AI asszisztens egy helyi, a saját szervered gépén (vagy egy
+                általad megadott másik gépen a hálózaton belül) futó
+                <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>-példányt
+                használ — semmilyen adat nem megy külső, internetes AI-szolgáltatáshoz. Az
+                asszisztens KIZÁRÓLAG olvasásra képes (nem módosít készletet, árat, nem hoz
+                létre beszerzést) — lásd az "AI Asszisztens" oldalt a bal oldali menüben.
+            </p>
+            <div class="toggle-line">
+                <span>AI asszisztens bekapcsolva</span>
+                <button type="button" class="toggle-switch" id="ai-enabled"></button>
+            </div>
+            <label for="ai-local-base-url">Ollama URL</label>
+            <input type="text" id="ai-local-base-url" placeholder="http://127.0.0.1:11434">
+            <p class="muted" style="margin-top:-6px;">
+                Alapból a szerver saját gépén futó Ollama (127.0.0.1) — csak akkor változtasd
+                meg, ha az Ollama egy MÁSIK, a helyi hálózaton elérhető gépen fut.
+            </p>
+            <label for="ai-local-model">Modell</label>
+            <input type="text" id="ai-local-model" placeholder="qwen3:8b">
+            <label for="ai-timeout-seconds">Időkorlát (másodperc)</label>
+            <input type="text" id="ai-timeout-seconds" placeholder="30">
+            <label for="ai-max-iterations">Maximális lépésszám (eszköz-hívási körök)</label>
+            <input type="text" id="ai-max-iterations" placeholder="5">
+            <p class="muted" style="margin-top:-6px;">
+                Ennyi eszköz-hívási körig próbálkozhat az asszisztens egyetlen kérdés
+                megválaszolásával, mielőtt megszakítaná — véd a végtelen ciklus ellen.
+            </p>
+            <label for="ai-max-output-tokens">Válasz max. hossza (token, opcionális)</label>
+            <input type="text" id="ai-max-output-tokens" placeholder="üresen hagyva: nincs korlát">
+            <button id="settings-save-ai-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Mentés</button>
+            <p id="settings-ai-feedback" class="modal-feedback"></p>
+
+            <div style="border-top:1px solid var(--border); margin-top:24px; padding-top:16px;">
+                <button id="ai-test-connection-btn" class="btn btn-secondary" style="width:auto; padding:10px 18px;" type="button">Kapcsolat tesztelése</button>
+                <p id="ai-test-connection-feedback" class="modal-feedback"></p>
             </div>
         </div>
 

@@ -2431,6 +2431,31 @@ class Database
         return $row ?: null;
     }
 
+    /**
+     * Név-részlet szerinti termékkeresés (LIKE, ugyanaz a minta, mint a
+     * vevő-/beszállító-keresésnél lentebb) — a meglévő termékkereső
+     * (products.php + kliens-oldali szűrés) mellett ez az EGYETLEN hely,
+     * ahol ez szerver-oldali lekérdezésként is elérhető; az AI Inventory
+     * eszközök (lásd src/Ai/Tools/InventoryTools.php get_product) ezt
+     * használják, hogy egy természetes nyelvű terméknevet (pl. "Coca
+     * Cola") azonosítóra tudjanak feloldani anélkül, hogy a teljes
+     * katalógust át kellene adni a modellnek.
+     */
+    public function searchProductsByName(string $query, int $limit = 20): array
+    {
+        $stmt = $this->pdo->prepare('
+            SELECT id, name, barcode, sku, group_name, stock_qty, price, net_price
+            FROM products
+            WHERE is_deleted = 0 AND name LIKE ?
+            ORDER BY name ASC
+            LIMIT ?
+        ');
+        $stmt->bindValue(1, '%' . $query . '%');
+        $stmt->bindValue(2, $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
     public function listBarcodeIndex(): array
     {
         $stmt = $this->pdo->query("SELECT id, barcode FROM products WHERE barcode IS NOT NULL AND barcode != ''");
@@ -6136,7 +6161,7 @@ class Database
     // szándékos elkülönítés indoklásáért.
     // ---------------------------------------------------------------
 
-    private const SYSTEM_EVENT_CATEGORIES = ['backup', 'woocommerce', 'nav', 'updater', 'printer', 'smtp', 'auth', 'database'];
+    private const SYSTEM_EVENT_CATEGORIES = ['backup', 'woocommerce', 'nav', 'updater', 'printer', 'smtp', 'auth', 'database', 'ai'];
     private const SYSTEM_EVENT_SEVERITIES = ['info', 'warning', 'error'];
     private const SYSTEM_EVENT_STATUSES = ['started', 'success', 'failure'];
 

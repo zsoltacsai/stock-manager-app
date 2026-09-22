@@ -38,6 +38,11 @@ require_once __DIR__ . '/../src/ClientSessionBridge.php';
 require_once __DIR__ . '/../src/ClientProxy.php';
 require_once __DIR__ . '/../src/AppVersion.php';
 require_once __DIR__ . '/../src/ClientServerHealth.php';
+require_once __DIR__ . '/../src/Ai/LocalProvider.php';
+require_once __DIR__ . '/../src/Ai/OllamaHealth.php';
+require_once __DIR__ . '/../src/Ai/AgentRunner.php';
+require_once __DIR__ . '/../src/Ai/AiAuditLogger.php';
+require_once __DIR__ . '/../src/Ai/Agents/InventoryAgent.php';
 
 /**
  * Minden tesztfüggvény saját, egyszer használatos SQLite fájllal dolgozik

@@ -323,6 +323,17 @@ if ('serviceWorker' in navigator) {
     const settingsSaveLoyaltyBtn = document.getElementById('settings-save-loyalty-btn');
     const settingsLoyaltyFeedback = document.getElementById('settings-loyalty-feedback');
 
+    const aiEnabled = document.getElementById('ai-enabled');
+    const aiLocalBaseUrl = document.getElementById('ai-local-base-url');
+    const aiLocalModel = document.getElementById('ai-local-model');
+    const aiTimeoutSeconds = document.getElementById('ai-timeout-seconds');
+    const aiMaxIterations = document.getElementById('ai-max-iterations');
+    const aiMaxOutputTokens = document.getElementById('ai-max-output-tokens');
+    const settingsSaveAiBtn = document.getElementById('settings-save-ai-btn');
+    const settingsAiFeedback = document.getElementById('settings-ai-feedback');
+    const aiTestConnectionBtn = document.getElementById('ai-test-connection-btn');
+    const aiTestConnectionFeedback = document.getElementById('ai-test-connection-feedback');
+
     const auditRetentionDays = document.getElementById('audit-retention-days');
     const settingsSaveAuditBtn = document.getElementById('settings-save-audit-btn');
     const settingsAuditFeedback = document.getElementById('settings-audit-feedback');
@@ -427,6 +438,13 @@ if ('serviceWorker' in navigator) {
         if (updateAutoCheckEnabled) updateAutoCheckEnabled.classList.toggle('on', !!data.update_auto_check_enabled);
         if (updateCheckInterval) updateCheckInterval.value = String(data.update_check_interval_hours || 24);
         if (updateAutoInstallEnabled) updateAutoInstallEnabled.classList.toggle('on', !!data.update_auto_install_enabled);
+
+        if (aiEnabled) aiEnabled.classList.toggle('on', !!data.ai_enabled);
+        if (aiLocalBaseUrl) aiLocalBaseUrl.value = data.ai_local_base_url || 'http://127.0.0.1:11434';
+        if (aiLocalModel) aiLocalModel.value = data.ai_local_model || 'qwen3:8b';
+        if (aiTimeoutSeconds) aiTimeoutSeconds.value = String(data.ai_timeout_seconds || 30);
+        if (aiMaxIterations) aiMaxIterations.value = String(data.ai_max_iterations || 5);
+        if (aiMaxOutputTokens) aiMaxOutputTokens.value = data.ai_max_output_tokens ? String(data.ai_max_output_tokens) : '';
 
         if (printerEnabled) printerEnabled.checked = !!data.printer_enabled;
         if (printerIp) printerIp.value = data.printer_ip || '';
@@ -1664,6 +1682,65 @@ if ('serviceWorker' in navigator) {
     }
     if (updateAutoCheckEnabled) updateAutoCheckEnabled.addEventListener('click', () => updateAutoCheckEnabled.classList.toggle('on'));
     if (updateAutoInstallEnabled) updateAutoInstallEnabled.addEventListener('click', () => updateAutoInstallEnabled.classList.toggle('on'));
+
+    if (aiEnabled) aiEnabled.addEventListener('click', () => aiEnabled.classList.toggle('on'));
+
+    if (settingsSaveAiBtn) {
+        settingsSaveAiBtn.addEventListener('click', async () => {
+            settingsAiFeedback.textContent = 'Mentés...';
+            settingsAiFeedback.className = 'modal-feedback';
+            try {
+                const res = await fetch('/api/settings.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ai_enabled: aiEnabled.classList.contains('on'),
+                        ai_local_base_url: aiLocalBaseUrl.value.trim(),
+                        ai_local_model: aiLocalModel.value.trim(),
+                        ai_timeout_seconds: parseInt(aiTimeoutSeconds.value, 10) || 30,
+                        ai_max_iterations: parseInt(aiMaxIterations.value, 10) || 5,
+                        ai_max_output_tokens: aiMaxOutputTokens.value.trim() ? parseInt(aiMaxOutputTokens.value, 10) : null,
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+                applySettings(data);
+                settingsAiFeedback.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;vertical-align:-1px;margin-right:4px;"><polyline points="20 6 9 17 4 12"></polyline></svg>Mentve';
+                settingsAiFeedback.classList.add('saved-flash');
+                setTimeout(() => settingsAiFeedback.classList.remove('saved-flash'), 1200);
+            } catch (err) {
+                settingsAiFeedback.textContent = 'Hiba: ' + err.message;
+                settingsAiFeedback.className = 'modal-feedback error';
+            }
+        });
+    }
+
+    if (aiTestConnectionBtn) {
+        aiTestConnectionBtn.addEventListener('click', async () => {
+            aiTestConnectionFeedback.textContent = 'Ellenőrzés...';
+            aiTestConnectionFeedback.className = 'modal-feedback';
+            try {
+                const res = await fetch('/api/ai-health.php?force=1');
+                const data = await res.json();
+                if (!data.enabled) {
+                    aiTestConnectionFeedback.textContent = 'Az AI asszisztens jelenleg ki van kapcsolva (mentsd el bekapcsolva előbb).';
+                    aiTestConnectionFeedback.className = 'modal-feedback error';
+                    return;
+                }
+                const labels = { available: 'Elérhető', unavailable: 'Nem érhető el', model_error: 'Modell hiba' };
+                if (data.status === 'available') {
+                    aiTestConnectionFeedback.textContent = 'Ollama elérhető, a modell (' + data.model + ') letöltve. ✓';
+                    aiTestConnectionFeedback.className = 'modal-feedback ok';
+                } else {
+                    aiTestConnectionFeedback.textContent = (labels[data.status] || data.status) + (data.message ? ': ' + data.message : '');
+                    aiTestConnectionFeedback.className = 'modal-feedback error';
+                }
+            } catch (err) {
+                aiTestConnectionFeedback.textContent = 'Hiba: ' + err.message;
+                aiTestConnectionFeedback.className = 'modal-feedback error';
+            }
+        });
+    }
 
     loadUpdateStatus();
     loadUpdateHistory();

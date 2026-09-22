@@ -262,6 +262,23 @@ class Settings
         // admin POST erre sose tud közvetlenül hatni.
         'maintenance_mode_active'  => false,
         'maintenance_mode_message' => '',
+
+        // AI asszisztens (első réteg — lásd src/Ai/) — alapból KIKAPCSOLT,
+        // ugyanaz a minta, mint minden más opcionális automatizmusnál
+        // fentebb. A helyi Ollama-t Kliens node SOSE hívja meg közvetlenül
+        // — a webroot/api/_bootstrap.php node_role-elágazása Kliens módban
+        // már ELŐBB a ClientProxy-hoz irányít, mielőtt ez a beállítás
+        // egyáltalán számítana (lásd webroot/api/ai-inventory.php).
+        'ai_enabled'            => false,
+        'ai_local_base_url'     => 'http://127.0.0.1:11434',
+        'ai_local_model'        => 'qwen3:8b',
+        'ai_timeout_seconds'    => 30,
+        'ai_max_iterations'     => 5,
+        // NULL = a providerre/modellre bízott alapértelmezett — csak akkor
+        // kerül ténylegesen a kérésbe, ha az admin explicit beállít egy
+        // pozitív értéket (lásd LocalProvider — jelenleg nem korlátozza a
+        // kimenetet, ez a mező a jövőbeli bővíthetőségért van előkészítve).
+        'ai_max_output_tokens'  => null,
     ];
 
     public function __construct(string $path)

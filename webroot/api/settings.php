@@ -42,6 +42,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'cron_secret',
         'smtp_host', 'smtp_username', 'smtp_password', 'smtp_from_name', 'smtp_from_email',
         'receipt_public_base_url',
+        'ai_local_model',
     ];
     // Ezeknél a mezőknél a válasz (lásd lentebb) sose küldi ki a valódi
     // értéket — a felület üresen, egy "(mentve)" jelzéssel mutatja őket.
@@ -86,7 +87,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Logikai (be/ki) mezők. FONTOS: 'maintenance_mode_active' SZÁNDÉKOSAN
     // NINCS itt — azt kizárólag az UpdateInstaller állíthatja, lásd
     // Settings::DEFAULTS docblockja.
-    $boolFields = ['auto_sync_enabled', 'printer_enabled', 'backup_enabled', 'szamlazz_send_email', 'nav_test_mode', 'nav_queue_enabled', 'nav_incoming_sync_enabled', 'receipt_show_logo', 'loyalty_enabled', 'printer_auto_print_enabled', 'printer_qr_enabled', 'update_auto_check_enabled', 'update_auto_install_enabled'];
+    $boolFields = ['auto_sync_enabled', 'printer_enabled', 'backup_enabled', 'szamlazz_send_email', 'nav_test_mode', 'nav_queue_enabled', 'nav_incoming_sync_enabled', 'receipt_show_logo', 'loyalty_enabled', 'printer_auto_print_enabled', 'printer_qr_enabled', 'update_auto_check_enabled', 'update_auto_install_enabled', 'ai_enabled'];
     foreach ($boolFields as $field) {
         if (isset($input[$field])) {
             $update[$field] = (bool) $input[$field];
@@ -188,6 +189,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     if (isset($input['loyalty_tier_gold_discount'])) {
         $update['loyalty_tier_gold_discount'] = max(0, min(100, (float) $input['loyalty_tier_gold_discount']));
+    }
+    if (isset($input['ai_local_base_url']) && trim((string) $input['ai_local_base_url']) !== '') {
+        // SZÁNDÉKOSAN NEM UrlSafety::check() (az a loopback/belső címeket
+        // utasítaná el) — a helyi Ollama base URL ALAPÉRTELMEZETTEN pont
+        // loopback (127.0.0.1:11434), lásd LocalProvider docblokkja. Itt
+        // csak formai (http/https-e egyáltalán) ellenőrzés történik.
+        $aiBaseUrl = rtrim(trim((string) $input['ai_local_base_url']), '/');
+        if (!preg_match('#^https?://#i', $aiBaseUrl)) {
+            send_json(['error' => 'A helyi AI (Ollama) URL-nek http:// vagy https:// kezdetűnek kell lennie.'], 400);
+        }
+        $update['ai_local_base_url'] = $aiBaseUrl;
+    }
+    if (isset($input['ai_timeout_seconds'])) {
+        $update['ai_timeout_seconds'] = max(5, min(300, (int) $input['ai_timeout_seconds']));
+    }
+    if (isset($input['ai_max_iterations'])) {
+        $update['ai_max_iterations'] = max(1, min(20, (int) $input['ai_max_iterations']));
+    }
+    if (array_key_exists('ai_max_output_tokens', $input)) {
+        $rawTokens = $input['ai_max_output_tokens'];
+        $update['ai_max_output_tokens'] = ($rawTokens === null || $rawTokens === '') ? null : max(1, (int) $rawTokens);
     }
     if (isset($input['audit_log_retention_days'])) {
         $update['audit_log_retention_days'] = max(1, (int) $input['audit_log_retention_days']);

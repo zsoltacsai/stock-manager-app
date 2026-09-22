@@ -105,6 +105,7 @@ if (!Auth::isLoggedIn($appSettings)) {
                     <option value="smtp">Email (SMTP)</option>
                     <option value="auth">Belépés</option>
                     <option value="database">Adatbázis</option>
+                    <option value="ai">AI asszisztens</option>
                 </select>
             </div>
             <div>

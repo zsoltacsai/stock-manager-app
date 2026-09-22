@@ -128,6 +128,16 @@ if (!$geoCheck['allowed']) {
     exit;
 }
 
+// Fázis 2 — a Database konstruálása IDE, a bejelentkezés-ellenőrzés ELÉ
+// került (korábban lentebb, a CSRF-ellenőrzés UTÁN történt) — a lenti, ÚJ
+// proxyzott-kliens hitelesítési ágnak (ClientAuthenticator) szüksége van
+// $db-re a registered_clients/client_sessions lekérdezéshez, MIELŐTT
+// eldőlne, hogy a kérés egyáltalán folytatódhat-e. Ez a mozgatás önmagában
+// NEM változtat semmilyen döntési logikán a közvetlen (nem proxyzott)
+// forgalomnál — csak azt jelenti, hogy egy elutasított kérés is nyit egy
+// (amúgy is gyors, meglévő kapcsolatot újrafelhasználó) DB-kapcsolatot.
+$db = new Database($config['db'], __DIR__ . '/../..');
+
 // Bejelentkezés-ellenőrzés — minden API-végpontra vonatkozik, kivéve a
 // bejelentkezéshez és a telepítő-állapot lekérdezéséhez szükséges pár
 // végpontot (ezeknek működniük kell MIELŐTT valaki be van jelentkezve).
@@ -156,6 +166,12 @@ $currentScript = basename($_SERVER['SCRIPT_NAME'] ?? '');
 $cronScripts = ['auto-backup-run.php', 'auto-sync-run.php', 'nav-queue-run.php', 'nav-incoming-sync-run.php', 'update-check-run.php', 'wc-queue-run.php'];
 $isCronScript = in_array($currentScript, $cronScripts, true);
 
+// Fázis 2 — egy proxyzott (ClientProxy-n keresztül érkező) kérést az
+// X-Client-Id fejléc jelenléte jelzi. Ez a kérés SOSE a Szerver saját,
+// böngésző-eredetű $_SESSION-jével dől el — lásd Auth::currentStaffId()
+// dokumentációja és a Fázis 2 tervdokumentum §5/§14 szakasza.
+$isClientProxiedRequest = isset($_SERVER['HTTP_X_CLIENT_ID']);
+
 if ($isCronScript) {
     $suppliedToken = (string) ($_SERVER['HTTP_X_CRON_TOKEN'] ?? '');
     $cronAuthorized = !empty($appSettings['cron_secret'])
@@ -164,6 +180,55 @@ if ($isCronScript) {
     if (!$cronAuthorized) {
         http_response_code(401);
         echo json_encode(['error' => 'Érvénytelen vagy hiányzó cron-token (X-Cron-Token fejléc).'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+} elseif ($isClientProxiedRequest) {
+    require_once __DIR__ . '/../../src/ClientAuthenticator.php';
+
+    // 1-7. lépés (X-Client-Id → aktív → nem visszavont → időbélyeg →
+    // nonce → aláírás) — lásd ClientAuthenticator::authenticate()
+    // docblockja a pontos sorrendért és azért, miért egységes, konzervatív
+    // hibaüzenetet adunk vissza a hívónak, függetlenül attól, MELYIK lépés
+    // bukott el.
+    $clientPathAndQuery = ClientHmac::pathAndQueryFromServerSuperglobal();
+    $clientRequestBody = file_get_contents('php://input') ?: '';
+    $clientAuthResult = (new ClientAuthenticator($db))->authenticate(
+        (string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'),
+        $clientPathAndQuery,
+        $clientRequestBody
+    );
+    if (!$clientAuthResult['ok']) {
+        // A RÉSZLETES ok (pl. "invalid_signature" vs. "revoked_client")
+        // KIZÁRÓLAG a szerver saját naplójába kerül — a hívó felé egy
+        // egységes, konzervatív hiba megy, hogy egy támadó ne tudja
+        // lépésenként "kitapogatni", melyik ellenőrzésen bukott el.
+        error_log('[fountaintrade] ClientAuthenticator elutasítva: ' . ($clientAuthResult['reason'] ?? 'ismeretlen'));
+        http_response_code(401);
+        echo json_encode(['error' => 'Hitelesítés sikertelen.'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    Auth::setProxiedRegisteredClientId((int) $clientAuthResult['registeredClient']['id']);
+
+    // A dolgozói munkamenet feloldása, HA a kérés hordoz egyet — a
+    // staff-login.php ÉPP EZT hozza létre, staff-logout.php pedig törli,
+    // egyiknél sem elvárás, hogy MÁR legyen érvényes munkamenet a kérés
+    // ELEJÉN (lásd $clientProxySessionOptional lentebb).
+    $clientSessionId = (string) ($_SERVER['HTTP_X_CLIENT_SESSION_ID'] ?? '');
+    if ($clientSessionId !== '') {
+        $clientSessionRow = $db->findClientSession($clientSessionId);
+        if (
+            $clientSessionRow
+            && (int) $clientSessionRow['registered_client_id'] === (int) $clientAuthResult['registeredClient']['id']
+            && strtotime((string) $clientSessionRow['expires_at']) > time()
+        ) {
+            Auth::setProxiedClientSession($clientSessionRow);
+        }
+    }
+
+    $clientProxySessionOptional = array_merge($authWhitelist, ['staff-login.php', 'staff-logout.php']);
+    if (!in_array($currentScript, $clientProxySessionOptional, true) && Auth::currentStaffId() === null) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Bejelentkezés szükséges.', 'auth_required' => true], JSON_UNESCAPED_UNICODE);
         exit;
     }
 } elseif (!in_array($currentScript, $authWhitelist, true) && !Auth::isLoggedIn($appSettings)) {
@@ -183,11 +248,36 @@ if ($isCronScript) {
 // beleértve — ezeknél nincs (vagy nem böngésző-session-alapú) a védendő
 // állapot.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && !in_array($currentScript, $csrfWhitelist, true) && !$isCronScript) {
-    $csrfHeader = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
-    if (!Auth::verifyCsrf($csrfHeader)) {
-        http_response_code(403);
-        echo json_encode(['error' => 'Érvénytelen vagy hiányzó CSRF-token — töltsd újra az oldalt.', 'csrf_required' => true], JSON_UNESCAPED_UNICODE);
-        exit;
+    if ($isClientProxiedRequest) {
+        // Fázis 2 — a Szerver SOSE a saját $_SESSION['csrf_token']-jéhez
+        // hasonlítja a proxyzott kérés tokenjét (az itt irreleváns — a
+        // böngésző session-je a Kliens gépén él). Ehelyett a MÁR feloldott
+        // client_sessions sorhoz kötött csrf_token_hash-t ellenőrizzük.
+        // Ha NINCS feloldott munkamenet (staff-login.php — még nincs mihez
+        // viszonyítani; vagy egy már lejárt/érvénytelen munkameneten hívott
+        // staff-logout.php — gyakorlatilag no-op), a CSRF-ellenőrzés itt
+        // szándékosan nem alkalmazható — a gépszintű HMAC-aláírás (MÁR
+        // ellenőrizve fentebb, feltétel nélkül minden proxyzott kérésen)
+        // adja ilyenkor az egyetlen, de ELÉGSÉGES védelmet, ugyanúgy, ahogy
+        // a cron-token is a cron-végpontok saját, elégséges védelme.
+        $clientSessionRow = Auth::proxiedClientSession();
+        if ($clientSessionRow !== null) {
+            $clientCsrfHeader = (string) ($_SERVER['HTTP_X_CLIENT_CSRF_TOKEN'] ?? '');
+            $clientCsrfOk = $clientCsrfHeader !== ''
+                && hash_equals((string) $clientSessionRow['csrf_token_hash'], hash('sha256', $clientCsrfHeader));
+            if (!$clientCsrfOk) {
+                http_response_code(403);
+                echo json_encode(['error' => 'Érvénytelen vagy hiányzó CSRF-token — töltsd újra az oldalt.', 'csrf_required' => true], JSON_UNESCAPED_UNICODE);
+                exit;
+            }
+        }
+    } else {
+        $csrfHeader = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+        if (!Auth::verifyCsrf($csrfHeader)) {
+            http_response_code(403);
+            echo json_encode(['error' => 'Érvénytelen vagy hiányzó CSRF-token — töltsd újra az oldalt.', 'csrf_required' => true], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
     }
 }
 
@@ -220,8 +310,6 @@ if (!empty($appSettings['wc_barcode_meta_key'])) {
 if (!empty($appSettings['wc_webhook_secret'])) {
     $config['woocommerce']['webhook_secret'] = $appSettings['wc_webhook_secret'];
 }
-
-$db = new Database($config['db'], __DIR__ . '/../..');
 
 // Karbantartási mód (12. pont) — az UpdateInstaller kapcsolja be a
 // frissítés telepítési szakaszára (lásd src/UpdateInstaller.php

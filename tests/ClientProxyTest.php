@@ -43,7 +43,7 @@ final class ClientProxyTest extends TestCase
         $proxy = new ClientProxy(['server_url' => 'http://192.168.1.10:8000']);
         $headers = $this->withServerVars(
             ['HTTP_HOST' => 'client-machine:8000', 'HTTP_ACCEPT' => 'application/json'],
-            fn () => $this->invokePrivate($proxy, 'buildOutboundHeaders')
+            fn () => $this->invokePrivate($proxy, 'buildOutboundHeaders', ['GET', ''])
         );
 
         foreach ($headers as $h) {
@@ -56,7 +56,7 @@ final class ClientProxyTest extends TestCase
         $proxy = new ClientProxy(['server_url' => 'http://192.168.1.10:8000']);
         $headers = $this->withServerVars(
             ['HTTP_COOKIE' => 'PHPSESSID=client-local-session-abc123', 'HTTP_ACCEPT' => 'application/json'],
-            fn () => $this->invokePrivate($proxy, 'buildOutboundHeaders')
+            fn () => $this->invokePrivate($proxy, 'buildOutboundHeaders', ['GET', ''])
         );
 
         $cookieHeaders = array_filter($headers, static fn ($h) => str_starts_with($h, 'Cookie:'));
@@ -74,7 +74,7 @@ final class ClientProxyTest extends TestCase
                 'HTTP_UPGRADE' => 'websocket',
                 'HTTP_ACCEPT' => 'application/json',
             ],
-            fn () => $this->invokePrivate($proxy, 'buildOutboundHeaders')
+            fn () => $this->invokePrivate($proxy, 'buildOutboundHeaders', ['GET', ''])
         );
 
         $joined = implode('; ', $headers);
@@ -89,7 +89,7 @@ final class ClientProxyTest extends TestCase
         $proxy = new ClientProxy(['server_url' => 'http://192.168.1.10:8000']);
         $headers = $this->withServerVars(
             ['CONTENT_TYPE' => 'application/json'],
-            fn () => $this->invokePrivate($proxy, 'buildOutboundHeaders')
+            fn () => $this->invokePrivate($proxy, 'buildOutboundHeaders', ['GET', ''])
         );
         $this->assertContains('Content-Type: application/json', $headers);
     }
@@ -104,7 +104,7 @@ final class ClientProxyTest extends TestCase
         $proxy = new ClientProxy(['server_url' => 'http://192.168.1.10:8000']);
         $headers = $this->withServerVars(
             ['HTTP_CONTENT_TYPE' => 'application/json', 'CONTENT_TYPE' => 'application/json'],
-            fn () => $this->invokePrivate($proxy, 'buildOutboundHeaders')
+            fn () => $this->invokePrivate($proxy, 'buildOutboundHeaders', ['GET', ''])
         );
         $contentTypeHeaders = array_filter($headers, static fn ($h) => str_starts_with($h, 'Content-Type:'));
         $this->assertCount(1, $contentTypeHeaders, 'Pontosan EGY Content-Type fejléc-sor mehet ki, sose kettő.');
@@ -118,10 +118,121 @@ final class ClientProxyTest extends TestCase
         $proxy = new ClientProxy(['server_url' => 'http://192.168.1.10:8000']);
         $headers = $this->withServerVars(
             ['CONTENT_LENGTH' => '1234', 'CONTENT_TYPE' => 'application/json'],
-            fn () => $this->invokePrivate($proxy, 'buildOutboundHeaders')
+            fn () => $this->invokePrivate($proxy, 'buildOutboundHeaders', ['GET', ''])
         );
         $lengthHeaders = array_filter($headers, static fn ($h) => str_starts_with($h, 'Content-Length:'));
         $this->assertCount(0, $lengthHeaders);
+    }
+
+    // -----------------------------------------------------------------
+    // HMAC-fejlécek — a kimenő kérésen mindig jelen vannak, helyes aláírással
+    // -----------------------------------------------------------------
+
+    private function withSession(array $vars, callable $fn)
+    {
+        $backup = $_SESSION ?? [];
+        $_SESSION = array_merge($_SESSION ?? [], $vars);
+        try {
+            return $fn();
+        } finally {
+            $_SESSION = $backup;
+        }
+    }
+
+    public function testBuildOutboundHeadersIncludesValidHmacSignature(): void
+    {
+        $proxy = new ClientProxy(['server_url' => 'http://192.168.1.10:8000', 'client_id' => 'cl_test123', 'client_secret' => 'raw-secret-value']);
+        $headers = $this->withServerVars(
+            ['SCRIPT_NAME' => '/api/sale.php', 'QUERY_STRING' => 'foo=bar'],
+            fn () => $this->withSession([], fn () => $this->invokePrivate($proxy, 'buildOutboundHeaders', ['POST', '{"a":1}']))
+        );
+
+        $byName = [];
+        foreach ($headers as $h) {
+            [$name, $value] = explode(': ', $h, 2);
+            $byName[$name] = $value;
+        }
+
+        $this->assertSame('cl_test123', $byName['X-Client-Id'] ?? null);
+        $this->assertArrayHasKey('X-Client-Timestamp', $byName);
+        $this->assertArrayHasKey('X-Client-Nonce', $byName);
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{32}$/', $byName['X-Client-Nonce']);
+
+        // A Szerver-oldali ellenőrzés PONTOSAN ugyanígy számolná újra —
+        // ha ez itt egyezik, a Kliens/Szerver kanonikus-sztring építése
+        // konzisztens.
+        $signingKey = ClientHmac::deriveSigningKey('raw-secret-value');
+        $canonical = ClientHmac::canonicalString('POST', '/api/sale.php?foo=bar', $byName['X-Client-Timestamp'], $byName['X-Client-Nonce'], '{"a":1}');
+        $expectedSignature = ClientHmac::sign($canonical, $signingKey);
+        $this->assertSame($expectedSignature, $byName['X-Client-Signature']);
+    }
+
+    public function testBuildOutboundHeadersOmitsSessionBridgeHeadersWhenNoLocalSession(): void
+    {
+        $proxy = new ClientProxy(['server_url' => 'http://192.168.1.10:8000', 'client_id' => 'cl_x', 'client_secret' => 'secret']);
+        $backup = $_SESSION ?? [];
+        unset($_SESSION['ft_client_session_id'], $_SESSION['ft_client_csrf_token']);
+        try {
+            $headers = $this->invokePrivate($proxy, 'buildOutboundHeaders', ['GET', '']);
+        } finally {
+            $_SESSION = $backup;
+        }
+
+        $joined = implode('; ', $headers);
+        $this->assertStringNotContainsString('X-Client-Session-Id:', $joined);
+        $this->assertStringNotContainsString('X-Client-Csrf-Token:', $joined);
+    }
+
+    public function testBuildOutboundHeadersIncludesSessionBridgeHeadersWhenPresentLocally(): void
+    {
+        $proxy = new ClientProxy(['server_url' => 'http://192.168.1.10:8000', 'client_id' => 'cl_x', 'client_secret' => 'secret']);
+        $headers = $this->withSession(
+            ['ft_client_session_id' => 'sess-abc', 'ft_client_csrf_token' => 'csrf-xyz'],
+            fn () => $this->invokePrivate($proxy, 'buildOutboundHeaders', ['GET', ''])
+        );
+
+        $this->assertContains('X-Client-Session-Id: sess-abc', $headers);
+        $this->assertContains('X-Client-Csrf-Token: csrf-xyz', $headers);
+    }
+
+    // -----------------------------------------------------------------
+    // captureSessionBridgeHeaders() — a Szerver válaszából a helyi session-be
+    // -----------------------------------------------------------------
+
+    public function testCaptureSessionBridgeHeadersStoresSessionAndCsrfToken(): void
+    {
+        $proxy = new ClientProxy(['server_url' => 'http://192.168.1.10:8000']);
+        $raw = "HTTP/1.1 200 OK\r\nX-Client-Session-Id: newsess123\r\nX-Client-Csrf-Token: newcsrf456\r\nContent-Type: application/json\r\n\r\n";
+
+        $this->withSession([], function () use ($proxy, $raw) {
+            $this->invokePrivate($proxy, 'captureSessionBridgeHeaders', [$raw]);
+            $this->assertSame('newsess123', $_SESSION['ft_client_session_id'] ?? null);
+            $this->assertSame('newcsrf456', $_SESSION['ft_client_csrf_token'] ?? null);
+        });
+    }
+
+    public function testCaptureSessionBridgeHeadersClearsOnSessionCleared(): void
+    {
+        $proxy = new ClientProxy(['server_url' => 'http://192.168.1.10:8000']);
+        $raw = "HTTP/1.1 200 OK\r\nX-Client-Session-Cleared: 1\r\nContent-Type: application/json\r\n\r\n";
+
+        $this->withSession(['ft_client_session_id' => 'old', 'ft_client_csrf_token' => 'old'], function () use ($proxy, $raw) {
+            $this->invokePrivate($proxy, 'captureSessionBridgeHeaders', [$raw]);
+            $this->assertArrayNotHasKey('ft_client_session_id', $_SESSION);
+            $this->assertArrayNotHasKey('ft_client_csrf_token', $_SESSION);
+        });
+    }
+
+    public function testFilterResponseHeaderLinesStripsSessionBridgeHeadersFromBrowserRelay(): void
+    {
+        $proxy = new ClientProxy(['server_url' => 'http://192.168.1.10:8000']);
+        $raw = "HTTP/1.1 200 OK\r\nX-Client-Session-Id: s1\r\nX-Client-Csrf-Token: c1\r\nX-Client-Session-Cleared: 1\r\nContent-Type: application/json\r\n\r\n";
+        $lines = $this->invokePrivate($proxy, 'filterResponseHeaderLines', [$raw]);
+
+        $joined = implode('; ', $lines);
+        $this->assertStringNotContainsString('X-Client-Session-Id', $joined, 'A böngésző sose láthatja a dolgozói munkamenet-híd fejléceit.');
+        $this->assertStringNotContainsString('X-Client-Csrf-Token', $joined);
+        $this->assertStringNotContainsString('X-Client-Session-Cleared', $joined);
     }
 
     // -----------------------------------------------------------------

@@ -60,6 +60,11 @@ $__smSidebarLinks = [
         'title' => 'Rendszerállapot',
         'icon' => '<path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>',
     ],
+    [
+        'href' => 'kliensek.php',
+        'title' => 'Kliensek',
+        'icon' => '<rect x="2" y="4" width="8" height="16" rx="1"></rect><rect x="14" y="4" width="8" height="16" rx="1"></rect><line x1="6" y1="8" x2="6" y2="8.01"></line><line x1="18" y1="8" x2="18" y2="8.01"></line>',
+    ],
 ];
 ?>
 <nav class="icon-sidebar">

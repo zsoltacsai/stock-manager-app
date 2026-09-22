@@ -19,6 +19,12 @@ final class Auth
 {
     private static bool $sessionStarted = false;
 
+    /** Publikus wrapper — a ClientProxy-nak (Kliens-oldalon) is UGYANAZT a session-cookie-konfigurációt kell garantálnia, mint a direkt forgalomnak. */
+    public static function ensureSessionStarted(): void
+    {
+        self::ensureSession();
+    }
+
     private static function ensureSession(): void
     {
         if (self::$sessionStarted) {
@@ -172,8 +178,51 @@ final class Auth
         }
     }
 
+    /**
+     * Fázis 2 — kliens/szerver architektúra. Ha egy proxyzott kérés a
+     * `client_sessions` tábla ellen érvényesen feloldódott (lásd
+     * `_bootstrap.php` új ága, `ClientAuthenticator`/`X-Client-Session-Id`),
+     * `_bootstrap.php` ide állítja be a feloldott sort — ez a "böngésző
+     * session"-nek a Kliens/Szerver-topológiára szánt megfelelője, mivel a
+     * böngésző valódi PHP-session-je a Kliens gépén él, nem a Szerverén.
+     * Kizárólag `_bootstrap.php` állítja — semmilyen végpont-fájl vagy
+     * más `src/*.php` nem hívja közvetlenül.
+     */
+    private static ?array $proxiedClientSession = null;
+
+    /** Fázis 2 — melyik regisztrált kliens-gép hitelesítette magát (HMAC) az aktuális kérésnél; null, ha nem proxyzott kérés. */
+    private static ?int $proxiedRegisteredClientId = null;
+
+    public static function setProxiedRegisteredClientId(?int $id): void
+    {
+        self::$proxiedRegisteredClientId = $id;
+    }
+
+    public static function proxiedRegisteredClientId(): ?int
+    {
+        return self::$proxiedRegisteredClientId;
+    }
+
+    public static function setProxiedClientSession(?array $session): void
+    {
+        self::$proxiedClientSession = $session;
+    }
+
+    public static function proxiedClientSession(): ?array
+    {
+        return self::$proxiedClientSession;
+    }
+
     public static function currentStaffId(): ?int
     {
+        // Fázis 2: egy érvényesen feloldott proxyzott kliens-munkamenet
+        // ELSŐBBSÉGET élvez — ha ez be van állítva, a kérés SOSE a Szerver
+        // saját (ez esetben irreleváns) $_SESSION-jéből dől el. Ha nincs
+        // beállítva (a túlnyomó többség — Önálló gép/Szerver közvetlen
+        // böngésző-forgalma), a meglévő, változatlan viselkedés fut.
+        if (self::$proxiedClientSession !== null) {
+            return (int) self::$proxiedClientSession['staff_id'];
+        }
         self::ensureSession();
         return isset($_SESSION['staff_id']) ? (int) $_SESSION['staff_id'] : null;
     }

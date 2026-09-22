@@ -4,6 +4,7 @@ require_once __DIR__ . '/AppVersion.php';
 require_once __DIR__ . '/InvoiceNumbering.php';
 require_once __DIR__ . '/PriceValidator.php';
 require_once __DIR__ . '/PurchaseDecisionService.php';
+require_once __DIR__ . '/ClientHmac.php';
 
 class Database
 {
@@ -1754,6 +1755,185 @@ class Database
             }
             throw $e;
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Kliens/szerver architektúra (Fázis 2) — regisztrált kliens gépek
+    // ---------------------------------------------------------------
+
+    /**
+     * Új kliens-gép regisztrálása — a nyers `client_secret` KIZÁRÓLAG ebben
+     * a visszatérési értékben jelenik meg, sehol máshol nem tárolódik
+     * (lásd ClientHmac.php docblockja: a DB-be csak a belőle levezetett
+     * `secret_hash` kerül, ami a HMAC-ellenőrzéshez ténylegesen szükséges
+     * kulcs).
+     *
+     * @return array{id:int, client_id:string, client_secret:string, label:string}
+     */
+    public function registerClient(string $label): array
+    {
+        $clientId = 'cl_' . bin2hex(random_bytes(12));
+        $rawSecret = bin2hex(random_bytes(32)); // 256 bit
+        $secretHash = ClientHmac::deriveSigningKey($rawSecret);
+        $now = date('Y-m-d H:i:s');
+
+        $stmt = $this->pdo->prepare('
+            INSERT INTO registered_clients (client_id, label, secret_hash, is_active, created_at)
+            VALUES (?, ?, ?, 1, ?)
+        ');
+        $stmt->execute([$clientId, $label, $secretHash, $now]);
+        $id = (int) $this->pdo->lastInsertId();
+
+        return ['id' => $id, 'client_id' => $clientId, 'client_secret' => $rawSecret, 'label' => $label];
+    }
+
+    /** Admin-listázáshoz — SOSE tartalmazza a secret_hash oszlopot, nincs rá legitim ok azt egy listázó végpontnak visszaadnia. */
+    public function listRegisteredClients(): array
+    {
+        return $this->pdo->query('
+            SELECT id, client_id, label, is_active, revoked_at, rotated_at, last_seen_at, created_at
+            FROM registered_clients ORDER BY created_at DESC
+        ')->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function findRegisteredClientById(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT id, client_id, label, is_active, revoked_at, rotated_at, last_seen_at, created_at FROM registered_clients WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    /**
+     * Belső használatra (ClientAuthenticator) — EZ TARTALMAZZA a
+     * secret_hash-t, mert a HMAC-ellenőrzéshez ez a tényleges kulcs. SOSE
+     * hívd admin-listázó vagy bármilyen kliens felé irányuló válaszból.
+     */
+    public function findRegisteredClientByClientId(string $clientId): ?array
+    {
+        if ($clientId === '') {
+            return null;
+        }
+        $stmt = $this->pdo->prepare('SELECT * FROM registered_clients WHERE client_id = ?');
+        $stmt->execute([$clientId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    /**
+     * Új secret generálása — a RÉGI azonnal érvénytelenné válik (a
+     * secret_hash felülíródik, a korábbi levezetett kulccsal számolt
+     * aláírások innentől sose egyeznek). A client_id VÁLTOZATLAN marad.
+     *
+     * @return array{client_secret:string}
+     */
+    public function rotateClientSecret(int $id): array
+    {
+        $client = $this->findRegisteredClientById($id);
+        if (!$client) {
+            throw new RuntimeException('A kliens nem található.');
+        }
+        if (!empty($client['revoked_at'])) {
+            throw new RuntimeException('Egy visszavont kliens titka nem újragenerálható — regisztrálj új klienst.');
+        }
+
+        $rawSecret = bin2hex(random_bytes(32));
+        $secretHash = ClientHmac::deriveSigningKey($rawSecret);
+        $now = date('Y-m-d H:i:s');
+        $this->pdo->prepare('UPDATE registered_clients SET secret_hash = ?, rotated_at = ? WHERE id = ?')
+            ->execute([$secretHash, $now, $id]);
+
+        return ['client_secret' => $rawSecret];
+    }
+
+    /** Végleges — a client_id SOSE kerül újrahasznosításra, és disable/enable-lel többé nem oldható fel. */
+    public function revokeClient(int $id): void
+    {
+        $now = date('Y-m-d H:i:s');
+        $stmt = $this->pdo->prepare("UPDATE registered_clients SET is_active = 0, revoked_at = ? WHERE id = ? AND revoked_at IS NULL");
+        $stmt->execute([$now, $id]);
+        if ($stmt->rowCount() === 0) {
+            $client = $this->findRegisteredClientById($id);
+            if (!$client) {
+                throw new RuntimeException('A kliens nem található.');
+            }
+            // Már korábban visszavonva — idempotens no-op, nem hiba.
+        }
+        $this->deleteClientSessionsForRegisteredClient($id);
+    }
+
+    /** Ideiglenes — egy visszavont (revoked) kliensre nem alkalmazható, csak egy meglévő, még nem visszavont klienst tilthat le. */
+    public function disableClient(int $id): void
+    {
+        $client = $this->findRegisteredClientById($id);
+        if (!$client) {
+            throw new RuntimeException('A kliens nem található.');
+        }
+        if (!empty($client['revoked_at'])) {
+            throw new RuntimeException('Egy visszavont kliens nem tiltható le/engedélyezhető — az véglegesen inaktív.');
+        }
+        $this->pdo->prepare('UPDATE registered_clients SET is_active = 0 WHERE id = ?')->execute([$id]);
+        $this->deleteClientSessionsForRegisteredClient($id);
+    }
+
+    public function enableClient(int $id): void
+    {
+        $client = $this->findRegisteredClientById($id);
+        if (!$client) {
+            throw new RuntimeException('A kliens nem található.');
+        }
+        if (!empty($client['revoked_at'])) {
+            throw new RuntimeException('Egy visszavont kliens nem engedélyezhető újra — regisztrálj új klienst.');
+        }
+        $this->pdo->prepare('UPDATE registered_clients SET is_active = 1 WHERE id = ?')->execute([$id]);
+    }
+
+    /** Best-effort, biztonsági döntés forrásaként SOSE használt — csak "mikor látta a Szerver utoljára ezt a klienst" megjelenítésre. */
+    public function touchClientLastSeen(int $id): void
+    {
+        $this->pdo->prepare('UPDATE registered_clients SET last_seen_at = ? WHERE id = ?')->execute([date('Y-m-d H:i:s'), $id]);
+    }
+
+    // ---------------------------------------------------------------
+    // Kliens/szerver architektúra (Fázis 2) — dolgozói munkamenet-híd
+    // ---------------------------------------------------------------
+
+    /**
+     * @return array{client_session_id:string}
+     */
+    public function createClientSession(int $registeredClientId, int $staffId, string $csrfTokenHash, int $timeoutMinutes): array
+    {
+        $clientSessionId = bin2hex(random_bytes(32));
+        $now = date('Y-m-d H:i:s');
+        $expiresAt = date('Y-m-d H:i:s', time() + max(1, $timeoutMinutes) * 60);
+
+        $this->pdo->prepare('
+            INSERT INTO client_sessions (client_session_id, registered_client_id, staff_id, csrf_token_hash, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ')->execute([$clientSessionId, $registeredClientId, $staffId, $csrfTokenHash, $now, $expiresAt]);
+
+        return ['client_session_id' => $clientSessionId];
+    }
+
+    public function findClientSession(string $clientSessionId): ?array
+    {
+        if ($clientSessionId === '') {
+            return null;
+        }
+        $stmt = $this->pdo->prepare('SELECT * FROM client_sessions WHERE client_session_id = ?');
+        $stmt->execute([$clientSessionId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    public function deleteClientSession(string $clientSessionId): void
+    {
+        $this->pdo->prepare('DELETE FROM client_sessions WHERE client_session_id = ?')->execute([$clientSessionId]);
+    }
+
+    public function deleteClientSessionsForRegisteredClient(int $registeredClientId): void
+    {
+        $this->pdo->prepare('DELETE FROM client_sessions WHERE registered_client_id = ?')->execute([$registeredClientId]);
     }
 
     // ---- Önfrissítés (GitHub Release-alapú) ----

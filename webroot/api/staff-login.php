@@ -35,4 +35,10 @@ if (!$staff) {
 
 Auth::clearRateLimit($rateLimitKey);
 Auth::setCurrentStaff($staff);
+// Fázis 2 — no-op direkt (nem proxyzott) kérésnél; proxyzott Kliensnél
+// létrehozza a szerver-oldali dolgozói munkamenetet + CSRF-hidat, és
+// válaszfejlécben adja vissza (lásd ClientSessionBridge.php docblockja) —
+// a lenti send_json() válasza emiatt SZÁNDÉKOSAN nem változik.
+require_once __DIR__ . '/../../src/ClientSessionBridge.php';
+ClientSessionBridge::establishStaffSession($db, $appSettings);
 send_json(['ok' => true, 'staff' => $staff]);

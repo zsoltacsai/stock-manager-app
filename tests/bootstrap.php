@@ -31,6 +31,10 @@ require_once __DIR__ . '/../src/ReportPeriod.php';
 require_once __DIR__ . '/../src/HungarianNameDays.php';
 require_once __DIR__ . '/../src/PurchaseDecisionService.php';
 require_once __DIR__ . '/../src/HealthMonitor.php';
+require_once __DIR__ . '/../src/ClientHmac.php';
+require_once __DIR__ . '/../src/ClientNonceStore.php';
+require_once __DIR__ . '/../src/ClientAuthenticator.php';
+require_once __DIR__ . '/../src/ClientSessionBridge.php';
 require_once __DIR__ . '/../src/ClientProxy.php';
 
 /**

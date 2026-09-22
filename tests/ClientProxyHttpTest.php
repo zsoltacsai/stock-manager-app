@@ -233,7 +233,7 @@ final class ClientProxyHttpTest extends TestCase
                 $respHeaders[strtolower(trim($k))] = trim($v);
             }
         }
-        return ['status' => $status, 'headers' => $respHeaders, 'body' => $rawBody];
+        return ['status' => $status, 'headers' => $respHeaders, 'body' => $rawBody, 'rawHeaders' => $rawHeaders];
     }
 
     // -----------------------------------------------------------------
@@ -284,7 +284,17 @@ final class ClientProxyHttpTest extends TestCase
     {
         $res = self::request('GET', self::$clientBaseUrl . '/api/_test-fixture.php?mode=cookie');
         $this->assertSame(200, $res['status']);
-        $this->assertArrayNotHasKey('set-cookie', $res['headers'], 'A Szerver saját Set-Cookie fejléce sose juthat el a böngészőig.');
+        // A RAW fejléc-szöveget vizsgáljuk (nem az egyszerű kulcs->érték
+        // térképet, ami egy esetleges TÖBB Set-Cookie sor közül csak az
+        // utolsót őrizné meg) — a Kliens SAJÁT, jogos PHPSESSID-sütije
+        // (a dolgozói munkamenet-híd tárolásához, lásd ClientProxy
+        // localClientSession()) mostantól elvárt módon MEGJELENIK, de a
+        // Szerver saját, konkrét titkos értéke SOSE szivároghat át.
+        $this->assertStringNotContainsString(
+            'server_side_secret',
+            $res['rawHeaders'],
+            'A Szerver saját Set-Cookie ÉRTÉKE sose juthat el a böngészőig, még akkor sem, ha időközben a Kliens saját (jogos) session-sütije is megjelenik a válaszban.'
+        );
     }
 
     public function testUnreachableServerProducesGracefulServerUnavailableResponse(): void

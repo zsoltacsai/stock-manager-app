@@ -13,4 +13,9 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 // "kijelentkezése" után a session továbbra is az ő azonosítójával
 // engedne át admin-kapukat a következő, PIN nélkül dolgozó számára.
 Auth::setCurrentStaff(null);
+// Fázis 2 — no-op direkt kérésnél; proxyzott Kliensnél törli a feloldott
+// client_sessions sort + jelzi a Kliensnek válaszfejlécben, hogy a saját
+// helyi munkamenet-mentését is ürítse (lásd ClientSessionBridge.php).
+require_once __DIR__ . '/../../src/ClientSessionBridge.php';
+ClientSessionBridge::clearStaffSession($db);
 send_json(['ok' => true]);

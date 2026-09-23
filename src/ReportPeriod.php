@@ -13,7 +13,7 @@
  */
 final class ReportPeriod
 {
-    public const PRESETS = ['today', 'yesterday', 'last_7_days', 'last_30_days', 'this_month', 'last_month', 'custom'];
+    public const PRESETS = ['today', 'yesterday', 'last_7_days', 'last_30_days', 'this_week', 'last_week', 'this_month', 'last_month', 'custom'];
 
     /**
      * @return array{from: string, to: string, period: string}
@@ -58,6 +58,13 @@ final class ReportPeriod
                 return ['from' => $today->modify('-6 days')->format('Y-m-d'), 'to' => $today->format('Y-m-d'), 'period' => $period];
             case 'last_30_days':
                 return ['from' => $today->modify('-29 days')->format('Y-m-d'), 'to' => $today->format('Y-m-d'), 'period' => $period];
+            case 'this_week':
+                // Fázis 4 (Sales Agent) — hétfőtől induló hét, a magyar
+                // üzleti konvenciónak megfelelően (nem vasárnap-kezdetű).
+                return ['from' => $today->modify('monday this week')->format('Y-m-d'), 'to' => $today->format('Y-m-d'), 'period' => $period];
+            case 'last_week':
+                $mondayThisWeek = $today->modify('monday this week');
+                return ['from' => $mondayThisWeek->modify('-7 days')->format('Y-m-d'), 'to' => $mondayThisWeek->modify('-1 day')->format('Y-m-d'), 'period' => $period];
             case 'this_month':
                 return ['from' => $today->modify('first day of this month')->format('Y-m-d'), 'to' => $today->format('Y-m-d'), 'period' => $period];
             case 'last_month':

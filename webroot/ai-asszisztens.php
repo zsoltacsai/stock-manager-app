@@ -48,13 +48,20 @@ if (!Auth::isLoggedIn($appSettings)) {
         </div>
 
         <div id="ai-assistant-form">
-            <label for="ai-question">Kérdésed a készletről</label>
+            <label for="ai-agent">Agent</label>
+            <select id="ai-agent">
+                <option value="inventory">Készlet (Inventory)</option>
+                <option value="sales">Forgalom (Sales)</option>
+            </select>
+
+            <label for="ai-question" style="margin-top:12px;">Kérdésed</label>
             <textarea id="ai-question" rows="3" placeholder="pl. Melyik termékekből fogunk várhatóan kifogyni?"></textarea>
             <button id="ai-ask-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Kérdezd a FountainTrade-et</button>
             <p id="ai-ask-feedback" class="modal-feedback"></p>
 
             <div id="ai-answer-box" style="display:none; border-top:1px solid var(--border); margin-top:20px; padding-top:16px;">
-                <strong>Válasz:</strong>
+                <strong>Agent:</strong> <span id="ai-answer-agent"></span>
+                <p><strong>Válasz:</strong></p>
                 <p id="ai-answer-text" style="white-space:pre-wrap;"></p>
                 <div id="ai-tools-used-box" style="display:none;">
                     <strong style="font-size:0.9em;">Használt eszközök:</strong>
@@ -64,9 +71,9 @@ if (!Auth::isLoggedIn($appSettings)) {
         </div>
 
         <p class="muted" style="margin-top:24px; border-top:1px solid var(--border); padding-top:16px;">
-            Az asszisztens kizárólag OLVASÁSRA képes (nem módosít készletet, árat, nem hoz létre
-            beszerzést) — minden számadat a FountainTrade tényleges adatbázisából származik,
-            a javaslatok pedig javaslatok, nem automatikusan végrehajtott műveletek.
+            Az asszisztens kizárólag OLVASÁSRA képes (nem módosít készletet, árat, forgalmat, nem
+            hoz létre beszerzést) — minden számadat a FountainTrade tényleges adatbázisából
+            származik, a javaslatok pedig javaslatok, nem automatikusan végrehajtott műveletek.
         </p>
     </div>
 </div>

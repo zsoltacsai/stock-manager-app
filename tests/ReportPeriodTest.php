@@ -28,6 +28,24 @@ final class ReportPeriodTest extends TestCase
         $this->assertSame(date('Y-m-d', strtotime('-29 days')), $last30['from']);
     }
 
+    public function testThisWeekAndLastWeekResolveToMondayStartWeekBoundaries(): void
+    {
+        // Fázis 4 (Sales Agent) — hétfőtől induló hét, lásd ReportPeriod::resolve() docblokkja.
+        $thisWeek = ReportPeriod::resolve('this_week');
+        $expectedMonday = (new DateTimeImmutable('monday this week'))->format('Y-m-d');
+        $this->assertSame($expectedMonday, $thisWeek['from']);
+        $this->assertSame(date('Y-m-d'), $thisWeek['to']);
+        $this->assertLessThanOrEqual($thisWeek['to'], $thisWeek['from']);
+
+        $lastWeek = ReportPeriod::resolve('last_week');
+        $expectedLastMonday = (new DateTimeImmutable('monday this week'))->modify('-7 days')->format('Y-m-d');
+        $expectedLastSunday = (new DateTimeImmutable('monday this week'))->modify('-1 day')->format('Y-m-d');
+        $this->assertSame($expectedLastMonday, $lastWeek['from']);
+        $this->assertSame($expectedLastSunday, $lastWeek['to']);
+        // A múlt hét sose nyúlik bele a folyó hétbe.
+        $this->assertLessThan($thisWeek['from'], $lastWeek['to']);
+    }
+
     public function testThisMonthAndLastMonthResolveToCalendarMonthBoundaries(): void
     {
         $thisMonth = ReportPeriod::resolve('this_month');

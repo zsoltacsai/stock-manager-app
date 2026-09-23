@@ -48,6 +48,8 @@ require_once __DIR__ . '/../src/Ai/AiProviderFactory.php';
 require_once __DIR__ . '/../src/Ai/AgentRunner.php';
 require_once __DIR__ . '/../src/Ai/AiAuditLogger.php';
 require_once __DIR__ . '/../src/Ai/Agents/InventoryAgent.php';
+require_once __DIR__ . '/../src/Ai/Tools/SalesTools.php';
+require_once __DIR__ . '/../src/Ai/Agents/SalesAgent.php';
 
 /**
  * Minden tesztfüggvény saját, egyszer használatos SQLite fájllal dolgozik

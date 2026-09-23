@@ -7606,4 +7606,126 @@ class Database
             'products_without_margin' => $productsWithoutMargin,
         ];
     }
+
+    /**
+     * Fázis 4 (Sales Agent) — kategória-szintű (products.group_name)
+     * eladási összesítő. UGYANÚGY, mint getSalesMarginSummary(), a MEGLÉVŐ
+     * getTopProductsReport() (már visszáru-nettósított, termékenkénti)
+     * eredményét összegzi csoportonként — NINCS párhuzamos, harmadik
+     * implementáció a bruttó/nettó/visszáru levezetésre. A 100000-es limit
+     * ugyanaz, mint getSalesMarginSummary()-nél — gyakorlatilag "az összes
+     * eladott terméket" jelenti egy aggregált (nem soronkénti) lekérdezésből.
+     */
+    public function getTopCategoriesReport(string $dateFrom, string $dateTo, int $limit = 20): array
+    {
+        $products = $this->getTopProductsReport($dateFrom, $dateTo, null, 0, 100000);
+
+        $byCategory = [];
+        foreach ($products as $p) {
+            $category = $p['group_name'] !== null && $p['group_name'] !== '' ? $p['group_name'] : '(kategória nélkül)';
+            $byCategory[$category] ??= ['category' => $category, 'qty' => 0, 'revenue' => 0.0, 'revenue_net' => 0.0, 'product_count' => 0];
+            $byCategory[$category]['qty'] += $p['qty'];
+            $byCategory[$category]['revenue'] += $p['revenue'];
+            $byCategory[$category]['revenue_net'] += $p['revenue_net'];
+            $byCategory[$category]['product_count']++;
+        }
+
+        foreach ($byCategory as &$row) {
+            $row['revenue'] = round($row['revenue'], 2);
+            $row['revenue_net'] = round($row['revenue_net'], 2);
+        }
+        unset($row);
+
+        $result = array_values($byCategory);
+        usort($result, static fn ($a, $b) => $b['revenue'] <=> $a['revenue']);
+        return array_slice($result, 0, max(1, $limit));
+    }
+
+    /**
+     * Fázis 4 (Sales Agent) — óránkénti (a nap órája, 0-23) bruttó
+     * forgalom-eloszlás. SZÁNDÉKOSAN nem visszáru-nettósított: a
+     * visszáru a VISSZÁRU pillanatának órájában történik, ami jellemzően
+     * eltér az eredeti eladás órájától, ezért egy "melyik órában van a
+     * legnagyobb forgalom" kérdésnél a bruttó eladási időpont-eloszlás a
+     * releváns, üzletileg értelmes válasz — a "gross" mezőnév ezt
+     * explicit jelzi is a hívó (SalesTools) felé.
+     */
+    public function getSalesByHourReport(string $dateFrom, string $dateTo): array
+    {
+        $dateExpr = $this->driver === 'mysql' ? 'DATE(created_at)' : "substr(created_at, 1, 10)";
+        $hourExpr = $this->driver === 'mysql' ? 'HOUR(created_at)' : "CAST(substr(created_at, 12, 2) AS INTEGER)";
+
+        $stmt = $this->pdo->prepare("
+            SELECT $hourExpr AS hour, COUNT(*) AS cnt, SUM(total) AS total
+            FROM sales
+            WHERE $dateExpr BETWEEN ? AND ?
+            GROUP BY $hourExpr
+        ");
+        $stmt->execute([$dateFrom, $dateTo]);
+
+        $byHour = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $byHour[(int) $row['hour']] = ['count' => (int) $row['cnt'], 'gross' => round((float) $row['total'], 2)];
+        }
+
+        $result = [];
+        for ($h = 0; $h < 24; $h++) {
+            $result[] = [
+                'hour'  => $h,
+                'count' => $byHour[$h]['count'] ?? 0,
+                'gross' => $byHour[$h]['gross'] ?? 0.0,
+            ];
+        }
+        return $result;
+    }
+
+    /**
+     * Fázis 4 (Sales Agent) — egyetlen termék eladott mennyisége/forgalma
+     * egy tetszőleges dátumtartományban, visszáruval nettósítva. UGYANAZ
+     * a levonás-elv, mint getTopProductsReport()-nál, csak egy termékre
+     * szűkítve (nem az összesre) — kis, célzott lekérdezés, nem a teljes
+     * top-lista lekérése+szűrése egyetlen termékhez.
+     */
+    public function getProductSalesInRange(int $productId, string $dateFrom, string $dateTo): array
+    {
+        $dateExpr = $this->driver === 'mysql' ? 'DATE(s.created_at)' : "substr(s.created_at, 1, 10)";
+        $soldStmt = $this->pdo->prepare("
+            SELECT COALESCE(SUM(si.qty), 0) AS qty, COALESCE(SUM(si.unit_price * si.qty), 0) AS revenue
+            FROM sale_items si
+            JOIN sales s ON s.id = si.sale_id
+            WHERE si.product_id = ? AND $dateExpr BETWEEN ? AND ?
+        ");
+        $soldStmt->execute([$productId, $dateFrom, $dateTo]);
+        $sold = $soldStmt->fetch(PDO::FETCH_ASSOC) ?: ['qty' => 0, 'revenue' => 0];
+
+        $returnDateExpr = $this->driver === 'mysql' ? 'DATE(r.created_at)' : "substr(r.created_at, 1, 10)";
+        $returnedStmt = $this->pdo->prepare("
+            SELECT COALESCE(SUM(ri.qty), 0) AS qty, COALESCE(SUM(ri.unit_price * ri.qty), 0) AS revenue
+            FROM return_items ri
+            JOIN returns r ON r.id = ri.return_id
+            WHERE ri.product_id = ? AND $returnDateExpr BETWEEN ? AND ?
+        ");
+        $returnedStmt->execute([$productId, $dateFrom, $dateTo]);
+        $returned = $returnedStmt->fetch(PDO::FETCH_ASSOC) ?: ['qty' => 0, 'revenue' => 0];
+
+        return [
+            'date_from' => $dateFrom,
+            'date_to'   => $dateTo,
+            'qty'       => (int) $sold['qty'] - (int) $returned['qty'],
+            'revenue'   => round((float) $sold['revenue'] - (float) $returned['revenue'], 2),
+        ];
+    }
+
+    /**
+     * Fázis 4 (Sales Agent) — visszárutranzakciók (nem tételek) száma egy
+     * dátumtartományban, a returns.total_refund-ot már összegző
+     * getSalesReportSummary()-t egészíti ki egy darabszámmal.
+     */
+    public function getReturnsCountInRange(string $dateFrom, string $dateTo): int
+    {
+        $dateExpr = $this->driver === 'mysql' ? 'DATE(created_at)' : "substr(created_at, 1, 10)";
+        $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM returns WHERE $dateExpr BETWEEN ? AND ?");
+        $stmt->execute([$dateFrom, $dateTo]);
+        return (int) $stmt->fetchColumn();
+    }
 }

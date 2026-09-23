@@ -3271,40 +3271,50 @@ tervezve (ami megfelel a valós, egy-kasszás használati esetnek). Két
 külön célkönyvtárba telepített példány UGYANAZOKAT a Feladatütemező-
 bejegyzéseket használná, és az egyik telepítés átírná a másikét.
 
-## AI Asszisztens (Inventory Agent — Ollama, Anthropic/Claude vagy OpenAI)
+## AI Asszisztens (Inventory + Sales Agent — Ollama, Anthropic/Claude vagy OpenAI)
 
 Az első FountainTrade AI-réteg: egy **provider-független AI-absztrakció**
 (`src/Ai/`), aminek jelenleg HÁROM, ténylegesen bekötött megvalósítása van
 — egy **helyi [Ollama](https://ollama.com)**-példány (`LocalProvider`,
 Fázis 1), az **Anthropic Messages API/Claude** (`AnthropicProvider`, Fázis
 2) és az **OpenAI Responses API** (`OpenAiProvider`, Fázis 3) —, admin
-által választhatóan. Az első (és jelenleg egyetlen) agent egy **kizárólag
-olvasás-jogú Készlet-asszisztens** (Inventory Agent). Ollama esetén
-semmilyen adat nem megy külső, internetes AI-szolgáltatáshoz — minden a
-saját géped (vagy a helyi hálózaton belüli, általad megadott gép)
-Ollama-példányán fut. Anthropic/OpenAI esetén a kérdésed és a lekérdezett
-(olvasás-kizárólagos) adatok a választott szolgáltató szervereire mennek.
+által választhatóan. KÉT agent épül erre az absztrakcióra, mindkettő
+**kizárólag olvasás-jogú**: a **Készlet-asszisztens** (`InventoryAgent`,
+Fázis 1) és a **Forgalmi elemző asszisztens** (`SalesAgent`, Fázis 4).
+Ollama esetén semmilyen adat nem megy külső, internetes AI-szolgáltatáshoz
+— minden a saját géped (vagy a helyi hálózaton belüli, általad megadott
+gép) Ollama-példányán fut. Anthropic/OpenAI esetén a kérdésed és a
+lekérdezett (olvasás-kizárólagos) adatok a választott szolgáltató
+szervereire mennek.
 
 ### Architektúra
 
 ```
 Felhasználó → AgentRunner → AiProviderInterface → LocalProvider (Ollama)
-                                                  ⌐ AnthropicProvider (Claude)
-                                                  ⌐ OpenAiProvider (OpenAI)
-            → HTTP API → LLM eszköz-hívás → ToolRegistry
-            → FountainTrade olvasás-kizárólagos eszköz → eredmény
-            → LLM → végleges válasz
+     ↑                                           ⌐ AnthropicProvider (Claude)
+     │                                           ⌐ OpenAiProvider (OpenAI)
+InventoryAgent / SalesAgent
+     │            → HTTP API → LLM eszköz-hívás → ToolRegistry
+     │                                             ⌐ InventoryTools
+     │                                             ⌐ SalesTools
+     └──── FountainTrade olvasás-kizárólagos eszköz → eredmény → LLM → végleges válasz
 ```
 
 - **`AiProviderInterface`** — az EGYETLEN szerződés, amin keresztül az
   `AgentRunner` bármelyik providerrel beszél. Az `AgentRunner` és az
-  `InventoryAgent` SOSE tud/feltételez semmit egy konkrét provider natív
-  HTTP/válasz-formátumáról — ez az architektúra Fázis 2/3 fő bizonyítéka:
-  UGYANAZ az `InventoryAgent`, UGYANAZON az `AgentRunner`-en keresztül,
-  provider-specifikus logika NÉLKÜL az agent/AgentRunner kódjában fut
-  mind a három providerrel (lásd `tests/AiCrossProviderRegressionTest.php`
-  — ugyanaz a szemantikai kérdés, ugyanaz az eszköz-hívás, mindhárom
+  agentek (`InventoryAgent`, `SalesAgent`) SOSE tudnak/feltételeznek
+  semmit egy konkrét provider natív HTTP/válasz-formátumáról — ez az
+  architektúra Fázis 2/3/4 fő bizonyítéka: UGYANAZ az agent, UGYANAZON az
+  `AgentRunner`-en keresztül, provider-specifikus logika NÉLKÜL az
+  agent/AgentRunner kódjában fut mind a három providerrel (lásd
+  `tests/AiCrossProviderRegressionTest.php` az InventoryAgent-hez,
+  `tests/AiSalesCrossProviderRegressionTest.php` a SalesAgent-hez —
+  ugyanaz a szemantikai kérdés, ugyanaz az eszköz-hívás, mindhárom
   providerrel).
+- **`AgentRunner`** — EGYETLEN, agent-független végrehajtó-osztály,
+  mindkét agent ezt használja, változatlanul (lásd a kör 13. pontja:
+  "Do NOT create a second AgentRunner"). Nem tudja, melyik agent vagy
+  melyik provider hívta.
 - **`LocalProvider`** — Ollama `/api/chat` (beszélgetés + eszköz-hívás)
   és `/api/tags` (elérhetőség/modell-lista) HTTP API-n keresztül,
   konfigurálható base URL-lel, modellel és időkorláttal. Nem igényel
@@ -3398,13 +3408,17 @@ Felhasználó → AgentRunner → AiProviderInterface → LocalProvider (Ollama)
   KÜLÖN, egymástól független, rövid életű (30 másodperces TTL) gép-helyi
   cache-elt elérhetőség-ellenőrzés — az UI-nak nem szabad minden
   oldalbetöltéskor valódi hálózati/API-hívást indítania.
-- **`ToolRegistry`** — a modell KIZÁRÓLAG a fordítási időben regisztrált
-  eszközök nevei közül választhat; egy ismeretlen eszköznév sose fut le
-  (biztonságos hibaüzenettel tér vissza). A modell SOSE kap közvetlen
-  adatbázis-hozzáférést, PDO-kapcsolatot, vagy nyers SQL-végrehajtási
-  lehetőséget. EGYETLEN `ToolRegistry`, EGYETLEN eszköz-készlet van —
-  nincs providerenként duplikált eszközlista, csak a Provider adaptálja a
-  protokollt.
+- **`ToolRegistry`** — EGYETLEN osztály, amin keresztül egy AI-eszköz
+  ténylegesen meghívható; a modell KIZÁRÓLAG a fordítási időben
+  regisztrált eszközök nevei közül választhat, egy ismeretlen eszköznév
+  sose fut le (biztonságos hibaüzenettel tér vissza — lásd
+  `ToolRegistry::register()`, ami duplikált nevű eszközt is elutasít). A
+  modell SOSE kap közvetlen adatbázis-hozzáférést, PDO-kapcsolatot, vagy
+  nyers SQL-végrehajtási lehetőséget. Mindkét agent (`InventoryAgent`,
+  `SalesAgent`) SAJÁT `ToolRegistry`-példányt épít az `answer()` hívásakor
+  (lásd lent), de UGYANAZT az osztályt használja — nincs providerenkénti
+  VAGY agentenkénti duplikált `ToolRegistry`-implementáció, csak a
+  Provider adaptálja a protokollt.
 - **`AgentRunner`** — generikus, agent- ÉS provider-független végrehajtó:
   elküldi az üzeneteket a providernek, végrehajtja a kért eszköz-
   hívásokat, majd visszaküldi az eredményt a modellnek — egy explicit,
@@ -3463,11 +3477,17 @@ felülírható.
 
 ### Provider-választás
 
-Az admin a Beállítások → AI asszisztens fülön választja ki, hogy az
-Inventory Agent Ollamát, Anthropicot (Claude) vagy OpenAI-t használjon-e —
-EGYETLEN beállítás-rendszer, nincs második, párhuzamos AI-konfigurációs
-alrendszer. A választás logika KIZÁRÓLAG az `AiProviderFactory`-ban van,
-sose az `InventoryAgent`-ben — az agent maga sose tudja/dönti el, melyik
+Az admin a Beállítások → AI asszisztens fülön választja ki, hogy MELYIK
+agent (Inventory VAGY Sales) Ollamát, Anthropicot (Claude) vagy OpenAI-t
+használjon-e — EGYETLEN beállítás-rendszer, nincs második, párhuzamos
+AI-konfigurációs alrendszer, ÉS a provider-választás mindkét agentre
+EGYSZERRE vonatkozik (nincs külön "Inventory provider" és "Sales
+provider" beállítás — lásd a kör 12. pontja: "Provider selection should
+remain independent from agent selection", ami itt úgy valósul meg, hogy a
+provider-választás GLOBÁLIS, az agent-választás pedig az AI Asszisztens
+oldal saját, kérdésenkénti dropdown-ja, lásd lent "Felület"). A választás
+logika KIZÁRÓLAG az `AiProviderFactory`-ban van, sose az agentekben — sem
+az `InventoryAgent`, sem a `SalesAgent` nem tudja/dönti el, melyik
 providerrel beszél.
 
 ### Anthropic/OpenAI API-kulcs — tárolás és biztonság
@@ -3499,31 +3519,36 @@ providerrel beszél.
 ### Client/Szerver viselkedés
 
 Az AI-réteg (és maga az Ollama/Anthropic/OpenAI-hívás) **KIZÁRÓLAG a
-Szerver/Önálló oldalon fut**, MINDHÁROM providernél — egy Kliens node
-SOSE hoz létre `LocalProvider`-t, `AnthropicProvider`-t vagy
-`OpenAiProvider`-t, SOSE hívja a választott szolgáltatót közvetlenül, és
-nincs külön, párhuzamos AI-specifikus Kliens-API: az `/api/ai-inventory.php`
-végpont a MEGLÉVŐ `ClientProxy`-n keresztül megy, pontosan úgy, mint
-minden más API-végpont. Egy Kliens-gépen a settings.json-nak nincs is
-szüksége AI-beállításra (sem Ollama-, sem Anthropic-, sem OpenAI-kulcsra)
-— a kérés a Szerverig ér, ott dől el minden, a `_bootstrap.php`
-`node_role`-elágazása garantálja, hogy a Kliens saját kódja sose fut le
-eddig a pontig. Nincs Anthropichoz/OpenAI-hoz külön írt Kliens-oldali védő
-kód — ugyanaz a MEGLÉVŐ mechanizmus véd mind a három providernél (lásd
-`tests/AiOpenAiClientProxyHttpTest.php` — valódi két-folyamatos Kliens→
-Szerver teszt, stub OpenAI-val).
+Szerver/Önálló oldalon fut**, MINDHÁROM providernél ÉS MINDKÉT agentnél
+(`InventoryAgent`, `SalesAgent`) — egy Kliens node SOSE hoz létre
+`LocalProvider`-t, `AnthropicProvider`-t vagy `OpenAiProvider`-t, SOSE
+hívja a választott szolgáltatót közvetlenül, és nincs külön, párhuzamos
+AI-specifikus Kliens-API: mind az `/api/ai-inventory.php`, mind az
+`/api/ai-sales.php` végpont a MEGLÉVŐ `ClientProxy`-n keresztül megy,
+pontosan úgy, mint minden más API-végpont. Egy Kliens-gépen a
+settings.json-nak nincs is szüksége AI-beállításra (sem Ollama-, sem
+Anthropic-, sem OpenAI-kulcsra) — a kérés a Szerverig ér, ott dől el
+minden, a `_bootstrap.php` `node_role`-elágazása garantálja, hogy a
+Kliens saját kódja sose fut le eddig a pontig. Nincs Anthropichoz/OpenAI-
+hoz, sem a SalesAgent-hez külön írt Kliens-oldali védő kód — ugyanaz a
+MEGLÉVŐ mechanizmus véd mind a három providernél és mindkét agentnél
+(lásd `tests/AiOpenAiClientProxyHttpTest.php` — valódi két-folyamatos
+Kliens→Szerver teszt, stub OpenAI-val; `tests/AiSalesClientProxyHttpTest.php`
+— ugyanez a SalesAgent-re).
 
 ### Biztonsági modell
 
 - A modell **SOSE kap** közvetlen adatbázis-hozzáférést, PDO-kapcsolatot
   vagy nyers SQL-végrehajtási lehetőséget — kizárólag a regisztrált,
   olvasás-kizárólagos eszközökön keresztül férhet hozzá adatokhoz.
-  Minden tényleges számítást (készlet, eladási sebesség, előrejelzés) a
-  meglévő `Database`-réteg végez el determinisztikusan — a modell nem
-  "talál ki" számokat.
-- Az `/api/ai-inventory.php` végpont vezetői (admin) jogszinthez kötött,
-  ugyanazzal a `require_admin()`/CSRF-mintával, mint minden más
-  üzletileg érzékeny végpont.
+  Minden tényleges számítást (készlet, eladási sebesség, előrejelzés,
+  forgalom, visszáru-arány, %-os változás) a meglévő `Database`-réteg
+  végez el determinisztikusan — a modell nem "talál ki" számokat, lásd
+  lent "Determinisztikus számítási szabályzat".
+- Mind az `/api/ai-inventory.php`, mind az `/api/ai-sales.php` végpont
+  vezetői (admin) jogszinthez kötött, ugyanazzal a
+  `require_admin()`/CSRF-mintával, mint minden más üzletileg érzékeny
+  végpont.
 - Minden agent-futás naplózva van a MEGLÉVŐ tevékenységnapló
   (`audit_log`) és rendszeresemény-napló (`system_events`, `ai`
   kategória) mechanizmuson keresztül — mikor, melyik agent/provider/
@@ -3545,18 +3570,106 @@ Szerver teszt, stub OpenAI-val).
 | `get_product_sales_velocity` | Átlagos napi fogyás + becsült hátralévő napok (a meglévő `Database::getStockForecastBulk()` determinisztikus számítása) |
 | `get_inventory_movements` | Készletmozgások (eladás/beszerzés/visszáru/leltár) egy dátumtartományban |
 
+### Elérhető Sales eszközök (Fázis 4)
+
+Mind a HÉT eszköz a `src/Ai/Tools/SalesTools.php`-ban él, és — a
+`get_top_categories`/`get_sales_by_hour`/`get_product_sales_trend`(egy
+termékre szűkített)/`get_returns_summary`(darabszám) kivételével, ahol 4
+KIS, célzott `Database`-metódus került hozzáadásra (lásd lent) — a MÁR
+MEGLÉVŐ `Database::getSalesReportSummary()`/`getTopProductsReport()`
+riport-metódusokra épül, UGYANAZOKRA, amiket a `webroot/riport-*.php`
+oldalak is használnak — nincs párhuzamos, második forgalmi-számítási
+implementáció.
+
+| Eszköz | Mit ad vissza | Alap |
+|---|---|---|
+| `get_sales_summary` | Bruttó/nettó forgalom, visszáru, tranzakciószám, átlagos kosárérték, fizetési mód szerinti bontás egy időszakra | `Database::getSalesReportSummary()` (MEGLÉVŐ) |
+| `compare_sales_periods` | Két időszak fenti mutatóinak összehasonlítása, abszolút és %-os változással | `getSalesReportSummary()` ×2 + backend %-számítás |
+| `get_top_selling_products` | Legjobban fogyó termékek darabszám szerint, visszáruval nettósítva | `Database::getTopProductsReport()` (MEGLÉVŐ) |
+| `get_top_categories` | Legjobban teljesítő termékkategóriák (products.group_name) forgalom szerint | ÚJ: `Database::getTopCategoriesReport()` — a MEGLÉVŐ `getTopProductsReport()` eredményét összegzi csoportonként, ugyanúgy, mint a MEGLÉVŐ `getSalesMarginSummary()` teszi |
+| `get_sales_by_hour` | Óránkénti (0-23) bruttó forgalom-eloszlás + a legforgalmasabb óra | ÚJ: `Database::getSalesByHourReport()` |
+| `get_product_sales_trend` | Egy termék eladási mennyisége/forgalma egy időszakban, opcionális összehasonlító időszakkal | ÚJ: `Database::getProductSalesInRange()` |
+| `get_returns_summary` | Visszáru összege, darabszáma, aránya a visszáru előtti bruttó forgalomhoz képest | `getSalesReportSummary()` + ÚJ: `Database::getReturnsCountInRange()` |
+
+**Dátumtartomány**: minden fenti eszköz vagy egy `period` kulcsszót fogad
+(`today`, `yesterday`, `last_7_days`, `last_30_days`, `this_week`,
+`last_week`, `this_month`, `last_month`, `custom`) — UGYANAZ a fehérlista,
+mint a `webroot/riport-*.php` oldalak "Időszak" választója (`ReportPeriod::PRESETS`,
+Fázis 4-ben kiegészítve `this_week`/`last_week`-kel), vagy explicit
+`date_from`/`date_to`-t. MINDKÉT esetben a MEGLÉVŐ `ReportPeriod::resolve()`
+validálja (formátum, sorrend, max. 5 év) — a `SalesTools` SOSE értelmez
+dátumot saját maga (lásd `SalesTools::resolveDateRange()` docblokkja). Egy
+teljes egészében jövőbeli tartomány explicit hibaüzenetet ad, nem egy
+hallgatólagosan üres összesítőt.
+
+### Determinisztikus számítási szabályzat és üzleti definíciók (Fázis 4)
+
+A SalesAgent SOSE dönt önállóan arról, mi számít "forgalomnak", hogyan
+kell a %-os változást vagy a kosárértéket kiszámítani — ezeket a MEGLÉVŐ
+FountainTrade backend-kód (`Database::getSalesReportSummary()` és
+társai) definiálja, a SalesAgent csak SZÖVEGESEN magyarázza a már
+kiszámított értékeket. A pontos, a jelenlegi kódból levezetett
+definíciók:
+
+- **Bruttó forgalom (`gross_sales`)** — az adott időszakban rögzített
+  eladások `total` mezőjének összege, **MÁR CSÖKKENTVE** az ugyanabban az
+  időszakban (a visszáru SAJÁT dátuma szerint) rögzített visszárukkal
+  (lásd `Database::getSalesReportSummary()` forráskódja: `$totalGross -=
+  $refund`). ÁFA-tartalmú (bruttó) érték.
+- **Visszáru (`returns`)** — az időszakban rögzített `returns.total_refund`
+  összege (pozitív szám).
+- **Nettó forgalom (`net_sales`)** — a bruttó forgalom ÁFA-mentesítve,
+  tételenként a tétel `vat_rate`-je alapján, SZINTÉN visszáruval
+  csökkentve.
+- **Tranzakció (`transactions`)** — egy `sales` tábla-sor (egy kassza-
+  tranzakció/kosár), NEM egy `sale_items` tétel.
+- **Kosárérték (`avg_basket`)** — bruttó forgalom / tranzakciószám
+  (`total_gross / sales_count`) — HA nulla tranzakció volt, 0.
+- **Visszáru ELŐTTI bruttó forgalom (`gross_sales_before_returns`, csak
+  `get_returns_summary`-nál)** — `gross_sales + returns` (a fenti,
+  már-csökkentett bruttó forgalomhoz a visszáru visszaadva) — ez a
+  visszáru-arány (`return_ratio_pct`) helyes, teljes nevezője.
+- **Termék-forgalom (`revenue`, top termékek/kategóriák)** — az eladott
+  tételek `unit_price × qty` összege, visszáruval nettósítva (az adott
+  termékre/kategóriára eső visszáru-tételek levonva) — lásd
+  `Database::getTopProductsReport()`.
+- **%-os változás** — `(jelenlegi - előző) / |előző| × 100`, egy
+  tizedesjegyre kerekítve; `null`, ha az előző érték 0 (nincs értelmezhető
+  alap) — lásd `SalesTools::percentChange()`, az EGYETLEN hely, ahol ez a
+  képlet szerepel.
+
+### Inventory/Sales keresztezés
+
+A SalesAgent — a MEGLÉVŐ `InventoryTools` módosítása/duplikálása NÉLKÜL —
+a saját `ToolRegistry`-jébe a `SalesTools` MELLETT regisztrálja az
+`InventoryTools`-t is, hogy pl. "miért esett vissza ennek a terméknek az
+eladása" típusú kérdésekre `get_product_sales_trend` + `get_stock_status`
+kombinációjával tudjon válaszolni. A rendszer prompt explicit megmondja a
+modellnek, hogy készlet-eszközt CSAK akkor használjon, ha egy forgalmi
+kérdés megválaszolásához ténylegesen indokolt (lásd `SalesAgent.php`
+system prompt-ja). Az `InventoryAgent` NEM kapja meg a `SalesTools`-t —
+a keresztezés egyirányú.
+
 ### Felület
 
 **Beállítások → AI asszisztens** fül: be/kikapcsolás, AI-provider
 választó (Helyi/Ollama, Anthropic/Claude vagy OpenAI), a választásnak
 megfelelően Ollama URL/modell/időkorlát VAGY Anthropic VAGY OpenAI
 API-kulcs (maszkolt állapotban)/modell/URL/időkorlát mezők, közös max.
-lépésszám/válasz-hossz mezők, "Kapcsolat tesztelése" gomb. **AI
-Asszisztens** oldal (bal oldali menü): egyetlen kérdés-mező, "Kérdezd a
+lépésszám/válasz-hossz mezők, "Kapcsolat tesztelése" gomb — ez a
+provider-választás GLOBÁLIS, mindkét agentre vonatkozik (lásd fentebb
+"Provider-választás"). **AI Asszisztens** oldal (bal oldali menü):
+**"Agent" választó** (Készlet/Inventory vagy Forgalom/Sales — Fázis 4,
+lásd a kör 12. pontja: "Keep this minimal. Do NOT redesign the page into
+a large generic chat application"), egyetlen kérdés-mező, "Kérdezd a
 FountainTrade-et" gomb, a válasz + a ténylegesen használt eszközök
-listája — ennek az oldalnak NINCS külön kódútja Ollama vs. Anthropic vs.
-OpenAI esetén, a különbség kizárólag a Beállítások fülön és a
-szerver-oldali `AiProviderFactory`-ban dől el.
+listája. A JS réteg (`webroot/ai-asszisztens.js`) a választott agent
+alapján KÉT KÜLÖN, de azonos alakú végpont közül választ
+(`/api/ai-inventory.php` vagy `/api/ai-sales.php`) — ennek az oldalnak
+NINCS külön kódútja sem Ollama vs. Anthropic vs. OpenAI, sem Inventory
+vs. Sales esetén, a különbség kizárólag a Beállítások fülön (provider) és
+az Agent-választón (melyik végpont), illetve a szerver-oldali
+`AiProviderFactory`-ban dől el.
 
 Az állapot-jelzés (`/api/ai-health.php`, mindhárom providerre kiterjesztve:
 AI kikapcsolva / nincs beállítva (API-kulcs hiányzik) / hitelesítési hiba /
@@ -3568,20 +3681,27 @@ FountainTrade-funkció működését.
 
 ### Ismert korlátok
 
-- **Kizárólag olvasás** — az Inventory Agent nem módosíthat készletet,
-  nem hozhat létre beszerzést, nem változtathat árat, és nem indíthat
-  semmilyen pénzügyi műveletet. Bármilyen ajánlása (pl. "érdemes lenne
-  rendelni") javaslat, nem végrehajtott döntés. Ez MINDHÁROM providerre
-  (Ollama, Anthropic, OpenAI) egyformán igaz — a korlátozás a
-  `ToolRegistry` szintjén van, nem a providerben.
+- **Kizárólag olvasás** — sem az Inventory, sem a Sales Agent nem
+  módosíthat készletet, eladást, árat, kasszát, vevőt vagy rendelést, és
+  nem indíthat semmilyen pénzügyi műveletet. Bármilyen ajánlása (pl.
+  "érdemes lenne rendelni") javaslat, nem végrehajtott döntés. Ez
+  MINDHÁROM providerre (Ollama, Anthropic, OpenAI) és MINDKÉT agentre
+  egyformán igaz — a korlátozás a `ToolRegistry`/`SalesTools`/
+  `InventoryTools` szintjén van (egyik eszköz sem ír), nem a providerben.
 - **Nincs tartós beszélgetés-előzmény** — minden kérdés egy önálló,
   friss agent-futás; a `ConversationManager` szándékosan csak egyetlen
   futás idejére tárol üzeneteket.
-- **Egyetlen agent van ténylegesen bekötve** ebben a körben (Inventory
-  Agent) — HÁROM provider van bekötve (`LocalProvider`/Ollama,
-  `AnthropicProvider`/Claude, `OpenAiProvider`/OpenAI), az architektúra
-  további agenteket (pl. Sales/Anomaly/WooCommerce) tesz lehetővé később,
-  de ezek jelenleg NINCSENEK implementálva.
+- **KÉT agent van ténylegesen bekötve** (`InventoryAgent`/Fázis 1,
+  `SalesAgent`/Fázis 4) — HÁROM provider van bekötve (`LocalProvider`/
+  Ollama, `AnthropicProvider`/Claude, `OpenAiProvider`/OpenAI), az
+  architektúra további agenteket (pl. Anomaly/WooCommerce) tesz lehetővé
+  később, de ezek jelenleg NINCSENEK implementálva.
+- **A SalesTools óránkénti bontása (`get_sales_by_hour`) SZÁNDÉKOSAN nem
+  visszáru-nettósított** — a visszáru a visszáru PILLANATÁNAK órájában
+  történik, ami eltérhet az eredeti eladás órájától, ezért a "melyik
+  órában legnagyobb a forgalom" kérdéshez a bruttó eladási időpont-
+  eloszlás a releváns válasz. Lásd `Database::getSalesByHourReport()`
+  docblokkja.
 - **Anthropic/OpenAI esetén a kérdésed és a lekérdezett adatok elhagyják
   a géped** — a választott felhő-API-hoz mennek, ellentétben az
   Ollama-üzemmóddal (helyi/hálózaton belüli, nem megy ki semmi). Ez
@@ -3601,8 +3721,23 @@ FountainTrade-funkció működését.
   API-kulcsot állít be, első használat előtt mindenképp végezz egy
   manuális "Kapcsolat tesztelése" + egy tényleges, eszköz-hívást igénylő
   kérdés-tesztet.
+- **A SalesAgent valódi API-kulccsal/valódi Ollamával még NINCS élesben
+  ellenőrizve** (Fázis 4) — az implementáció idején sem helyi Ollama nem
+  futott (kapcsolat időtúllépéssel elutasítva), sem Anthropic-, sem
+  OpenAI-API-kulcs nem volt biztonságosan konfigurálva, ezért a
+  SalesAgent teljes eszköz-hívási/válasz-folyamata KIZÁRÓLAG kontrollált
+  loopback stub-szerverek ellen, illetve a valódi `SalesTools`/`Database`
+  réteggel (de szimulált LLM-válasszal) lett bizonyítva — lásd
+  `tests/AiSalesToolsTest.php` (valódi adatbázis, nincs LLM),
+  `tests/AiSalesAgentTest.php` (szkriptelt `FakeAiProvider`, valódi
+  eszközök), `tests/AiSalesEndpointHttpTest.php`/
+  `AiSalesClientProxyHttpTest.php`/`AiSalesCrossProviderRegressionTest.php`
+  (stub Ollama/Anthropic/OpenAI). Ha egy admin valódi providert állít be,
+  első Sales-kérdés előtt mindenképp végezz egy manuális "Kapcsolat
+  tesztelése" + egy tényleges, eszköz-hívást igénylő kérdés-tesztet (pl.
+  "Mennyi volt a mai forgalom?").
 - **Jövőbeli írási műveletek** (pl. "hozz létre egy beszerzési
   javaslatot") tervezetten mindig egy explicit emberi jóváhagyási lépésen
   mennének át (AI javaslat → emberi jóváhagyás → validált backend
   művelet → audit log) — ez a mechanizmus még nincs megépítve, jelenleg
-  mindhárom provider szigorúan csak olvasás.
+  mindhárom provider és mindkét agent szigorúan csak olvasás.

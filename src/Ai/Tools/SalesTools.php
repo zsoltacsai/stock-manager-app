@@ -344,9 +344,16 @@ final class SalesTools
      * sorrend, maximális tartomány) teljes egészében a MEGLÉVŐ
      * ReportPeriod::resolve() végzi — lásd az osztály docblokkja.
      *
+     * SZÁNDÉKOSAN public (Fázis 5, Anomaly Agent) — az `AnomalyTools` ezt
+     * hívja meg közvetlenül, hogy NE kelljen egy második, majdnem
+     * ugyanolyan dátumtartomány-értelmezőt írni (lásd a kör 12. pontja:
+     * "Do not invent a second date system"). Tisztán funkcionális,
+     * mellékhatás-mentes segédmetódus — a public láthatóság nem nyit meg
+     * semmilyen új mellékhatást/állapotot.
+     *
      * @return array{from:string,to:string}
      */
-    private function resolveDateRange(array $args, string $fromKey = 'date_from', string $toKey = 'date_to', string $periodKey = 'period'): array
+    public function resolveDateRange(array $args, string $fromKey = 'date_from', string $toKey = 'date_to', string $periodKey = 'period'): array
     {
         $period = isset($args[$periodKey]) ? trim((string) $args[$periodKey]) : '';
         if ($period !== '' && $period !== 'custom') {

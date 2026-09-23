@@ -52,6 +52,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <select id="ai-agent">
                 <option value="inventory">Készlet (Inventory)</option>
                 <option value="sales">Forgalom (Sales)</option>
+                <option value="anomaly">Anomália (Anomaly)</option>
             </select>
 
             <label for="ai-question" style="margin-top:12px;">Kérdésed</label>

@@ -7728,4 +7728,33 @@ class Database
         $stmt->execute([$dateFrom, $dateTo]);
         return (int) $stmt->fetchColumn();
     }
+
+    /**
+     * Fázis 5 (Anomaly Agent) — a "lassan mozgó készlet" anomália-típus
+     * kandidátum-listája: van készlete a terméknek (>= $minStockQty),
+     * EGYETLEN, bounded SQL-lekérdezéssel (lásd a kör 22. pontja: "Avoid
+     * loading all historical sales into PHP memory... bounded result
+     * sets"). A tényleges eladási aktivitást (kelt-e belőle valami az
+     * ablakban) a hívó (AnomalyTools) a MEGLÉVŐ getTopProductsReport()
+     * eredményével veti össze — ez a metódus KIZÁRÓLAG a "van készlete"
+     * szűrést végzi, nem ismétli meg az eladás-aggregációt.
+     */
+    public function getProductsWithStockAboveZero(int $minStockQty = 1, int $limit = 200): array
+    {
+        $stmt = $this->pdo->prepare('
+            SELECT id, name, stock_qty
+            FROM products
+            WHERE is_deleted = 0 AND stock_qty >= ?
+            ORDER BY stock_qty DESC
+            LIMIT ?
+        ');
+        $stmt->bindValue(1, $minStockQty, PDO::PARAM_INT);
+        $stmt->bindValue(2, max(1, $limit), PDO::PARAM_INT);
+        $stmt->execute();
+        return array_map(static function ($row) {
+            $row['id'] = (int) $row['id'];
+            $row['stock_qty'] = (int) $row['stock_qty'];
+            return $row;
+        }, $stmt->fetchAll(PDO::FETCH_ASSOC));
+    }
 }

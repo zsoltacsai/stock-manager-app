@@ -18,8 +18,8 @@
     // provider-választás (Beállítások fülön) teljesen független ettől —
     // ugyanaz a végpont-pár működik Ollama/Anthropic/OpenAI alatt is,
     // provider-specifikus kódútvonal NÉLKÜL ezen az oldalon.
-    const AGENT_ENDPOINTS = { inventory: '/api/ai-inventory.php', sales: '/api/ai-sales.php' };
-    const AGENT_LABELS = { inventory: 'Készlet (Inventory)', sales: 'Forgalom (Sales)' };
+    const AGENT_ENDPOINTS = { inventory: '/api/ai-inventory.php', sales: '/api/ai-sales.php', anomaly: '/api/ai-anomaly.php' };
+    const AGENT_LABELS = { inventory: 'Készlet (Inventory)', sales: 'Forgalom (Sales)', anomaly: 'Anomália (Anomaly)' };
 
     // A providernév a válaszban jön (data.provider, lásd api/ai-health.php)
     // — a feliratok szándékosan providerfüggetlenek, hogy ez az oldal

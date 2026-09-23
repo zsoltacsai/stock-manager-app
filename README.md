@@ -3271,21 +3271,23 @@ tervezve (ami megfelel a valós, egy-kasszás használati esetnek). Két
 külön célkönyvtárba telepített példány UGYANAZOKAT a Feladatütemező-
 bejegyzéseket használná, és az egyik telepítés átírná a másikét.
 
-## AI Asszisztens (Inventory + Sales Agent — Ollama, Anthropic/Claude vagy OpenAI)
+## AI Asszisztens (Inventory + Sales + Anomaly Agent — Ollama, Anthropic/Claude vagy OpenAI)
 
 Az első FountainTrade AI-réteg: egy **provider-független AI-absztrakció**
 (`src/Ai/`), aminek jelenleg HÁROM, ténylegesen bekötött megvalósítása van
 — egy **helyi [Ollama](https://ollama.com)**-példány (`LocalProvider`,
 Fázis 1), az **Anthropic Messages API/Claude** (`AnthropicProvider`, Fázis
 2) és az **OpenAI Responses API** (`OpenAiProvider`, Fázis 3) —, admin
-által választhatóan. KÉT agent épül erre az absztrakcióra, mindkettő
+által választhatóan. HÁROM agent épül erre az absztrakcióra, mindegyik
 **kizárólag olvasás-jogú**: a **Készlet-asszisztens** (`InventoryAgent`,
-Fázis 1) és a **Forgalmi elemző asszisztens** (`SalesAgent`, Fázis 4).
-Ollama esetén semmilyen adat nem megy külső, internetes AI-szolgáltatáshoz
-— minden a saját géped (vagy a helyi hálózaton belüli, általad megadott
-gép) Ollama-példányán fut. Anthropic/OpenAI esetén a kérdésed és a
-lekérdezett (olvasás-kizárólagos) adatok a választott szolgáltató
-szervereire mennek.
+Fázis 1), a **Forgalmi elemző asszisztens** (`SalesAgent`, Fázis 4) és az
+**Anomália-elemző asszisztens** (`AnomalyAgent`, Fázis 5 — determinisztikusan
+azonosított szokatlan forgalmi/készlet-mintázatokat MAGYARÁZ, nem "fedez
+fel" saját maga, lásd lent). Ollama esetén semmilyen adat nem megy külső,
+internetes AI-szolgáltatáshoz — minden a saját géped (vagy a helyi
+hálózaton belüli, általad megadott gép) Ollama-példányán fut.
+Anthropic/OpenAI esetén a kérdésed és a lekérdezett (olvasás-kizárólagos)
+adatok a választott szolgáltató szervereire mennek.
 
 ### Architektúra
 
@@ -3293,26 +3295,30 @@ szervereire mennek.
 Felhasználó → AgentRunner → AiProviderInterface → LocalProvider (Ollama)
      ↑                                           ⌐ AnthropicProvider (Claude)
      │                                           ⌐ OpenAiProvider (OpenAI)
-InventoryAgent / SalesAgent
+InventoryAgent / SalesAgent / AnomalyAgent
      │            → HTTP API → LLM eszköz-hívás → ToolRegistry
      │                                             ⌐ InventoryTools
      │                                             ⌐ SalesTools
+     │                                             ⌐ AnomalyTools → AnomalyDetector
+     │                                                (determinisztikus "anomália-e ez?")
      └──── FountainTrade olvasás-kizárólagos eszköz → eredmény → LLM → végleges válasz
 ```
 
 - **`AiProviderInterface`** — az EGYETLEN szerződés, amin keresztül az
   `AgentRunner` bármelyik providerrel beszél. Az `AgentRunner` és az
-  agentek (`InventoryAgent`, `SalesAgent`) SOSE tudnak/feltételeznek
-  semmit egy konkrét provider natív HTTP/válasz-formátumáról — ez az
-  architektúra Fázis 2/3/4 fő bizonyítéka: UGYANAZ az agent, UGYANAZON az
-  `AgentRunner`-en keresztül, provider-specifikus logika NÉLKÜL az
-  agent/AgentRunner kódjában fut mind a három providerrel (lásd
-  `tests/AiCrossProviderRegressionTest.php` az InventoryAgent-hez,
-  `tests/AiSalesCrossProviderRegressionTest.php` a SalesAgent-hez —
-  ugyanaz a szemantikai kérdés, ugyanaz az eszköz-hívás, mindhárom
+  agentek (`InventoryAgent`, `SalesAgent`, `AnomalyAgent`) SOSE
+  tudnak/feltételeznek semmit egy konkrét provider natív HTTP/válasz-
+  formátumáról — ez az architektúra Fázis 2/3/4/5 fő bizonyítéka: UGYANAZ
+  az agent, UGYANAZON az `AgentRunner`-en keresztül, provider-specifikus
+  logika NÉLKÜL az agent/AgentRunner kódjában fut mind a három
+  providerrel (lásd `tests/AiCrossProviderRegressionTest.php` az
+  InventoryAgent-hez, `tests/AiSalesCrossProviderRegressionTest.php` a
+  SalesAgent-hez, `tests/AiAnomalyCrossProviderRegressionTest.php` az
+  AnomalyAgent-hez — ugyanaz a szemantikai kérdés, ugyanaz az eszköz-
+  hívás, ugyanaz a determinisztikus anomália-rekord, mindhárom
   providerrel).
 - **`AgentRunner`** — EGYETLEN, agent-független végrehajtó-osztály,
-  mindkét agent ezt használja, változatlanul (lásd a kör 13. pontja:
+  mindhárom agent ezt használja, változatlanul (lásd a kör 13/15. pontja:
   "Do NOT create a second AgentRunner"). Nem tudja, melyik agent vagy
   melyik provider hívta.
 - **`LocalProvider`** — Ollama `/api/chat` (beszélgetés + eszköz-hívás)
@@ -3414,11 +3420,11 @@ InventoryAgent / SalesAgent
   sose fut le (biztonságos hibaüzenettel tér vissza — lásd
   `ToolRegistry::register()`, ami duplikált nevű eszközt is elutasít). A
   modell SOSE kap közvetlen adatbázis-hozzáférést, PDO-kapcsolatot, vagy
-  nyers SQL-végrehajtási lehetőséget. Mindkét agent (`InventoryAgent`,
-  `SalesAgent`) SAJÁT `ToolRegistry`-példányt épít az `answer()` hívásakor
-  (lásd lent), de UGYANAZT az osztályt használja — nincs providerenkénti
-  VAGY agentenkénti duplikált `ToolRegistry`-implementáció, csak a
-  Provider adaptálja a protokollt.
+  nyers SQL-végrehajtási lehetőséget. MINDHÁROM agent (`InventoryAgent`,
+  `SalesAgent`, `AnomalyAgent`) SAJÁT `ToolRegistry`-példányt épít az
+  `answer()` hívásakor (lásd lent), de UGYANAZT az osztályt használja —
+  nincs providerenkénti VAGY agentenkénti duplikált `ToolRegistry`-
+  implementáció, csak a Provider adaptálja a protokollt.
 - **`AgentRunner`** — generikus, agent- ÉS provider-független végrehajtó:
   elküldi az üzeneteket a providernek, végrehajtja a kért eszköz-
   hívásokat, majd visszaküldi az eredményt a modellnek — egy explicit,
@@ -3519,22 +3525,23 @@ providerrel beszél.
 ### Client/Szerver viselkedés
 
 Az AI-réteg (és maga az Ollama/Anthropic/OpenAI-hívás) **KIZÁRÓLAG a
-Szerver/Önálló oldalon fut**, MINDHÁROM providernél ÉS MINDKÉT agentnél
-(`InventoryAgent`, `SalesAgent`) — egy Kliens node SOSE hoz létre
-`LocalProvider`-t, `AnthropicProvider`-t vagy `OpenAiProvider`-t, SOSE
-hívja a választott szolgáltatót közvetlenül, és nincs külön, párhuzamos
-AI-specifikus Kliens-API: mind az `/api/ai-inventory.php`, mind az
-`/api/ai-sales.php` végpont a MEGLÉVŐ `ClientProxy`-n keresztül megy,
-pontosan úgy, mint minden más API-végpont. Egy Kliens-gépen a
-settings.json-nak nincs is szüksége AI-beállításra (sem Ollama-, sem
-Anthropic-, sem OpenAI-kulcsra) — a kérés a Szerverig ér, ott dől el
-minden, a `_bootstrap.php` `node_role`-elágazása garantálja, hogy a
-Kliens saját kódja sose fut le eddig a pontig. Nincs Anthropichoz/OpenAI-
-hoz, sem a SalesAgent-hez külön írt Kliens-oldali védő kód — ugyanaz a
-MEGLÉVŐ mechanizmus véd mind a három providernél és mindkét agentnél
-(lásd `tests/AiOpenAiClientProxyHttpTest.php` — valódi két-folyamatos
-Kliens→Szerver teszt, stub OpenAI-val; `tests/AiSalesClientProxyHttpTest.php`
-— ugyanez a SalesAgent-re).
+Szerver/Önálló oldalon fut**, MINDHÁROM providernél ÉS MINDHÁROM agentnél
+(`InventoryAgent`, `SalesAgent`, `AnomalyAgent`) — egy Kliens node SOSE
+hoz létre `LocalProvider`-t, `AnthropicProvider`-t vagy `OpenAiProvider`-t,
+SOSE hívja a választott szolgáltatót közvetlenül, és nincs külön,
+párhuzamos AI-specifikus Kliens-API: mind az `/api/ai-inventory.php`,
+mind az `/api/ai-sales.php`, mind az `/api/ai-anomaly.php` végpont a
+MEGLÉVŐ `ClientProxy`-n keresztül megy, pontosan úgy, mint minden más
+API-végpont. Egy Kliens-gépen a settings.json-nak nincs is szüksége
+AI-beállításra (sem Ollama-, sem Anthropic-, sem OpenAI-kulcsra) — a
+kérés a Szerverig ér, ott dől el minden, a `_bootstrap.php`
+`node_role`-elágazása garantálja, hogy a Kliens saját kódja sose fut le
+eddig a pontig. Nincs Anthropichoz/OpenAI-hoz, sem a Sales-/AnomalyAgent-
+hez külön írt Kliens-oldali védő kód — ugyanaz a MEGLÉVŐ mechanizmus véd
+mind a három providernél és mindhárom agentnél (lásd
+`tests/AiOpenAiClientProxyHttpTest.php` — valódi két-folyamatos
+Kliens→Szerver teszt, stub OpenAI-val; `tests/AiSalesClientProxyHttpTest.php`/
+`tests/AiAnomalyClientProxyHttpTest.php` — ugyanez a Sales-/AnomalyAgent-re).
 
 ### Biztonsági modell
 
@@ -3650,6 +3657,135 @@ kérdés megválaszolásához ténylegesen indokolt (lásd `SalesAgent.php`
 system prompt-ja). Az `InventoryAgent` NEM kapja meg a `SalesTools`-t —
 a keresztezés egyirányú.
 
+### Anomália-elemzés (AnomalyAgent, Fázis 5)
+
+A HARMADIK FountainTrade AI-agent — **KIZÁRÓLAG olvasás**, KÉT ÚJ
+komponensre épül:
+
+- **`src/Ai/AnomalyDetector.php`** — a LEGFONTOSABB új osztály: tisztán
+  determinisztikus, PHP-aritmetikai döntéshozó, NINCS Database-
+  függősége, NINCS LLM/AI. Az "anomália-e ez?" kérdésre MINDIG a backend
+  válaszol, SOSE a modell (lásd a kör "IMPORTANT PRINCIPLE" szakasza).
+  Minden `detect*()` hívás HÁROM lehetséges kimenetet ad:
+  - `anomaly` — teljes, strukturált rekord (lásd lent a sémát).
+  - `normal` — a mutató a küszöbön belül van.
+  - `insufficient_data` — NEM volt elég adat egy megbízható döntéshez
+    (pl. túl kicsi az összehasonlítási alap) — ez EGY KÜLÖN, ELSŐOSZTÁLYÚ
+    kimenet, SOSE alakul át csendben "normal"-lá. Ugyanezt a mintát
+    (`status: 'insufficient_data'|'out_of_stock'|'zero_consumption'|'ok'`)
+    már a MEGLÉVŐ `Database::getStockForecastBulk()` is használja — az
+    `AnomalyDetector` ezt az ELVET viszi tovább, nem talál ki új
+    konvenciót.
+- **`src/Ai/Tools/AnomalyTools.php`** — a kandidátum-kiválasztást és az
+  adatlekérdezést végzi, de a TÉNYLEGES döntést mindig az
+  `AnomalyDetector`-nek adja át. Egy PÉLDÁNYT tart a MEGLÉVŐ `SalesTools`/
+  `InventoryTools`-ból, és azok PUBLIKUS metódusait hívja — nincs
+  párhuzamos forgalmi/készlet-számítás (lásd a kör 2. pontja: "Do not
+  duplicate them"). Az EGYETLEN ÚJ `Database`-metódus, ami ehhez a
+  fázishoz kellett: `getProductsWithStockAboveZero()` (a "lassan mozgó
+  készlet" kandidátum-listájához — nem volt rá meglévő lekérdezés).
+
+Anomália-rekord séma (minden `anomaly` státuszú találatra):
+
+```json
+{
+  "type": "sales_decline",
+  "severity": "critical",
+  "entity_type": "product",
+  "entity_id": 123,
+  "entity_name": "...",
+  "metric": "qty",
+  "current_value": 2,
+  "baseline_value": 20,
+  "change_percent": -90.0,
+  "evidence": { "current_qty": 2, "previous_qty": 20, "...": "..." },
+  "reason_code": "sales_drop_above_threshold"
+}
+```
+
+#### Támogatott anomália-típusok, küszöbök, minimum-adat szabályok
+
+MINDEN küszöb egy helyen, `AnomalyDetector` `public const`-jaiban van
+(lásd a kör 4. pontja: "Do NOT scatter... across multiple files"),
+tesztelve (`tests/AnomalyDetectorTest.php`, 34 teszt, a pontos határértékekkel
+együtt):
+
+| Típus | Küszöb | Minimum adat | Súlyosság |
+|---|---|---|---|
+| `sales_decline` | eladás-változás <= **-30%** | előző időszak >= **5** db | medium (30-49.9%) / high (50-69.9%) / critical (>=70%) |
+| `sales_spike` | eladás-változás >= **+50%** | előző időszak >= **5** db | ugyanaz a sáv, mint fent |
+| `return_rate_anomaly` (bolt-szintű) | visszáru-arány növekedés >= **10 százalékpont** | mindkét időszak >= **5** tranzakció | medium (10-19.9pp) / high (20-29.9pp) / critical (>=30pp) |
+| `slow_moving_stock` | van készlet (>0), de <= **1** db kelt el egy >= **14** napos ablakban | az ablak legalább 14 nap kell legyen | medium (készlet >=10) / high (>=50) / critical (>=100, 0 eladással) |
+| `stock_sales_divergence` | eladás-visszaesés (mint fent) ÉS a MEGLÉVŐ `Database::getStockForecastBulk()` becsült hátralévő napja >= **60** | a forecast `status` mezője `'ok'` kell legyen (különben `insufficient_data`, ok: `forecast_unavailable`) | medium (60-119) / high (120-179) / critical (>=180 nap) |
+| `low_stock_elevated_sales` | a termék MÁR alacsony készletű (MEGLÉVŐ `InventoryTools`/`low_stock_default_threshold` definíció) ÉS eladás-emelkedés >= **+50%** | előző időszak >= 5 db | medium (50-69.9%) / high (70-99.9%) / critical (>=100%) |
+
+Az 5 darabos/5 tranzakciós minimum-adat szabály MEGAKADÁLYOZZA a
+klasszikus "1 eladás → 2 eladás = 100%-os növekedés" hamis riasztást
+(lásd a kör 5. pontja) — ez alatt a küszöb alatt a válasz MINDIG
+`insufficient_data`, SOSE "normal" vagy "anomália".
+
+**SZÁNDÉKOSAN NEM implementált kategóriák** ebben a fázisban (lásd a kör
+2. pontja: "Prefer a smaller number of high-quality anomaly types"):
+kategória-szintű (pl. "az Italok kategória szokatlanul teljesít") és
+óránkénti anomália — mindkettőhöz megbízható megvalósításhoz olyan új
+aggregációs logika kellene, amit erre a körre nem lehetett a MEGLÉVŐ
+kódra támaszkodva, kellő alapossággal levezetni. A "stock growth without
+corresponding sales growth" kategóriát a `stock_sales_divergence` fedi
+le, a MEGLÉVŐ, tesztelt napi-fogyás/hátralévő-napok becsléssel (nincs új,
+közvetlen készlet-időbeli-mozgás-aggregáció).
+
+**Duplikátum-elnyomás**: ha egy termék MÁR `stock_sales_divergence`-ként
+szerepel, a `get_inventory_anomalies` NEM adja hozzá még egyszer
+`slow_moving_stock`-ként is — a divergencia gazdagabb (összehasonlító)
+evidence-et ad ugyanarra a jelenségre.
+
+**Elégtelen adat a TELJES válaszra** (nem csak egy-egy kandidátumra): ha
+a vizsgált ÉS az összehasonlítási időszakban EGYÜTTESEN sincs eladási
+adat, vagy nincs egyetlen készletezett termék sem, a válasz `data_quality`
+mezője NEM üres — ez EXPLICIT jelzi az adathiányt, sose "csendben üres
+listaként" (lásd a kör 6. pontja).
+
+#### Elérhető Anomaly eszközök
+
+KÉT eszköz (lásd a kör 7. pontja: "Use the minimum tool set needed" —
+SZÁNDÉKOSAN NINCS harmadik, "get_entity_anomaly_detail" eszköz: minden
+rekord már gazdag `evidence`-et ad, a modell a MEGLÉVŐ, keresztezett
+`get_product`/`get_stock_status`/`get_product_sales_trend` eszközökkel
+tud mélyebbre menni egy adott `entity_id`-ra):
+
+| Eszköz | Mit ad vissza |
+|---|---|
+| `get_sales_anomalies` | `sales_decline`/`sales_spike` termékenként + `return_rate_anomaly` bolt-szinten |
+| `get_inventory_anomalies` | `stock_sales_divergence`, `low_stock_elevated_sales`, `slow_moving_stock` |
+
+Mindkét eszköz **determinisztikusan rendezett** (súlyosság csökkenő,
+majd a %-os változás abszolútértéke csökkenő, majd entity_id növekvő —
+teljes holtverseny esetén is mindig ugyanaz a sorrend), és **bounded**
+(alapértelmezett 10, max 30 találat, `truncated` jelzővel — lásd a kör
+22. pontja: "Avoid loading all historical sales into PHP memory... bounded
+result sets"; a belső kandidátum-scan is legfeljebb 500 termékre néz rá,
+EGY-KÉT aggregált SQL-lekérdezéssel, nincs N+1).
+
+**Dátumtartomány**: UGYANAZ a `period`/`date_from`/`date_to` mechanizmus,
+mint a SalesTools-nál (lásd fent), a MEGLÉVŐ `SalesTools::resolveDateRange()`
+metódust hívja közvetlenül (public, kifejezetten emiatt — lásd a
+docblokkját), nincs második dátum-értelmező rendszer (lásd a kör 12.
+pontja). Ha nincs explicit `compare_period`/`compare_date_from`/
+`compare_date_to` megadva, az összehasonlítási időszak automatikusan a
+vizsgálttal AZONOS HOSSZÚSÁGÚ, közvetlenül megelőző időszak
+(`AnomalyTools::resolveComparisonRanges()`, az EGYETLEN hely, ahol ez a
+logika létezik).
+
+#### Korreláció vs. okozatiság
+
+Ez a legfontosabb, a rendszer promptban EXPLICIT kikényszerített szabály
+(lásd `AnomalyAgent.php`): a modell MONDHATJA, hogy pl. csökkenő eladás +
+magas készlet EGYÜTT lassuló készletforgásra UTALHAT ("ez arra utalhat,
+hogy..."), de SOSE állíthatja, hogy az egyik a másikat OKOZZA ("a
+készlet növekedését X okozza") — a backend jelenleg NEM ad okozati
+bizonyítékot, csak együttjárást, ezért a rendszer prompt ezt gyakorlatilag
+mindig tiltja.
+
 ### Felület
 
 **Beállítások → AI asszisztens** fül: be/kikapcsolás, AI-provider
@@ -3657,19 +3793,28 @@ választó (Helyi/Ollama, Anthropic/Claude vagy OpenAI), a választásnak
 megfelelően Ollama URL/modell/időkorlát VAGY Anthropic VAGY OpenAI
 API-kulcs (maszkolt állapotban)/modell/URL/időkorlát mezők, közös max.
 lépésszám/válasz-hossz mezők, "Kapcsolat tesztelése" gomb — ez a
-provider-választás GLOBÁLIS, mindkét agentre vonatkozik (lásd fentebb
-"Provider-választás"). **AI Asszisztens** oldal (bal oldali menü):
-**"Agent" választó** (Készlet/Inventory vagy Forgalom/Sales — Fázis 4,
-lásd a kör 12. pontja: "Keep this minimal. Do NOT redesign the page into
-a large generic chat application"), egyetlen kérdés-mező, "Kérdezd a
-FountainTrade-et" gomb, a válasz + a ténylegesen használt eszközök
-listája. A JS réteg (`webroot/ai-asszisztens.js`) a választott agent
-alapján KÉT KÜLÖN, de azonos alakú végpont közül választ
-(`/api/ai-inventory.php` vagy `/api/ai-sales.php`) — ennek az oldalnak
-NINCS külön kódútja sem Ollama vs. Anthropic vs. OpenAI, sem Inventory
-vs. Sales esetén, a különbség kizárólag a Beállítások fülön (provider) és
-az Agent-választón (melyik végpont), illetve a szerver-oldali
-`AiProviderFactory`-ban dől el.
+provider-választás GLOBÁLIS, mind a három agentre vonatkozik (lásd
+fentebb "Provider-választás"). **AI Asszisztens** oldal (bal oldali
+menü): **"Agent" választó** (Készlet/Inventory, Forgalom/Sales vagy
+Anomália/Anomaly — Fázis 4/5, lásd a kör 12/14. pontja: "Keep this
+minimal. Do NOT redesign the page into a large generic chat
+application"), egyetlen kérdés-mező, "Kérdezd a FountainTrade-et" gomb,
+a válasz + a ténylegesen használt eszközök listája. A JS réteg
+(`webroot/ai-asszisztens.js`) a választott agent alapján HÁROM KÜLÖN, de
+azonos alakú végpont közül választ (`/api/ai-inventory.php`,
+`/api/ai-sales.php` vagy `/api/ai-anomaly.php`) — ennek az oldalnak NINCS
+külön kódútja sem Ollama vs. Anthropic vs. OpenAI, sem Inventory vs.
+Sales vs. Anomaly esetén, a különbség kizárólag a Beállítások fülön
+(provider) és az Agent-választón (melyik végpont), illetve a szerver-
+oldali `AiProviderFactory`-ban dől el. Az anomália-találatok
+számadatai (súlyosság, %-os változás) MINDIG a backend válaszából
+származnak — a JS SOSE számol/módosít semmilyen anomália-mutatót (lásd a
+kör 14. pontja: "Do not have JavaScript calculate the anomaly
+percentage"); az opcionális, strukturált "evidence-kártya" megjelenítés
+SZÁNDÉKOSAN NEM készült el ebben a körben (a kör maga is "optionally
+present"-ként jelöli) — a válasz szövege + a "Használt eszközök" lista a
+MEGLÉVŐ, minden agentre egységes UI-mintát követi, nincs Anomaly-
+specifikus felület-részlet.
 
 Az állapot-jelzés (`/api/ai-health.php`, mindhárom providerre kiterjesztve:
 AI kikapcsolva / nincs beállítva (API-kulcs hiányzik) / hitelesítési hiba /
@@ -3681,21 +3826,29 @@ FountainTrade-funkció működését.
 
 ### Ismert korlátok
 
-- **Kizárólag olvasás** — sem az Inventory, sem a Sales Agent nem
-  módosíthat készletet, eladást, árat, kasszát, vevőt vagy rendelést, és
-  nem indíthat semmilyen pénzügyi műveletet. Bármilyen ajánlása (pl.
-  "érdemes lenne rendelni") javaslat, nem végrehajtott döntés. Ez
-  MINDHÁROM providerre (Ollama, Anthropic, OpenAI) és MINDKÉT agentre
-  egyformán igaz — a korlátozás a `ToolRegistry`/`SalesTools`/
-  `InventoryTools` szintjén van (egyik eszköz sem ír), nem a providerben.
+- **Kizárólag olvasás** — sem az Inventory, sem a Sales, sem az Anomaly
+  Agent nem módosíthat készletet, eladást, árat, kasszát, vevőt vagy
+  rendelést, és nem indíthat semmilyen pénzügyi műveletet. Bármilyen
+  ajánlása (pl. "érdemes lenne rendelni") javaslat, nem végrehajtott
+  döntés. Ez MINDHÁROM providerre (Ollama, Anthropic, OpenAI) és
+  MINDHÁROM agentre egyformán igaz — a korlátozás a `ToolRegistry`/
+  `SalesTools`/`InventoryTools`/`AnomalyTools` szintjén van (egyik eszköz
+  sem ír), nem a providerben.
 - **Nincs tartós beszélgetés-előzmény** — minden kérdés egy önálló,
   friss agent-futás; a `ConversationManager` szándékosan csak egyetlen
   futás idejére tárol üzeneteket.
-- **KÉT agent van ténylegesen bekötve** (`InventoryAgent`/Fázis 1,
-  `SalesAgent`/Fázis 4) — HÁROM provider van bekötve (`LocalProvider`/
-  Ollama, `AnthropicProvider`/Claude, `OpenAiProvider`/OpenAI), az
-  architektúra további agenteket (pl. Anomaly/WooCommerce) tesz lehetővé
-  később, de ezek jelenleg NINCSENEK implementálva.
+- **HÁROM agent van ténylegesen bekötve** (`InventoryAgent`/Fázis 1,
+  `SalesAgent`/Fázis 4, `AnomalyAgent`/Fázis 5) — HÁROM provider van
+  bekötve (`LocalProvider`/Ollama, `AnthropicProvider`/Claude,
+  `OpenAiProvider`/OpenAI), az architektúra további agenteket (pl.
+  WooCommerce-specifikus) tesz lehetővé később, de ezek jelenleg
+  NINCSENEK implementálva.
+- **Az AnomalyAgent szándékosan NEM implementál minden elméletileg
+  lehetséges anomália-kategóriát** (lásd fentebb "Anomália-elemzés") —
+  kategória-szintű és óránkénti anomália-detektálás NINCS ebben a
+  körben, mert megbízható megvalósításukhoz olyan új aggregációs logika
+  kellene, amit a MEGLÉVŐ kódra támaszkodva nem lehetett kellő
+  alapossággal levezetni.
 - **A SalesTools óránkénti bontása (`get_sales_by_hour`) SZÁNDÉKOSAN nem
   visszáru-nettósított** — a visszáru a visszáru PILLANATÁNAK órájában
   történik, ami eltérhet az eredeti eladás órájától, ezért a "melyik
@@ -3736,8 +3889,25 @@ FountainTrade-funkció működését.
   első Sales-kérdés előtt mindenképp végezz egy manuális "Kapcsolat
   tesztelése" + egy tényleges, eszköz-hívást igénylő kérdés-tesztet (pl.
   "Mennyi volt a mai forgalom?").
+- **Az AnomalyAgent valódi API-kulccsal/valódi Ollamával még NINCS
+  élesben ellenőrizve** (Fázis 5) — az implementáció idején sem helyi
+  Ollama nem futott (kapcsolat időtúllépéssel elutasítva), sem
+  Anthropic-, sem OpenAI-API-kulcs nem volt biztonságosan konfigurálva,
+  ezért az AnomalyAgent teljes eszköz-hívási/válasz-folyamata KIZÁRÓLAG
+  kontrollált loopback stub-szerverek ellen, illetve a valódi
+  `AnomalyDetector`/`AnomalyTools`/`Database` réteggel (de szimulált
+  LLM-válasszal) lett bizonyítva — lásd `tests/AnomalyDetectorTest.php`
+  (34 teszt, tisztán a determinisztikus döntéshozóra, nincs adatbázis/LLM),
+  `tests/AiAnomalyToolsTest.php` (valódi adatbázis, nincs LLM),
+  `tests/AiAnomalyAgentTest.php` (szkriptelt `FakeAiProvider`, valódi
+  eszközök), `tests/AiAnomalyEndpointHttpTest.php`/
+  `AiAnomalyClientProxyHttpTest.php`/`AiAnomalyCrossProviderRegressionTest.php`
+  (stub Ollama/Anthropic/OpenAI). Ha egy admin valódi providert állít be,
+  első Anomaly-kérdés előtt mindenképp végezz egy manuális "Kapcsolat
+  tesztelése" + egy tényleges kérdés-tesztet (pl. "Van valami szokatlan a
+  forgalomban?").
 - **Jövőbeli írási műveletek** (pl. "hozz létre egy beszerzési
   javaslatot") tervezetten mindig egy explicit emberi jóváhagyási lépésen
   mennének át (AI javaslat → emberi jóváhagyás → validált backend
   művelet → audit log) — ez a mechanizmus még nincs megépítve, jelenleg
-  mindhárom provider és mindkét agent szigorúan csak olvasás.
+  mindhárom provider és mindhárom agent szigorúan csak olvasás.

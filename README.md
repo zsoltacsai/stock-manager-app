@@ -3355,15 +3355,39 @@ Felhasználó → AgentRunner → AiProviderInterface → LocalProvider (Ollama)
     `ToolRegistry::toProviderToolList()`-nak megfelelő alakkal, ezért az
     `OpenAiProvider` közvetlenül a `ToolDefinition`-ökből építi a
     kérést, nem a kényelmi metódusból.
-  - **Ismert, dokumentált egyszerűsítés**: a visszaküldött assistant
-    szöveges üzeneteket és function_call elemeket a saját, egyszerű
-    `EasyInputMessage`-stílusú alakban (`{role, content}` string
-    content-tel) illetve a dokumentált `{type:'function_call', call_id,
-    name, arguments}` alakban építjük újra, NEM az OpenAI válaszában
-    kapott elem nyers, teljes (pl. `id`/`status` mezőket is tartalmazó)
-    alakját visszhangozva — mivel valódi API-kulcs hiányában ez élesben
-    nem volt tesztelhető, ez explicit, dokumentált feltételezés (lásd
-    "Ismert korlátok" alul).
+  - **Reasoning item visszajátszás** (utólagos javítás — lásd a
+    `fix: harden OpenAI response replay` commit): a hivatalos
+    dokumentáció ("Preserve reasoning without stored responses") szerint
+    `store:false` mellett egy reasoning-képes modell (a konfigurált
+    `gpt-6-sol` ALAPÉRTELMEZETTEN "medium" reasoning.effort-tal fut, tehát
+    valós használatban rendszeresen ad vissza `type:'reasoning'` elemeket
+    `encrypted_content` mezővel) a válasz `output` tömbjében visszaadott
+    reasoning/function_call elemeket EGY folytató kérésben ÉRINTETLENÜL,
+    EREDETI POZÍCIÓBAN vissza kell küldeni, különben a modell elveszíti a
+    reasoning-folytonosságát. Mivel a generikus, provider-független belső
+    üzenet-alak (`ConversationManager`/`AgentRunner` — `{role, content,
+    tool_calls}`) NEM tud reasoning item-et hordozni, az `OpenAiProvider`
+    egy KIZÁRÓLAG saját magába zárt, egy PHP-példány (egy HTTP-kérés/egy
+    `AgentRunner::run()` hívás) élettartamáig élő, SOSE perzisztens
+    `$rawOutputBatches` gyorsítótárat tart: minden eszköz-hívást
+    tartalmazó válasz NYERS `output` tömbjét elmenti, a hozzá tartozó
+    `call_id`-k listájával kulcsolva, és a KÖVETKEZŐ híváskor, ha egy
+    korábbi assistant-kör tool_calls-ai pontosan egyeznek egy tárolt
+    köteggel, a NYERS elemeket (reasoning-gal, eredeti `id`/`status`
+    mezőkkel együtt) küldi vissza VÁLTOZATLANUL — a reasoning-tartalmat
+    (pl. `encrypted_content`) SOSE vizsgálja/dekódolja, tisztán opak
+    adatként kezeli. Csak akkor esik vissza az egyszerűsített (content +
+    tool_calls-ból újraépített) alakra, ha NINCS egyező tárolt köteg (pl.
+    egy idegen forrásból származó előzmény). Ez a mechanizmus a MEGOSZTOTT
+    `AiProviderInterface`/`AiChatResponse`/`ToolCall` szerződés
+    megváltoztatása NÉLKÜL, KIZÁRÓLAG az `OpenAiProvider`-en belül oldja
+    meg a problémát — az `AgentRunner`/`InventoryAgent`/`LocalProvider`/
+    `AnthropicProvider` egyike sem változott. Lásd
+    `tests/AiOpenAiReasoningReplayTest.php` a részletes bizonyításért
+    (reasoning item pontos visszajátszása egyetlen és több egyidejű
+    function_call esetén is, titkosított tartalom byte-pontos megőrzése,
+    ismeretlen elem-típusok biztonságos kezelése, teljes AgentRunner-
+    folyamat reasoning-gel).
 - **`AiProviderFactory`** — az EGYETLEN hely, ahol a `ai_provider`
   beállítás egy konkrét `AiProviderInterface`-példánnyá válik. Szigorú
   fehérlista (`local`, `anthropic`, `openai`) — a beállításban tárolt
@@ -3566,15 +3590,16 @@ FountainTrade-funkció működését.
 - **Az OpenAI-integráció valódi API-kulccsal még NINCS élesben
   ellenőrizve** — az implementáció idején nem állt rendelkezésre biztonságos
   módon konfigurált, valódi OpenAI API-kulcs, ezért a Responses API-val
-  szembeni teljes protokoll-fordítás KIZÁRÓLAG kontrollált loopback
-  stub-szerverek ellen lett bizonyítva (lásd "Automatizált tesztek" a
-  `tests/AiOpenAiProviderTest.php`/`AiInventoryEndpointOpenAiHttpTest.php`/
-  `AiOpenAiClientProxyHttpTest.php` fájlokban). Konkrétan NEM ellenőrzött
-  élesben: hogy a kézzel épített `function_call`/`function_call_output`
-  input-elemek (lásd fentebb, "Ismert, dokumentált egyszerűsítés") pontosan
-  megfelelnek-e a valódi OpenAI API elvárásainak minden esetben. Ha egy
-  admin valódi OpenAI API-kulcsot állít be, első használat előtt
-  mindenképp végezz egy manuális "Kapcsolat tesztelése" + egy tényleges
+  szembeni teljes protokoll-fordítás (a reasoning item visszajátszással
+  együtt, lásd fentebb) KIZÁRÓLAG kontrollált loopback stub-szerverek
+  ellen lett bizonyítva (lásd "Automatizált tesztek" a
+  `tests/AiOpenAiProviderTest.php`/`AiOpenAiReasoningReplayTest.php`/
+  `AiInventoryEndpointOpenAiHttpTest.php`/`AiOpenAiClientProxyHttpTest.php`
+  fájlokban) — a stub-válaszok realisztikus, dokumentáció-hű `reasoning`/
+  `function_call`/`message` elemeket tartalmaznak, de értelemszerűen nem
+  helyettesítik a valódi OpenAI API-t. Ha egy admin valódi OpenAI
+  API-kulcsot állít be, első használat előtt mindenképp végezz egy
+  manuális "Kapcsolat tesztelése" + egy tényleges, eszköz-hívást igénylő
   kérdés-tesztet.
 - **Jövőbeli írási műveletek** (pl. "hozz létre egy beszerzési
   javaslatot") tervezetten mindig egy explicit emberi jóváhagyási lépésen

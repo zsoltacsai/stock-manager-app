@@ -40,9 +40,64 @@ require_once __DIR__ . '/ToolCall.php';
  *    'tool'-üzenet mintájával, ezért itt NEM kell semmilyen
  *    összegyűjtő/buffer logika (lásd AnthropicProvider::translateMessages()
  *    kontrasztban).
+ * 4) REASONING ITEM REPLAY (utólagos javítás — lásd a hibajegy "harden
+ *    OpenAI response replay" indoklását): a hivatalos dokumentáció
+ *    ("Preserve reasoning without stored responses") szerint `store:false`
+ *    mellett egy reasoning-képes modell (pl. a konfigurált `gpt-6-sol`,
+ *    amely ALAPÉRTELMEZETTEN "medium" reasoning.effort-tal fut) a válasz
+ *    `output` tömbjében `type:'reasoning'` elemeket ad vissza, jellemzően
+ *    egy `encrypted_content` mezővel — ezeket ÉRINTETLENÜL, EREDETI
+ *    POZÍCIÓBAN vissza kell küldeni egy eszköz-hívást folytató kérésben,
+ *    különben a modell elveszíti a reasoning-folytonosságát. A generikus,
+ *    provider-független belső üzenet-alak (lásd ConversationManager/
+ *    AgentRunner — `{role, content, tool_calls}`) NEM tud reasoning
+ *    item-et hordozni, és az AgentRunner minden iterációban egy ÚJ
+ *    tömböt épít `AiChatResponse`/`ToolCall`-okból, tehát a nyers OpenAI
+ *    elemek a `chat()` visszatérése után azonnal elvesznének, ha nem
+ *    tárolnánk őket valahol.
+ *
+ *    Megoldás — a LEHETŐ LEGKISEBB, KIZÁRÓLAG ebbe az osztályba zárt
+ *    mechanizmus, a megosztott AiProviderInterface/AiChatResponse/
+ *    ToolCall szerződés megváltoztatása NÉLKÜL: ez a példány egy rövid
+ *    életű, kizárólag a SAJÁT futása alatt élő, nem perzisztens
+ *    `$rawOutputBatches` gyorsítótárat tart (lásd lent) — minden
+ *    eszköz-hívást tartalmazó válasz NYERS `output` tömbjét elmenti,
+ *    a hozzá tartozó `call_id`-k listájával kulcsolva. A KÖVETKEZŐ
+ *    `chat()`-hívásnál, amikor egy korábbi assistant-kör tool_calls-ait
+ *    fordítanánk vissza OpenAI-alakra, ha a call_id-k egyeznek egy
+ *    tárolt köteggel, a NYERS elemeket (reasoning-gal, `message`-
+ *    preambulummal, minden eredeti mezővel együtt) küldjük vissza
+ *    VÁLTOZATLANUL — a reasoning-tartalmat SOSE vizsgáljuk/dekódoljuk,
+ *    tisztán opak adatként kezeljük. Csak akkor esik vissza az
+ *    egyszerűsített (content+tool_calls-ból újraépített) alakra, ha
+ *    NINCS egyező tárolt köteg (pl. egy idegen forrásból származó
+ *    előzmény) — ez a régi, Fázis 3-as viselkedés, biztonságos
+ *    alapértelmezésként megmarad.
+ *
+ *    Ez a gyorsítótár KIZÁRÓLAG egy PHP-példány élettartamáig él (egy
+ *    HTTP-kérés/egy AgentRunner::run() hívás — az AiProviderFactory
+ *    minden kérésre friss providert épít), SOSE kerül lemezre/adatbázisba
+ *    — nem sérti a "nincs tartós beszélgetés-előzmény" korlátot (lásd a
+ *    kör 3. pontja), csak azt teszi lehetővé, hogy UGYANAZON a futáson
+ *    belül a reasoning-elemek pontosan visszajátszhatók legyenek.
+ *
+ *    SZÁNDÉKOSAN NEM váltottunk `previous_response_id`-alapú állapot-
+ *    láncolásra — a fenti gyorsítótár a dokumentáció saját "manually
+ *    replay the complete response history" ajánlott mintáját követi,
+ *    ami kifejezetten `store:false`/stateless üzemmódhoz készült.
  */
 final class OpenAiProvider implements AiProviderInterface
 {
+    /**
+     * Az adott PHP-példány saját futása alatt kapott, eszköz-hívást
+     * tartalmazó válaszok NYERS `output` tömbjei, call_id-listával
+     * kulcsolva — lásd az osztály docblokkja ("Reasoning item replay").
+     * SOSE perzisztens, SOSE oszlik meg más providerpéldánnyal/kéréssel.
+     *
+     * @var array<int,array{callIds:string[],items:array<int,array<string,mixed>>}>
+     */
+    private array $rawOutputBatches = [];
+
     public function __construct(
         private readonly string $baseUrl,
         private readonly string $apiKey,
@@ -59,7 +114,7 @@ final class OpenAiProvider implements AiProviderInterface
 
     public function chat(array $messages, array $tools): AiChatResponse
     {
-        [$instructions, $input] = self::translateMessages($messages);
+        [$instructions, $input] = $this->translateMessages($messages);
 
         $body = [
             'model' => $this->model,
@@ -127,9 +182,21 @@ final class OpenAiProvider implements AiProviderInterface
                     is_array($arguments) ? $arguments : []
                 );
             }
-            // Egyéb elem-típusok (pl. 'reasoning') a kör 7. pontja szerint
-            // szándékosan figyelmen kívül maradnak — az InventoryAgent
-            // system promptja/üzleti logikája nem támaszkodik rájuk.
+            // Egyéb elem-típusok (pl. 'reasoning') a normalizált
+            // AiChatResponse felépítéséhez figyelmen kívül maradnak — az
+            // InventoryAgent system promptja/üzleti logikája nem
+            // támaszkodik rájuk. A NYERS elemek (reasoning-gal együtt)
+            // ettől függetlenül megmaradnak a $decoded['output']-ban, és
+            // lent, eszköz-hívás esetén, teljes egészében elmentésre
+            // kerülnek — lásd az osztály docblokkja ("Reasoning item
+            // replay").
+        }
+
+        if ($toolCalls) {
+            $this->rawOutputBatches[] = [
+                'callIds' => array_map(static fn (ToolCall $c) => $c->id, $toolCalls),
+                'items' => $decoded['output'],
+            ];
         }
 
         $content = $textParts ? implode("\n", array_filter($textParts, static fn ($t) => $t !== '')) : null;
@@ -174,10 +241,15 @@ final class OpenAiProvider implements AiProviderInterface
      * stílusú csoportosítás/buffer, mert a Responses API ezt nem várja
      * el).
      *
+     * NEM statikus (a Fázis 3 eredeti verziójában az volt) — a
+     * `$rawOutputBatches` gyorsítótárhoz kell hozzáférnie egy korábbi
+     * assistant-kör PONTOS, reasoning-item-eket is megőrző visszajátszásához,
+     * lásd az osztály docblokkja ("Reasoning item replay").
+     *
      * @param array<int,array{role:string,content:?string,tool_calls?:array,tool_call_id?:string,name?:string}> $messages
      * @return array{0:string,1:array<int,array<string,mixed>>}
      */
-    private static function translateMessages(array $messages): array
+    private function translateMessages(array $messages): array
     {
         $instructions = '';
         $input = [];
@@ -196,6 +268,24 @@ final class OpenAiProvider implements AiProviderInterface
             }
 
             if ($role === 'assistant') {
+                $toolCallIds = array_map(static fn ($tc) => (string) ($tc['id'] ?? ''), $msg['tool_calls'] ?? []);
+                $rawBatch = $toolCallIds ? $this->findRawBatch($toolCallIds) : null;
+
+                if ($rawBatch !== null) {
+                    // Pontos, eredeti visszajátszás — reasoning item(ek)kel
+                    // és minden más nyers mezővel (id, status, stb.)
+                    // együtt, VÁLTOZATLANUL. A reasoning tartalmát (pl.
+                    // encrypted_content) itt sose vizsgáljuk/dekódoljuk.
+                    foreach ($rawBatch as $rawItem) {
+                        $input[] = $rawItem;
+                    }
+                    continue;
+                }
+
+                // Nincs egyező tárolt köteg (pl. a történet nem ettől a
+                // providerpéldánytól származik) — biztonságos,
+                // egyszerűsített visszaépítés, ugyanaz, mint a Fázis 3
+                // eredeti viselkedése.
                 if (!empty($msg['content'])) {
                     $input[] = ['role' => 'assistant', 'content' => (string) $msg['content']];
                 }
@@ -226,6 +316,25 @@ final class OpenAiProvider implements AiProviderInterface
         }
 
         return [$instructions, $input];
+    }
+
+    /**
+     * Megkeresi a $rawOutputBatches-ben azt a köteget, aminek a call_id-
+     * listája PONTOSAN (sorrendben és értékben) megegyezik a kérttel —
+     * lásd az osztály docblokkja. `null`, ha nincs egyező köteg (biztonságos,
+     * a hívó ilyenkor visszaesik az egyszerűsített visszaépítésre).
+     *
+     * @param string[] $callIds
+     * @return array<int,array<string,mixed>>|null
+     */
+    private function findRawBatch(array $callIds): ?array
+    {
+        foreach ($this->rawOutputBatches as $batch) {
+            if ($batch['callIds'] === $callIds) {
+                return $batch['items'];
+            }
+        }
+        return null;
     }
 
     private function executeRequest(array $body)

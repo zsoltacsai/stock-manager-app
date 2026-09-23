@@ -324,15 +324,27 @@ if ('serviceWorker' in navigator) {
     const settingsLoyaltyFeedback = document.getElementById('settings-loyalty-feedback');
 
     const aiEnabled = document.getElementById('ai-enabled');
+    const aiProvider = document.getElementById('ai-provider');
+    const aiLocalFields = document.getElementById('ai-local-fields');
     const aiLocalBaseUrl = document.getElementById('ai-local-base-url');
     const aiLocalModel = document.getElementById('ai-local-model');
     const aiTimeoutSeconds = document.getElementById('ai-timeout-seconds');
+    const aiAnthropicFields = document.getElementById('ai-anthropic-fields');
+    const aiAnthropicApiKey = document.getElementById('ai-anthropic-api-key');
+    const aiAnthropicModel = document.getElementById('ai-anthropic-model');
+    const aiAnthropicBaseUrl = document.getElementById('ai-anthropic-base-url');
+    const aiAnthropicTimeoutSeconds = document.getElementById('ai-anthropic-timeout-seconds');
     const aiMaxIterations = document.getElementById('ai-max-iterations');
     const aiMaxOutputTokens = document.getElementById('ai-max-output-tokens');
     const settingsSaveAiBtn = document.getElementById('settings-save-ai-btn');
     const settingsAiFeedback = document.getElementById('settings-ai-feedback');
     const aiTestConnectionBtn = document.getElementById('ai-test-connection-btn');
     const aiTestConnectionFeedback = document.getElementById('ai-test-connection-feedback');
+
+    function toggleAiProviderFields(provider) {
+        if (aiLocalFields) aiLocalFields.classList.toggle('hidden', provider === 'anthropic');
+        if (aiAnthropicFields) aiAnthropicFields.classList.toggle('hidden', provider !== 'anthropic');
+    }
 
     const auditRetentionDays = document.getElementById('audit-retention-days');
     const settingsSaveAuditBtn = document.getElementById('settings-save-audit-btn');
@@ -440,9 +452,16 @@ if ('serviceWorker' in navigator) {
         if (updateAutoInstallEnabled) updateAutoInstallEnabled.classList.toggle('on', !!data.update_auto_install_enabled);
 
         if (aiEnabled) aiEnabled.classList.toggle('on', !!data.ai_enabled);
+        const aiProviderValue = data.ai_provider === 'anthropic' ? 'anthropic' : 'local';
+        if (aiProvider) aiProvider.value = aiProviderValue;
+        toggleAiProviderFields(aiProviderValue);
         if (aiLocalBaseUrl) aiLocalBaseUrl.value = data.ai_local_base_url || 'http://127.0.0.1:11434';
         if (aiLocalModel) aiLocalModel.value = data.ai_local_model || 'qwen3:8b';
         if (aiTimeoutSeconds) aiTimeoutSeconds.value = String(data.ai_timeout_seconds || 30);
+        applySecretField(aiAnthropicApiKey, data, 'anthropic_api_key', '');
+        if (aiAnthropicModel) aiAnthropicModel.value = data.anthropic_model || 'claude-sonnet-5';
+        if (aiAnthropicBaseUrl) aiAnthropicBaseUrl.value = data.anthropic_base_url || 'https://api.anthropic.com';
+        if (aiAnthropicTimeoutSeconds) aiAnthropicTimeoutSeconds.value = String(data.anthropic_timeout_seconds || 30);
         if (aiMaxIterations) aiMaxIterations.value = String(data.ai_max_iterations || 5);
         if (aiMaxOutputTokens) aiMaxOutputTokens.value = data.ai_max_output_tokens ? String(data.ai_max_output_tokens) : '';
 
@@ -1684,6 +1703,7 @@ if ('serviceWorker' in navigator) {
     if (updateAutoInstallEnabled) updateAutoInstallEnabled.addEventListener('click', () => updateAutoInstallEnabled.classList.toggle('on'));
 
     if (aiEnabled) aiEnabled.addEventListener('click', () => aiEnabled.classList.toggle('on'));
+    if (aiProvider) aiProvider.addEventListener('change', () => toggleAiProviderFields(aiProvider.value));
 
     if (settingsSaveAiBtn) {
         settingsSaveAiBtn.addEventListener('click', async () => {
@@ -1695,9 +1715,14 @@ if ('serviceWorker' in navigator) {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         ai_enabled: aiEnabled.classList.contains('on'),
+                        ai_provider: aiProvider ? aiProvider.value : 'local',
                         ai_local_base_url: aiLocalBaseUrl.value.trim(),
                         ai_local_model: aiLocalModel.value.trim(),
                         ai_timeout_seconds: parseInt(aiTimeoutSeconds.value, 10) || 30,
+                        anthropic_api_key: aiAnthropicApiKey ? aiAnthropicApiKey.value : '',
+                        anthropic_model: aiAnthropicModel ? aiAnthropicModel.value.trim() : '',
+                        anthropic_base_url: aiAnthropicBaseUrl ? aiAnthropicBaseUrl.value.trim() : '',
+                        anthropic_timeout_seconds: aiAnthropicTimeoutSeconds ? (parseInt(aiAnthropicTimeoutSeconds.value, 10) || 30) : 30,
                         ai_max_iterations: parseInt(aiMaxIterations.value, 10) || 5,
                         ai_max_output_tokens: aiMaxOutputTokens.value.trim() ? parseInt(aiMaxOutputTokens.value, 10) : null,
                     }),
@@ -1727,12 +1752,19 @@ if ('serviceWorker' in navigator) {
                     aiTestConnectionFeedback.className = 'modal-feedback error';
                     return;
                 }
-                const labels = { available: 'Elérhető', unavailable: 'Nem érhető el', model_error: 'Modell hiba' };
+                const labels = {
+                    available: 'Elérhető',
+                    unavailable: 'Nem érhető el',
+                    model_error: 'Modell hiba',
+                    not_configured: 'Nincs beállítva',
+                    auth_error: 'Hitelesítési hiba',
+                };
+                const providerLabel = data.provider === 'anthropic' ? 'Anthropic' : 'Ollama';
                 if (data.status === 'available') {
-                    aiTestConnectionFeedback.textContent = 'Ollama elérhető, a modell (' + data.model + ') letöltve. ✓';
+                    aiTestConnectionFeedback.textContent = providerLabel + ' elérhető, a modell (' + data.model + ') használható. ✓';
                     aiTestConnectionFeedback.className = 'modal-feedback ok';
                 } else {
-                    aiTestConnectionFeedback.textContent = (labels[data.status] || data.status) + (data.message ? ': ' + data.message : '');
+                    aiTestConnectionFeedback.textContent = providerLabel + ': ' + (labels[data.status] || data.status) + (data.message ? ' — ' + data.message : '');
                     aiTestConnectionFeedback.className = 'modal-feedback error';
                 }
             } catch (err) {

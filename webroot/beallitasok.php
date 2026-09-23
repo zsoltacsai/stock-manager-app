@@ -934,27 +934,55 @@ if (!Auth::isLoggedIn($appSettings)) {
 
         <div id="tab-ai-settings" class="tab-panel">
             <p class="muted" style="margin-top:0;">
-                Az AI asszisztens egy helyi, a saját szervered gépén (vagy egy
+                Az AI asszisztens vagy egy helyi, a saját szervered gépén (vagy egy
                 általad megadott másik gépen a hálózaton belül) futó
-                <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>-példányt
-                használ — semmilyen adat nem megy külső, internetes AI-szolgáltatáshoz. Az
-                asszisztens KIZÁRÓLAG olvasásra képes (nem módosít készletet, árat, nem hoz
-                létre beszerzést) — lásd az "AI Asszisztens" oldalt a bal oldali menüben.
+                <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>-példányt,
+                vagy az Anthropic (Claude) felhő-alapú API-ját használja — az alábbi választástól
+                függően. Anthropic esetén a kérdésed és a lekérdezett adatok az Anthropic
+                szervereire mennek; helyi (Ollama) esetén semmilyen adat nem megy külső,
+                internetes AI-szolgáltatáshoz. Az asszisztens mindkét esetben KIZÁRÓLAG
+                olvasásra képes (nem módosít készletet, árat, nem hoz létre beszerzést) — lásd
+                az "AI Asszisztens" oldalt a bal oldali menüben.
             </p>
             <div class="toggle-line">
                 <span>AI asszisztens bekapcsolva</span>
                 <button type="button" class="toggle-switch" id="ai-enabled"></button>
             </div>
-            <label for="ai-local-base-url">Ollama URL</label>
-            <input type="text" id="ai-local-base-url" placeholder="http://127.0.0.1:11434">
-            <p class="muted" style="margin-top:-6px;">
-                Alapból a szerver saját gépén futó Ollama (127.0.0.1) — csak akkor változtasd
-                meg, ha az Ollama egy MÁSIK, a helyi hálózaton elérhető gépen fut.
-            </p>
-            <label for="ai-local-model">Modell</label>
-            <input type="text" id="ai-local-model" placeholder="qwen3:8b">
-            <label for="ai-timeout-seconds">Időkorlát (másodperc)</label>
-            <input type="text" id="ai-timeout-seconds" placeholder="30">
+
+            <label for="ai-provider">AI-provider</label>
+            <select id="ai-provider">
+                <option value="local">Helyi (Ollama)</option>
+                <option value="anthropic">Anthropic (Claude)</option>
+            </select>
+
+            <div id="ai-local-fields">
+                <label for="ai-local-base-url">Ollama URL</label>
+                <input type="text" id="ai-local-base-url" placeholder="http://127.0.0.1:11434">
+                <p class="muted" style="margin-top:-6px;">
+                    Alapból a szerver saját gépén futó Ollama (127.0.0.1) — csak akkor változtasd
+                    meg, ha az Ollama egy MÁSIK, a helyi hálózaton elérhető gépen fut.
+                </p>
+                <label for="ai-local-model">Modell</label>
+                <input type="text" id="ai-local-model" placeholder="qwen3:8b">
+                <label for="ai-timeout-seconds">Időkorlát (másodperc)</label>
+                <input type="text" id="ai-timeout-seconds" placeholder="30">
+            </div>
+
+            <div id="ai-anthropic-fields" class="hidden">
+                <label for="ai-anthropic-api-key">Anthropic API-kulcs</label>
+                <input type="password" id="ai-anthropic-api-key" placeholder="(mentve)">
+                <p class="muted" style="margin-top:-6px;">
+                    A kulcs kizárólag a szerveren tárolódik, sose kerül a böngészőbe. Üresen
+                    hagyva a mentés nem törli a korábban elmentett kulcsot.
+                </p>
+                <label for="ai-anthropic-model">Modell</label>
+                <input type="text" id="ai-anthropic-model" placeholder="claude-sonnet-5">
+                <label for="ai-anthropic-base-url">API URL</label>
+                <input type="text" id="ai-anthropic-base-url" placeholder="https://api.anthropic.com">
+                <label for="ai-anthropic-timeout-seconds">Időkorlát (másodperc)</label>
+                <input type="text" id="ai-anthropic-timeout-seconds" placeholder="30">
+            </div>
+
             <label for="ai-max-iterations">Maximális lépésszám (eszköz-hívási körök)</label>
             <input type="text" id="ai-max-iterations" placeholder="5">
             <p class="muted" style="margin-top:-6px;">

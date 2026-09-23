@@ -3271,43 +3271,79 @@ tervezve (ami megfelel a valós, egy-kasszás használati esetnek). Két
 külön célkönyvtárba telepített példány UGYANAZOKAT a Feladatütemező-
 bejegyzéseket használná, és az egyik telepítés átírná a másikét.
 
-## AI Asszisztens (Inventory Agent — helyi Ollama)
+## AI Asszisztens (Inventory Agent — Ollama vagy Anthropic/Claude)
 
 Az első FountainTrade AI-réteg: egy **provider-független AI-absztrakció**
-(`src/Ai/`), aminek az első, ténylegesen bekötött megvalósítása egy
-**helyi [Ollama](https://ollama.com)**-példányt használ, és az első
-agent egy **kizárólag olvasás-jogú Készlet-asszisztens** (Inventory
-Agent). Semmilyen adat nem megy külső, internetes AI-szolgáltatáshoz —
+(`src/Ai/`), aminek jelenleg KÉT, ténylegesen bekötött megvalósítása van —
+egy **helyi [Ollama](https://ollama.com)**-példány (`LocalProvider`, Fázis
+1) és az **Anthropic Messages API/Claude** (`AnthropicProvider`, Fázis 2)
+—, admin által választhatóan. Az első (és jelenleg egyetlen) agent egy
+**kizárólag olvasás-jogú Készlet-asszisztens** (Inventory Agent). Ollama
+esetén semmilyen adat nem megy külső, internetes AI-szolgáltatáshoz —
 minden a saját géped (vagy a helyi hálózaton belüli, általad megadott
-gép) Ollama-példányán fut.
+gép) Ollama-példányán fut. Anthropic esetén a kérdésed és a lekérdezett
+(olvasás-kizárólagos) adatok az Anthropic szervereire mennek.
 
 ### Architektúra
 
 ```
-Felhasználó → AgentRunner → AiProviderInterface → LocalProvider
-            → Ollama HTTP API → LLM eszköz-hívás → ToolRegistry
+Felhasználó → AgentRunner → AiProviderInterface → LocalProvider (Ollama)
+                                                  ⌐ AnthropicProvider (Claude)
+            → HTTP API → LLM eszköz-hívás → ToolRegistry
             → FountainTrade olvasás-kizárólagos eszköz → eredmény
             → LLM → végleges válasz
 ```
 
 - **`AiProviderInterface`** — az EGYETLEN szerződés, amin keresztül az
-  `AgentRunner` bármelyik providerrel beszél. Jelenleg egyetlen
-  megvalósítás létezik (`LocalProvider`/Ollama) — a felület úgy lett
-  tervezve, hogy egy jövőbeli `AnthropicProvider`/`OpenAiProvider` az
-  `AgentRunner` módosítása NÉLKÜL bekapcsolható legyen.
+  `AgentRunner` bármelyik providerrel beszél. Az `AgentRunner` és az
+  `InventoryAgent` SOSE tud/feltételez semmit egy konkrét provider natív
+  HTTP/válasz-formátumáról — ez az architektúra Fázis 2 fő bizonyítéka:
+  UGYANAZ az `InventoryAgent`, UGYANAZON az `AgentRunner`-en keresztül,
+  provider-specifikus logika NÉLKÜL az agent/AgentRunner kódjában fut
+  mindkét providerrel.
 - **`LocalProvider`** — Ollama `/api/chat` (beszélgetés + eszköz-hívás)
   és `/api/tags` (elérhetőség/modell-lista) HTTP API-n keresztül,
   konfigurálható base URL-lel, modellel és időkorláttal. Nem igényel
   API-kulcsot.
+- **`AnthropicProvider`** — az [Anthropic Messages API](https://platform.claude.com)
+  (`POST /v1/messages`, `GET /v1/models`) közvetlen HTTP (cURL)
+  implementációja — SZÁNDÉKOSAN nincs hozzáadva az official Anthropic PHP
+  SDK, mert a projekt Composer-mentes (lásd "Külső függőségek" szakasz),
+  és a Messages API kontraktusa (fejlécek: `x-api-key`,
+  `anthropic-version: 2023-06-01`) közvetlen HTTP-hívással is egyszerűen
+  implementálható, ugyanazzal a mintával, mint a `LocalProvider`/
+  `WooCommerceClient`. Az osztály KIZÁRÓLAG a protokoll-fordítást végzi
+  (a generikus, Ollama/OpenAI-stílusú belső üzenet-alakot fordítja
+  Anthropic natív `system`/`messages`/`tool_use`/`tool_result`
+  content-block szerkezetére, és vissza) — a `ConversationManager` egy
+  `role:'tool'` üzenetet ad HÍVÁSONKÉNT egy eszköz-eredményhez, míg az
+  Anthropic API megköveteli, hogy EGY assistant-kör összes egyidejű
+  `tool_use`-ára adott eredmény EGYETLEN, közvetlenül következő
+  user-üzenetbe legyen csoportosítva (`tool_result` content block-ok
+  tömbje) — ezt a fordítást az `AnthropicProvider::translateMessages()`
+  végzi, lásd a docblokkját.
+- **`AiProviderFactory`** — az EGYETLEN hely, ahol a `ai_provider`
+  beállítás egy konkrét `AiProviderInterface`-példánnyá válik. Szigorú
+  fehérlista (`local`, `anthropic`) — a beállításban tárolt érték SOSE
+  használható közvetlenül osztálynévként; ismeretlen érték biztonságosan
+  elutasításra kerül (kivétel + korlátozott `system_events` napló-
+  bejegyzés), sose esik vissza csendben egy másik providerre.
+- **`OllamaHealth`/`AnthropicHealth`** — providerenként KÜLÖN, egymástól
+  független, rövid életű (30 másodperces TTL) gép-helyi cache-elt
+  elérhetőség-ellenőrzés — az UI-nak nem szabad minden oldalbetöltéskor
+  valódi hálózati/API-hívást indítania.
 - **`ToolRegistry`** — a modell KIZÁRÓLAG a fordítási időben regisztrált
   eszközök nevei közül választhat; egy ismeretlen eszköznév sose fut le
   (biztonságos hibaüzenettel tér vissza). A modell SOSE kap közvetlen
   adatbázis-hozzáférést, PDO-kapcsolatot, vagy nyers SQL-végrehajtási
-  lehetőséget.
-- **`AgentRunner`** — generikus, agent-független végrehajtó: elküldi az
-  üzeneteket a providernek, végrehajtja a kért eszköz-hívásokat, majd
-  visszaküldi az eredményt a modellnek — egy explicit, konfigurálható
-  maximális lépésszámig (véd a végtelen eszköz-hívási ciklus ellen).
+  lehetőséget. EGYETLEN `ToolRegistry`, EGYETLEN eszköz-készlet van —
+  nincs providerenként duplikált eszközlista, csak a Provider adaptálja a
+  protokollt.
+- **`AgentRunner`** — generikus, agent- ÉS provider-független végrehajtó:
+  elküldi az üzeneteket a providernek, végrehajtja a kért eszköz-
+  hívásokat, majd visszaküldi az eredményt a modellnek — egy explicit,
+  konfigurálható maximális lépésszámig (véd a végtelen eszköz-hívási
+  ciklus ellen).
 - **`ConversationManager`** — könnyű, KIZÁRÓLAG egyetlen kérdés-válasz
   futás időtartamára élő üzenet-lista, nincs tartós beszélgetés-
   előzmény ebben a körben.
@@ -3317,24 +3353,75 @@ Felhasználó → AgentRunner → AiProviderInterface → LocalProvider
 | Beállítás | Alapérték |
 |---|---|
 | AI asszisztens bekapcsolva | **Kikapcsolva** (mint minden más opcionális automatizmus) |
+| AI-provider | `local` (Ollama) |
 | Ollama URL | `http://127.0.0.1:11434` |
-| Modell | `qwen3:8b` |
-| Időkorlát | 30 másodperc |
-| Max. lépésszám (eszköz-hívási kör) | 5 |
-| Max. válasz-hossz (token, opcionális) | nincs korlátozva |
+| Ollama modell | `qwen3:8b` |
+| Ollama időkorlát | 30 másodperc |
+| Anthropic API-kulcs | (nincs beállítva) |
+| Anthropic modell | `claude-sonnet-5` |
+| Anthropic API URL | `https://api.anthropic.com` |
+| Anthropic időkorlát | 30 másodperc |
+| Max. lépésszám (eszköz-hívási kör) | 5 (mindkét providernél) |
+| Max. válasz-hossz (token, opcionális) | nincs korlátozva (mindkét providernél) |
 
 Az Ollama telepítése/futtatása a FountainTrade-től FÜGGETLEN lépés — lásd
 [ollama.com](https://ollama.com), majd `ollama pull qwen3:8b`. A
 FountainTrade sose telepíti vagy indítja el az Ollamát saját maga.
 
+Az Anthropic-modell alapértéke (`claude-sonnet-5`) az implementáció
+idején hatályos, hivatalos Anthropic dokumentáció alapján lett
+kiválasztva — a docs saját megfogalmazása szerint "a legjobb egyensúly
+sebesség és intelligencia között", ami egy szinkron, gyakran hívott,
+egyszerű eszköz-hívó asszisztenshez (mint az Inventory Agent) jobban illik,
+mint a nagyobb költségű/late­nciájú, hosszú-futású agentic munkára szánt
+Opus modell. A modell admin által bármikor felülírható.
+
+### Provider-választás
+
+Az admin a Beállítások → AI asszisztens fülön választja ki, hogy az
+Inventory Agent Ollamát vagy Anthropicot (Claude) használjon-e — EGYETLEN
+beállítás-rendszer, nincs második, párhuzamos AI-konfigurációs alrendszer.
+A választás logika KIZÁRÓLAG az `AiProviderFactory`-ban van, sose az
+`InventoryAgent`-ben — az agent maga sose tudja/dönti el, melyik
+providerrel beszél.
+
+### Anthropic API-kulcs — tárolás és biztonság
+
+- Az API-kulcs a MEGLÉVŐ, más integrációknál (WooCommerce, NAV, SMTP,
+  felhő-mentés) is használt titkos-mező mechanizmust használja
+  (`Settings::SECRET_RESPONSE_FIELDS`/`maskSecretFields()`,
+  `webroot/api/settings.php` `$secretFields` tömbje) — NEM egy külön,
+  Anthropic-specifikus tárolási megoldás.
+- GET `/api/settings.php` válaszban a kulcs SOSE megy ki nyersen — csak
+  egy `anthropic_api_key_set` jelző jelzi, hogy van-e már elmentett érték.
+- Üresen beküldött kulcs-mező mentéskor NEM törli a meglévő kulcsot — csak
+  egy ténylegesen újonnan beírt érték írja felül. A felület mindig csak a
+  maszkolt állapotot mutatja.
+- A kulcs SOSE kerül a böngésző-JavaScripthez, SOSE kerül naplózásra
+  (sem `audit_log`, sem `system_events`), és SOSE jelenik meg egy
+  `AiProviderException` üzenetében.
+- Az `anthropic_base_url` a `webroot/api/settings.php` `$outboundUrlFields`
+  SSRF-védelmén megy át mentéskor (`UrlSafety::check()`) — ELLENTÉTBEN az
+  `ai_local_base_url`-lel (ami alapból loopback, Ollama-specifikus, ott a
+  loopback a VÁRT eset), az Anthropic base URL egy valódi, külső,
+  nyilvános API, nincs legitim ok, hogy belső/loopback címre mutasson.
+- A kulcs kizárólag a Szerver/Önálló gépen létezik — lásd lent, Client/
+  Szerver viselkedés.
+
 ### Client/Szerver viselkedés
 
-Az AI-réteg (és maga az Ollama-hívás) **KIZÁRÓLAG a Szerver/Önálló
-oldalon fut** — egy Kliens node SOSE hív Ollamát közvetlenül, és nincs
-külön, párhuzamos AI-specifikus Kliens-API: az `/api/ai-inventory.php`
-végpont a MEGLÉVŐ `ClientProxy`-n keresztül megy, pontosan úgy, mint
-minden más API-végpont. Egy Kliens-gépen a settings.json-nak nincs is
-szüksége AI-beállításra — a kérés a Szerverig ér, ott dől el minden.
+Az AI-réteg (és maga az Ollama/Anthropic-hívás) **KIZÁRÓLAG a Szerver/
+Önálló oldalon fut**, MINDKÉT providernél — egy Kliens node SOSE hoz
+létre `LocalProvider`-t vagy `AnthropicProvider`-t, SOSE hív Ollamát vagy
+Anthropicot közvetlenül, és nincs külön, párhuzamos AI-specifikus
+Kliens-API: az `/api/ai-inventory.php` végpont a MEGLÉVŐ `ClientProxy`-n
+keresztül megy, pontosan úgy, mint minden más API-végpont. Egy
+Kliens-gépen a settings.json-nak nincs is szüksége AI-beállításra (sem
+Ollama-, sem Anthropic-kulcsra) — a kérés a Szerverig ér, ott dől el
+minden, a `_bootstrap.php` `node_role`-elágazása garantálja, hogy a
+Kliens saját kódja sose fut le eddig a pontig. Nincs Anthropichoz külön
+írt Kliens-oldali védő kód — ugyanaz a MEGLÉVŐ mechanizmus véd mindkét
+providernél.
 
 ### Biztonsági modell
 
@@ -3353,9 +3440,10 @@ szüksége AI-beállításra — a kérés a Szerverig ér, ott dől el minden.
   modell, a kérdés (bounded, 500 karakterig), a használt eszközök,
   sikeres volt-e, mennyi ideig tartott. Nyers modell-válasz, API-kulcs
   vagy egyéb titok SOSE kerül naplózásra.
-- Hibaválaszok (pl. az Ollama nem elérhető) SOSE tartalmaznak nyers
-  kivétel-szöveget, fájlrendszer-útvonalat vagy technikai részletet — a
-  felhasználó mindig egy előre megírt, biztonságos üzenetet kap.
+- Hibaválaszok (pl. az Ollama/Anthropic nem elérhető) SOSE tartalmaznak
+  nyers kivétel-szöveget, fájlrendszer-útvonalat, API-kulcsot vagy egyéb
+  technikai részletet — a felhasználó mindig egy előre megírt, biztonságos
+  üzenetet kap.
 
 ### Elérhető Inventory eszközök (Phase 1)
 
@@ -3369,31 +3457,46 @@ szüksége AI-beállításra — a kérés a Szerverig ér, ott dől el minden.
 
 ### Felület
 
-**Beállítások → AI asszisztens** fül: be/kikapcsolás, Ollama URL/modell/
-időkorlát/lépésszám beállítása, "Kapcsolat tesztelése" gomb. **AI
-Asszisztens** oldal (bal oldali menü): egyetlen kérdés-mező, "Kérdezd a
-FountainTrade-et" gomb, a válasz + a ténylegesen használt eszközök
-listája. Az állapot-jelzés (AI kikapcsolva / Ollama nem érhető el /
-modell hiányzik / elérhető) 30 másodpercig cache-elt — nem indít
-hálózati hívást minden oldalbetöltéskor, és az Ollama elérhetetlensége
-SOSE befolyásolja a kassza vagy a többi FountainTrade-funkció működését.
+**Beállítások → AI asszisztens** fül: be/kikapcsolás, AI-provider
+választó (Helyi/Ollama vagy Anthropic/Claude), a választásnak megfelelően
+Ollama URL/modell/időkorlát VAGY Anthropic API-kulcs (maszkolt
+állapotban)/modell/URL/időkorlát mezők, közös max. lépésszám/válasz-hossz
+mezők, "Kapcsolat tesztelése" gomb. **AI Asszisztens** oldal (bal oldali
+menü): egyetlen kérdés-mező, "Kérdezd a FountainTrade-et" gomb, a válasz +
+a ténylegesen használt eszközök listája — ennek az oldalnak NINCS külön
+kódútja Ollama vs. Anthropic esetén, a különbség kizárólag a Beállítások
+fülön és a szerver-oldali `AiProviderFactory`-ban dől el.
 
-### Ismert korlátok (Phase 1)
+Az állapot-jelzés (`/api/ai-health.php`, mindkét providerre kiterjesztve:
+AI kikapcsolva / nincs beállítva (Anthropic API-kulcs hiányzik) /
+hitelesítési hiba / nem érhető el / modell hiányzik / elérhető) 30
+másodpercig cache-elt providerenként (`OllamaHealth`/`AnthropicHealth`) —
+nem indít hálózati/API-hívást minden oldalbetöltéskor, és egyik provider
+elérhetetlensége SEM befolyásolja a kassza vagy a többi
+FountainTrade-funkció működését.
+
+### Ismert korlátok
 
 - **Kizárólag olvasás** — az Inventory Agent nem módosíthat készletet,
   nem hozhat létre beszerzést, nem változtathat árat, és nem indíthat
   semmilyen pénzügyi műveletet. Bármilyen ajánlása (pl. "érdemes lenne
-  rendelni") javaslat, nem végrehajtott döntés.
+  rendelni") javaslat, nem végrehajtott döntés. Ez MINDKÉT providerre
+  (Ollama, Anthropic) egyformán igaz — a korlátozás a `ToolRegistry`
+  szintjén van, nem a providerben.
 - **Nincs tartós beszélgetés-előzmény** — minden kérdés egy önálló,
   friss agent-futás; a `ConversationManager` szándékosan csak egyetlen
   futás idejére tárol üzeneteket.
-- **Egyetlen agent, egyetlen provider van ténylegesen bekötve** ebben a
-  körben (Inventory Agent, LocalProvider/Ollama) — az architektúra
-  további agenteket (pl. Sales/Anomaly/WooCommerce) és providereket
-  (Anthropic/OpenAI) tesz lehetővé később, de ezek jelenleg NINCSENEK
-  implementálva.
+- **Egyetlen agent van ténylegesen bekötve** ebben a körben (Inventory
+  Agent) — KÉT provider van bekötve (`LocalProvider`/Ollama,
+  `AnthropicProvider`/Claude/Anthropic), az architektúra további
+  agenteket (pl. Sales/Anomaly/WooCommerce) és providereket (pl. OpenAI)
+  tesz lehetővé később, de ezek jelenleg NINCSENEK implementálva.
+- **Anthropic esetén a kérdésed és a lekérdezett adatok elhagyják a
+  géped** — az Anthropic API-hoz mennek, ellentétben az Ollama-üzemmóddal
+  (helyi/hálózaton belüli, nem megy ki semmi). Ez tudatos admin-döntés
+  (provider-választás), nem alapértelmezett viselkedés.
 - **Jövőbeli írási műveletek** (pl. "hozz létre egy beszerzési
   javaslatot") tervezetten mindig egy explicit emberi jóváhagyási lépésen
   mennének át (AI javaslat → emberi jóváhagyás → validált backend
-  művelet → audit log) — ez a mechanizmus még nincs megépítve, Phase 1
-  szigorúan csak olvasás.
+  művelet → audit log) — ez a mechanizmus még nincs megépítve, jelenleg
+  mindkét provider szigorúan csak olvasás.

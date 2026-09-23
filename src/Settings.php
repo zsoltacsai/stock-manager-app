@@ -278,7 +278,29 @@ class Settings
         // kerül ténylegesen a kérésbe, ha az admin explicit beállít egy
         // pozitív értéket (lásd LocalProvider — jelenleg nem korlátozza a
         // kimenetet, ez a mező a jövőbeli bővíthetőségért van előkészítve).
+        // AnthropicProvider-nél a max_tokens KÖTELEZŐ mező (lásd az
+        // Anthropic Messages API), ezért ott egy hardcodolt alapértelmezésre
+        // esik vissza, ha ez üresen marad — lásd AnthropicProvider.php.
         'ai_max_output_tokens'  => null,
+
+        // Fázis 2 — melyik providert használja az InventoryAgent, ha az
+        // AI asszisztens be van kapcsolva. 'local' (Ollama, alapértelmezett,
+        // az 1.5.0 Fázis 1 viselkedésével bit-azonos) vagy 'anthropic' —
+        // lásd src/Ai/AiProviderFactory.php. Szigorú whitelist, sose
+        // felhasználó által megadott, tetszőleges osztálynév.
+        'ai_provider' => 'local',
+
+        // Anthropic (Claude) — az API-kulcs a MEGLÉVŐ titkos-mező mintát
+        // használja (lásd SECRET_RESPONSE_FIELDS/maskSecretFields() lent,
+        // és webroot/api/settings.php $secretFields tömbje): GET válaszban
+        // sose megy ki nyersen, csak egy "_set" jelző; üres beküldött érték
+        // NEM törli a meglévőt. Kliens node SOSE látja, SOSE hoz létre
+        // AnthropicProvider-t — lásd webroot/api/_bootstrap.php node_role-
+        // elágazása (ugyanaz a garancia, mint az Ollama-nál).
+        'anthropic_api_key'         => '',
+        'anthropic_model'           => 'claude-sonnet-5',
+        'anthropic_base_url'        => 'https://api.anthropic.com',
+        'anthropic_timeout_seconds' => 30,
     ];
 
     public function __construct(string $path)
@@ -440,6 +462,7 @@ class Settings
         'nav_password', 'nav_signer_key', 'nav_exchange_key', 'cron_secret',
         'low_stock_notify_webhook',
         'smtp_password',
+        'anthropic_api_key',
     ];
 
     /**

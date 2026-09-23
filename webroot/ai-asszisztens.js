@@ -10,10 +10,16 @@
     const toolsUsedBox = document.getElementById('ai-tools-used-box');
     const toolsUsedList = document.getElementById('ai-tools-used-list');
 
+    // A providernév a válaszban jön (data.provider, lásd api/ai-health.php)
+    // — a feliratok szándékosan providerfüggetlenek, hogy ez az oldal
+    // NE tartalmazzon külön kódútvonalat Ollama vs. Anthropic esetén
+    // (lásd a kör 10. pontja).
     const STATUS_LABELS = {
-        available: '🟢 Ollama elérhető',
-        unavailable: '🔴 Ollama nem érhető el',
-        model_error: '🟡 A konfigurált modell nincs letöltve',
+        available: '🟢 Elérhető',
+        unavailable: '🔴 Nem érhető el',
+        model_error: '🟡 A konfigurált modell nem elérhető',
+        not_configured: '🟡 Nincs beállítva',
+        auth_error: '🔴 Hitelesítési hiba',
     };
 
     async function loadHealth() {
@@ -28,7 +34,8 @@
             }
             disabledNotice.style.display = 'none';
             form.style.display = '';
-            statusLine.textContent = (STATUS_LABELS[data.status] || data.status) + (data.model ? ' — ' + data.model : '');
+            const providerLabel = data.provider === 'anthropic' ? 'Anthropic' : 'Ollama';
+            statusLine.textContent = providerLabel + ': ' + (STATUS_LABELS[data.status] || data.status) + (data.model ? ' — ' + data.model : '');
             askBtn.disabled = data.status !== 'available';
         } catch (err) {
             statusLine.textContent = 'Nem sikerült lekérdezni az AI állapotát.';

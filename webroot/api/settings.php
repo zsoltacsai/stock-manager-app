@@ -43,6 +43,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'smtp_host', 'smtp_username', 'smtp_password', 'smtp_from_name', 'smtp_from_email',
         'receipt_public_base_url',
         'ai_local_model',
+        'anthropic_api_key', 'anthropic_model', 'anthropic_base_url',
     ];
     // Ezeknél a mezőknél a válasz (lásd lentebb) sose küldi ki a valódi
     // értéket — a felület üresen, egy "(mentve)" jelzéssel mutatja őket.
@@ -59,13 +60,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // kezelni, mint egy API-kulcsot (lásd $secretResponseFields is).
         'low_stock_notify_webhook',
         'smtp_password',
+        'anthropic_api_key',
     ];
     // Ezeket a mezőket a szerver ténylegesen FEL IS HÍVJA — itt kell
     // elutasítani egy belső/nem-publikus URL elmentését, mielőtt egyáltalán
     // eljutna odáig, hogy a WooCommerceClient/LowStockNotifier valaha
     // felhasználja (azok is ellenőrzik, védelmi mélységként, de a hiba itt,
-    // mentéskor egyértelműbb visszajelzés a felhasználónak).
-    $outboundUrlFields = ['wc_store_url', 'low_stock_notify_webhook'];
+    // mentéskor egyértelműbb visszajelzés a felhasználónak). Az Anthropic
+    // base URL SZÁNDÉKOSAN itt van (ellentétben az ai_local_base_url-lel,
+    // ami alapból loopback) — ez egy valódi, külső, nyilvános API, nincs
+    // legitim ok, hogy belső/loopback címre mutasson.
+    $outboundUrlFields = ['wc_store_url', 'low_stock_notify_webhook', 'anthropic_base_url'];
 
     foreach ($stringFields as $field) {
         if (!isset($input[$field])) {
@@ -210,6 +215,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (array_key_exists('ai_max_output_tokens', $input)) {
         $rawTokens = $input['ai_max_output_tokens'];
         $update['ai_max_output_tokens'] = ($rawTokens === null || $rawTokens === '') ? null : max(1, (int) $rawTokens);
+    }
+    // Fázis 2 — melyik AI-providert használja az InventoryAgent. Szigorú
+    // whitelist itt is, ugyanúgy, mint AiProviderFactory::create()-ban —
+    // védelmi mélység, hogy egy érvénytelen érték se kerülhessen be a
+    // settings.json-ba, ne csak a factory-hívás pillanatában derüljön ki.
+    if (isset($input['ai_provider']) && in_array($input['ai_provider'], ['local', 'anthropic'], true)) {
+        $update['ai_provider'] = $input['ai_provider'];
+    }
+    if (isset($input['anthropic_timeout_seconds'])) {
+        $update['anthropic_timeout_seconds'] = max(5, min(300, (int) $input['anthropic_timeout_seconds']));
     }
     if (isset($input['audit_log_retention_days'])) {
         $update['audit_log_retention_days'] = max(1, (int) $input['audit_log_retention_days']);

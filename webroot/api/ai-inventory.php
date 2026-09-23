@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
-require_once __DIR__ . '/../../src/Ai/LocalProvider.php';
+require_once __DIR__ . '/../../src/Ai/AiProviderFactory.php';
 require_once __DIR__ . '/../../src/Ai/Agents/InventoryAgent.php';
 require_once __DIR__ . '/../../src/Ai/AiAuditLogger.php';
 
@@ -28,16 +28,18 @@ if (mb_strlen($question) > 2000) {
     send_json(['error' => 'A kérdés túl hosszú (legfeljebb 2000 karakter).'], 400);
 }
 
-$maxOutputTokens = isset($appSettings['ai_max_output_tokens']) && $appSettings['ai_max_output_tokens'] !== null
-    ? (int) $appSettings['ai_max_output_tokens']
-    : null;
+try {
+    $provider = AiProviderFactory::create($appSettings, $db);
+} catch (AiProviderException $e) {
+    // Ismeretlen/érvénytelen ai_provider beállítás — a factory már
+    // naplózott (lásd AiProviderFactory::logInvalidProvider), itt csak egy
+    // biztonságos, nyers kivétel-szöveg nélküli válasz megy ki.
+    send_json(['error' => 'Az AI asszisztens jelenleg nem érhető el (érvénytelen provider-beállítás).'], 503);
+}
 
-$provider = new LocalProvider(
-    (string) $appSettings['ai_local_base_url'],
-    (string) $appSettings['ai_local_model'],
-    (int) $appSettings['ai_timeout_seconds'],
-    $maxOutputTokens
-);
+$configuredModel = $provider->name() === 'anthropic'
+    ? (string) $appSettings['anthropic_model']
+    : (string) $appSettings['ai_local_model'];
 
 $agent = new InventoryAgent($provider, $db, $appSettings, max(1, (int) $appSettings['ai_max_iterations']));
 
@@ -51,7 +53,7 @@ AiAuditLogger::logRun(
     Auth::currentStaffId(),
     InventoryAgent::name(),
     $provider->name(),
-    (string) $appSettings['ai_local_model'],
+    $configuredModel,
     $question,
     $result,
     $durationMs

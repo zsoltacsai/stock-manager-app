@@ -346,10 +346,91 @@ if ('serviceWorker' in navigator) {
     const aiTestConnectionBtn = document.getElementById('ai-test-connection-btn');
     const aiTestConnectionFeedback = document.getElementById('ai-test-connection-feedback');
 
+    const ollamaProvSection = document.getElementById('ai-ollama-provision-section');
+    const ollamaProvInstalled = document.getElementById('ollama-prov-installed');
+    const ollamaProvVersion = document.getElementById('ollama-prov-version');
+    const ollamaProvApi = document.getElementById('ollama-prov-api');
+    const ollamaProvModelName = document.getElementById('ollama-prov-model-name');
+    const ollamaProvModelStatus = document.getElementById('ollama-prov-model-status');
+    const ollamaProvRefreshBtn = document.getElementById('ollama-prov-refresh-btn');
+    const ollamaProvInstallBtn = document.getElementById('ollama-prov-install-btn');
+    const ollamaProvStartBtn = document.getElementById('ollama-prov-start-btn');
+    const ollamaProvPullBtn = document.getElementById('ollama-prov-pull-btn');
+    const ollamaProvFeedback = document.getElementById('ollama-prov-feedback');
+
     function toggleAiProviderFields(provider) {
         if (aiLocalFields) aiLocalFields.classList.toggle('hidden', provider !== 'local');
         if (aiAnthropicFields) aiAnthropicFields.classList.toggle('hidden', provider !== 'anthropic');
         if (aiOpenaiFields) aiOpenaiFields.classList.toggle('hidden', provider !== 'openai');
+        if (ollamaProvSection) {
+            ollamaProvSection.style.display = provider !== 'local' ? 'none' : '';
+            if (provider === 'local') loadOllamaProvisionStatus();
+        }
+    }
+
+    // Fázis 6, Rész B (a kör 20./30. pontja) — a Beállítások "Helyi
+    // Ollama telepítés/kezelés" panelje. Az állapot-lekérdezés a
+    // MEGLÉVŐ, szerver-oldali TTL-cache mögött fut (lásd
+    // OllamaProvisioner::detectStatusCached()) — ez a felület ezért
+    // szabadon hívhatja fülváltáskor, nem terheli feleslegesen az
+    // Ollamát/a fájlrendszert minden egyes híváskor.
+    async function loadOllamaProvisionStatus(force) {
+        if (!ollamaProvSection) return;
+        try {
+            const res = await fetch('/api/ollama-status.php' + (force ? '?force=1' : ''));
+            const data = await res.json();
+            if (!res.ok || !data.ok) {
+                // A kör 30. pontja — a Kliens-módú elutasítás (403,
+                // client_mode_unavailable) is EGYÉRTELMŰ, önálló szöveget
+                // kap, nem "Ollama nem érhető el"-ként jelenik meg.
+                if (data.client_mode_unavailable) {
+                    ollamaProvInstalled.textContent = 'Kliens node — nem elérhető itt';
+                } else {
+                    ollamaProvInstalled.textContent = 'Hiba az állapot lekérdezésekor';
+                }
+                ollamaProvVersion.textContent = '—';
+                ollamaProvApi.textContent = '—';
+                ollamaProvModelStatus.textContent = '—';
+                return;
+            }
+            ollamaProvInstalled.textContent = data.installed ? 'Igen' : 'Nem';
+            ollamaProvVersion.textContent = data.version || '—';
+            ollamaProvApi.textContent = data.api_available ? 'Igen' : 'Nem';
+            ollamaProvModelName.textContent = data.configured_model || '—';
+            // A kör 30. pontja — négy ÉLESEN megkülönböztetett állapot,
+            // sose egyetlen "Ollama nem érhető el" szöveg.
+            if (!data.installed) {
+                ollamaProvModelStatus.textContent = 'Nincs telepítve';
+            } else if (!data.api_available) {
+                ollamaProvModelStatus.textContent = 'Telepítve, de az API nem érhető el';
+            } else if (!data.model_installed) {
+                ollamaProvModelStatus.textContent = 'Nincs letöltve';
+            } else {
+                ollamaProvModelStatus.textContent = 'Letöltve, használatra kész';
+            }
+        } catch (err) {
+            ollamaProvInstalled.textContent = 'Hiba az állapot lekérdezésekor';
+        }
+    }
+
+    async function runOllamaProvisionAction(url, busyText) {
+        if (!ollamaProvFeedback) return;
+        ollamaProvFeedback.textContent = busyText;
+        ollamaProvFeedback.className = 'modal-feedback';
+        [ollamaProvInstallBtn, ollamaProvStartBtn, ollamaProvPullBtn, ollamaProvRefreshBtn].forEach(b => { if (b) b.disabled = true; });
+        try {
+            const res = await fetch(url, { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok || !data.ok) throw new Error(data.error || 'ismeretlen hiba');
+            ollamaProvFeedback.textContent = data.message || 'Kész.';
+            ollamaProvFeedback.className = 'modal-feedback ok';
+            await loadOllamaProvisionStatus(true);
+        } catch (err) {
+            ollamaProvFeedback.textContent = 'Hiba: ' + err.message;
+            ollamaProvFeedback.className = 'modal-feedback error';
+        } finally {
+            [ollamaProvInstallBtn, ollamaProvStartBtn, ollamaProvPullBtn, ollamaProvRefreshBtn].forEach(b => { if (b) b.disabled = false; });
+        }
     }
 
     const auditRetentionDays = document.getElementById('audit-retention-days');
@@ -1787,6 +1868,17 @@ if ('serviceWorker' in navigator) {
                 aiTestConnectionFeedback.className = 'modal-feedback error';
             }
         });
+    }
+
+    if (ollamaProvRefreshBtn) ollamaProvRefreshBtn.addEventListener('click', () => loadOllamaProvisionStatus(true));
+    if (ollamaProvInstallBtn) {
+        ollamaProvInstallBtn.addEventListener('click', () => runOllamaProvisionAction('/api/ollama-install.php', 'Telepítés folyamatban, ez eltarthat egy percig…'));
+    }
+    if (ollamaProvStartBtn) {
+        ollamaProvStartBtn.addEventListener('click', () => runOllamaProvisionAction('/api/ollama-start.php', 'Indítás…'));
+    }
+    if (ollamaProvPullBtn) {
+        ollamaProvPullBtn.addEventListener('click', () => runOllamaProvisionAction('/api/ollama-pull-model.php', 'Modell letöltése folyamatban, ez akár több percig is eltarthat…'));
     }
 
     loadUpdateStatus();

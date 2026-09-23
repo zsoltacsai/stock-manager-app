@@ -356,6 +356,121 @@ Describe 'install-windows-lib — Invoke-FountainTradeTopologyTool (tools/instal
     }
 }
 
+Describe 'install-windows-lib — Resolve-OllamaProvisionDecision (Fázis 6 Rész B — kör 25. pontja)' {
+    It 'Önálló gép + Ollama kérve -> felkínálva ÉS telepítendő' {
+        $r = Resolve-OllamaProvisionDecision -NodeRole 'standalone' -InstallRequested $true -SkipRequested $false
+        $r.ShouldOffer | Should Be $true
+        $r.ShouldInstall | Should Be $true
+    }
+    It 'Önálló gép + Ollama nem kérve (sem -Install, sem -Skip) -> felkínálva, de NEM automatikusan telepítendő' {
+        $r = Resolve-OllamaProvisionDecision -NodeRole 'standalone' -InstallRequested $false -SkipRequested $false
+        $r.ShouldOffer | Should Be $true
+        $r.ShouldInstall | Should Be $false
+    }
+    It 'Szerver + Ollama kérve -> felkínálva ÉS telepítendő' {
+        $r = Resolve-OllamaProvisionDecision -NodeRole 'server' -InstallRequested $true -SkipRequested $false
+        $r.ShouldOffer | Should Be $true
+        $r.ShouldInstall | Should Be $true
+    }
+    It 'Szerver + kifejezetten kihagyva (-SkipOllama) -> felkínálva, de NEM telepítendő' {
+        $r = Resolve-OllamaProvisionDecision -NodeRole 'server' -InstallRequested $false -SkipRequested $true
+        $r.ShouldOffer | Should Be $true
+        $r.ShouldInstall | Should Be $false
+    }
+    It 'Kliens + Ollama kérve -> MÉGIS elutasítva/letiltva (strukturális biztosíték)' {
+        $r = Resolve-OllamaProvisionDecision -NodeRole 'client' -InstallRequested $true -SkipRequested $false
+        $r.ShouldOffer | Should Be $false
+        $r.ShouldInstall | Should Be $false
+    }
+    It 'Kliens + semmi kérve -> nincs felkínálva/telepítendő Ollama-lépés' {
+        $r = Resolve-OllamaProvisionDecision -NodeRole 'client' -InstallRequested $false -SkipRequested $false
+        $r.ShouldOffer | Should Be $false
+        $r.ShouldInstall | Should Be $false
+    }
+    It 'Kliens + -SkipOllama is elutasítva marad (a Kliens-tiltás elsőbbséget élvez)' {
+        $r = Resolve-OllamaProvisionDecision -NodeRole 'client' -InstallRequested $false -SkipRequested $true
+        $r.ShouldOffer | Should Be $false
+    }
+}
+
+Describe 'install-windows-lib — Test-OllamaInstallerRequiresElevation (kör 15./21. pontja kutatási eredménye)' {
+    It 'Az Ollama Windows-telepítője NEM igényel UAC-emelést (Inno Setup PrivilegesRequired=lowest)' {
+        Test-OllamaInstallerRequiresElevation | Should Be $false
+    }
+}
+
+Describe 'install-windows-lib — Test-ShouldSkipOllamaInstall (idempotencia / already-installed detection)' {
+    It 'Már telepített, sikeres állapot-válasz esetén kihagyja az újratelepítést' {
+        Test-ShouldSkipOllamaInstall -StatusJson ([PSCustomObject]@{ ok = $true; installed = $true }) | Should Be $true
+    }
+    It 'Nem telepített állapotnál NEM hagyja ki (telepíteni kell)' {
+        Test-ShouldSkipOllamaInstall -StatusJson ([PSCustomObject]@{ ok = $true; installed = $false }) | Should Be $false
+    }
+    It 'Sikertelen állapot-lekérdezésnél (ok=false) NEM hagyja ki (biztonságosan a telepítés felé dönt)' {
+        Test-ShouldSkipOllamaInstall -StatusJson ([PSCustomObject]@{ ok = $false; installed = $true }) | Should Be $false
+    }
+    It 'Hiányzó/$null állapotnál NEM hagyja ki (nem dob kivételt)' {
+        Test-ShouldSkipOllamaInstall -StatusJson $null | Should Be $false
+    }
+    It 'Idempotens újrafuttatás: két EGYMÁS UTÁNI hívás UGYANAZT az eredményt adja ugyanarra a bemenetre (nincs rejtett állapot)' {
+        $status = [PSCustomObject]@{ ok = $true; installed = $true }
+        (Test-ShouldSkipOllamaInstall -StatusJson $status) | Should Be (Test-ShouldSkipOllamaInstall -StatusJson $status)
+    }
+}
+
+Describe 'install-windows-lib — Invoke-FountainTradeOllamaProvisionTool (tools/ollama-provision-cli.php valódi PHP-hívása, mock Ollama nélkül)' {
+    $candidates = @('C:\tools\php83\php.exe', (Get-Command php.exe -ErrorAction SilentlyContinue).Source)
+    $phpExe = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+    $toolPath = Join-Path $PSScriptRoot '..\tools\ollama-provision-cli.php'
+    $tempRoot = $null
+
+    BeforeEach {
+        $tempRoot = Join-Path $env:TEMP "ft-ollama-provision-invoke-test-$(Get-Random)"
+        New-Item -ItemType Directory -Path (Join-Path $tempRoot 'src\Ai') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $tempRoot 'tools') -Force | Out-Null
+        Copy-Item (Join-Path $PSScriptRoot '..\src\Ai\AiProviderException.php') (Join-Path $tempRoot 'src\Ai\AiProviderException.php')
+        Copy-Item (Join-Path $PSScriptRoot '..\src\Ai\OllamaProvisioner.php') (Join-Path $tempRoot 'src\Ai\OllamaProvisioner.php')
+        Copy-Item $toolPath (Join-Path $tempRoot 'tools\ollama-provision-cli.php')
+    }
+    AfterEach {
+        if ($tempRoot -and (Test-Path $tempRoot)) { Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'status: nem-elérhető Ollamánál installed=false, api_available=false (SOSE dob kivételt/hibát)' -Skip:(-not $phpExe) {
+        # Szándékosan egy SOSE-hallgató porton — a valódi 127.0.0.1:11434-en
+        # PHPUnit alatt sem akarunk valódi Ollamától függeni (kör 27. pontja).
+        $r = Invoke-FountainTradeOllamaProvisionTool -PhpExe $phpExe -ToolPath (Join-Path $tempRoot 'tools\ollama-provision-cli.php') -Action 'status' -BaseUrl 'http://127.0.0.1:1' -Model 'qwen3:8b'
+        $r.ExitCode | Should Be 0
+        $r.Json.ok | Should Be $true
+        $r.Json.api_available | Should Be $false
+        $r.Json.configured_model | Should Be 'qwen3:8b'
+    }
+
+    It 'pull-model: nem-elérhető Ollamánál hibát ad, nem-nulla kilépési kóddal (nem próbál telepíteni helyette)' -Skip:(-not $phpExe) {
+        $r = Invoke-FountainTradeOllamaProvisionTool -PhpExe $phpExe -ToolPath (Join-Path $tempRoot 'tools\ollama-provision-cli.php') -Action 'pull-model' -BaseUrl 'http://127.0.0.1:1' -Model 'qwen3:8b'
+        $r.ExitCode | Should Not Be 0
+        $r.Json.ok | Should Be $false
+        $r.Json.error | Should Not BeNullOrEmpty
+    }
+}
+
+Describe 'install-windows.ps1 — Fázis 6 Rész B szerkezeti garanciák (statikus forrás-ellenőrzés, Ollama)' {
+    $mainScriptText = Get-Content (Join-Path $PSScriptRoot '..\install-windows.ps1') -Raw
+
+    It 'Az Ollama-lépés a MEGLÉVŐ Resolve-OllamaProvisionDecision döntést használja, nem egy párhuzamos saját feltételt' {
+        $mainScriptText | Should Match 'Resolve-OllamaProvisionDecision -NodeRole \$NodeRole'
+    }
+    It 'Egy sikertelen (nem-kötelező) Ollama-telepítés NEM állítja meg a teljes telepítést (nincs Exit-WithFailureSummary az általános ágon)' {
+        $mainScriptText | Should Match 'Write-Warn2 "Az Ollama telep[ií]t[eé]se sikertelen'
+    }
+    It '-OllamaRequired esetén egy sikertelen telepítés MEGSZAKÍTJA a teljes telepítést' {
+        $mainScriptText | Should Match '\$OllamaRequired\)[\s\S]{0,200}Exit-WithFailureSummary'
+    }
+    It 'Kliens node-on külön ág fut le, ami NEM ajánlja fel az Ollama-telepítést' {
+        $mainScriptText | Should Match 'Kliens node — az Ollama itt nem el[eé]rhet[oő]'
+    }
+}
+
 Describe 'install-windows.ps1 — Fázis 2 Checkpoint 3 szerkezeti garanciák (statikus forrás-ellenőrzés)' {
     $mainScriptText = Get-Content (Join-Path $PSScriptRoot '..\install-windows.ps1') -Raw
 

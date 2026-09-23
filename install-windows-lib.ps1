@@ -261,6 +261,76 @@ function Invoke-FountainTradeTopologyTool {
     return @{ ExitCode = $exitCode; Json = $json; Raw = $rawText }
 }
 
+# Fázis 6, Rész B — PURE, mellékhatás-mentes döntési logika: kínálható-e
+# fel/futtatható-e az Ollama-telepítés EBBEN a szerepkörben/kérésben.
+# Admin-jog/hálózat/tényleges telepítés NÉLKÜL tesztelhető (a kör 25.
+# pontja). Kliens node-on az Ollama SOSE kínálható fel, MÉG akkor sem, ha
+# a hívó (tévedésből) -InstallOllama-t adott meg — ez STRUKTURÁLIS
+# biztosíték, nem csak egy figyelmen kívül hagyható figyelmeztetés.
+function Resolve-OllamaProvisionDecision {
+    param(
+        [Parameter(Mandatory)][ValidateSet('standalone', 'server', 'client')][string]$NodeRole,
+        [bool]$InstallRequested = $false,
+        [bool]$SkipRequested = $false
+    )
+    if ($NodeRole -eq 'client') {
+        return @{ ShouldOffer = $false; ShouldInstall = $false; Reason = 'Kliens node — az Ollama nem elérhető/nem kínálható fel ezen a node-on.' }
+    }
+    if ($SkipRequested) {
+        return @{ ShouldOffer = $true; ShouldInstall = $false; Reason = 'A telepítő kifejezetten kihagyta az Ollama-telepítést (-SkipOllama).' }
+    }
+    if ($InstallRequested) {
+        return @{ ShouldOffer = $true; ShouldInstall = $true; Reason = 'A telepítő explicit kérte az Ollama-telepítést (-InstallOllama).' }
+    }
+    return @{ ShouldOffer = $true; ShouldInstall = $false; Reason = 'Nincs explicit kérés — alapból NEM települ csendben (interaktív módban a szkript rákérdez).' }
+}
+
+# A tools/ollama-provision-cli.php CLI-eszköz vékony, argumentum-építő +
+# JSON-parszoló hívóburka — UGYANAZ a minta, mint Invoke-FountainTradeTopologyTool
+# fent: a tényleges logikát (letöltés+SHA-256-ellenőrzés+csendes futtatás,
+# lásd OllamaProvisioner.php) a MEGLÉVŐ PHP-osztály végzi, ez a függvény
+# csak meghívja és értelmezi a JSON-kimenetet.
+function Invoke-FountainTradeOllamaProvisionTool {
+    param(
+        [Parameter(Mandatory)][string]$PhpExe,
+        [Parameter(Mandatory)][string]$ToolPath,
+        [Parameter(Mandatory)][ValidateSet('status', 'install', 'pull-model')][string]$Action,
+        [string]$BaseUrl,
+        [string]$Model
+    )
+    $argList = @($ToolPath, "--action=$Action")
+    if ($BaseUrl) { $argList += "--base-url=$BaseUrl" }
+    if ($Model) { $argList += "--model=$Model" }
+
+    $output = & $PhpExe @argList
+    $exitCode = $LASTEXITCODE
+    $rawText = ($output -join "`n")
+    $json = $null
+    try { $json = $rawText | ConvertFrom-Json } catch { }
+    return @{ ExitCode = $exitCode; Json = $json; Raw = $rawText }
+}
+
+# Pure — a kör 15./21. pontja kutatásának RÖGZÍTETT eredménye: az Ollama
+# hivatalos Windows-telepítője (Inno Setup, app/ollama.iss a forrásban:
+# "PrivilegesRequired=lowest") NEM igényel Rendszergazdai/UAC-jogosultságot
+# — a saját felhasználói fiók %LOCALAPPDATA%-jába települ. EZ a függvény
+# teszi ezt a döntést EXPLICITTÉ és tesztelhetővé (a kör 25. pontja "UAC/
+# elevation decision"), sose implicit/hallgatólagos feltételezés.
+function Test-OllamaInstallerRequiresElevation {
+    return $false
+}
+
+# Pure — eldönti, hogy egy MÁR lekérdezett Ollama-állapot alapján kell-e
+# egyáltalán telepítést kísérelni (idempotencia — a kör 25. pontja
+# "already-installed detection"/"idempotent re-run"). $StatusJson egy
+# Invoke-FountainTradeOllamaProvisionTool -Action 'status' válasz .Json
+# mezője (vagy egy azzal egyező alakú objektum/hashtable).
+function Test-ShouldSkipOllamaInstall {
+    param($StatusJson)
+    if ($null -eq $StatusJson) { return $false }
+    return [bool]($StatusJson.ok) -and [bool]($StatusJson.installed)
+}
+
 # Pure — eldönti, hogy egy VISSZAOLVASOTT tűzfalszabály (LocalPort/Protocol/
 # RemoteAddress/Enabled, ahogy egy Get-NetFirewallRule + Get-
 # NetFirewallPortFilter/Get-NetFirewallAddressFilter páros visszaadná) a

@@ -50,6 +50,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <div id="ai-assistant-form">
             <label for="ai-agent">Agent</label>
             <select id="ai-agent">
+                <option value="copilot">Copilot (általános asszisztens)</option>
                 <option value="inventory">Készlet (Inventory)</option>
                 <option value="sales">Forgalom (Sales)</option>
                 <option value="anomaly">Anomália (Anomaly)</option>
@@ -62,6 +63,10 @@ if (!Auth::isLoggedIn($appSettings)) {
 
             <div id="ai-answer-box" style="display:none; border-top:1px solid var(--border); margin-top:20px; padding-top:16px;">
                 <strong>Agent:</strong> <span id="ai-answer-agent"></span>
+                <div id="ai-agents-used-box" style="display:none; margin-top:4px;">
+                    <strong style="font-size:0.9em;">Felhasznált ügynökök:</strong>
+                    <span id="ai-agents-used-text" style="font-size:0.9em; color:var(--muted);"></span>
+                </div>
                 <p><strong>Válasz:</strong></p>
                 <p id="ai-answer-text" style="white-space:pre-wrap;"></p>
                 <div id="ai-tools-used-box" style="display:none;">

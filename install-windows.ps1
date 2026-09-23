@@ -122,7 +122,22 @@ param(
     # Explicit megerősítés egy "veszélyes" szerepkör-váltáshoz (bármilyen
     # módból Kliensre — lásd a kör 16. pontja: a helyi adatbázis ilyenkor a
     # lemezen marad, de az alkalmazás többé nem ezt használja).
-    [switch]$ConfirmModeSwitch
+    [switch]$ConfirmModeSwitch,
+    # Fázis 6, Rész B — Ollama (helyi AI) telepítés a Windows telepítőből.
+    # Kizárólag Önálló gép/Szerver szerepkörnél kínálható fel/futtatható —
+    # Kliens node-on ez a lépés SOSE fut le, még akkor sem, ha valaki
+    # tévedésből megadná ezt a kapcsolót (lásd Resolve-OllamaProvisionDecision).
+    # $InstallOllama/$SkipOllama hiányában a szkript interaktívan kérdez;
+    # nem-interaktív módban ($env:FOUNTAINTRADE_NONINTERACTIVE) az
+    # alapértelmezés "nem települ" (nincs csendes, meglepetésszerű telepítés).
+    [switch]$InstallOllama,
+    [switch]$SkipOllama,
+    # Ha jelen van, egy sikertelen Ollama-telepítés a TELJES FountainTrade
+    # telepítést megszakítja — alapból NEM ez történik (a kör 23. pontja:
+    # "FountainTrade installation must fail only if the user explicitly
+    # selected 'required' semantics... POS should still be installable").
+    [switch]$OllamaRequired,
+    [string]$OllamaModel = 'qwen3:8b'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -737,6 +752,64 @@ $NodeRole = $resolvedNodeRole
 # -AsSecureString miatt sose látja a nyers értéket visszhangozva.
 $roleLabel = switch ($NodeRole) { 'server' { 'Szerver' } 'client' { 'Kliens' } default { 'Önálló gép' } }
 Write-Ok "Node-szerepkör: $roleLabel"
+
+# -------------------------------------------------------------------
+# Ollama (helyi AI) telepítés — Fázis 6, Rész B. KIZÁRÓLAG Önálló gép/
+# Szerver szerepkörnél kínálható fel (lásd Resolve-OllamaProvisionDecision
+# — Kliens node-on ez STRUKTURÁLISAN ki van zárva, nem csak egy feltétel
+# elrejti a menüt). A tényleges letöltés+SHA-256-ellenőrzés+csendes
+# futtatás a MEGLÉVŐ OllamaProvisioner.php-ban történik (lásd
+# tools/ollama-provision-cli.php), itt csak meghívjuk.
+# -------------------------------------------------------------------
+$ollamaDecision = Resolve-OllamaProvisionDecision -NodeRole $NodeRole -InstallRequested:$InstallOllama.IsPresent -SkipRequested:$SkipOllama.IsPresent
+if ($ollamaDecision.ShouldOffer) {
+    Write-Step "Helyi AI (Ollama) — opcionális"
+    $ollamaProvisionToolPath = Join-Path $InstallPath 'tools\ollama-provision-cli.php'
+    $shouldInstallOllama = $ollamaDecision.ShouldInstall
+    if (-not $InstallOllama.IsPresent -and -not $SkipOllama.IsPresent) {
+        if ($env:FOUNTAINTRADE_NONINTERACTIVE) {
+            Write-Ok "Nem-interaktív mód, -InstallOllama/-SkipOllama nélkül — Ollama NEM települ (add meg valamelyik kapcsolót, ha szükséges)."
+            $shouldInstallOllama = $false
+        } else {
+            Write-Host ""
+            Write-Host "Az AI-asszisztens (opcionális) egy helyi Ollama-példányt is használhat" -ForegroundColor Cyan
+            Write-Host "(nincs adat internetre küldve). Ez nem kötelező — később, a Beállítások" -ForegroundColor Cyan
+            Write-Host "AI fülén is telepíthető/kezelhető." -ForegroundColor Cyan
+            $ollamaChoice = Read-Host "Szeretnéd most telepíteni az Ollamát? (i/N)"
+            $shouldInstallOllama = $ollamaChoice.Trim().ToLowerInvariant() -in @('i', 'igen', 'y', 'yes')
+        }
+    }
+
+    if (-not $shouldInstallOllama) {
+        Write-Ok "Ollama telepítése kihagyva — a POS/FountainTrade ettől függetlenül teljes körűen használható marad."
+    } elseif (-not (Test-Path $ollamaProvisionToolPath)) {
+        Write-Warn2 "Hiányzik a tools\ollama-provision-cli.php — az Ollama-telepítés kihagyva."
+    } else {
+        $ollamaStatus = Invoke-FountainTradeOllamaProvisionTool -PhpExe $phpExe -ToolPath $ollamaProvisionToolPath -Action 'status' -Model $OllamaModel
+        if ($ollamaStatus.ExitCode -eq 0 -and (Test-ShouldSkipOllamaInstall -StatusJson $ollamaStatus.Json)) {
+            Write-Ok "Az Ollama már telepítve van (verzió: $($ollamaStatus.Json.version)) — telepítés kihagyva."
+        } else {
+            Write-Host "Ollama telepítése folyamatban (ez eltarthat egy percig — letöltés + ellenőrzés)…" -ForegroundColor DarkGray
+            $ollamaInstallResult = Invoke-FountainTradeOllamaProvisionTool -PhpExe $phpExe -ToolPath $ollamaProvisionToolPath -Action 'install'
+            if ($ollamaInstallResult.ExitCode -eq 0 -and $ollamaInstallResult.Json.ok) {
+                Write-Ok "Ollama sikeresen települt (verzió: $($ollamaInstallResult.Json.version))."
+            } else {
+                $ollamaError = if ($ollamaInstallResult.Json) { $ollamaInstallResult.Json.error } else { $ollamaInstallResult.Raw }
+                if ($OllamaRequired) {
+                    Exit-WithFailureSummary "Az Ollama telepítése sikertelen (kötelezőként megjelölve): $ollamaError" "Telepítsd manuálisan az Ollamát (https://ollama.com/download/windows), vagy futtasd újra -OllamaRequired nélkül."
+                }
+                # A kör 23. pontja explicit követelménye: egy sikertelen Ollama-
+                # telepítés NEM buktatja meg a teljes FountainTrade-telepítést —
+                # csak világosan jelezzük, a POS ettől függetlenül telepíthető
+                # marad.
+                Write-Warn2 "Az Ollama telepítése sikertelen: $ollamaError — az AI-asszisztens Ollama nélkül nem lesz elérhető, de a POS teljes körűen működik. Később a Beállítások AI fülén újrapróbálható."
+            }
+        }
+    }
+} else {
+    Write-Step "Helyi AI (Ollama)"
+    Write-Ok "Kliens node — az Ollama itt nem elérhető/nem kínálható fel; az AI-kérések (ha vannak) a Szerveren futnak le."
+}
 
 $bindHost = Get-FountainTradeBindHost -NodeRole $NodeRole
 

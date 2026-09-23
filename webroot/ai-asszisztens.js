@@ -11,6 +11,8 @@
     const answerText = document.getElementById('ai-answer-text');
     const toolsUsedBox = document.getElementById('ai-tools-used-box');
     const toolsUsedList = document.getElementById('ai-tools-used-list');
+    const agentsUsedBox = document.getElementById('ai-agents-used-box');
+    const agentsUsedText = document.getElementById('ai-agents-used-text');
 
     // Fázis 4 (Sales Agent) — egyetlen oldal, egy "Agent" választóval, két
     // KÜLÖN végponttal (lásd a kör 12. pontja: "Keep this minimal. Do NOT
@@ -18,8 +20,8 @@
     // provider-választás (Beállítások fülön) teljesen független ettől —
     // ugyanaz a végpont-pár működik Ollama/Anthropic/OpenAI alatt is,
     // provider-specifikus kódútvonal NÉLKÜL ezen az oldalon.
-    const AGENT_ENDPOINTS = { inventory: '/api/ai-inventory.php', sales: '/api/ai-sales.php', anomaly: '/api/ai-anomaly.php' };
-    const AGENT_LABELS = { inventory: 'Készlet (Inventory)', sales: 'Forgalom (Sales)', anomaly: 'Anomália (Anomaly)' };
+    const AGENT_ENDPOINTS = { copilot: '/api/ai-copilot.php', inventory: '/api/ai-inventory.php', sales: '/api/ai-sales.php', anomaly: '/api/ai-anomaly.php' };
+    const AGENT_LABELS = { copilot: 'Copilot', inventory: 'Készlet (Inventory)', sales: 'Forgalom (Sales)', anomaly: 'Anomália (Anomaly)' };
 
     // A providernév a válaszban jön (data.provider, lásd api/ai-health.php)
     // — a feliratok szándékosan providerfüggetlenek, hogy ez az oldal
@@ -82,6 +84,14 @@
             if (answerAgent) answerAgent.textContent = AGENT_LABELS[data.agent] || data.agent;
             answerText.textContent = data.answer;
             answerBox.style.display = '';
+            if (agentsUsedBox && agentsUsedText) {
+                if (data.agents_used && data.agents_used.length) {
+                    agentsUsedText.textContent = data.agents_used.map(a => AGENT_LABELS[a] || a).join(', ');
+                    agentsUsedBox.style.display = '';
+                } else {
+                    agentsUsedBox.style.display = 'none';
+                }
+            }
             if (data.tools_used && data.tools_used.length) {
                 toolsUsedList.innerHTML = data.tools_used.map(t => `<li>${t}</li>`).join('');
                 toolsUsedBox.style.display = '';

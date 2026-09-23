@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/AgentRunResult.php';
+require_once __DIR__ . '/CopilotRunResult.php';
 
 /**
  * Egy AI-agent futásának naplózása a MEGLÉVŐ két napló-mechanizmuson
@@ -90,6 +91,95 @@ final class AiAuditLogger
             );
         } catch (Throwable $e) {
             error_log('[fountaintrade] AI audit logSystemEvent sikertelen: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Fázis 6 — az AiCopilot futásainak naplózása, a MEGLÉVŐ logRun()
+     * MELLÉ, azt NEM módosítva (a kör 13. pontja: "Reuse AiAuditLogger" —
+     * de a Copilot eredménye CopilotRunResult, nem AgentRunResult, ezért
+     * egy külön, párhuzamos metódus a legkisebb változtatás, ami a
+     * meglévő három agent naplózási viselkedését bit-pontosan
+     * érintetlenül hagyja). Ugyanaz a két napló-mechanizmus (logAudit +
+     * logSystemEvent), 'copilot' agent-névvel, KIEGÉSZÍTVE a részt vevő
+     * ügynökök listájával — de továbbra is bounded, SOSE a nyers
+     * agent-válaszok teljes szövegével (lásd truncate()).
+     */
+    public static function logCopilotRun(
+        Database $db,
+        array $appSettings,
+        ?int $staffId,
+        string $provider,
+        string $model,
+        string $question,
+        CopilotRunResult $result,
+        float $durationMs,
+    ): void {
+        $truncatedQuestion = self::truncate($question, self::MAX_QUESTION_LENGTH);
+        $agentsSummary = $result->agentsUsed ? implode(', ', $result->agentsUsed) : '(nincs)';
+        $toolsSummary = $result->toolsUsed ? implode(', ', $result->toolsUsed) : '(nincs)';
+        $outcomeText = $result->success
+            ? 'Sikeres'
+            : 'Sikertelen: ' . self::truncate((string) $result->error, self::MAX_ERROR_LENGTH);
+
+        $auditDetails = sprintf(
+            'Kérdés: %s | Provider: %s | Modell: %s | Ügynökök: %s | Eszközök: %s | Iterációk: %d | %s (%d ms)',
+            $truncatedQuestion,
+            $provider,
+            $model,
+            $agentsSummary,
+            $toolsSummary,
+            $result->iterations,
+            $outcomeText,
+            (int) $durationMs
+        );
+
+        try {
+            $db->logAudit(
+                $staffId,
+                'ai_agent_run',
+                'ai_agent',
+                null,
+                $auditDetails,
+                (int) ($appSettings['audit_log_retention_days'] ?? 30)
+            );
+        } catch (Throwable $e) {
+            error_log('[fountaintrade] AI Copilot audit logAudit sikertelen: ' . $e->getMessage());
+        }
+
+        $agentResultsBounded = [];
+        foreach ($result->agentResults as $agentName => $agentResult) {
+            $agentResultsBounded[$agentName] = [
+                'success' => $agentResult['success'],
+                'tools_used' => $agentResult['tools_used'],
+                'error' => $agentResult['error'] !== null ? self::truncate((string) $agentResult['error'], self::MAX_ERROR_LENGTH) : null,
+            ];
+        }
+
+        $technicalDetail = json_encode([
+            'agent' => 'copilot',
+            'provider' => $provider,
+            'model' => $model,
+            'agents_used' => $result->agentsUsed,
+            'agent_results' => $agentResultsBounded,
+            'tools_used' => $result->toolsUsed,
+            'iterations' => $result->iterations,
+            'duration_ms' => (int) $durationMs,
+            'error' => $result->success ? null : self::truncate((string) $result->error, self::MAX_ERROR_LENGTH),
+        ], JSON_UNESCAPED_UNICODE);
+
+        try {
+            $db->logSystemEvent(
+                'ai',
+                'agent_run',
+                $result->success ? 'info' : 'warning',
+                $result->success ? 'success' : 'failure',
+                $result->success ? 'AI-agent futás sikeres (copilot).' : 'AI-agent futás sikertelen (copilot).',
+                $technicalDetail,
+                (int) ($appSettings['system_events_retention_days'] ?? 14)
+            );
+        } catch (Throwable $e) {
+            error_log('[fountaintrade] AI Copilot audit logSystemEvent sikertelen: ' . $e->getMessage());
         }
     }
 

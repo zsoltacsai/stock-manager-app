@@ -3271,7 +3271,7 @@ tervezve (ami megfelel a valós, egy-kasszás használati esetnek). Két
 külön célkönyvtárba telepített példány UGYANAZOKAT a Feladatütemező-
 bejegyzéseket használná, és az egyik telepítés átírná a másikét.
 
-## AI Asszisztens (Inventory + Sales + Anomaly Agent — Ollama, Anthropic/Claude vagy OpenAI)
+## AI Asszisztens (Inventory + Sales + Anomaly Agent + Copilot — Ollama, Anthropic/Claude vagy OpenAI)
 
 Az első FountainTrade AI-réteg: egy **provider-független AI-absztrakció**
 (`src/Ai/`), aminek jelenleg HÁROM, ténylegesen bekötött megvalósítása van
@@ -3786,6 +3786,92 @@ készlet növekedését X okozza") — a backend jelenleg NEM ad okozati
 bizonyítékot, csak együttjárást, ezért a rendszer prompt ezt gyakorlatilag
 mindig tiltja.
 
+### AI Copilot (útválasztó/összefoglaló asszisztens, Fázis 6, Rész A)
+
+A negyedik, de architekturálisan MÁS jellegű "agent": az `AiCopilot`
+(`src/Ai/Agents/AiCopilot.php`) NEM egy negyedik domain-szakértő, hanem
+egy **útválasztó/összefoglaló** réteg a MEGLÉVŐ három agent (Inventory/
+Sales/Anomaly) fölött — a cél egy "kérdezz akármit, a Copilot eldönti,
+melyik szakterület(ek) kellenek" belépési pont, hogy a felhasználónak ne
+kelljen előre eldöntenie, melyik agent-et válassza.
+
+**Architektúra — nincs új tool-calling ciklus, nincs duplikált agent-logika:**
+a Copilot MAGA IS a MEGLÉVŐ `AgentRunner`-en fut, egy SAJÁT
+`ToolRegistry`-vel, amiben PONTOSAN HÁROM eszköz van regisztrálva:
+`ask_inventory_agent` / `ask_sales_agent` / `ask_anomaly_agent` — mindegyik
+egy vékony wrapper, ami egyszerűen meghívja a megfelelő agent MÁR LÉTEZŐ
+`answer()`-jét egy, a Copilot LLM-je által megfogalmazott, fókuszált
+rész-kérdéssel. Ez azt jelenti:
+
+- **Fehérlistázás STRUKTURÁLISAN garantált** — a `ToolRegistry` ELEVE csak
+  a regisztrált 3 nevet fogadja el; egy modell által kitalált negyedik/
+  tetszőleges eszköznevet a MEGLÉVŐ `ToolRegistry::execute()` automatikusan,
+  biztonságosan `ToolResult::fail()`-lel utasít el ("Ismeretlen eszköz") —
+  a Copilot-nak ehhez semmilyen saját védelmi kódot nem kellett írnia.
+- **Rekurzió STRUKTURÁLISAN lehetetlen** — az `InventoryAgent`/`SalesAgent`/
+  `AnomalyAgent` SAJÁT `ToolRegistry`-jébe KIZÁRÓLAG a domain-eszközeik
+  kerülnek regisztrálásra, "ask_*_agent" eszköz EGYIKÜKNÉL SEM létezik,
+  tehát egy agent-futás sose tud "visszahívni" a Copilot-ba (lásd
+  `tests/AiCopilotTest.php` rekurzió-tesztje: egy szándékosan próbált
+  visszahívási kísérlet a beágyazott agent SAJÁT `ToolRegistry`-jében
+  biztonságosan "Ismeretlen eszköz" hibaként fut le, a futás mégis
+  sikeresen befejeződik).
+- **Provider-független** — a Copilot `AiProviderFactory`-n keresztül kapott
+  `AiProviderInterface`-t használ, UGYANÚGY, mint a három domain-agent;
+  nincs `if provider == ...` elágazás a Copilot kódjában (lásd
+  `tests/AiCopilotCrossProviderRegressionTest.php` — ugyanaz a Copilot,
+  ugyanaz az ügynök-választás, mindhárom providerrel).
+- **Hívás-/költségkorlát** — `AiCopilot::MAX_AGENT_CALLS = 3` (a kör 6/9.
+  pontja: legfeljebb 3 domain-agent-hívás egy kérdésen belül, hiszen
+  jelenleg is csak 3 domain van); egy negyedik/további kísérlet biztonságos
+  hibaüzenetet kap, NEM indít újabb agent-futást (lásd
+  `tests/AiCopilotTest.php::testMaxAgentCallLimitIsEnforced`). Emellett a
+  Copilot SAJÁT `AgentRunner`-e is a MEGLÉVŐ `ai_max_iterations`
+  beállítást használja a saját "gondolkodási" köreinek felső korlátjaként.
+- **Eredmény-modell** — `CopilotRunResult` (`src/Ai/CopilotRunResult.php`)
+  a MEGLÉVŐ `AgentRunResult` mintájára, KIEGÉSZÍTVE: `agentsUsed` (mely
+  ügynökök vettek részt, hívási sorrendben), `agentResults` (ügynökönkénti
+  siker/hiba + saját eszközhasználat), `toolsUsed` (a részt vevő
+  ügynökök eszközeinek uniója). Provider-natív struktúra SOSE kerül bele.
+- **Naplózás** — `AiAuditLogger::logCopilotRun()` (ÚJ, KÜLÖN metódus, a
+  MEGLÉVŐ `logRun()` egyetlen sora sem módosult) — `agent='copilot'`,
+  résztvevő ügynökök + eszközök + siker/hiba, bounded hosszal, a MEGLÉVŐ
+  audit_log/system_events mechanizmuson keresztül.
+
+**Egy-agent vs. több-agent kérdések** — a rendszer prompt (lásd
+`AiCopilot::SYSTEM_INSTRUCTION`) explicit előírja: egyszerű, egy-területű
+kérdéshez EGY ügynök elég (pl. "mi fogyott ki?" → csak
+`ask_inventory_agent`), és csak VALÓBAN több területet érintő kérdésnél
+(pl. "miért esett vissza X termék eladása, és ez szokatlan-e?" →
+forgalom + esetleg anomália/készlet) hív meg többet — a rendszer NEM
+kényszerít ki felesleges agent-hívásokat (lásd
+`testCopilotDoesNotForceMultipleAgentCallsWhenOneSuffices`).
+
+**Korreláció vs. okozatiság a Copilot szintjén is** — mivel a Copilot
+TÖBB ügynök eredményét kombinálhatja, a saját rendszer promptja is
+KÜLÖN kimondja ugyanazt a szabályt, mint az `AnomalyAgent`: együttjárás
+("erre utalhat") igen, okozati állítás ("ezt X okozza") nem — ez pont
+azért kritikus itt, mert a szintézis-lépés az a pont, ahol egy modell a
+LEGKÖNNYEBBEN "invent"-álna hamis ok-okozati kapcsolatot két, önmagában
+igaz részlet közé.
+
+**Végpont** — `POST /api/ai-copilot.php`, byte-strukturálisan ugyanaz a
+minta, mint a három domain-végpont (`require_admin`, CSRF, `ai_enabled`
+ellenőrzés, üzenet-hosszkorlát, `AiProviderFactory`, biztonságos
+hibaválaszok) — a válasz `agent`/`answer`/`agents_used`/`tools_used`/
+`agent_results` mezőket ad vissza. Kliens node-on ez a végpont is a
+MEGLÉVŐ `_bootstrap.php` node_role-elágazásán keresztül proxyzódik a
+Szerverre, agent-specifikus Kliens-oldali kód NÉLKÜL (lásd
+`tests/AiCopilotClientProxyHttpTest.php`).
+
+**Felület** — a **AI Asszisztens** oldal "Agent" választója egy új
+**"Copilot"** opciót kapott (`/api/ai-copilot.php`-hoz irányítva), ami az
+alapértelmezett/legelső, "általános asszisztens" mód — a meglévő
+Inventory/Sales/Anomaly közvetlen agent-választás VÁLTOZATLANUL
+megmaradt. A válasz-doboz egy "Felhasznált ügynökök" sort is mutat
+(`agents_used`), amikor a Copilot ténylegesen hívott legalább egy
+domain-agent-et.
+
 ### Felület
 
 **Beállítások → AI asszisztens** fül: be/kikapcsolás, AI-provider
@@ -3795,18 +3881,20 @@ API-kulcs (maszkolt állapotban)/modell/URL/időkorlát mezők, közös max.
 lépésszám/válasz-hossz mezők, "Kapcsolat tesztelése" gomb — ez a
 provider-választás GLOBÁLIS, mind a három agentre vonatkozik (lásd
 fentebb "Provider-választás"). **AI Asszisztens** oldal (bal oldali
-menü): **"Agent" választó** (Készlet/Inventory, Forgalom/Sales vagy
-Anomália/Anomaly — Fázis 4/5, lásd a kör 12/14. pontja: "Keep this
+menü): **"Agent" választó** (Copilot, Készlet/Inventory, Forgalom/Sales
+vagy Anomália/Anomaly — Fázis 4/5/6, lásd a kör 12/14. pontja: "Keep this
 minimal. Do NOT redesign the page into a large generic chat
 application"), egyetlen kérdés-mező, "Kérdezd a FountainTrade-et" gomb,
-a válasz + a ténylegesen használt eszközök listája. A JS réteg
-(`webroot/ai-asszisztens.js`) a választott agent alapján HÁROM KÜLÖN, de
-azonos alakú végpont közül választ (`/api/ai-inventory.php`,
-`/api/ai-sales.php` vagy `/api/ai-anomaly.php`) — ennek az oldalnak NINCS
-külön kódútja sem Ollama vs. Anthropic vs. OpenAI, sem Inventory vs.
-Sales vs. Anomaly esetén, a különbség kizárólag a Beállítások fülön
-(provider) és az Agent-választón (melyik végpont), illetve a szerver-
-oldali `AiProviderFactory`-ban dől el. Az anomália-találatok
+a válasz + a ténylegesen használt eszközök listája (Copilot esetén a
+"Felhasznált ügynökök" sorral kiegészítve). A JS réteg
+(`webroot/ai-asszisztens.js`) a választott agent alapján NÉGY KÜLÖN, de
+azonos alakú végpont közül választ (`/api/ai-copilot.php`,
+`/api/ai-inventory.php`, `/api/ai-sales.php` vagy `/api/ai-anomaly.php`) —
+ennek az oldalnak NINCS külön kódútja sem Ollama vs. Anthropic vs.
+OpenAI, sem Copilot vs. Inventory vs. Sales vs. Anomaly esetén, a
+különbség kizárólag a Beállítások fülön (provider) és az Agent-választón
+(melyik végpont), illetve a szerver-oldali `AiProviderFactory`-ban dől
+el. Az anomália-találatok
 számadatai (súlyosság, %-os változás) MINDIG a backend válaszából
 származnak — a JS SOSE számol/módosít semmilyen anomália-mutatót (lásd a
 kör 14. pontja: "Do not have JavaScript calculate the anomaly
@@ -3823,6 +3911,142 @@ providerenként (`OllamaHealth`/`AnthropicHealth`/`OpenAiHealth`) — nem
 indít hálózati/API-hívást minden oldalbetöltéskor, és egyik provider
 elérhetetlensége SEM befolyásolja a kassza vagy a többi
 FountainTrade-funkció működését.
+
+### Ollama-telepítés (Fázis 6, Rész B)
+
+Az AI asszisztens **Helyi (Ollama)** módjának gyakorlati akadálya eddig
+az volt, hogy egy admin-nak MANUÁLISAN kellett telepítenie az
+[Ollamát](https://ollama.com) a szerver-gépre. Ez a kör ezt teszi
+gyakorlativá — Standalone/Szerver node-okon, a Beállítások felületéről
+VAGY a Windows telepítőből.
+
+#### Hivatalos telepítési mechanizmus (élőben ellenőrizve, 2026-09-23)
+
+A képzési adatok helyett a JELENLEGI hivatalos Ollama-forrásokat
+ellenőriztük élőben (böngészőn keresztül), az eredmény:
+
+- A Windows-telepítő (`OllamaSetup.exe`) a GitHub Releases API-n
+  keresztül szerezhető be biztonságosan:
+  `https://api.github.com/repos/ollama/ollama/releases/latest` — ez adja
+  vissza a MINDENKORI legújabb kiadás pontos, GitHub-hosztolt
+  letöltési címét (`github.com/ollama/ollama/releases/download/...`) ÉS
+  egy, a GitHub infrastruktúrája által SZÁMÍTOTT SHA-256 `digest` mezőt
+  minden egyes eszközhöz (az Ollama projekt emellett egy SAJÁT,
+  karbantartók által feltöltött `sha256sum.txt` fájlt is közread minden
+  kiadáshoz) — ez a VALÓS, ellenőrizhető integritás-mechanizmus, amit a
+  `OllamaProvisioner` ténylegesen használ letöltés után, futtatás előtt.
+  Sem checksumot, sem aláíró-nevet nem talált ki/publikált a projekt —
+  a GitHub API strukturált válasza az egyetlen forrás.
+- Az Ollama forráskódjának `app/ollama.iss` fájlja (a hivatalos build
+  ezt fordítja `OllamaSetup.exe`-vé [Inno Setup](https://jrsoftware.org/isinfo.php)-pal)
+  igazolja: **`PrivilegesRequired=lowest`** — az Ollama Windows-telepítője
+  **NEM igényel Rendszergazdai/UAC-jogosultságot**, a felhasználó SAJÁT
+  `%LOCALAPPDATA%\Programs\Ollama` mappájába települ. Ezt FÜGGETLENÜL a
+  hivatalos `docs.ollama.com/windows` oldal is megerősíti ("The Ollama
+  install does not require Administrator"). **Emiatt a FountainTrade
+  Ollama-telepítője SOSE valósít meg UAC-megkerülést, elevated
+  segédfolyamatot vagy self-elevation-t** — a telepítő UGYANAZZAL a
+  jogosultsággal indítható, mint amivel a FountainTrade Szerver-folyamat
+  fut (`OllamaProvisioner::runSilentInstaller()`).
+- Az Inno Setup STANDARD, dokumentált csendes-telepítési kapcsolói
+  (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`) érvényesek, semmilyen
+  Ollama-specifikus felülírás nélkül — a `docs.ollama.com/windows` oldal
+  FÜGGETLENÜL is megerősíti a `/DIR="..."` kapcsoló meglétét (ugyanaz az
+  Inno Setup szabvány-kapcsoló), ami két FÜGGETLEN forrásból is
+  alátámasztja az azonosítást (Inno Setup, nem NSIS/MSI).
+- Az Ollama API alapértelmezetten KIZÁRÓLAG `127.0.0.1:11434`-en figyel
+  — a FountainTrade Ollama-kódja (sem a `LocalProvider`, sem az
+  `OllamaProvisioner`) SOSE állítja be az `OLLAMA_HOST` környezeti
+  változót, tehát ez a biztonságos alapértelmezés érintetlen marad, MÉG
+  akkor is, ha maga a FountainTrade Szerver `0.0.0.0`-n figyel — **nincs
+  új tűzfalszabály, nincs LAN-expozíció**.
+- Modell-letöltés: `POST /api/pull {"model":..., "stream": false}` →
+  végleges válasz `{"status": "success"}` (vagy hiba) — ugyanaz a REST-
+  konvenció, mint a MEGLÉVŐ `/api/chat`/`/api/tags` végpontok.
+
+#### `OllamaProvisioner` (`src/Ai/OllamaProvisioner.php`)
+
+Szándékosan KÜLÖN osztály, NEM a `LocalProvider` bővítése (a
+`LocalProvider` továbbra is TISZTÁN API-kliens marad, telepítési logika
+nélkül — lásd a kör 17. pontja). Felelősségei:
+
+- **Detektálás**: `installedBinaryPath()`/`isInstalled()` (a
+  `%LOCALAPPDATA%\Programs\Ollama\ollama.exe` jelenléte), `detectApiVersion()`
+  (`GET /api/version`) és `detectCliVersion()` (`ollama.exe --version`,
+  akkor is működik, ha a szerver-folyamat épp nem fut), `isModelInstalled()`
+  (`GET /api/tags`, ugyanazzal a ":latest"-tag-toleráns egyezés-logikával,
+  mint `LocalProvider::checkAvailability()`), `detectStatus()`/
+  `detectStatusCached()` (30 másodperces TTL-cache, UGYANAZ a minta, mint
+  `OllamaHealth` — a kör 31. pontja: nincs felesleges ellenőrzés minden
+  oldalbetöltéskor).
+- **Telepítés**: `downloadAndVerifyInstaller()` (letöltés + SHA-256
+  ellenőrzés, SOSE futtat) + `runSilentInstaller()` (a MÁR letöltött,
+  MÁR ellenőrzött fájl csendes futtatása, tömb-alakú `proc_open` argv-vel,
+  SOSE shell-interpretált) — `install()` a kettőt kapcsolja össze.
+  Bizalmi kapuk: a letöltési cím MINDIG `https://github.com/ollama/ollama/releases/download/`
+  előtaggal kell kezdődjön, és MINDIG kell hozzá egy nem-üres SHA-256
+  `digest` — ha bármelyik hiányzik, a telepítés MEGSZAKAD, SOSE telepít
+  vakon.
+- **Indítás/ellenőrzés**: `startIfNotRunning()` — ha az API már elérhető,
+  nincs teendő; ha nem, megpróbálja elindítani a tálca-alkalmazást
+  (ami saját maga indítja a szerver-folyamatot is).
+- **Modell-letöltés**: `pullModel()` — a konfigurált `ai_local_model`
+  (SOSE hardcodolt `qwen3:8b` az `OllamaProvisioner`-ben magában, lásd a
+  kör 22. pontja) letöltése, modellnév-validációval (csak
+  `[a-zA-Z0-9._:/-]` karakterek).
+
+#### In-app telepítés (Beállítások → AI asszisztens)
+
+Amikor a **Helyi (Ollama)** provider van kiválasztva, egy **"Helyi
+Ollama telepítés/kezelés"** panel jelenik meg: Telepítve/Verzió/API
+elérhető/Konfigurált modell/Modell letöltve állapot-tábla, és
+**"Állapot frissítése"**/**"Ollama telepítése"**/**"Indítás/ellenőrzés"**/
+**"Modell letöltése"** gombok. A gombok a `POST /api/ollama-install.php`,
+`/api/ollama-start.php`, `/api/ollama-pull-model.php` végpontokat hívják
+(mindegyik `require_admin`, node_role-védett), az állapot a `GET
+/api/ollama-status.php` (30 mp cache) végpontról jön. A modell-letöltés
+akár több percig is eltarthat egy nagyobb modellnél — ez EGY, szinkron
+HTTP-kéréssel történik (lásd "Ismert korlátok" lent a streamelt
+progress-sáv hiányáról), a felület eközben egy "folyamatban" szöveget
+mutat.
+
+#### Windows telepítő integráció
+
+Az `install-windows.ps1` a node-szerepkör (Önálló gép/Szerver/Kliens)
+beállítása UTÁN egy opcionális "Helyi AI (Ollama)" lépést kínál fel —
+**KIZÁRÓLAG Önálló gép/Szerver szerepkörnél** (`Resolve-OllamaProvisionDecision`,
+`install-windows-lib.ps1` — Kliens node-on ez a lépés STRUKTURÁLISAN ki
+van zárva, nem csak egy feltétel rejti el a menüt elöl). Új kapcsolók:
+`-InstallOllama` / `-SkipOllama` (nem-interaktív módban explicit döntés
+szükséges, alapértelmezetten NEM települ csendben), `-OllamaRequired`
+(ha jelen van, egy sikertelen Ollama-telepítés a TELJES FountainTrade-
+telepítést megszakítja — alapból NEM ez történik, a POS Ollama nélkül is
+teljes körűen telepíthető marad), `-OllamaModel` (alapértelmezetten
+`qwen3:8b`). A tényleges telepítést a `tools/ollama-provision-cli.php`
+CLI-eszköz végzi (ugyanaz a minta, mint `tools/installer-set-topology.php`
+— a PowerShell-oldal SOSE ír újra PHP-logikát, mindig a MEGLÉVŐ
+`OllamaProvisioner`-t hívja meg egy vékony argumentum-építő/JSON-parszoló
+csomagoláson keresztül).
+
+#### Node-szerepkör szabályok
+
+| Szerepkör | Telepíthet Ollamát? | Futtathat Ollamát? | Tart Ollama-beállítást? |
+|---|---|---|---|
+| Önálló gép | Igen | Igen (helyben) | Igen |
+| Szerver | Igen | Igen (helyben) | Igen |
+| Kliens | **Nem** | **Nem** | **Nem** |
+
+Egy Kliens node SOSE telepít/futtat/konfigurál Ollamát helyben — minden
+AI-kérés (Copilot/Inventory/Sales/Anomaly) a MEGLÉVŐ `ClientProxy`-n
+keresztül a Szerverre megy, ott fut le a tényleges `LocalProvider`/
+`OllamaProvisioner`-hívás. Az `ollama-status.php`/`ollama-install.php`/
+`ollama-start.php`/`ollama-pull-model.php` végpontok mindegyike explicit
+elutasítja a `node_role === 'client'` esetet, ugyanazzal a mintával, mint
+a MEGLÉVŐ cron-script topológia-védőháló a `_bootstrap.php`-ban — ez egy
+FÜGGETLEN, a végpont saját szerződését is önmagában igazoló védőháló,
+azon FELÜL, hogy egy Kliens kérése egyébként is a `_bootstrap.php`
+node_role-elágazásán keresztül már ELŐBB a Szerverre proxyzódna (lásd
+`tests/AiCopilotClientProxyHttpTest.php::testClientCannotTriggerOllamaInstallation`).
 
 ### Ismert korlátok
 
@@ -3911,3 +4135,53 @@ FountainTrade-funkció működését.
   mennének át (AI javaslat → emberi jóváhagyás → validált backend
   művelet → audit log) — ez a mechanizmus még nincs megépítve, jelenleg
   mindhárom provider és mindhárom agent szigorúan csak olvasás.
+- **Az AiCopilot valódi API-kulccsal/valódi Ollamával még NINCS élesben
+  ellenőrizve** (Fázis 6, Rész A) — ugyanazzal az indoklással, mint a
+  Sales-/AnomalyAgent-nél fentebb: az implementáció idején sem helyi
+  Ollama nem futott, sem Anthropic-/OpenAI-API-kulcs nem volt biztonságosan
+  konfigurálva. A Copilot teljes ügynök-választási/szintézis-folyamata
+  KIZÁRÓLAG kontrollált `FakeAiProvider`-rel (`tests/AiCopilotTest.php`,
+  valódi InventoryAgent/SalesAgent/AnomalyAgent + valódi eszközök) és
+  loopback stub-szerverekkel (`tests/AiCopilotEndpointHttpTest.php`,
+  `AiCopilotClientProxyHttpTest.php`, `AiCopilotCrossProviderRegressionTest.php`)
+  lett bizonyítva. Ha egy admin valódi providert állít be, első
+  Copilot-kérdés előtt mindenképp végezz egy manuális, ténylegesen
+  több-ügynökös kérdés-tesztet (pl. "Van olyan termék, amelyből nő a
+  készlet, miközben csökken az értékesítés?").
+- **Az Ollama-telepítés valódi telepítővel/valódi GitHub-hívással még
+  NINCS élesben ellenőrizve** (Fázis 6, Rész B) — az implementáció idején
+  nem állt rendelkezésre olyan gép, ahol egy valódi `OllamaSetup.exe`
+  telepítést biztonságosan el lehetett volna végezni PHPUnit-futás
+  részeként (ez EGYÉBKÉNT is tiltott lenne — lásd a kör 26. pontja: "Do
+  not run a real installer during PHPUnit"). Az `OllamaProvisioner`
+  MINDEN ága (letöltés+SHA-256-ellenőrzés, csendes futtatás, állapot-
+  detektálás, modell-letöltés) kontrollált loopback stub-szerverek és a
+  PHP CLI-t magát ártalmatlan tesztparancsként használó valódi
+  folyamat-indítás ellen lett bizonyítva (lásd
+  `tests/OllamaProvisionerTest.php`) — a hivatalos letöltési forrás/
+  checksum-mechanizmus/Inno Setup-azonosítás viszont ÉLŐ, valódi
+  GitHub-lekérdezéssel lett kutatva (lásd fentebb "Hivatalos telepítési
+  mechanizmus"), nem feltételezésből. Ha egy admin ténylegesen
+  telepít(tet) Ollamát a Beállítások felületéről vagy a Windows
+  telepítőből, első alkalommal mindenképp ellenőrizd az "Állapot
+  frissítése" gombbal, hogy a telepítés/API/modell ténylegesen rendben
+  van-e.
+- **Nincs streamelt letöltési folyamatjelző a modell-letöltéshez** — a
+  `POST /api/ollama-pull-model.php` egyetlen, szinkron (bár hosszú
+  időkorláttal futó) HTTP-kérésen keresztül hívja az Ollama `/api/pull`
+  végpontját `stream:false`-szal — a felület csak a végleges siker/hiba
+  állapotot mutatja, nem egy élő %-os sávot. Nagyobb modelleknél (több
+  GB) ez azt jelenti, hogy a böngésző-kérés is hosszan blokkolhat.
+- **Az Ollama-telepítés Windows-szolgáltatásként futó FountainTrade
+  Szerver esetén elméleti korlátba ütközhet** — bár az Ollama hivatalos
+  Windows-telepítője NEM igényel Rendszergazdai/UAC-jogosultságot (lásd
+  fentebb), az Inno Setup-alapú telepítő és az Ollama tálca-alkalmazása
+  GUI-jellegű folyamat, ami tipikusan egy interaktív desktop-munkameneten
+  belül fut megbízhatóan — ha a FountainTrade Szerver egy nem-interaktív
+  Windows-szolgáltatásfiókként fut (nincs bejelentkezett desktop-
+  munkamenet), a telepítés/indítás elméletileg megbízhatatlanabb lehet.
+  Ez NEM egy jogosultsági (UAC) korlát, hanem egy desktop-munkamenet
+  korlát — ilyen esetben a `ollama-install.php`/`ollama-start.php`
+  egyértelmű hibát ad vissza (nem hagyja hamisan azt hinni az adminnal,
+  hogy sikerült), és az admin manuálisan, egy interaktív munkamenetből
+  is telepítheti/indíthatja az Ollamát.

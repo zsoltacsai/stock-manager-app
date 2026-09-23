@@ -969,6 +969,32 @@ if (!Auth::isLoggedIn($appSettings)) {
                 <input type="text" id="ai-timeout-seconds" placeholder="30">
             </div>
 
+            <div id="ai-ollama-provision-section" style="border-top:1px solid var(--border); margin-top:16px; padding-top:16px;">
+                <strong>Helyi Ollama telepítés/kezelés</strong>
+                <p class="muted" style="margin-top:4px;">
+                    Csak Önálló gép vagy Szerver node-on érhető el — Kliens node SOSE telepít/futtat
+                    Ollamát helyben, minden ilyen kérés a Szerveren fut le. Az Ollama Windows-
+                    telepítője a hivatalos gyártói leírás szerint NEM igényel Rendszergazdai
+                    jogosultságot, a saját felhasználói fiókodba települ.
+                </p>
+                <table class="sample-table" style="margin-top:8px;">
+                    <tbody>
+                        <tr><td>Telepítve</td><td id="ollama-prov-installed">—</td></tr>
+                        <tr><td>Verzió</td><td id="ollama-prov-version">—</td></tr>
+                        <tr><td>API elérhető</td><td id="ollama-prov-api">—</td></tr>
+                        <tr><td>Konfigurált modell</td><td id="ollama-prov-model-name">—</td></tr>
+                        <tr><td>Modell letöltve</td><td id="ollama-prov-model-status">—</td></tr>
+                    </tbody>
+                </table>
+                <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+                    <button id="ollama-prov-refresh-btn" class="btn btn-secondary" style="width:auto; padding:8px 14px;" type="button">Állapot frissítése</button>
+                    <button id="ollama-prov-install-btn" class="btn btn-primary" style="width:auto; padding:8px 14px;" type="button">Ollama telepítése</button>
+                    <button id="ollama-prov-start-btn" class="btn btn-secondary" style="width:auto; padding:8px 14px;" type="button">Indítás/ellenőrzés</button>
+                    <button id="ollama-prov-pull-btn" class="btn btn-secondary" style="width:auto; padding:8px 14px;" type="button">Modell letöltése</button>
+                </div>
+                <p id="ollama-prov-feedback" class="modal-feedback" style="margin-top:8px;"></p>
+            </div>
+
             <div id="ai-anthropic-fields" class="hidden">
                 <label for="ai-anthropic-api-key">Anthropic API-kulcs</label>
                 <input type="password" id="ai-anthropic-api-key" placeholder="(mentve)">

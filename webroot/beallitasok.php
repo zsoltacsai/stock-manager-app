@@ -937,12 +937,12 @@ if (!Auth::isLoggedIn($appSettings)) {
                 Az AI asszisztens vagy egy helyi, a saját szervered gépén (vagy egy
                 általad megadott másik gépen a hálózaton belül) futó
                 <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>-példányt,
-                vagy az Anthropic (Claude) felhő-alapú API-ját használja — az alábbi választástól
-                függően. Anthropic esetén a kérdésed és a lekérdezett adatok az Anthropic
-                szervereire mennek; helyi (Ollama) esetén semmilyen adat nem megy külső,
-                internetes AI-szolgáltatáshoz. Az asszisztens mindkét esetben KIZÁRÓLAG
-                olvasásra képes (nem módosít készletet, árat, nem hoz létre beszerzést) — lásd
-                az "AI Asszisztens" oldalt a bal oldali menüben.
+                vagy az Anthropic (Claude), vagy az OpenAI felhő-alapú API-ját használja — az
+                alábbi választástól függően. Anthropic/OpenAI esetén a kérdésed és a lekérdezett
+                adatok a választott szolgáltató szervereire mennek; helyi (Ollama) esetén
+                semmilyen adat nem megy külső, internetes AI-szolgáltatáshoz. Az asszisztens
+                mindhárom esetben KIZÁRÓLAG olvasásra képes (nem módosít készletet, árat, nem
+                hoz létre beszerzést) — lásd az "AI Asszisztens" oldalt a bal oldali menüben.
             </p>
             <div class="toggle-line">
                 <span>AI asszisztens bekapcsolva</span>
@@ -953,6 +953,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <select id="ai-provider">
                 <option value="local">Helyi (Ollama)</option>
                 <option value="anthropic">Anthropic (Claude)</option>
+                <option value="openai">OpenAI</option>
             </select>
 
             <div id="ai-local-fields">
@@ -981,6 +982,21 @@ if (!Auth::isLoggedIn($appSettings)) {
                 <input type="text" id="ai-anthropic-base-url" placeholder="https://api.anthropic.com">
                 <label for="ai-anthropic-timeout-seconds">Időkorlát (másodperc)</label>
                 <input type="text" id="ai-anthropic-timeout-seconds" placeholder="30">
+            </div>
+
+            <div id="ai-openai-fields" class="hidden">
+                <label for="ai-openai-api-key">OpenAI API-kulcs</label>
+                <input type="password" id="ai-openai-api-key" placeholder="(mentve)">
+                <p class="muted" style="margin-top:-6px;">
+                    A kulcs kizárólag a szerveren tárolódik, sose kerül a böngészőbe. Üresen
+                    hagyva a mentés nem törli a korábban elmentett kulcsot.
+                </p>
+                <label for="ai-openai-model">Modell</label>
+                <input type="text" id="ai-openai-model" placeholder="gpt-6-sol">
+                <label for="ai-openai-base-url">API URL</label>
+                <input type="text" id="ai-openai-base-url" placeholder="https://api.openai.com">
+                <label for="ai-openai-timeout-seconds">Időkorlát (másodperc)</label>
+                <input type="text" id="ai-openai-timeout-seconds" placeholder="30">
             </div>
 
             <label for="ai-max-iterations">Maximális lépésszám (eszköz-hívási körök)</label>

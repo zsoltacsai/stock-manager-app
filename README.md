@@ -3271,24 +3271,26 @@ tervezve (ami megfelel a valós, egy-kasszás használati esetnek). Két
 külön célkönyvtárba telepített példány UGYANAZOKAT a Feladatütemező-
 bejegyzéseket használná, és az egyik telepítés átírná a másikét.
 
-## AI Asszisztens (Inventory Agent — Ollama vagy Anthropic/Claude)
+## AI Asszisztens (Inventory Agent — Ollama, Anthropic/Claude vagy OpenAI)
 
 Az első FountainTrade AI-réteg: egy **provider-független AI-absztrakció**
-(`src/Ai/`), aminek jelenleg KÉT, ténylegesen bekötött megvalósítása van —
-egy **helyi [Ollama](https://ollama.com)**-példány (`LocalProvider`, Fázis
-1) és az **Anthropic Messages API/Claude** (`AnthropicProvider`, Fázis 2)
-—, admin által választhatóan. Az első (és jelenleg egyetlen) agent egy
-**kizárólag olvasás-jogú Készlet-asszisztens** (Inventory Agent). Ollama
-esetén semmilyen adat nem megy külső, internetes AI-szolgáltatáshoz —
-minden a saját géped (vagy a helyi hálózaton belüli, általad megadott
-gép) Ollama-példányán fut. Anthropic esetén a kérdésed és a lekérdezett
-(olvasás-kizárólagos) adatok az Anthropic szervereire mennek.
+(`src/Ai/`), aminek jelenleg HÁROM, ténylegesen bekötött megvalósítása van
+— egy **helyi [Ollama](https://ollama.com)**-példány (`LocalProvider`,
+Fázis 1), az **Anthropic Messages API/Claude** (`AnthropicProvider`, Fázis
+2) és az **OpenAI Responses API** (`OpenAiProvider`, Fázis 3) —, admin
+által választhatóan. Az első (és jelenleg egyetlen) agent egy **kizárólag
+olvasás-jogú Készlet-asszisztens** (Inventory Agent). Ollama esetén
+semmilyen adat nem megy külső, internetes AI-szolgáltatáshoz — minden a
+saját géped (vagy a helyi hálózaton belüli, általad megadott gép)
+Ollama-példányán fut. Anthropic/OpenAI esetén a kérdésed és a lekérdezett
+(olvasás-kizárólagos) adatok a választott szolgáltató szervereire mennek.
 
 ### Architektúra
 
 ```
 Felhasználó → AgentRunner → AiProviderInterface → LocalProvider (Ollama)
                                                   ⌐ AnthropicProvider (Claude)
+                                                  ⌐ OpenAiProvider (OpenAI)
             → HTTP API → LLM eszköz-hívás → ToolRegistry
             → FountainTrade olvasás-kizárólagos eszköz → eredmény
             → LLM → végleges válasz
@@ -3297,10 +3299,12 @@ Felhasználó → AgentRunner → AiProviderInterface → LocalProvider (Ollama)
 - **`AiProviderInterface`** — az EGYETLEN szerződés, amin keresztül az
   `AgentRunner` bármelyik providerrel beszél. Az `AgentRunner` és az
   `InventoryAgent` SOSE tud/feltételez semmit egy konkrét provider natív
-  HTTP/válasz-formátumáról — ez az architektúra Fázis 2 fő bizonyítéka:
+  HTTP/válasz-formátumáról — ez az architektúra Fázis 2/3 fő bizonyítéka:
   UGYANAZ az `InventoryAgent`, UGYANAZON az `AgentRunner`-en keresztül,
   provider-specifikus logika NÉLKÜL az agent/AgentRunner kódjában fut
-  mindkét providerrel.
+  mind a három providerrel (lásd `tests/AiCrossProviderRegressionTest.php`
+  — ugyanaz a szemantikai kérdés, ugyanaz az eszköz-hívás, mindhárom
+  providerrel).
 - **`LocalProvider`** — Ollama `/api/chat` (beszélgetés + eszköz-hívás)
   és `/api/tags` (elérhetőség/modell-lista) HTTP API-n keresztül,
   konfigurálható base URL-lel, modellel és időkorláttal. Nem igényel
@@ -3322,16 +3326,54 @@ Felhasználó → AgentRunner → AiProviderInterface → LocalProvider (Ollama)
   user-üzenetbe legyen csoportosítva (`tool_result` content block-ok
   tömbje) — ezt a fordítást az `AnthropicProvider::translateMessages()`
   végzi, lásd a docblokkját.
+- **`OpenAiProvider`** — az [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses)
+  (`POST /v1/responses`, `GET /v1/models`) közvetlen HTTP (cURL)
+  implementációja, ugyanazzal a Composer-mentes indoklással, mint az
+  Anthropic-nál. Fontos, dokumentáció-alapú protokoll-döntések:
+  - **Nincs `previous_response_id`-alapú szerver-oldali állapot-
+    láncolás** — a hivatalos "function calling" útmutató saját ajánlott
+    mintája szerint a TELJES `input` listát (a korábbi assistant/
+    function_call/function_call_output elemekkel együtt) újraküldjük
+    minden hívásnál, ugyanúgy, mint az Anthropic/Ollama providerek —
+    ez a MEGLÉVŐ `ConversationManager`/`AgentRunner` "mindig a teljes
+    előzményt küldd újra" tervéhez illeszkedik, nincs szükség egy
+    genuinely eltérő állapot-modellre.
+  - **`store: false` mindig** — mivel sose használunk
+    `previous_response_id`-t, nincs szükség arra, hogy az OpenAI a
+    válaszainkat a szerverén tárolja (alapértelmezetten legalább 30
+    napig tárolná).
+  - **A tool-eredmény-folytatás EGY `function_call_output` elem
+    HÍVÁSONKÉNT**, NEM egyetlen csoportosított üzenetbe bundle-özve
+    (ELLENTÉTBEN az Anthropic-kal) — ez pontosan megegyezik a
+    `ConversationManager::addToolResult()` meglévő, hívásonkénti
+    'tool'-üzenet mintájával, ezért itt NEM kellett semmilyen
+    összegyűjtő/buffer logika (ellentétben `AnthropicProvider::
+    translateMessages()`-szel).
+  - **Lapos eszköz-séma** (`{type, name, description, parameters,
+    strict}` közvetlenül a tömb-elemen) — NEM egy beágyazott
+    `"function"` kulcs alatt, ellentétben a Ollama-stílusú
+    `ToolRegistry::toProviderToolList()`-nak megfelelő alakkal, ezért az
+    `OpenAiProvider` közvetlenül a `ToolDefinition`-ökből építi a
+    kérést, nem a kényelmi metódusból.
+  - **Ismert, dokumentált egyszerűsítés**: a visszaküldött assistant
+    szöveges üzeneteket és function_call elemeket a saját, egyszerű
+    `EasyInputMessage`-stílusú alakban (`{role, content}` string
+    content-tel) illetve a dokumentált `{type:'function_call', call_id,
+    name, arguments}` alakban építjük újra, NEM az OpenAI válaszában
+    kapott elem nyers, teljes (pl. `id`/`status` mezőket is tartalmazó)
+    alakját visszhangozva — mivel valódi API-kulcs hiányában ez élesben
+    nem volt tesztelhető, ez explicit, dokumentált feltételezés (lásd
+    "Ismert korlátok" alul).
 - **`AiProviderFactory`** — az EGYETLEN hely, ahol a `ai_provider`
   beállítás egy konkrét `AiProviderInterface`-példánnyá válik. Szigorú
-  fehérlista (`local`, `anthropic`) — a beállításban tárolt érték SOSE
-  használható közvetlenül osztálynévként; ismeretlen érték biztonságosan
-  elutasításra kerül (kivétel + korlátozott `system_events` napló-
-  bejegyzés), sose esik vissza csendben egy másik providerre.
-- **`OllamaHealth`/`AnthropicHealth`** — providerenként KÜLÖN, egymástól
-  független, rövid életű (30 másodperces TTL) gép-helyi cache-elt
-  elérhetőség-ellenőrzés — az UI-nak nem szabad minden oldalbetöltéskor
-  valódi hálózati/API-hívást indítania.
+  fehérlista (`local`, `anthropic`, `openai`) — a beállításban tárolt
+  érték SOSE használható közvetlenül osztálynévként; ismeretlen érték
+  biztonságosan elutasításra kerül (kivétel + korlátozott `system_events`
+  napló-bejegyzés), sose esik vissza csendben egy másik providerre.
+- **`OllamaHealth`/`AnthropicHealth`/`OpenAiHealth`** — providerenként
+  KÜLÖN, egymástól független, rövid életű (30 másodperces TTL) gép-helyi
+  cache-elt elérhetőség-ellenőrzés — az UI-nak nem szabad minden
+  oldalbetöltéskor valódi hálózati/API-hívást indítania.
 - **`ToolRegistry`** — a modell KIZÁRÓLAG a fordítási időben regisztrált
   eszközök nevei közül választhat; egy ismeretlen eszköznév sose fut le
   (biztonságos hibaüzenettel tér vissza). A modell SOSE kap közvetlen
@@ -3361,8 +3403,12 @@ Felhasználó → AgentRunner → AiProviderInterface → LocalProvider (Ollama)
 | Anthropic modell | `claude-sonnet-5` |
 | Anthropic API URL | `https://api.anthropic.com` |
 | Anthropic időkorlát | 30 másodperc |
-| Max. lépésszám (eszköz-hívási kör) | 5 (mindkét providernél) |
-| Max. válasz-hossz (token, opcionális) | nincs korlátozva (mindkét providernél) |
+| OpenAI API-kulcs | (nincs beállítva) |
+| OpenAI modell | `gpt-6-sol` |
+| OpenAI API URL | `https://api.openai.com` |
+| OpenAI időkorlát | 30 másodperc |
+| Max. lépésszám (eszköz-hívási kör) | 5 (mindhárom providernél) |
+| Max. válasz-hossz (token, opcionális) | nincs korlátozva (mindhárom providernél) |
 
 Az Ollama telepítése/futtatása a FountainTrade-től FÜGGETLEN lépés — lásd
 [ollama.com](https://ollama.com), majd `ollama pull qwen3:8b`. A
@@ -3374,54 +3420,74 @@ kiválasztva — a docs saját megfogalmazása szerint "a legjobb egyensúly
 sebesség és intelligencia között", ami egy szinkron, gyakran hívott,
 egyszerű eszköz-hívó asszisztenshez (mint az Inventory Agent) jobban illik,
 mint a nagyobb költségű/late­nciájú, hosszú-futású agentic munkára szánt
-Opus modell. A modell admin által bármikor felülírható.
+Opus modell.
+
+Az OpenAI-modell alapértéke (`gpt-6-sol`) SZINTÉN az implementáció idején
+hatályos, hivatalos OpenAI modell-katalógus alapján lett kiválasztva — NEM
+a feladat-leírásban javasolt (elavult, a jelenlegi katalógusban nem is
+szereplő) modellnévvel. A jelenlegi OpenAI-lineup GPT-6 generációs
+(Astra/Sol/Luna); a `gpt-6-sol` a docs saját megfogalmazása szerint
+"komplex kódolási és agentic munkafolyamatokra" készült, ár/teljesítmény
+szempontból a Sonnet 5-nek megfelelő középső szinten ($2/$10 per MTok
+be/kimenet, pontosan megegyezik a Claude Sonnet 5 árazásával) — ugyanaz az
+indoklás, mint az Anthropic-modell választásánál: a flagship (`gpt-6-astra`,
+komplex érvelésre/kódolásra optimalizált, drágább/lassabb) túlméretezett
+egy egyszerű, szinkron eszköz-hívó asszisztenshez, a legolcsóbb (`gpt-6-luna`)
+pedig "cost-sensitive, high-volume" munkára pozicionált, nem feltétlenül
+elég megbízható eszköz-választáshoz. Mindkét modell admin által bármikor
+felülírható.
 
 ### Provider-választás
 
 Az admin a Beállítások → AI asszisztens fülön választja ki, hogy az
-Inventory Agent Ollamát vagy Anthropicot (Claude) használjon-e — EGYETLEN
-beállítás-rendszer, nincs második, párhuzamos AI-konfigurációs alrendszer.
-A választás logika KIZÁRÓLAG az `AiProviderFactory`-ban van, sose az
-`InventoryAgent`-ben — az agent maga sose tudja/dönti el, melyik
+Inventory Agent Ollamát, Anthropicot (Claude) vagy OpenAI-t használjon-e —
+EGYETLEN beállítás-rendszer, nincs második, párhuzamos AI-konfigurációs
+alrendszer. A választás logika KIZÁRÓLAG az `AiProviderFactory`-ban van,
+sose az `InventoryAgent`-ben — az agent maga sose tudja/dönti el, melyik
 providerrel beszél.
 
-### Anthropic API-kulcs — tárolás és biztonság
+### Anthropic/OpenAI API-kulcs — tárolás és biztonság
 
 - Az API-kulcs a MEGLÉVŐ, más integrációknál (WooCommerce, NAV, SMTP,
   felhő-mentés) is használt titkos-mező mechanizmust használja
   (`Settings::SECRET_RESPONSE_FIELDS`/`maskSecretFields()`,
   `webroot/api/settings.php` `$secretFields` tömbje) — NEM egy külön,
-  Anthropic-specifikus tárolási megoldás.
-- GET `/api/settings.php` válaszban a kulcs SOSE megy ki nyersen — csak
-  egy `anthropic_api_key_set` jelző jelzi, hogy van-e már elmentett érték.
+  provider-specifikus tárolási megoldás. Az OpenAI-kulcs (`openai_api_key`)
+  ugyanezt a mechanizmust használja, mint az Anthropic-kulcs.
+- GET `/api/settings.php` válaszban a kulcsok SOSE mennek ki nyersen —
+  csak egy `anthropic_api_key_set`/`openai_api_key_set` jelző jelzi, hogy
+  van-e már elmentett érték.
 - Üresen beküldött kulcs-mező mentéskor NEM törli a meglévő kulcsot — csak
   egy ténylegesen újonnan beírt érték írja felül. A felület mindig csak a
   maszkolt állapotot mutatja.
 - A kulcs SOSE kerül a böngésző-JavaScripthez, SOSE kerül naplózásra
   (sem `audit_log`, sem `system_events`), és SOSE jelenik meg egy
   `AiProviderException` üzenetében.
-- Az `anthropic_base_url` a `webroot/api/settings.php` `$outboundUrlFields`
-  SSRF-védelmén megy át mentéskor (`UrlSafety::check()`) — ELLENTÉTBEN az
-  `ai_local_base_url`-lel (ami alapból loopback, Ollama-specifikus, ott a
-  loopback a VÁRT eset), az Anthropic base URL egy valódi, külső,
-  nyilvános API, nincs legitim ok, hogy belső/loopback címre mutasson.
+- Az `anthropic_base_url`/`openai_base_url` a `webroot/api/settings.php`
+  `$outboundUrlFields` SSRF-védelmén megy át mentéskor (`UrlSafety::check()`)
+  — ELLENTÉTBEN az `ai_local_base_url`-lel (ami alapból loopback,
+  Ollama-specifikus, ott a loopback a VÁRT eset), mindkét felhő-API egy
+  valódi, külső, nyilvános szolgáltatás, nincs legitim ok, hogy belső/
+  loopback címre mutasson.
 - A kulcs kizárólag a Szerver/Önálló gépen létezik — lásd lent, Client/
   Szerver viselkedés.
 
 ### Client/Szerver viselkedés
 
-Az AI-réteg (és maga az Ollama/Anthropic-hívás) **KIZÁRÓLAG a Szerver/
-Önálló oldalon fut**, MINDKÉT providernél — egy Kliens node SOSE hoz
-létre `LocalProvider`-t vagy `AnthropicProvider`-t, SOSE hív Ollamát vagy
-Anthropicot közvetlenül, és nincs külön, párhuzamos AI-specifikus
-Kliens-API: az `/api/ai-inventory.php` végpont a MEGLÉVŐ `ClientProxy`-n
-keresztül megy, pontosan úgy, mint minden más API-végpont. Egy
-Kliens-gépen a settings.json-nak nincs is szüksége AI-beállításra (sem
-Ollama-, sem Anthropic-kulcsra) — a kérés a Szerverig ér, ott dől el
-minden, a `_bootstrap.php` `node_role`-elágazása garantálja, hogy a
-Kliens saját kódja sose fut le eddig a pontig. Nincs Anthropichoz külön
-írt Kliens-oldali védő kód — ugyanaz a MEGLÉVŐ mechanizmus véd mindkét
-providernél.
+Az AI-réteg (és maga az Ollama/Anthropic/OpenAI-hívás) **KIZÁRÓLAG a
+Szerver/Önálló oldalon fut**, MINDHÁROM providernél — egy Kliens node
+SOSE hoz létre `LocalProvider`-t, `AnthropicProvider`-t vagy
+`OpenAiProvider`-t, SOSE hívja a választott szolgáltatót közvetlenül, és
+nincs külön, párhuzamos AI-specifikus Kliens-API: az `/api/ai-inventory.php`
+végpont a MEGLÉVŐ `ClientProxy`-n keresztül megy, pontosan úgy, mint
+minden más API-végpont. Egy Kliens-gépen a settings.json-nak nincs is
+szüksége AI-beállításra (sem Ollama-, sem Anthropic-, sem OpenAI-kulcsra)
+— a kérés a Szerverig ér, ott dől el minden, a `_bootstrap.php`
+`node_role`-elágazása garantálja, hogy a Kliens saját kódja sose fut le
+eddig a pontig. Nincs Anthropichoz/OpenAI-hoz külön írt Kliens-oldali védő
+kód — ugyanaz a MEGLÉVŐ mechanizmus véd mind a három providernél (lásd
+`tests/AiOpenAiClientProxyHttpTest.php` — valódi két-folyamatos Kliens→
+Szerver teszt, stub OpenAI-val).
 
 ### Biztonsági modell
 
@@ -3440,10 +3506,10 @@ providernél.
   modell, a kérdés (bounded, 500 karakterig), a használt eszközök,
   sikeres volt-e, mennyi ideig tartott. Nyers modell-válasz, API-kulcs
   vagy egyéb titok SOSE kerül naplózásra.
-- Hibaválaszok (pl. az Ollama/Anthropic nem elérhető) SOSE tartalmaznak
-  nyers kivétel-szöveget, fájlrendszer-útvonalat, API-kulcsot vagy egyéb
-  technikai részletet — a felhasználó mindig egy előre megírt, biztonságos
-  üzenetet kap.
+- Hibaválaszok (pl. az Ollama/Anthropic/OpenAI nem elérhető) SOSE
+  tartalmaznak nyers kivétel-szöveget, fájlrendszer-útvonalat, API-kulcsot
+  vagy egyéb technikai részletet — a felhasználó mindig egy előre megírt,
+  biztonságos üzenetet kap.
 
 ### Elérhető Inventory eszközök (Phase 1)
 
@@ -3458,20 +3524,21 @@ providernél.
 ### Felület
 
 **Beállítások → AI asszisztens** fül: be/kikapcsolás, AI-provider
-választó (Helyi/Ollama vagy Anthropic/Claude), a választásnak megfelelően
-Ollama URL/modell/időkorlát VAGY Anthropic API-kulcs (maszkolt
-állapotban)/modell/URL/időkorlát mezők, közös max. lépésszám/válasz-hossz
-mezők, "Kapcsolat tesztelése" gomb. **AI Asszisztens** oldal (bal oldali
-menü): egyetlen kérdés-mező, "Kérdezd a FountainTrade-et" gomb, a válasz +
-a ténylegesen használt eszközök listája — ennek az oldalnak NINCS külön
-kódútja Ollama vs. Anthropic esetén, a különbség kizárólag a Beállítások
-fülön és a szerver-oldali `AiProviderFactory`-ban dől el.
+választó (Helyi/Ollama, Anthropic/Claude vagy OpenAI), a választásnak
+megfelelően Ollama URL/modell/időkorlát VAGY Anthropic VAGY OpenAI
+API-kulcs (maszkolt állapotban)/modell/URL/időkorlát mezők, közös max.
+lépésszám/válasz-hossz mezők, "Kapcsolat tesztelése" gomb. **AI
+Asszisztens** oldal (bal oldali menü): egyetlen kérdés-mező, "Kérdezd a
+FountainTrade-et" gomb, a válasz + a ténylegesen használt eszközök
+listája — ennek az oldalnak NINCS külön kódútja Ollama vs. Anthropic vs.
+OpenAI esetén, a különbség kizárólag a Beállítások fülön és a
+szerver-oldali `AiProviderFactory`-ban dől el.
 
-Az állapot-jelzés (`/api/ai-health.php`, mindkét providerre kiterjesztve:
-AI kikapcsolva / nincs beállítva (Anthropic API-kulcs hiányzik) /
-hitelesítési hiba / nem érhető el / modell hiányzik / elérhető) 30
-másodpercig cache-elt providerenként (`OllamaHealth`/`AnthropicHealth`) —
-nem indít hálózati/API-hívást minden oldalbetöltéskor, és egyik provider
+Az állapot-jelzés (`/api/ai-health.php`, mindhárom providerre kiterjesztve:
+AI kikapcsolva / nincs beállítva (API-kulcs hiányzik) / hitelesítési hiba /
+nem érhető el / modell hiányzik / elérhető) 30 másodpercig cache-elt
+providerenként (`OllamaHealth`/`AnthropicHealth`/`OpenAiHealth`) — nem
+indít hálózati/API-hívást minden oldalbetöltéskor, és egyik provider
 elérhetetlensége SEM befolyásolja a kassza vagy a többi
 FountainTrade-funkció működését.
 
@@ -3480,23 +3547,37 @@ FountainTrade-funkció működését.
 - **Kizárólag olvasás** — az Inventory Agent nem módosíthat készletet,
   nem hozhat létre beszerzést, nem változtathat árat, és nem indíthat
   semmilyen pénzügyi műveletet. Bármilyen ajánlása (pl. "érdemes lenne
-  rendelni") javaslat, nem végrehajtott döntés. Ez MINDKÉT providerre
-  (Ollama, Anthropic) egyformán igaz — a korlátozás a `ToolRegistry`
-  szintjén van, nem a providerben.
+  rendelni") javaslat, nem végrehajtott döntés. Ez MINDHÁROM providerre
+  (Ollama, Anthropic, OpenAI) egyformán igaz — a korlátozás a
+  `ToolRegistry` szintjén van, nem a providerben.
 - **Nincs tartós beszélgetés-előzmény** — minden kérdés egy önálló,
   friss agent-futás; a `ConversationManager` szándékosan csak egyetlen
   futás idejére tárol üzeneteket.
 - **Egyetlen agent van ténylegesen bekötve** ebben a körben (Inventory
-  Agent) — KÉT provider van bekötve (`LocalProvider`/Ollama,
-  `AnthropicProvider`/Claude/Anthropic), az architektúra további
-  agenteket (pl. Sales/Anomaly/WooCommerce) és providereket (pl. OpenAI)
-  tesz lehetővé később, de ezek jelenleg NINCSENEK implementálva.
-- **Anthropic esetén a kérdésed és a lekérdezett adatok elhagyják a
-  géped** — az Anthropic API-hoz mennek, ellentétben az Ollama-üzemmóddal
-  (helyi/hálózaton belüli, nem megy ki semmi). Ez tudatos admin-döntés
-  (provider-választás), nem alapértelmezett viselkedés.
+  Agent) — HÁROM provider van bekötve (`LocalProvider`/Ollama,
+  `AnthropicProvider`/Claude, `OpenAiProvider`/OpenAI), az architektúra
+  további agenteket (pl. Sales/Anomaly/WooCommerce) tesz lehetővé később,
+  de ezek jelenleg NINCSENEK implementálva.
+- **Anthropic/OpenAI esetén a kérdésed és a lekérdezett adatok elhagyják
+  a géped** — a választott felhő-API-hoz mennek, ellentétben az
+  Ollama-üzemmóddal (helyi/hálózaton belüli, nem megy ki semmi). Ez
+  tudatos admin-döntés (provider-választás), nem alapértelmezett
+  viselkedés.
+- **Az OpenAI-integráció valódi API-kulccsal még NINCS élesben
+  ellenőrizve** — az implementáció idején nem állt rendelkezésre biztonságos
+  módon konfigurált, valódi OpenAI API-kulcs, ezért a Responses API-val
+  szembeni teljes protokoll-fordítás KIZÁRÓLAG kontrollált loopback
+  stub-szerverek ellen lett bizonyítva (lásd "Automatizált tesztek" a
+  `tests/AiOpenAiProviderTest.php`/`AiInventoryEndpointOpenAiHttpTest.php`/
+  `AiOpenAiClientProxyHttpTest.php` fájlokban). Konkrétan NEM ellenőrzött
+  élesben: hogy a kézzel épített `function_call`/`function_call_output`
+  input-elemek (lásd fentebb, "Ismert, dokumentált egyszerűsítés") pontosan
+  megfelelnek-e a valódi OpenAI API elvárásainak minden esetben. Ha egy
+  admin valódi OpenAI API-kulcsot állít be, első használat előtt
+  mindenképp végezz egy manuális "Kapcsolat tesztelése" + egy tényleges
+  kérdés-tesztet.
 - **Jövőbeli írási műveletek** (pl. "hozz létre egy beszerzési
   javaslatot") tervezetten mindig egy explicit emberi jóváhagyási lépésen
   mennének át (AI javaslat → emberi jóváhagyás → validált backend
   művelet → audit log) — ez a mechanizmus még nincs megépítve, jelenleg
-  mindkét provider szigorúan csak olvasás.
+  mindhárom provider szigorúan csak olvasás.

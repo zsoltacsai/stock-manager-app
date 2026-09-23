@@ -42,6 +42,8 @@ require_once __DIR__ . '/../src/Ai/LocalProvider.php';
 require_once __DIR__ . '/../src/Ai/OllamaHealth.php';
 require_once __DIR__ . '/../src/Ai/AnthropicProvider.php';
 require_once __DIR__ . '/../src/Ai/AnthropicHealth.php';
+require_once __DIR__ . '/../src/Ai/OpenAiProvider.php';
+require_once __DIR__ . '/../src/Ai/OpenAiHealth.php';
 require_once __DIR__ . '/../src/Ai/AiProviderFactory.php';
 require_once __DIR__ . '/../src/Ai/AgentRunner.php';
 require_once __DIR__ . '/../src/Ai/AiAuditLogger.php';

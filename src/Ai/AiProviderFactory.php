@@ -5,16 +5,18 @@ declare(strict_types=1);
 require_once __DIR__ . '/AiProviderInterface.php';
 require_once __DIR__ . '/LocalProvider.php';
 require_once __DIR__ . '/AnthropicProvider.php';
+require_once __DIR__ . '/OpenAiProvider.php';
 
 /**
  * Az egyetlen hely, ahol az `ai_provider` beállítás (settings.json,
  * Settings::DEFAULTS) egy konkrét AiProviderInterface-példánnyá válik —
- * lásd a kör 5. pontja. SZIGORÚ fehérlista (`local`, `anthropic`): a
- * beállításban tárolt érték SOSE használható közvetlenül osztálynévként/
- * dinamikus példányosításhoz, mindig egy explicit match ágon megy
- * keresztül. Ismeretlen/érvénytelen érték esetén BIZTONSÁGOSAN elutasít
- * (kivétel + korlátozott rendszeresemény-napló), sose esik vissza csendben
- * egy másik providerre — az elrejtene egy konfigurációs hibát.
+ * lásd a kör 5. pontja. SZIGORÚ fehérlista (`local`, `anthropic`,
+ * `openai`): a beállításban tárolt érték SOSE használható közvetlenül
+ * osztálynévként/dinamikus példányosításhoz, mindig egy explicit match
+ * ágon megy keresztül. Ismeretlen/érvénytelen érték esetén BIZTONSÁGOSAN
+ * elutasít (kivétel + korlátozott rendszeresemény-napló), sose esik
+ * vissza csendben egy másik providerre — az elrejtene egy konfigurációs
+ * hibát.
  *
  * Az InventoryAgent/AgentRunner ezt a factory-t sose látja/hívja —
  * KIZÁRÓLAG a végpont (pl. ai-inventory.php) hívja meg egyszer, a kapott
@@ -24,7 +26,7 @@ require_once __DIR__ . '/AnthropicProvider.php';
  */
 final class AiProviderFactory
 {
-    private const ALLOWED_PROVIDERS = ['local', 'anthropic'];
+    private const ALLOWED_PROVIDERS = ['local', 'anthropic', 'openai'];
 
     /**
      * @param array<string,mixed> $appSettings
@@ -51,6 +53,13 @@ final class AiProviderFactory
                 (string) $appSettings['anthropic_api_key'],
                 (string) $appSettings['anthropic_model'],
                 (int) $appSettings['anthropic_timeout_seconds'],
+                $maxOutputTokens
+            ),
+            'openai' => new OpenAiProvider(
+                (string) $appSettings['openai_base_url'],
+                (string) $appSettings['openai_api_key'],
+                (string) $appSettings['openai_model'],
+                (int) $appSettings['openai_timeout_seconds'],
                 $maxOutputTokens
             ),
             default => new LocalProvider(

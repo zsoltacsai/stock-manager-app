@@ -24,6 +24,10 @@ final class AiProviderFactoryTest extends TestCase
             'anthropic_model' => 'claude-sonnet-5',
             'anthropic_base_url' => 'https://api.anthropic.com',
             'anthropic_timeout_seconds' => 30,
+            'openai_api_key' => 'sk-openai-teszt',
+            'openai_model' => 'gpt-6-sol',
+            'openai_base_url' => 'https://api.openai.com',
+            'openai_timeout_seconds' => 30,
         ];
     }
 
@@ -51,6 +55,26 @@ final class AiProviderFactoryTest extends TestCase
         $provider = AiProviderFactory::create($settings);
         $this->assertInstanceOf(AnthropicProvider::class, $provider);
         $this->assertSame('anthropic', $provider->name());
+    }
+
+    public function testSelectsOpenAiProviderExplicitly(): void
+    {
+        $settings = $this->baseSettings();
+        $settings['ai_provider'] = 'openai';
+        $provider = AiProviderFactory::create($settings);
+        $this->assertInstanceOf(OpenAiProvider::class, $provider);
+        $this->assertSame('openai', $provider->name());
+    }
+
+    public function testOpenAiProviderIsConstructedWithConfiguredSettings(): void
+    {
+        $settings = $this->baseSettings();
+        $settings['ai_provider'] = 'openai';
+        $settings['openai_model'] = 'gpt-6-astra';
+        $provider = AiProviderFactory::create($settings);
+        $reflection = new ReflectionProperty(OpenAiProvider::class, 'model');
+        $reflection->setAccessible(true);
+        $this->assertSame('gpt-6-astra', $reflection->getValue($provider));
     }
 
     public function testInvalidProviderValueIsRejectedNotInstantiated(): void

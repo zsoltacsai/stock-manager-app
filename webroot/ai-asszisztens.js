@@ -12,8 +12,10 @@
 
     // A providernév a válaszban jön (data.provider, lásd api/ai-health.php)
     // — a feliratok szándékosan providerfüggetlenek, hogy ez az oldal
-    // NE tartalmazzon külön kódútvonalat Ollama vs. Anthropic esetén
-    // (lásd a kör 10. pontja).
+    // NE tartalmazzon külön kódútvonalat Ollama vs. Anthropic vs. OpenAI
+    // esetén (lásd a kör 13. pontja: "The Inventory Assistant page must
+    // remain provider-neutral").
+    const PROVIDER_LABELS = { anthropic: 'Anthropic', openai: 'OpenAI', local: 'Ollama' };
     const STATUS_LABELS = {
         available: '🟢 Elérhető',
         unavailable: '🔴 Nem érhető el',
@@ -34,7 +36,7 @@
             }
             disabledNotice.style.display = 'none';
             form.style.display = '';
-            const providerLabel = data.provider === 'anthropic' ? 'Anthropic' : 'Ollama';
+            const providerLabel = PROVIDER_LABELS[data.provider] || 'Ollama';
             statusLine.textContent = providerLabel + ': ' + (STATUS_LABELS[data.status] || data.status) + (data.model ? ' — ' + data.model : '');
             askBtn.disabled = data.status !== 'available';
         } catch (err) {

@@ -37,9 +37,11 @@ try {
     send_json(['error' => 'Az AI asszisztens jelenleg nem érhető el (érvénytelen provider-beállítás).'], 503);
 }
 
-$configuredModel = $provider->name() === 'anthropic'
-    ? (string) $appSettings['anthropic_model']
-    : (string) $appSettings['ai_local_model'];
+$configuredModel = match ($provider->name()) {
+    'anthropic' => (string) $appSettings['anthropic_model'],
+    'openai' => (string) $appSettings['openai_model'],
+    default => (string) $appSettings['ai_local_model'],
+};
 
 $agent = new InventoryAgent($provider, $db, $appSettings, max(1, (int) $appSettings['ai_max_iterations']));
 

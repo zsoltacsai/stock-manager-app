@@ -283,11 +283,11 @@ class Settings
         // esik vissza, ha ez üresen marad — lásd AnthropicProvider.php.
         'ai_max_output_tokens'  => null,
 
-        // Fázis 2 — melyik providert használja az InventoryAgent, ha az
+        // Fázis 2/3 — melyik providert használja az InventoryAgent, ha az
         // AI asszisztens be van kapcsolva. 'local' (Ollama, alapértelmezett,
-        // az 1.5.0 Fázis 1 viselkedésével bit-azonos) vagy 'anthropic' —
-        // lásd src/Ai/AiProviderFactory.php. Szigorú whitelist, sose
-        // felhasználó által megadott, tetszőleges osztálynév.
+        // az 1.5.0 Fázis 1 viselkedésével bit-azonos), 'anthropic' vagy
+        // 'openai' — lásd src/Ai/AiProviderFactory.php. Szigorú whitelist,
+        // sose felhasználó által megadott, tetszőleges osztálynév.
         'ai_provider' => 'local',
 
         // Anthropic (Claude) — az API-kulcs a MEGLÉVŐ titkos-mező mintát
@@ -301,6 +301,14 @@ class Settings
         'anthropic_model'           => 'claude-sonnet-5',
         'anthropic_base_url'        => 'https://api.anthropic.com',
         'anthropic_timeout_seconds' => 30,
+
+        // Fázis 3 — OpenAI (Responses API), UGYANAZZAL a titkos-mező
+        // mintával és Kliens/Szerver garanciával, mint az Anthropic
+        // fentebb — lásd src/Ai/OpenAiProvider.php.
+        'openai_api_key'         => '',
+        'openai_model'           => 'gpt-6-sol',
+        'openai_base_url'        => 'https://api.openai.com',
+        'openai_timeout_seconds' => 30,
     ];
 
     public function __construct(string $path)
@@ -463,6 +471,7 @@ class Settings
         'low_stock_notify_webhook',
         'smtp_password',
         'anthropic_api_key',
+        'openai_api_key',
     ];
 
     /**

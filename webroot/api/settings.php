@@ -44,6 +44,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'receipt_public_base_url',
         'ai_local_model',
         'anthropic_api_key', 'anthropic_model', 'anthropic_base_url',
+        'openai_api_key', 'openai_model', 'openai_base_url',
     ];
     // Ezeknél a mezőknél a válasz (lásd lentebb) sose küldi ki a valódi
     // értéket — a felület üresen, egy "(mentve)" jelzéssel mutatja őket.
@@ -61,6 +62,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'low_stock_notify_webhook',
         'smtp_password',
         'anthropic_api_key',
+        'openai_api_key',
     ];
     // Ezeket a mezőket a szerver ténylegesen FEL IS HÍVJA — itt kell
     // elutasítani egy belső/nem-publikus URL elmentését, mielőtt egyáltalán
@@ -69,8 +71,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // mentéskor egyértelműbb visszajelzés a felhasználónak). Az Anthropic
     // base URL SZÁNDÉKOSAN itt van (ellentétben az ai_local_base_url-lel,
     // ami alapból loopback) — ez egy valódi, külső, nyilvános API, nincs
-    // legitim ok, hogy belső/loopback címre mutasson.
-    $outboundUrlFields = ['wc_store_url', 'low_stock_notify_webhook', 'anthropic_base_url'];
+    // legitim ok, hogy belső/loopback címre mutasson. Az openai_base_url
+    // ugyanezért, ugyanezzel az indoklással.
+    $outboundUrlFields = ['wc_store_url', 'low_stock_notify_webhook', 'anthropic_base_url', 'openai_base_url'];
 
     foreach ($stringFields as $field) {
         if (!isset($input[$field])) {
@@ -220,11 +223,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // whitelist itt is, ugyanúgy, mint AiProviderFactory::create()-ban —
     // védelmi mélység, hogy egy érvénytelen érték se kerülhessen be a
     // settings.json-ba, ne csak a factory-hívás pillanatában derüljön ki.
-    if (isset($input['ai_provider']) && in_array($input['ai_provider'], ['local', 'anthropic'], true)) {
+    if (isset($input['ai_provider']) && in_array($input['ai_provider'], ['local', 'anthropic', 'openai'], true)) {
         $update['ai_provider'] = $input['ai_provider'];
     }
     if (isset($input['anthropic_timeout_seconds'])) {
         $update['anthropic_timeout_seconds'] = max(5, min(300, (int) $input['anthropic_timeout_seconds']));
+    }
+    if (isset($input['openai_timeout_seconds'])) {
+        $update['openai_timeout_seconds'] = max(5, min(300, (int) $input['openai_timeout_seconds']));
     }
     if (isset($input['audit_log_retention_days'])) {
         $update['audit_log_retention_days'] = max(1, (int) $input['audit_log_retention_days']);

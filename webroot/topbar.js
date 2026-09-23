@@ -334,6 +334,11 @@ if ('serviceWorker' in navigator) {
     const aiAnthropicModel = document.getElementById('ai-anthropic-model');
     const aiAnthropicBaseUrl = document.getElementById('ai-anthropic-base-url');
     const aiAnthropicTimeoutSeconds = document.getElementById('ai-anthropic-timeout-seconds');
+    const aiOpenaiFields = document.getElementById('ai-openai-fields');
+    const aiOpenaiApiKey = document.getElementById('ai-openai-api-key');
+    const aiOpenaiModel = document.getElementById('ai-openai-model');
+    const aiOpenaiBaseUrl = document.getElementById('ai-openai-base-url');
+    const aiOpenaiTimeoutSeconds = document.getElementById('ai-openai-timeout-seconds');
     const aiMaxIterations = document.getElementById('ai-max-iterations');
     const aiMaxOutputTokens = document.getElementById('ai-max-output-tokens');
     const settingsSaveAiBtn = document.getElementById('settings-save-ai-btn');
@@ -342,8 +347,9 @@ if ('serviceWorker' in navigator) {
     const aiTestConnectionFeedback = document.getElementById('ai-test-connection-feedback');
 
     function toggleAiProviderFields(provider) {
-        if (aiLocalFields) aiLocalFields.classList.toggle('hidden', provider === 'anthropic');
+        if (aiLocalFields) aiLocalFields.classList.toggle('hidden', provider !== 'local');
         if (aiAnthropicFields) aiAnthropicFields.classList.toggle('hidden', provider !== 'anthropic');
+        if (aiOpenaiFields) aiOpenaiFields.classList.toggle('hidden', provider !== 'openai');
     }
 
     const auditRetentionDays = document.getElementById('audit-retention-days');
@@ -452,7 +458,7 @@ if ('serviceWorker' in navigator) {
         if (updateAutoInstallEnabled) updateAutoInstallEnabled.classList.toggle('on', !!data.update_auto_install_enabled);
 
         if (aiEnabled) aiEnabled.classList.toggle('on', !!data.ai_enabled);
-        const aiProviderValue = data.ai_provider === 'anthropic' ? 'anthropic' : 'local';
+        const aiProviderValue = (data.ai_provider === 'anthropic' || data.ai_provider === 'openai') ? data.ai_provider : 'local';
         if (aiProvider) aiProvider.value = aiProviderValue;
         toggleAiProviderFields(aiProviderValue);
         if (aiLocalBaseUrl) aiLocalBaseUrl.value = data.ai_local_base_url || 'http://127.0.0.1:11434';
@@ -462,6 +468,10 @@ if ('serviceWorker' in navigator) {
         if (aiAnthropicModel) aiAnthropicModel.value = data.anthropic_model || 'claude-sonnet-5';
         if (aiAnthropicBaseUrl) aiAnthropicBaseUrl.value = data.anthropic_base_url || 'https://api.anthropic.com';
         if (aiAnthropicTimeoutSeconds) aiAnthropicTimeoutSeconds.value = String(data.anthropic_timeout_seconds || 30);
+        applySecretField(aiOpenaiApiKey, data, 'openai_api_key', '');
+        if (aiOpenaiModel) aiOpenaiModel.value = data.openai_model || 'gpt-6-sol';
+        if (aiOpenaiBaseUrl) aiOpenaiBaseUrl.value = data.openai_base_url || 'https://api.openai.com';
+        if (aiOpenaiTimeoutSeconds) aiOpenaiTimeoutSeconds.value = String(data.openai_timeout_seconds || 30);
         if (aiMaxIterations) aiMaxIterations.value = String(data.ai_max_iterations || 5);
         if (aiMaxOutputTokens) aiMaxOutputTokens.value = data.ai_max_output_tokens ? String(data.ai_max_output_tokens) : '';
 
@@ -1723,6 +1733,10 @@ if ('serviceWorker' in navigator) {
                         anthropic_model: aiAnthropicModel ? aiAnthropicModel.value.trim() : '',
                         anthropic_base_url: aiAnthropicBaseUrl ? aiAnthropicBaseUrl.value.trim() : '',
                         anthropic_timeout_seconds: aiAnthropicTimeoutSeconds ? (parseInt(aiAnthropicTimeoutSeconds.value, 10) || 30) : 30,
+                        openai_api_key: aiOpenaiApiKey ? aiOpenaiApiKey.value : '',
+                        openai_model: aiOpenaiModel ? aiOpenaiModel.value.trim() : '',
+                        openai_base_url: aiOpenaiBaseUrl ? aiOpenaiBaseUrl.value.trim() : '',
+                        openai_timeout_seconds: aiOpenaiTimeoutSeconds ? (parseInt(aiOpenaiTimeoutSeconds.value, 10) || 30) : 30,
                         ai_max_iterations: parseInt(aiMaxIterations.value, 10) || 5,
                         ai_max_output_tokens: aiMaxOutputTokens.value.trim() ? parseInt(aiMaxOutputTokens.value, 10) : null,
                     }),
@@ -1759,7 +1773,8 @@ if ('serviceWorker' in navigator) {
                     not_configured: 'Nincs beállítva',
                     auth_error: 'Hitelesítési hiba',
                 };
-                const providerLabel = data.provider === 'anthropic' ? 'Anthropic' : 'Ollama';
+                const providerLabels = { anthropic: 'Anthropic', openai: 'OpenAI', local: 'Ollama' };
+                const providerLabel = providerLabels[data.provider] || 'Ollama';
                 if (data.status === 'available') {
                     aiTestConnectionFeedback.textContent = providerLabel + ' elérhető, a modell (' + data.model + ') használható. ✓';
                     aiTestConnectionFeedback.className = 'modal-feedback ok';

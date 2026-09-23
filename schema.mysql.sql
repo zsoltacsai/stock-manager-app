@@ -735,5 +735,25 @@ CREATE TABLE IF NOT EXISTS update_history (
     INDEX idx_update_history_started_at (started_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Fázis 7 — AI Daily Intelligence perzisztens jelentés-tábla (lásd
+-- schema.sql azonos szakasza / Database::migrateV30AiDailyReports()).
+CREATE TABLE IF NOT EXISTS ai_daily_reports (
+    id                        INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    report_date               VARCHAR(10) NOT NULL,
+    status                    VARCHAR(16) NOT NULL DEFAULT 'pending',
+    provider                  VARCHAR(32),
+    model                     VARCHAR(64),
+    has_significant_findings  INT NOT NULL DEFAULT 0,
+    findings_count            INT NOT NULL DEFAULT 0,
+    findings_json             TEXT,
+    report_text               TEXT,
+    error                     TEXT,
+    started_at                DATETIME NULL,
+    completed_at              DATETIME NULL,
+    created_at                DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY idx_ai_daily_reports_date (report_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 INSERT INTO schema_version (version)
 SELECT 16 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM schema_version);

@@ -346,6 +346,13 @@ if ('serviceWorker' in navigator) {
     const aiTestConnectionBtn = document.getElementById('ai-test-connection-btn');
     const aiTestConnectionFeedback = document.getElementById('ai-test-connection-feedback');
 
+    const aiDailyEnabled = document.getElementById('ai-daily-enabled');
+    const aiDailyHour = document.getElementById('ai-daily-hour');
+    const aiDailyMaxFindings = document.getElementById('ai-daily-max-findings');
+    const aiDailyNotifyEnabled = document.getElementById('ai-daily-notify-enabled');
+    const settingsSaveAiDailyBtn = document.getElementById('settings-save-ai-daily-btn');
+    const settingsAiDailyFeedback = document.getElementById('settings-ai-daily-feedback');
+
     const ollamaProvSection = document.getElementById('ai-ollama-provision-section');
     const ollamaProvInstalled = document.getElementById('ollama-prov-installed');
     const ollamaProvVersion = document.getElementById('ollama-prov-version');
@@ -555,6 +562,10 @@ if ('serviceWorker' in navigator) {
         if (aiOpenaiTimeoutSeconds) aiOpenaiTimeoutSeconds.value = String(data.openai_timeout_seconds || 30);
         if (aiMaxIterations) aiMaxIterations.value = String(data.ai_max_iterations || 5);
         if (aiMaxOutputTokens) aiMaxOutputTokens.value = data.ai_max_output_tokens ? String(data.ai_max_output_tokens) : '';
+        if (aiDailyEnabled) aiDailyEnabled.classList.toggle('on', !!data.ai_daily_intelligence_enabled);
+        if (aiDailyHour) aiDailyHour.value = String(data.ai_daily_intelligence_hour ?? 7);
+        if (aiDailyMaxFindings) aiDailyMaxFindings.value = String(data.ai_daily_intelligence_max_findings ?? 10);
+        if (aiDailyNotifyEnabled) aiDailyNotifyEnabled.classList.toggle('on', data.ai_daily_intelligence_notify_enabled !== false);
 
         if (printerEnabled) printerEnabled.checked = !!data.printer_enabled;
         if (printerIp) printerIp.value = data.printer_ip || '';
@@ -1870,6 +1881,36 @@ if ('serviceWorker' in navigator) {
         });
     }
 
+    if (aiDailyEnabled) aiDailyEnabled.addEventListener('click', () => aiDailyEnabled.classList.toggle('on'));
+    if (aiDailyNotifyEnabled) aiDailyNotifyEnabled.addEventListener('click', () => aiDailyNotifyEnabled.classList.toggle('on'));
+    if (settingsSaveAiDailyBtn) {
+        settingsSaveAiDailyBtn.addEventListener('click', async () => {
+            settingsAiDailyFeedback.textContent = 'Mentés...';
+            settingsAiDailyFeedback.className = 'modal-feedback';
+            try {
+                const res = await fetch('/api/settings.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ai_daily_intelligence_enabled: aiDailyEnabled.classList.contains('on'),
+                        ai_daily_intelligence_hour: parseInt(aiDailyHour.value, 10) || 0,
+                        ai_daily_intelligence_max_findings: parseInt(aiDailyMaxFindings.value, 10) || 10,
+                        ai_daily_intelligence_notify_enabled: aiDailyNotifyEnabled.classList.contains('on'),
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+                applySettings(data);
+                settingsAiDailyFeedback.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;vertical-align:-1px;margin-right:4px;"><polyline points="20 6 9 17 4 12"></polyline></svg>Mentve';
+                settingsAiDailyFeedback.classList.add('saved-flash');
+                setTimeout(() => settingsAiDailyFeedback.classList.remove('saved-flash'), 1200);
+            } catch (err) {
+                settingsAiDailyFeedback.textContent = 'Hiba: ' + err.message;
+                settingsAiDailyFeedback.className = 'modal-feedback error';
+            }
+        });
+    }
+
     if (ollamaProvRefreshBtn) ollamaProvRefreshBtn.addEventListener('click', () => loadOllamaProvisionStatus(true));
     if (ollamaProvInstallBtn) {
         ollamaProvInstallBtn.addEventListener('click', () => runOllamaProvisionAction('/api/ollama-install.php', 'Telepítés folyamatban, ez eltarthat egy percig…'));
@@ -2013,6 +2054,9 @@ if ('serviceWorker' in navigator) {
             const res = await fetch('/api/system-status.php');
             const data = await res.json();
             const alerts = [];
+            if (data.ai_daily_report_available) {
+                alerts.push({ text: `Új AI napi jelentés érhető el (${data.ai_daily_report_date}).`, href: 'ai-asszisztens.php?tab=daily' });
+            }
             if (data.webshop_orders_draft_count > 0) {
                 alerts.push({ text: `${data.webshop_orders_draft_count} új rendelés a webáruházból`, href: 'beerkezo-eladasok.php' });
             }

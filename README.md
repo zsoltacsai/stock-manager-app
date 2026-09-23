@@ -4048,6 +4048,251 @@ azon FELÜL, hogy egy Kliens kérése egyébként is a `_bootstrap.php`
 node_role-elágazásán keresztül már ELŐBB a Szerverre proxyzódna (lásd
 `tests/AiCopilotClientProxyHttpTest.php::testClientCannotTriggerOllamaInstallation`).
 
+### AI futás-előzmények és Napi intelligencia (Fázis 7)
+
+Ez a kör az AI-t "interaktív asszisztensből" "kontrollált üzemeltetési
+funkcióvá" mozdítja el: (A) egy admin-nézet a MÁR meglévő AI-naplóból, (B)
+egy naponta ütemezett, determinisztikus-adat-first összefoglaló-jelentés,
+(C) a MEGLÉVŐ cron/worker-architektúrán keresztül ütemezve. Továbbra is
+KIZÁRÓLAG olvasás — sem az előzmény-nézet, sem a napi jelentés nem
+végezhet/kezdeményezhet semmilyen készlet-/ár-/eladás-/kassza-/vevő-/
+számla-módosítást.
+
+#### AI futás-előzmények (`AI Asszisztens → Előzmények`)
+
+NEM egy második naplózó rendszer — a MEGLÉVŐ `system_events`
+(`category='ai'`, amit az `AiAuditLogger` már eddig is írt minden egyes
+agent-/Copilot-futáshoz) fölé épülő, lapozható/szűrhető admin-nézet. Új
+Database-metódusok (`getAiRunHistory()`/`countAiRunHistory()`/
+`getAiRunHistoryEntry()`) — SOSE töltik be a teljes eseménytáblát
+PHP-memóriába: valódi SQL `LIMIT`/`OFFSET`, determinisztikus `ORDER BY
+created_at DESC, id DESC` rendezés, bounded lapméret (`Database::
+AI_HISTORY_MAX_PAGE_SIZE = 100`, a végpont ezen felül is korlátoz).
+Szűrhető agent/provider/siker-bukás/dátumtartomány szerint — az agent/
+provider a `technical_detail` JSON-ban él (nincs külön oszlop), ezért a
+szűrés egy `technical_detail LIKE ?` feltétellel megy, MINDIG a
+`category='ai'` (indexelt) + státusz/dátum (szintén indexelt) szűrés
+UTÁN, sose a teljes táblán. A nyers `technical_detail` JSON SOSE jut ki a
+végpontokból (`ai-history-list.php`/`ai-history-detail.php`) — kizárólag
+a MÁR bounded, biztonságos mezők (agent, provider, modell, eszközök,
+résztvevő ügynökök, időtartam, iterációk, állapot, bounded hibaszöveg).
+API-kulcsok, CSRF-tokenek, HMAC-titkok, nyers stack trace-ek SOSE
+kerülnek bele — ezek eleve sosem kerültek az `AiAuditLogger` által írt
+`technical_detail`-be sem (lásd ott a docblokkja), a lekérdező réteg csak
+örökli ezt a garanciát.
+
+#### Napi AI intelligencia (`AI Asszisztens → Napi intelligencia`)
+
+`src/Ai/AiDailyIntelligence.php` — SZÁNDÉKOSAN NEM egy negyedik
+"DailyAgent", hanem a MEGLÉVŐ `AnomalyTools`/`SalesTools`/`InventoryTools`
+"operatív kompozíciója", pontosan a kör 5. pontjának megfelelően:
+
+```
+Determinisztikus gyűjtés (AnomalyTools/SalesTools/InventoryTools)
+    ↓ bounded, strukturált findings (max. 10, súlyosság szerint rangsorolva)
+EGYETLEN szintézis-hívás (MEGLÉVŐ AgentRunner, ÜRES ToolRegistry)
+    ↓
+Napi jelentés (report_text + findings_json), perzisztálva
+```
+
+- **Determinisztikus gyűjtés, egyszeri lekérdezéssel** — `AnomalyTools::
+  getSalesAnomalies()`/`getInventoryAnomalies()` (súlyosság szerint MÁR
+  rendezett/bounded anomália-lista + `data_quality`/"elégtelen adat"
+  jelzés), `SalesTools::getSalesSummary()`/`compareSalesPeriods()` (mai
+  forgalom + tegnaphoz képesti változás), `InventoryTools::
+  getLowStockProducts()` (alacsony készlet-lista) — ugyanazok a PHP-
+  objektumok, amiket az `AnomalyAgent`/`SalesAgent`/`InventoryAgent` is
+  használ, KÖZVETLENÜL példányosítva (nem a `ToolRegistry`-n keresztül —
+  itt nincs LLM, ami "választana" eszközt, a backend dönt).
+- **Determinisztikus rangsorolás/bounded lista, SOSE a modell dönt** — a
+  sales+inventory anomáliák egyesített listáját `AiDailyIntelligence::
+  prioritizeFindings()` súlyosság (kritikus > magas > közepes > alacsony),
+  majd `|változás %|`, végül `entity_id` szerint (stabil, determinisztikus
+  tie-break) rendezi, duplikátumokat (azonos type+entity) kiszűri, és a
+  konfigurált maximumra (`ai_daily_intelligence_max_findings`, alapból
+  10, KEMÉNY felső korlát ugyanennyi — lásd `AiDailyIntelligence::
+  MAX_FINDINGS_HARD_CAP`) vágja — a modell EZ UTÁN, MÁR kész listát kap,
+  nem választhat, mely nyers sorok maradjanak ki.
+- **EGYETLEN szintézis-hívás, ÜRES `ToolRegistry`-vel** — a MEGLÉVŐ
+  `AgentRunner`-en fut (nincs új végrehajtó-osztály), de a regisztrált
+  eszközök listája SZÁNDÉKOSAN üres: a kontextus (anomáliák + forgalmi
+  összegzés + készlet-figyelmeztetések) MÁR teljes egészében a promptban
+  van, a modellnek SOSE kell (és SOSE tud) eszközt hívni innen — ez zárja
+  ki STRUKTURÁLISAN a rekurzív Copilot-/agent-hívást (a kör 9. pontja:
+  "no recursive Copilot calls"), NEM egy futásidejű ellenőrzés. A
+  végrehajtási gráf ezért garantáltan aciklikus: `AiDailyIntelligence`
+  SOSE hívja meg az `AiCopilot`-ot (`tests/AiDailyIntelligenceTest.php::
+  testSourceNeverReferencesAiCopilotProvingAcyclicExecutionGraph`).
+- **Rendszer prompt** (lásd `AiDailyIntelligence::SYSTEM_INSTRUCTION`) —
+  explicit kimondja: a kapott adat hiteles/végleges, a modell SOSE talál
+  ki/számol újra semmit, MEGFIGYELÉS vs. ÉRTELMEZÉS elkülönítve,
+  korreláció-vs-okozatiság (ugyanaz a szabály, mint az `AnomalyAgent`-nél
+  és a Copilot-nál), "elégtelen adat" külön közlendő, a legfontosabb
+  megállapítást a KAPOTT súlyosság alapján emeli ki (sose saját
+  sorrendet), tömör, magyar üzleti nyelvezet.
+- **Perzisztencia** — új `ai_daily_reports` tábla (Fázis 7,
+  `Database::migrateV30AiDailyReports()`), egyedi index `report_date`-en
+  (a kör 11. pontja explicit követelménye: naponta LEGFELJEBB EGY
+  kanonikus jelentés). Mezők: `report_date`, `status`
+  (`pending`/`running`/`completed`/`failed`), `provider`, `model`,
+  `has_significant_findings`, `findings_count`, `findings_json` (bounded,
+  legfeljebb a konfigurált max. megállapítás-szám), `report_text`
+  (legfeljebb `AiDailyIntelligence::MAX_REPORT_TEXT_LENGTH` = 4000
+  karakter), `error` (bounded), `started_at`/`completed_at`.
+- **Idempotencia/konkurencia-védelem** — `Database::
+  claimAiDailyReportSlot()`, UGYANAZ a minta, mint a kasszakezelés
+  (Fázis 1.5.0) atomikus `INSERT...SELECT...WHERE NOT EXISTS` (ÚJ napra)
+  + `UPDATE...WHERE status IN ('pending','failed')` (ÚJRAPRÓBÁLKOZÁS egy
+  korábban elbukott napra) kombinációja. Egy `'running'` állapotú sor,
+  ami `ai_daily_intelligence_stale_minutes` (alapból 30) percnél régebbi,
+  ELAVULTNAK számít és újra lefoglalható — enélkül egy összeomlott
+  folyamat örökre blokkolná az adott napot. Egy MÁR `'completed'` napra
+  a worker egyszerűen kihagyja a futást (`skipped`), SOSE generál
+  duplikátumot, SOSE küld ismételt értesítést.
+- **Költségkorlát** — legfeljebb 10 megállapítás, bounded kontextus
+  (nincs teljes eladási tábla átadva a modellnek, csak összegzések/
+  bizonyíték), EGYETLEN provider-hívás (nincs eszköz-hívási kör, nincs
+  ismételt agent-invokáció ugyanarra az adatra), a Copilot-tal ELLENTÉTBEN
+  itt NINCS 1-3 beágyazott agent-hívás — a napi jelentés architekturálisan
+  OLCSÓBB egyetlen kérdésnél is.
+
+#### Ütemezés — a MEGLÉVŐ cron/worker-architektúrán
+
+Új worker-végpont: `webroot/api/ai-daily-intelligence-run.php`,
+UGYANAZZAL a mintával, mint `update-check-run.php`: a Feladatütemező
+gyakran (30 percenként) hívja, a végpont saját maga dönti el, esedékes-e
+ténylegesen — NEM egy naponta egyszer futó, külön trigger, hogy egy
+kihagyott/elbukott ablak ne jelentsen egy egész napos csúszást. Nincs új
+daemon, nincs végtelen PHP-ciklus, nincs második cron-rendszer — a
+`webroot/api/_bootstrap.php` MEGLÉVŐ `$cronScripts`/`X-Cron-Token`
+mechanizmusát bővíti egyetlen új bejegyzéssel (lásd a MEGLÉVŐ
+`cron_secret`, nincs külön AI-cron-titok). Az `install-windows.ps1`
+`$cronJobs` listája egy 7. bejegyzést kapott (`FountainTrade - AI napi
+intelligencia`), UGYANAZZAL az idempotens létrehozási/frissítési és
+visszaolvasás-ellenőrzési logikával, mint a MEGLÉVŐ hat feladat.
+
+**Node-szerepkör szabályok** — pontosan ugyanaz a minta, mint az Ollama-
+telepítésnél (lásd fent): a worker Standalone/Szerver node-on fut,
+Kliens node-on SOSE — a `_bootstrap.php` topológia-kapuja (a `ai-daily-
+intelligence-run.php` hozzáadva a `$cronScripts` listához) MINDKÉT
+védelmet automatikusan megadja (Kliens node elutasítja MÉG egy hihető
+tokennel is, ÉS a kérés sose jut el a Szerverig) — nincs Kliens-specifikus
+kód, amit külön kellett volna írni.
+
+**Provider-hiba biztonságos kezelése** — ha a konfigurált provider
+(Ollama/Anthropic/OpenAI) nem érhető el/hibázik, a worker `status:
+'failed'`-ként perzisztálja az eredményt, SOSE jelöli sikeresnek, SOSE
+generál kitalált megállapítást, és a normál POS-működést nem érinti
+(egy AI-hiba egy KÜLÖN HTTP-kérés/válasz, nem blokkol semmilyen más
+FountainTrade-funkciót). Ismételt hiba esetén sincs "értesítés-spam" —
+lásd lent.
+
+**Élőben megfigyelt, javított hiba (Fázis 7)**: egy VALÓDI, helyi Ollama
+(`qwen3:8b`) elleni ellenőrzés során kiderült, hogy a PHP beépített
+fejlesztői szerverének alapértelmezett `max_execution_time`-ja (php.ini,
+jellemzően 30 mp) a TELJES kérés-kiszolgálásra vonatkozik, FÜGGETLENÜL
+attól, hogy az egyes cURL-hívások (`ai_timeout_seconds`) ennél rövidebbek
+— egy több eszköz-kört/ügynök-hívást igénylő, valós (nem stub) modellel
+folytatott beszélgetés simán meghaladhatja ezt, amit PHP egy nyers
+"Maximum execution time exceeded" végzetes hibaként állít meg (a
+generikus szerverhiba-válasz, NEM a szándékolt "Az AI-modell jelenleg
+nem érhető el." üzenet). Minden AI-végpont (`ai-inventory.php`/
+`ai-sales.php`/`ai-anomaly.php`/`ai-copilot.php`/
+`ai-daily-intelligence-run.php`) mostantól `set_time_limit()`-tel,
+DINAMIKUSAN, a ténylegesen konfigurált `ai_max_iterations`/
+`ai_timeout_seconds` (Copilot esetén ×4, a legfeljebb 3 beágyazott
+ügynök-hívás + saját körök miatt) legrosszabb esetéhez igazítva oldja
+fel ezt — nem egy találgatott fix szám.
+
+#### Provider-választás
+
+A napi jelentés a JELENLEG konfigurált AI-providert használja (`local`/
+`anthropic`/`openai`, `AiProviderFactory::create()`-on keresztül) — nincs
+providerre hardcodolt logika `AiDailyIntelligence`-ben. Helyi (Ollama)
+esetén, ha az Ollama nem elérhető, Anthropic/OpenAI esetén, ha nincs
+konfigurálva/érvénytelen a kulcs — mindkét eset egyformán, biztonságosan
+`status: 'failed'`-ként végződik, a normál FountainTrade-működés
+folytatódik.
+
+#### Beállítások (alapból KIKAPCSOLVA)
+
+`ai_daily_intelligence_enabled` (alapból `false` — a kör 31. pontjának
+explicit követelménye: SOSE aktiválódik csendben csak azért, mert
+`ai_enabled` igaz), `ai_daily_intelligence_hour` (0-23, alapból 7 —
+ennél az óránál korábban a worker "not_due"-t ad, nem generál),
+`ai_daily_intelligence_max_findings` (1-10, alapból 10),
+`ai_daily_intelligence_notify_enabled` (alapból `true`).
+
+#### Értesítés
+
+A MEGLÉVŐ értesítési harang (`system-status.php` + `topbar.js`
+`loadNotifications()`) egy új feltétellel bővült: **"Új AI napi jelentés
+érhető el (ÉÉÉÉ-HH-NN)."**, KIZÁRÓLAG akkor, ha a LEGUTÓBB TÉNYLEGESEN
+`'completed'` jelentés `has_significant_findings=true`-t hordoz — SOSE
+jelez sikertelen provider-kapcsolatra önmagában, SOSE üres/nincs-találat
+jelentésre, és mivel egy adott napra CSAK EGY kanonikus sor létezhet
+(lásd fent), ugyanannak a jelentésnek egy ismételt lekérdezése/futása sem
+generál új értesítést. Nincs új levelezőrendszer/külső üzenetküldő
+integráció — kizárólag a MEGLÉVŐ in-app harang bővült.
+
+#### Felület
+
+**AI Asszisztens** oldal két új füllel bővült (`Előzmények`/`Napi
+intelligencia`), az eredeti interaktív "Asszisztens" fül VÁLTOZATLAN
+marad az elsődleges mód. **Dashboard**: új, kompakt "Mai AI összefoglaló"
+kártya (`dash-ai-daily-card`), a MEGLÉVŐ kártya-mintát követve, NÉGY
+állapottal (Nincs még elkészült jelentés / Jelentés elkészült / Nincs
+jelentős új megállapítás / A jelentés generálása sikertelen) — a kártya
+egy KÜLÖN, admin-only végpontot hív (`ai-daily-report.php?date=<ma>`),
+nem-admin dolgozónál csendben rejtve marad (nincs hibaüzenet). Egyik új
+felületi elem sem számol semmit JavaScript-ben — minden szám a backendről
+jön készen.
+
+#### Client/Szerver
+
+**Kliens**: SOSE futtatja a napi workert, SOSE ér el provider-hitelesítő
+adatot, SOSE példányosít providert — a `ai-history-list.php`/
+`ai-history-detail.php`/`ai-daily-report.php` végpontok a MEGLÉVŐ,
+admin-jogszinthez kötött, `ClientProxy`-n átmenő útvonalon keresztül
+olvassák a Szerveren MÁR elkészült eredményt, ugyanúgy, mint bármelyik
+másik admin-nézet. **Szerver**: futtatja az ütemezett AI-munkát, tárolja
+és kiszolgálja az eredményt. **Önálló gép**: helyben ütemezve fut.
+
+#### Valódi provider-ellenőrzés (Fázis 7)
+
+**Ténylegesen elvégezve** — ebben a körben, ELLENTÉTBEN a korábbi
+fázisokkal, VOLT elérhető, valódi, helyi Ollama-példány (`qwen3:8b`,
+ténylegesen telepítve/letöltve ezen a gépen). Valódi, végponttól-
+végpontig futtatott ellenőrzések:
+- Egy valódi `InventoryAgent`-kérdés ("Mi fogyott ki teljesen?") a TELJES
+  HTTP-úton (böngésző → `ai-inventory.php` → `AiProviderFactory` →
+  `LocalProvider` → valódi Ollama → `get_low_stock_products` eszköz →
+  valódi adatbázis-adat → válasz) — SIKERES, helyes, a valódi
+  adatbázisból származó termékneveket/azonosítókat idéző válasszal.
+- Egy valódi `AiDailyIntelligence::generateForDate()` futás (a TELJES
+  determinisztikus gyűjtés + EGY valódi szintézis-hívás + perzisztencia)
+  — SIKERES, `has_significant_findings=true`, 2 megállapítás, a
+  generált magyar nyelvű jelentés ténylegesen a kapott, valódi
+  adatbázis-adatokra hivatkozott (termékazonosítók, készletmennyiségek),
+  helyesen jelezte az "elégtelen adat" esetet a visszáru-arány
+  vizsgálatánál, és a végén explicit megerősítette, hogy minden adat a
+  rendszer hiteles adatbázisából származik.
+- Ez a valódi ellenőrzés fedezte fel ÉS igazolta a fenti
+  `max_execution_time`-javítás szükségességét/helyességét — az ELSŐ
+  kísérlet (a javítás előtt) egy nyers szerverhibával bukott el, a
+  javítás UTÁNI kísérletek már a szándékolt, biztonságos módon (vagy
+  sikeresen, vagy egy tiszta "Az AI-modell jelenleg nem érhető el."
+  üzenettel) végződtek.
+- **Megfigyelt teljesítmény-jellemző**: ezen a konkrét hardveren/modellen
+  egyetlen valódi Ollama-hívás 130-350+ másodpercig is tarthatott — ez
+  NEM egy hiba, hanem a helyi, viszonylag nagy (8B paraméteres) modell
+  valós következtetési ideje ezen a gépen; ez a tapasztalat vezetett a
+  fenti dinamikus `set_time_limit()`-javításhoz.
+- Anthropic/OpenAI valódi API-kulccsal ebben a körben sem volt elérhető
+  — ezekre továbbra is KIZÁRÓLAG a kontrollált stub-szerverek ellen
+  futó tesztek (`tests/AiDailyIntelligenceCrossProviderTest.php`)
+  bizonyítják a protokoll-szintű helyességet.
+
 ### Ismert korlátok
 
 - **Kizárólag olvasás** — sem az Inventory, sem a Sales, sem az Anomaly
@@ -4185,3 +4430,29 @@ node_role-elágazásán keresztül már ELŐBB a Szerverre proxyzódna (lásd
   egyértelmű hibát ad vissza (nem hagyja hamisan azt hinni az adminnal,
   hogy sikerült), és az admin manuálisan, egy interaktív munkamenetből
   is telepítheti/indíthatja az Ollamát.
+- **A Napi AI intelligencia nem egy negyedik agent** — szándékosan a
+  MEGLÉVŐ Anomália-/Forgalmi-/Készlet-eszközök "operatív kompozíciója"
+  (lásd fent), nincs saját, önálló anomália-/forgalmi logikája — minden
+  ilyen jellegű változtatás a MEGLÉVŐ `AnomalyDetector`/`AnomalyTools`/
+  `SalesTools`/`InventoryTools` fájlokban történik, a napi jelentés
+  automatikusan örökli.
+- **A napi jelentés "mai" adatra vonatkozik a generálás pillanatában** —
+  `AiDailyIntelligence::gatherContext()` a `SalesTools`/`InventoryTools`
+  `'today'`/`'yesterday'` preset-jeit használja (`ReportPeriod`,
+  szerver-oldali dátumszámítás), tehát a `report_date` és a TÉNYLEGES
+  generálás naptári napjának egyeznie kell a helyes eredményhez — nincs
+  admin-indított, tetszőleges MÚLTBELI napra szóló utólagos újraszámítás
+  ebben a körben (a worker mindig a mai napra generál/próbál újra).
+- **Az AI-előzmények lekérdezése `technical_detail LIKE`-alapú
+  szűréssel dolgozik agent/provider szerint** (nincs külön, indexelt
+  oszlop ezekhez a system_events táblában) — alacsony AI-eseményszámnál
+  (a MEGLÉVŐ retention-takarítás amúgy is korlátozza) ez elhanyagolható,
+  de NEM egy nagy-adat-optimalizált lekérdezés; ha az AI-használat
+  drasztikusan megnőne, ez egy jövőbeli, dedikált oszlopos bővítést
+  indokolhatna.
+- **Nincs élő/streamelt frissítés az Előzmények/Napi intelligencia
+  füleken** — mindkettő egy explicit oldalbetöltéskor/fül-váltáskor
+  frissül, nem "polling"-gal (ellentétben pl. a webshop-rendelés
+  jelvénnyel) — egy éppen folyamatban lévő napi-jelentés-generálás
+  állapotát az admin-nak manuálisan (fül újranyitásával/frissítéssel)
+  kell újra lekérdeznie.

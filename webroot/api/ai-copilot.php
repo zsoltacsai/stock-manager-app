@@ -20,6 +20,13 @@ if (empty($appSettings['ai_enabled'])) {
     send_json(['error' => 'Az AI asszisztens jelenleg ki van kapcsolva.'], 503);
 }
 
+// Fázis 7 — lásd ai-inventory.php ugyanezen soránál a részletes indoklás
+// (dinamikus korlát). A Copilot itt SZÁNDÉKOSAN nagyobb szorzót kap, mint
+// az egyedi domain-agentek — legfeljebb AiCopilot::MAX_AGENT_CALLS (3)
+// beágyazott ügynök-hívást indíthat, MINDEGYIK akár ai_max_iterations
+// körig, a SAJÁT (útválasztó/szintézis) körei FELETT.
+set_time_limit(max(60, 4 * (int) $appSettings['ai_max_iterations'] * (int) $appSettings['ai_timeout_seconds'] + 120));
+
 $input = json_input();
 $question = trim((string) ($input['message'] ?? ''));
 if ($question === '') {

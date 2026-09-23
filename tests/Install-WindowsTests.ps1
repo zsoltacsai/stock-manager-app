@@ -477,10 +477,13 @@ Describe 'install-windows.ps1 — Fázis 2 Checkpoint 3 szerkezeti garanciák (s
     It "A wc-queue-run.php szerepel a `$cronJobs listában (korábban hiányzó bejegyzés javítva)" {
         $mainScriptText | Should Match "Endpoint = 'wc-queue-run\.php'"
     }
-    It 'Mind a hat worker-végpont szerepel a cron-listában' {
+    It 'Mind a hat MEGLÉVŐ worker-végpont szerepel a cron-listában' {
         foreach ($ep in @('auto-backup-run.php', 'auto-sync-run.php', 'nav-queue-run.php', 'nav-incoming-sync-run.php', 'update-check-run.php', 'wc-queue-run.php')) {
             $mainScriptText | Should Match "Endpoint = '$([regex]::Escape($ep))'"
         }
+    }
+    It 'Fázis 7 — az AI napi intelligencia worker (ai-daily-intelligence-run.php) is szerepel a cron-listában' {
+        $mainScriptText | Should Match "Endpoint = 'ai-daily-intelligence-run\.php'"
     }
     It 'Kliens módban a szkript AKTÍVAN eltávolítja (Unregister-ScheduledTask) a korábbi worker-feladatokat' {
         $mainScriptText | Should Match "NodeRole -eq 'client'[\s\S]{0,1200}Unregister-ScheduledTask"

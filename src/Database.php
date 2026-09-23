@@ -8,7 +8,7 @@ require_once __DIR__ . '/ClientHmac.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 29;
+    private const SCHEMA_VERSION = 30;
 
     private PDO $pdo;
     private string $driver;
@@ -210,6 +210,9 @@ class Database
             }
             if ($version < 29) {
                 $this->migrateV29ClientLastSeenVersion();
+            }
+            if ($version < 30) {
+                $this->migrateV30AiDailyReports();
             }
         }
 
@@ -1775,6 +1778,57 @@ class Database
                 throw $e;
             }
         }
+    }
+
+    /**
+     * Fázis 7 — AI Daily Intelligence perzisztens tárolója. Szándékosan
+     * KÜLÖN tábla, NEM a system_events-be írva (lásd a kör 11. pontja:
+     * "a daily report is a structured, user-facing artifact rather than
+     * a generic event") — a system_events-et továbbra is az
+     * AiAuditLogger írja, változatlanul, minden EGYES agent/copilot
+     * futáshoz; ez a tábla ellenben NAPONTA LEGFELJEBB EGY, hosszabb
+     * élettartamú, admin által ténylegesen megnyitható "jelentés"
+     * rekordot tart, `report_date`-en EGYEDI indexszel (a kör 11. pontja
+     * explicit követelménye: "a unique constraint so only one canonical
+     * report exists per report date") — ez EGYBEN az idempotencia
+     * (a kör 12. pontja) egyik pillére is: egy második ütemezett
+     * végrehajtás UGYANARRA a napra SOSE tud egy második sort létrehozni,
+     * legfeljebb a MEGLÉVŐT frissítheti (lásd claimAiDailyReportSlot()/
+     * finalizeAiDailyReport() a kör 12. pontjának állapotgépéhez:
+     * pending|running|completed|failed).
+     */
+    private function migrateV30AiDailyReports(): void
+    {
+        $isMysql = $this->driver === 'mysql';
+        $pk = $isMysql ? 'INT UNSIGNED AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
+        $ts = $isMysql ? 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' : "TEXT NOT NULL DEFAULT (datetime('now'))";
+
+        try {
+            $this->pdo->exec("CREATE TABLE IF NOT EXISTS ai_daily_reports (
+                id                        $pk,
+                report_date               VARCHAR(10) NOT NULL,
+                status                    VARCHAR(16) NOT NULL DEFAULT 'pending',
+                provider                  VARCHAR(32),
+                model                     VARCHAR(64),
+                has_significant_findings  INTEGER NOT NULL DEFAULT 0,
+                findings_count            INTEGER NOT NULL DEFAULT 0,
+                findings_json             TEXT,
+                report_text               TEXT,
+                error                     TEXT,
+                started_at                TEXT,
+                completed_at              TEXT,
+                created_at                $ts,
+                updated_at                $ts
+            )" . ($isMysql ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : ''));
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        try {
+            $this->pdo->exec(
+                $this->driver !== 'mysql'
+                    ? 'CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_daily_reports_date ON ai_daily_reports(report_date)'
+                    : 'CREATE UNIQUE INDEX idx_ai_daily_reports_date ON ai_daily_reports(report_date)'
+            );
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
     }
 
     // ---------------------------------------------------------------
@@ -6249,6 +6303,223 @@ class Database
             $counts[$row['severity']] = (int) $row['cnt'];
         }
         return $counts;
+    }
+
+    // ---------------------------------------------------------------
+    // AI futás-előzmények lekérdező réteg (Fázis 7) — a kör 2/3. pontja:
+    // NEM egy második naplózó rendszer, a MEGLÉVŐ system_events
+    // (category='ai') olvasása, szűréssel/lapozással kiegészítve. Az
+    // agent/provider/modell mezők a technical_detail JSON-ban élnek
+    // (AiAuditLogger::logRun()/logCopilotRun() írja) — nincs bennük
+    // indexelt oszlop, de a category='ai' + created_at szűrés MÁR
+    // indexelt (idx_system_events_category_severity/idx_system_events_
+    // created_at), a technical_detail LIKE-szűrés ezen a MÁR leszűkített
+    // halmazon fut, sose a teljes táblán.
+    // ---------------------------------------------------------------
+
+    private const AI_HISTORY_MAX_PAGE_SIZE = 100;
+
+    /**
+     * @param array $filters opcionális: 'agent', 'provider', 'status'
+     *   ('success'|'failure'|'started'), 'date_from', 'date_to' (ÉÉÉÉ-HH-NN)
+     */
+    public function getAiRunHistory(array $filters = [], int $limit = 20, int $offset = 0): array
+    {
+        $limit = max(1, min(self::AI_HISTORY_MAX_PAGE_SIZE, $limit));
+        $offset = max(0, $offset);
+
+        [$whereSql, $params] = $this->buildAiHistoryWhere($filters);
+
+        $stmt = $this->pdo->prepare("SELECT * FROM system_events $whereSql ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?");
+        $i = 1;
+        foreach ($params as $p) {
+            $stmt->bindValue($i++, $p);
+        }
+        $stmt->bindValue($i++, $limit, PDO::PARAM_INT);
+        $stmt->bindValue($i++, $offset, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return array_map([self::class, 'decorateAiHistoryRow'], $stmt->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /** Ugyanazokkal a szűrőkkel, mint getAiRunHistory() — a lapozás "összesen N találat" mezőjéhez. */
+    public function countAiRunHistory(array $filters = []): int
+    {
+        [$whereSql, $params] = $this->buildAiHistoryWhere($filters);
+        $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM system_events $whereSql");
+        $stmt->execute($params);
+        return (int) $stmt->fetchColumn();
+    }
+
+    /** Egyetlen AI-futás részlet-nézete — ugyanazt a bounded/szűrt alakot adja, mint a lista. */
+    public function getAiRunHistoryEntry(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare("SELECT * FROM system_events WHERE id = ? AND category = 'ai'");
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ? self::decorateAiHistoryRow($row) : null;
+    }
+
+    /** @return array{0:string,1:array} [WHERE SQL, kötendő paraméterek] */
+    private function buildAiHistoryWhere(array $filters): array
+    {
+        $where = ["category = 'ai'"];
+        $params = [];
+
+        if (!empty($filters['status']) && in_array($filters['status'], self::SYSTEM_EVENT_STATUSES, true)) {
+            $where[] = 'status = ?';
+            $params[] = $filters['status'];
+        }
+        // agent/provider a technical_detail JSON-ban él (lásd a szakasz
+        // fenti docblokkja) — a szűrő-érték a hívó (webroot/api/ai-history-
+        // list.php) oldalán MÁR egy zárt fehérlistán megy át, itt a '%'/'_'
+        // LIKE-joker karakterek escape-elése védelmi mélységként.
+        if (!empty($filters['agent'])) {
+            $where[] = 'technical_detail LIKE ?';
+            $params[] = '%"agent":"' . self::escapeLikeValue((string) $filters['agent']) . '"%';
+        }
+        if (!empty($filters['provider'])) {
+            $where[] = 'technical_detail LIKE ?';
+            $params[] = '%"provider":"' . self::escapeLikeValue((string) $filters['provider']) . '"%';
+        }
+        if (!empty($filters['date_from'])) {
+            $where[] = 'created_at >= ?';
+            $params[] = $filters['date_from'] . ' 00:00:00';
+        }
+        if (!empty($filters['date_to'])) {
+            $where[] = 'created_at <= ?';
+            $params[] = $filters['date_to'] . ' 23:59:59';
+        }
+
+        return ['WHERE ' . implode(' AND ', $where), $params];
+    }
+
+    private static function escapeLikeValue(string $value): string
+    {
+        return str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $value);
+    }
+
+    /**
+     * A nyers technical_detail JSON-t SOSE adja tovább a hívónak (lásd a
+     * kör 2. pontja: "Do not expose ... raw stack traces / oversized
+     * prompts/responses") — kizárólag a MÁR AiAuditLogger által előre
+     * bounded, biztonságosan megjeleníthető mezőket bontja ki belőle.
+     */
+    private static function decorateAiHistoryRow(array $row): array
+    {
+        $detail = json_decode((string) ($row['technical_detail'] ?? ''), true);
+        $detail = is_array($detail) ? $detail : [];
+
+        $row['agent'] = $detail['agent'] ?? null;
+        $row['provider'] = $detail['provider'] ?? null;
+        $row['model'] = $detail['model'] ?? null;
+        $row['tools_used'] = $detail['tools_used'] ?? [];
+        $row['agents_used'] = $detail['agents_used'] ?? null;
+        $row['iterations'] = $detail['iterations'] ?? null;
+        $row['duration_ms'] = $detail['duration_ms'] ?? null;
+        $row['detail_error'] = $detail['error'] ?? null;
+        unset($row['technical_detail']);
+
+        return $row;
+    }
+
+    // ---------------------------------------------------------------
+    // AI Daily Intelligence — napi jelentés perzisztencia (Fázis 7)
+    // ---------------------------------------------------------------
+
+    /**
+     * Atomikus slot-lefoglalás egy adott napra — UGYANAZ a minta, mint
+     * Database::openCashSession() ("INSERT...SELECT...WHERE NOT EXISTS"
+     * egy ÚJ sorért, majd "UPDATE...WHERE status IN (...)" egy MEGLÉVŐ,
+     * újra-indítható sorért). Csak akkor ad `true`-t, ha A HÍVÓ FUTÁSA
+     * kapta a jogot ténylegesen generálni — egy már 'completed', vagy egy
+     * MÁSIK, MÉG NEM ELAVULT 'running' sor esetén `false`-t ad (a hívó
+     * ilyenkor kihagyja a futást — ez az idempotencia/konkurencia-védelem
+     * lényege, a kör 12. pontja).
+     *
+     * @param int $staleAfterMinutes ennyi percnél régebbi 'running' sor
+     *   ELAVULTNAK számít (pl. egy korábban összeomlott folyamat) — ekkor
+     *   ÚJRA lefoglalható, különben egy egyszer megszakadt futás örökre
+     *   blokkolná az adott napot.
+     */
+    public function claimAiDailyReportSlot(string $reportDate, int $staleAfterMinutes = 30): bool
+    {
+        $now = date('Y-m-d H:i:s');
+        $staleCutoff = date('Y-m-d H:i:s', strtotime("-$staleAfterMinutes minutes"));
+
+        $stmt = $this->pdo->prepare('
+            INSERT INTO ai_daily_reports (report_date, status, started_at, created_at, updated_at)
+            SELECT ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (SELECT 1 FROM ai_daily_reports WHERE report_date = ?)
+        ');
+        $stmt->execute([$reportDate, 'running', $now, $now, $now, $reportDate]);
+        if ($stmt->rowCount() === 1) {
+            return true;
+        }
+
+        $stmt = $this->pdo->prepare("
+            UPDATE ai_daily_reports SET status = 'running', started_at = ?, updated_at = ?
+            WHERE report_date = ? AND (status IN ('pending', 'failed') OR (status = 'running' AND started_at < ?))
+        ");
+        $stmt->execute([$now, $now, $reportDate, $staleCutoff]);
+        return $stmt->rowCount() === 1;
+    }
+
+    /**
+     * @param array $result 'status' ('completed'|'failed') KÖTELEZŐ, a
+     *   többi mező opcionális — lásd AiDailyIntelligence::generateForDate()
+     *   a pontos alakért. Bound: findings_json/report_text hossza a
+     *   HÍVÓ (AiDailyIntelligence) felelőssége korlátozni, ez a metódus
+     *   csak perzisztál.
+     */
+    public function finalizeAiDailyReport(string $reportDate, array $result): void
+    {
+        $now = date('Y-m-d H:i:s');
+        $stmt = $this->pdo->prepare('
+            UPDATE ai_daily_reports SET
+                status = ?, provider = ?, model = ?, has_significant_findings = ?,
+                findings_count = ?, findings_json = ?, report_text = ?, error = ?,
+                completed_at = ?, updated_at = ?
+            WHERE report_date = ?
+        ');
+        $stmt->execute([
+            (string) $result['status'],
+            $result['provider'] ?? null,
+            $result['model'] ?? null,
+            !empty($result['has_significant_findings']) ? 1 : 0,
+            (int) ($result['findings_count'] ?? 0),
+            $result['findings_json'] ?? null,
+            $result['report_text'] ?? null,
+            $result['error'] ?? null,
+            $now,
+            $now,
+            $reportDate,
+        ]);
+    }
+
+    public function getAiDailyReport(string $reportDate): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM ai_daily_reports WHERE report_date = ?');
+        $stmt->execute([$reportDate]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    /** A Dashboard-kártya/értesítési harang számára — a legutóbbi TÉNYLEGESEN elkészült jelentés, dátum-sorrendben. */
+    public function getLatestCompletedAiDailyReport(): ?array
+    {
+        $row = $this->pdo->query("SELECT * FROM ai_daily_reports WHERE status = 'completed' ORDER BY report_date DESC LIMIT 1")
+            ->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    /** Admin-listázáshoz — legutóbbi N jelentés, dátum szerint csökkenő sorrendben (bounded). */
+    public function listAiDailyReports(int $limit = 30): array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM ai_daily_reports ORDER BY report_date DESC LIMIT ?');
+        $stmt->bindValue(1, max(1, min(90, $limit)), PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     // ---------------------------------------------------------------

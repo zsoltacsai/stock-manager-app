@@ -1036,7 +1036,8 @@ Write-Ok "Bind/tűzfal összhang: node='$NodeRole' -> kötés='$bindHost' + tűz
 # -------------------------------------------------------------------
 # 7. Cron-feladatok (idempotens létrehozás/frissítés)
 # -------------------------------------------------------------------
-# A hat FountainTrade worker/cron-feladat listája — Szerver/Önálló módban
+# A hét FountainTrade worker/cron-feladat listája (Fázis 7 óta — korábban
+# hat volt, lásd az AI napi intelligencia bejegyzés lentebb) — Szerver/Önálló módban
 # EZ mind regisztrálva lesz, Kliens módban EGYIK SEM (lásd lentebb). A
 # 'FountainTrade - WooCommerce push queue' bejegyzés a kör 9. pontjának
 # javítása: korábban hiányzott ebből a listából, tehát wc-queue-run.php
@@ -1049,7 +1050,13 @@ $cronJobs = @(
     @{ Name = 'FountainTrade - NAV kimeno queue'; Endpoint = 'nav-queue-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650) } },
     @{ Name = 'FountainTrade - NAV bejovo szinkron'; Endpoint = 'nav-incoming-sync-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 3650) } },
     @{ Name = 'FountainTrade - Frissites ellenorzes'; Endpoint = 'update-check-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration (New-TimeSpan -Days 3650) } },
-    @{ Name = 'FountainTrade - WooCommerce push queue'; Endpoint = 'wc-queue-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650) } }
+    @{ Name = 'FountainTrade - WooCommerce push queue'; Endpoint = 'wc-queue-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650) } },
+    # Fázis 7 — AI Daily Intelligence. UGYANAZ a "gyakori poll, a végpont
+    # saját maga dönti el, esedékes-e" minta, mint update-check-run.php
+    # (lásd webroot/api/ai-daily-intelligence-run.php) — nem egy külön,
+    # naponta egyszer futó Feladatütemező-trigger, hogy egy kihagyott/
+    # elbukott ablak ne jelentsen egy egész napos csúszást.
+    @{ Name = 'FountainTrade - AI napi intelligencia'; Endpoint = 'ai-daily-intelligence-run.php'; Trigger = { New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration (New-TimeSpan -Days 3650) } }
 )
 
 if ($NodeRole -eq 'client') {

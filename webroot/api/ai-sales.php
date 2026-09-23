@@ -20,6 +20,12 @@ if (empty($appSettings['ai_enabled'])) {
     send_json(['error' => 'Az AI asszisztens jelenleg ki van kapcsolva.'], 503);
 }
 
+// Fázis 7 — lásd ai-inventory.php ugyanezen soránál a részletes indoklás
+// (élő, valódi Ollamával megfigyelt hiba — a korlát DINAMIKUS, az
+// ai_max_iterations/ai_timeout_seconds tényleges legrosszabb esetéhez
+// igazodik).
+set_time_limit(max(60, (int) $appSettings['ai_max_iterations'] * (int) $appSettings['ai_timeout_seconds'] + 60));
+
 $input = json_input();
 $question = trim((string) ($input['message'] ?? ''));
 if ($question === '') {

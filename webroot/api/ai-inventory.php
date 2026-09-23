@@ -19,6 +19,23 @@ if (empty($appSettings['ai_enabled'])) {
     send_json(['error' => 'Az AI asszisztens jelenleg ki van kapcsolva.'], 503);
 }
 
+// Fázis 7 — élő, valódi (helyi) Ollamával végzett ellenőrzéskor élőben
+// megfigyelt hiba: a PHP beépített fejlesztői szerverének alapértelmezett
+// `max_execution_time` (php.ini, jellemzően 30 mp) a TELJES szkript
+// futására vonatkozik, FÜGGETLENÜL attól, hogy az egyes cURL-hívások
+// (lásd ai_timeout_seconds) ennél rövidebbek. Egy valós, nagyobb
+// modellnél (pl. qwen3:8b) EGY agent-futás akár `ai_max_iterations` DARAB
+// egymást követő, egyenként `ai_timeout_seconds`-ig tartó valódi hívást is
+// indíthat (élőben MEGFIGYELVE: egy 2-körös AnomalyAgent-hívás 280 mp-es
+// ai_timeout_seconds mellett önmagában meghaladt egy fix 300 mp-es
+// korlátot) — ezért a korlát DINAMIKUSAN, a TÉNYLEGESEN engedélyezett
+// legrosszabb esethez igazodik, nem egy találgatott fix szám. Enélkül
+// PHP egy nyers "Maximum execution time exceeded" végzetes hibaként
+// állítja meg a futást (a _bootstrap.php shutdown-handlere ezt ÁLTALÁNOS
+// szerverhibaként adja vissza, NEM a szándékolt, biztonságos "Az
+// AI-modell jelenleg nem érhető el." üzenetként).
+set_time_limit(max(60, (int) $appSettings['ai_max_iterations'] * (int) $appSettings['ai_timeout_seconds'] + 60));
+
 $input = json_input();
 $question = trim((string) ($input['message'] ?? ''));
 if ($question === '') {

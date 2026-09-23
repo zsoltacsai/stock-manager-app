@@ -1040,6 +1040,30 @@ if (!Auth::isLoggedIn($appSettings)) {
                 <button id="ai-test-connection-btn" class="btn btn-secondary" style="width:auto; padding:10px 18px;" type="button">Kapcsolat tesztelése</button>
                 <p id="ai-test-connection-feedback" class="modal-feedback"></p>
             </div>
+
+            <div style="border-top:1px solid var(--border); margin-top:24px; padding-top:16px;">
+                <strong>AI Napi intelligencia (ütemezett napi összefoglaló)</strong>
+                <p class="muted" style="margin-top:4px;">
+                    Naponta egyszer (a lenti órától kezdve esedékes), a MEGLÉVŐ Anomália-/
+                    Forgalmi-/Készlet-ügynökök determinisztikus eredményeiből generál egy rövid
+                    összefoglalót — csak Önálló gép/Szerver node-on fut (Kliens node sose). Alapból
+                    KIKAPCSOLT, még akkor is, ha az AI asszisztens be van kapcsolva.
+                </p>
+                <div class="toggle-line">
+                    <span>Napi intelligencia bekapcsolva</span>
+                    <button type="button" class="toggle-switch" id="ai-daily-enabled"></button>
+                </div>
+                <label for="ai-daily-hour">Generálás legkorábban ettől az órától (0-23, helyi idő)</label>
+                <input type="text" id="ai-daily-hour" placeholder="7">
+                <label for="ai-daily-max-findings">Maximális megállapítás-szám a jelentésben (1-10)</label>
+                <input type="text" id="ai-daily-max-findings" placeholder="10">
+                <div class="toggle-line">
+                    <span>Értesítés jelentős megállapításnál</span>
+                    <button type="button" class="toggle-switch" id="ai-daily-notify-enabled"></button>
+                </div>
+                <button id="settings-save-ai-daily-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Mentés</button>
+                <p id="settings-ai-daily-feedback" class="modal-feedback"></p>
+            </div>
         </div>
 
     </div>

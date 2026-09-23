@@ -697,4 +697,27 @@ CREATE TABLE IF NOT EXISTS update_history (
 );
 CREATE INDEX IF NOT EXISTS idx_update_history_started_at ON update_history(started_at);
 
+-- Fázis 7 — AI Daily Intelligence perzisztens jelentés-tábla (lásd
+-- Database::migrateV30AiDailyReports() docblokkja). Naponta LEGFELJEBB
+-- EGY sor report_date-enként (egyedi index) — ez az idempotencia egyik
+-- pillére: egy második ütemezett futás ugyanarra a napra sose hoz létre
+-- második sort.
+CREATE TABLE IF NOT EXISTS ai_daily_reports (
+    id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_date               TEXT NOT NULL,
+    status                    TEXT NOT NULL DEFAULT 'pending',   -- pending|running|completed|failed
+    provider                  TEXT,
+    model                     TEXT,
+    has_significant_findings  INTEGER NOT NULL DEFAULT 0,
+    findings_count            INTEGER NOT NULL DEFAULT 0,
+    findings_json             TEXT,
+    report_text               TEXT,
+    error                     TEXT,
+    started_at                TEXT,
+    completed_at              TEXT,
+    created_at                TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at                TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_daily_reports_date ON ai_daily_reports(report_date);
+
 INSERT INTO schema_version (version) SELECT 16 WHERE NOT EXISTS (SELECT 1 FROM schema_version);

@@ -89,7 +89,7 @@ $config = require __DIR__ . '/../../config/config.php';
 // ClientProxy-továbbítás előtt is!), egyszerűen elutasítja a kérést, hogy egy
 // Kliens SOSE továbbítsa a Szerver felé (még egy véletlenül érvényes
 // cron-tokennel érkező kérést se).
-$cronScripts = ['auto-backup-run.php', 'auto-sync-run.php', 'nav-queue-run.php', 'nav-incoming-sync-run.php', 'update-check-run.php', 'wc-queue-run.php'];
+$cronScripts = ['auto-backup-run.php', 'auto-sync-run.php', 'nav-queue-run.php', 'nav-incoming-sync-run.php', 'update-check-run.php', 'wc-queue-run.php', 'ai-daily-intelligence-run.php'];
 $currentScript = basename($_SERVER['SCRIPT_NAME'] ?? '');
 if (($config['node_role'] ?? 'standalone') === 'client' && in_array($currentScript, $cronScripts, true)) {
     http_response_code(403);

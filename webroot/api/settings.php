@@ -95,7 +95,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Logikai (be/ki) mezők. FONTOS: 'maintenance_mode_active' SZÁNDÉKOSAN
     // NINCS itt — azt kizárólag az UpdateInstaller állíthatja, lásd
     // Settings::DEFAULTS docblockja.
-    $boolFields = ['auto_sync_enabled', 'printer_enabled', 'backup_enabled', 'szamlazz_send_email', 'nav_test_mode', 'nav_queue_enabled', 'nav_incoming_sync_enabled', 'receipt_show_logo', 'loyalty_enabled', 'printer_auto_print_enabled', 'printer_qr_enabled', 'update_auto_check_enabled', 'update_auto_install_enabled', 'ai_enabled'];
+    $boolFields = ['auto_sync_enabled', 'printer_enabled', 'backup_enabled', 'szamlazz_send_email', 'nav_test_mode', 'nav_queue_enabled', 'nav_incoming_sync_enabled', 'receipt_show_logo', 'loyalty_enabled', 'printer_auto_print_enabled', 'printer_qr_enabled', 'update_auto_check_enabled', 'update_auto_install_enabled', 'ai_enabled', 'ai_daily_intelligence_enabled', 'ai_daily_intelligence_notify_enabled'];
     foreach ($boolFields as $field) {
         if (isset($input[$field])) {
             $update[$field] = (bool) $input[$field];
@@ -231,6 +231,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     if (isset($input['openai_timeout_seconds'])) {
         $update['openai_timeout_seconds'] = max(5, min(300, (int) $input['openai_timeout_seconds']));
+    }
+    // Fázis 7 — AI Daily Intelligence numerikus beállításai (a bool
+    // mezők — enabled/notify_enabled — a fenti $boolFields listában
+    // vannak, ugyanazzal a generikus mintával, mint 'ai_enabled').
+    if (isset($input['ai_daily_intelligence_hour'])) {
+        $update['ai_daily_intelligence_hour'] = max(0, min(23, (int) $input['ai_daily_intelligence_hour']));
+    }
+    if (isset($input['ai_daily_intelligence_max_findings'])) {
+        $update['ai_daily_intelligence_max_findings'] = max(1, min(10, (int) $input['ai_daily_intelligence_max_findings']));
     }
     if (isset($input['audit_log_retention_days'])) {
         $update['audit_log_retention_days'] = max(1, (int) $input['audit_log_retention_days']);

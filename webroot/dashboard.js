@@ -207,3 +207,50 @@ async function loadRevenueChart() {
 
 loadDashboard();
 loadRevenueChart();
+loadAiDailySummary();
+
+// ------------------------------------------------------------------
+// Fázis 7 — "Mai AI összefoglaló" kompakt kártya. KÜLÖN, önálló hívás
+// (nem a dashboard-summary.php részeként) — az /api/ai-daily-report.php
+// admin-only (ugyanaz a jogszint-indoklás, mint minden AI-végpontnál),
+// egy nem-admin dolgozónál ez a kártya egyszerűen rejtve marad (SOSE
+// jelenik meg hibaüzenet neki — a card alapból display:none, csak
+// sikeres admin-lekérdezésnél jelenik meg).
+// ------------------------------------------------------------------
+async function loadAiDailySummary() {
+    const card = document.getElementById('dash-ai-daily-card');
+    const box = document.getElementById('dash-ai-daily-status');
+    if (!card || !box) return;
+    try {
+        const today = new Date().toISOString().slice(0, 10);
+        const data = await fetchJson('/api/ai-daily-report.php?date=' + today);
+        const report = data.report;
+        card.style.display = '';
+
+        if (!report) {
+            box.innerHTML = '<p class="muted" style="margin:0;">Nincs még elkészült jelentés.</p>';
+            return;
+        }
+        if (report.status === 'failed') {
+            box.innerHTML = '<p class="muted" style="margin:0;">A jelentés generálása sikertelen.</p>';
+            return;
+        }
+        if (report.status === 'pending' || report.status === 'running') {
+            box.innerHTML = '<p class="muted" style="margin:0;">Generálás folyamatban…</p>';
+            return;
+        }
+        if (!report.has_significant_findings) {
+            box.innerHTML = '<p class="muted" style="margin:0;">Nincs jelentős új megállapítás.</p>';
+            return;
+        }
+        box.innerHTML = `
+            <p style="margin-top:0;">Jelentés elkészült — <strong>${report.findings_count}</strong> jelentős megállapítás.</p>
+            <p class="muted" style="margin-bottom:0;"><a href="ai-asszisztens.php?tab=daily">Napi intelligencia megtekintése →</a></p>
+        `;
+    } catch (err) {
+        // Nem-admin dolgozónál (403) vagy AI-hiba esetén a kártya csendben
+        // rejtve marad — ez NEM egy hiba, amit a Dashboardon meg kellene
+        // jeleníteni minden felhasználónak.
+        card.style.display = 'none';
+    }
+}

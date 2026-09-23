@@ -76,6 +76,12 @@ if (!Auth::isLoggedIn($appSettings)) {
         <div id="dash-today-status"></div>
     </div>
 
+    <!-- 4b. Fázis 7 — AI napi intelligencia kompakt kártya -->
+    <div class="import-card" id="dash-ai-daily-card" style="display:none;">
+        <h2>Mai AI összefoglaló</h2>
+        <div id="dash-ai-daily-status"></div>
+    </div>
+
     <!-- 5. 7 napos forgalmi trend -->
     <div class="import-card">
         <h2>Forgalom — utolsó 7 nap</h2>

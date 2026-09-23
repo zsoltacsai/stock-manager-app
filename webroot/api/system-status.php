@@ -6,7 +6,19 @@ require_once __DIR__ . '/../../src/AppVersion.php';
 
 $lowStockThreshold = (int) ($appSettings['low_stock_default_threshold'] ?? 5);
 
+// Fázis 7 — a kör 20. pontja: az értesítési harang KIZÁRÓLAG akkor
+// jelez, ha a LEGUTÓBB TÉNYLEGESEN elkészült ('completed') napi
+// jelentés VALÓBAN tartalmaz jelentős megállapítást — sikertelen
+// provider-kapcsolat, üres/nincs-találat jelentés, vagy ugyanannak a
+// jelentésnek az ismételt lekérdezése SOSE jelez itt semmit (lásd
+// Database::getLatestCompletedAiDailyReport() — 'failed'/'running'
+// állapotú sorokat sose ad vissza).
+$latestAiDailyReport = $db->getLatestCompletedAiDailyReport();
+$aiDailyReportAvailable = $latestAiDailyReport !== null && !empty($latestAiDailyReport['has_significant_findings']);
+
 send_json([
+    'ai_daily_report_available' => $aiDailyReportAvailable,
+    'ai_daily_report_date' => $aiDailyReportAvailable ? $latestAiDailyReport['report_date'] : null,
     'driver'   => $db->driver(),
     'products' => $db->countProducts(),
     'sales_today' => $db->countSalesToday(),

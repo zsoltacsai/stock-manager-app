@@ -309,6 +309,22 @@ class Settings
         'openai_model'           => 'gpt-6-sol',
         'openai_base_url'        => 'https://api.openai.com',
         'openai_timeout_seconds' => 30,
+
+        // Fázis 7 — AI Daily Intelligence (napi AI-összefoglaló). Lásd a
+        // kör 31. pontja explicit követelménye: "AI Daily Intelligence
+        // must not silently become active just because AI is enabled" —
+        // ezért KÜLÖN kapcsoló, alapból KIKAPCSOLVA, még akkor is, ha
+        // 'ai_enabled' már igaz. 'ai_daily_intelligence_hour' — a
+        // MEGLÉVŐ, percenkénti/30-percenkénti poll-mintát követő
+        // cron-worker (ai-daily-intelligence-run.php) csak ETTŐL az
+        // órától kezdve generál jelentést az adott napra (0-23,
+        // Europe/Budapest) — a tényleges, kevés-perces pontosságot a
+        // Feladatütemező ismétlési gyakorisága adja, ugyanúgy, mint az
+        // update-check-run.php "esedékes-e" mintája.
+        'ai_daily_intelligence_enabled'        => false,
+        'ai_daily_intelligence_hour'           => 7,
+        'ai_daily_intelligence_max_findings'   => 10,
+        'ai_daily_intelligence_notify_enabled' => true,
     ];
 
     public function __construct(string $path)

@@ -8,7 +8,7 @@ require_once __DIR__ . '/ClientHmac.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 30;
+    private const SCHEMA_VERSION = 31;
 
     private PDO $pdo;
     private string $driver;
@@ -213,6 +213,9 @@ class Database
             }
             if ($version < 30) {
                 $this->migrateV30AiDailyReports();
+            }
+            if ($version < 31) {
+                $this->migrateV31ActionProposals();
             }
         }
 
@@ -1827,6 +1830,74 @@ class Database
                 $this->driver !== 'mysql'
                     ? 'CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_daily_reports_date ON ai_daily_reports(report_date)'
                     : 'CREATE UNIQUE INDEX idx_ai_daily_reports_date ON ai_daily_reports(report_date)'
+            );
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+    }
+
+    /**
+     * Fázis 8A — AI Action Proposals + Human Approval. Ez a tábla EGY
+     * javaslat teljes életciklusát tartja (lásd ActionProposal.php a
+     * pontos állapotgépért: pending|approved|rejected|expired|stale —
+     * SZÁNDÉKOSAN NINCS 'executed' állapot, ez a fázis SOSE hajt végre
+     * üzleti műveletet, lásd ActionProposalService.php docblokkja).
+     *
+     * `fingerprint`-en EGYEDI index — ez a duplikátum-elnyomás elsődleges
+     * védelme (lásd Database::createActionProposal() "INSERT ... WHERE
+     * NOT EXISTS" mintája, UGYANAZ, mint claimAiDailyReportSlot()-nál):
+     * egy adott (típus, entitás, ok-kód, időszak) kombinációra SOSE jöhet
+     * létre két sor, függetlenül attól, hogy az elsőt már elbírálták-e.
+     */
+    private function migrateV31ActionProposals(): void
+    {
+        $isMysql = $this->driver === 'mysql';
+        $pk = $isMysql ? 'INT UNSIGNED AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
+        $ts = $isMysql ? 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' : "TEXT NOT NULL DEFAULT (datetime('now'))";
+
+        try {
+            $this->pdo->exec("CREATE TABLE IF NOT EXISTS ai_action_proposals (
+                id                $pk,
+                proposal_type     VARCHAR(32) NOT NULL,
+                status            VARCHAR(16) NOT NULL DEFAULT 'pending',
+                agent             VARCHAR(32) NOT NULL,
+                provider          VARCHAR(32),
+                model             VARCHAR(64),
+                source_run_id     INTEGER,
+                entity_type       VARCHAR(32) NOT NULL,
+                entity_id         INTEGER NOT NULL,
+                entity_name       VARCHAR(191),
+                evidence_json     TEXT,
+                proposal_json     TEXT,
+                fingerprint       VARCHAR(128) NOT NULL,
+                created_at        $ts,
+                updated_at        $ts,
+                expires_at        TEXT NOT NULL,
+                reviewed_at       TEXT,
+                reviewed_by       INTEGER,
+                rejection_reason  VARCHAR(500)
+            )" . ($isMysql ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : ''));
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        $indexes = [
+            'idx_ai_action_proposals_status' => 'status',
+            'idx_ai_action_proposals_created_at' => 'created_at',
+            'idx_ai_action_proposals_expires_at' => 'expires_at',
+            'idx_ai_action_proposals_agent' => 'agent',
+            'idx_ai_action_proposals_type' => 'proposal_type',
+        ];
+        foreach ($indexes as $indexName => $column) {
+            try {
+                $this->pdo->exec(
+                    $isMysql
+                        ? "CREATE INDEX $indexName ON ai_action_proposals($column)"
+                        : "CREATE INDEX IF NOT EXISTS $indexName ON ai_action_proposals($column)"
+                );
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+        }
+        try {
+            $this->pdo->exec(
+                $isMysql
+                    ? 'CREATE UNIQUE INDEX idx_ai_action_proposals_fingerprint ON ai_action_proposals(fingerprint)'
+                    : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_action_proposals_fingerprint ON ai_action_proposals(fingerprint)'
             );
         } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
     }
@@ -6520,6 +6591,191 @@ class Database
         $stmt->bindValue(1, max(1, min(90, $limit)), PDO::PARAM_INT);
         $stmt->execute();
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    // ---------------------------------------------------------------
+    // AI Action Proposals — javaslat + emberi jóváhagyás (Fázis 8A)
+    // ---------------------------------------------------------------
+
+    private const ACTION_PROPOSAL_MAX_PAGE_SIZE = 100;
+
+    /**
+     * A duplikátum-elnyomás elsődleges, konkurrencia-biztos mechanizmusa —
+     * UGYANAZ az "INSERT ... SELECT ... WHERE NOT EXISTS" minta, mint
+     * claimAiDailyReportSlot()-nál/openCashSession()-nél: ha MÁR létezik
+     * sor ugyanezzel a fingerprinttel (bármilyen státuszban — lásd
+     * ActionProposalService::computeFingerprint() docblokkja, miért
+     * SZÁNDÉKOSAN nem csak a 'pending' sorokra szűkül ez a védelem), a
+     * beszúrás csendben no-op, a hívó null-t kap.
+     *
+     * @return int|null az új sor id-ja, vagy null, ha duplikátum volt (nem jött létre új sor)
+     */
+    public function createActionProposal(array $data): ?int
+    {
+        $stmt = $this->pdo->prepare('
+            INSERT INTO ai_action_proposals (
+                proposal_type, status, agent, provider, model, source_run_id,
+                entity_type, entity_id, entity_name, evidence_json, proposal_json,
+                fingerprint, created_at, updated_at, expires_at
+            )
+            SELECT ?, \'pending\', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (SELECT 1 FROM ai_action_proposals WHERE fingerprint = ?)
+        ');
+        $stmt->execute([
+            $data['proposal_type'],
+            $data['agent'],
+            $data['provider'] ?? null,
+            $data['model'] ?? null,
+            $data['source_run_id'] ?? null,
+            $data['entity_type'],
+            $data['entity_id'],
+            $data['entity_name'] ?? null,
+            $data['evidence_json'] ?? null,
+            $data['proposal_json'] ?? null,
+            $data['fingerprint'],
+            $data['created_at'],
+            $data['updated_at'],
+            $data['expires_at'],
+            $data['fingerprint'],
+        ]);
+        if ($stmt->rowCount() === 0) {
+            return null;
+        }
+        return (int) $this->pdo->lastInsertId();
+    }
+
+    public function getActionProposal(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM ai_action_proposals WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    /**
+     * @param array{status?:string, proposal_type?:string, agent?:string} $filters
+     */
+    public function listActionProposals(array $filters = [], int $limit = 20, int $offset = 0): array
+    {
+        $limit = max(1, min(self::ACTION_PROPOSAL_MAX_PAGE_SIZE, $limit));
+        $offset = max(0, $offset);
+        [$whereSql, $params] = $this->buildActionProposalWhere($filters);
+
+        $stmt = $this->pdo->prepare("SELECT * FROM ai_action_proposals $whereSql ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?");
+        $i = 1;
+        foreach ($params as $param) {
+            $stmt->bindValue($i++, $param);
+        }
+        $stmt->bindValue($i++, $limit, PDO::PARAM_INT);
+        $stmt->bindValue($i++, $offset, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function countActionProposals(array $filters = []): int
+    {
+        [$whereSql, $params] = $this->buildActionProposalWhere($filters);
+        $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM ai_action_proposals $whereSql");
+        $stmt->execute($params);
+        return (int) $stmt->fetchColumn();
+    }
+
+    /** @return array{0:string,1:array<int,mixed>} */
+    private function buildActionProposalWhere(array $filters): array
+    {
+        $where = [];
+        $params = [];
+        if (!empty($filters['status'])) {
+            $where[] = 'status = ?';
+            $params[] = $filters['status'];
+        }
+        if (!empty($filters['proposal_type'])) {
+            $where[] = 'proposal_type = ?';
+            $params[] = $filters['proposal_type'];
+        }
+        if (!empty($filters['agent'])) {
+            $where[] = 'agent = ?';
+            $params[] = $filters['agent'];
+        }
+        return [$where ? 'WHERE ' . implode(' AND ', $where) : '', $params];
+    }
+
+    /**
+     * Atomi állapotátmenet pending → approved — UGYANAZ a minta, mint
+     * closeCashSession()-nél: a WHERE-feltétel (status='pending' ÉS még
+     * nem járt le) az EGYETLEN döntési pont, SOSE egy megelőző SELECT
+     * (lásd ActionProposalService::approve() — a "elavult-e" ellenőrzés
+     * itt egy KÜLÖN, korábbi lépés, ami MAGA IS csak egy párhuzamos,
+     * ugyanilyen atomi WHERE status='pending' feltételű UPDATE-et hajthat
+     * végre — így két versengő kérés közül SOSE tud mindkettő sikerrel
+     * lezárulni, lásd a metódus docblokkját markActionProposalStale()-nél).
+     */
+    public function approveActionProposal(int $id, ?int $staffId): bool
+    {
+        $now = date('Y-m-d H:i:s');
+        $stmt = $this->pdo->prepare("
+            UPDATE ai_action_proposals
+            SET status = 'approved', reviewed_at = ?, reviewed_by = ?, updated_at = ?
+            WHERE id = ? AND status = 'pending' AND expires_at > ?
+        ");
+        $stmt->execute([$now, $staffId, $now, $id, $now]);
+        return $stmt->rowCount() === 1;
+    }
+
+    public function rejectActionProposal(int $id, ?int $staffId, ?string $reason): bool
+    {
+        $now = date('Y-m-d H:i:s');
+        $stmt = $this->pdo->prepare("
+            UPDATE ai_action_proposals
+            SET status = 'rejected', reviewed_at = ?, reviewed_by = ?, rejection_reason = ?, updated_at = ?
+            WHERE id = ? AND status = 'pending'
+        ");
+        $stmt->execute([$now, $staffId, $reason, $now, $id]);
+        return $stmt->rowCount() === 1;
+    }
+
+    /**
+     * Atomi pending → stale átmenet, a jóváhagyás-előtti revalidáció
+     * eredményeként (lásd ActionProposalService::approve()) — UGYANAZZAL
+     * a WHERE status='pending' feltétellel, mint approveActionProposal()/
+     * rejectActionProposal(), ezért a három átmenet KÖLCSÖNÖSEN kizárja
+     * egymást ugyanarra a sorra: bármelyik kettő versenyhelyzetben lévő
+     * hívás közül csak az EGYIK talál még 'pending' sort, a másik
+     * rowCount()===0-t kap, SOSE jöhet létre két, egymásnak ellentmondó
+     * végállapot.
+     */
+    public function markActionProposalStale(int $id): bool
+    {
+        $now = date('Y-m-d H:i:s');
+        $stmt = $this->pdo->prepare("UPDATE ai_action_proposals SET status = 'stale', updated_at = ? WHERE id = ? AND status = 'pending'");
+        $stmt->execute([$now, $id]);
+        return $stmt->rowCount() === 1;
+    }
+
+    public function expireActionProposal(int $id): bool
+    {
+        $now = date('Y-m-d H:i:s');
+        $stmt = $this->pdo->prepare("UPDATE ai_action_proposals SET status = 'expired', updated_at = ? WHERE id = ? AND status = 'pending' AND expires_at <= ?");
+        $stmt->execute([$now, $id, $now]);
+        return $stmt->rowCount() === 1;
+    }
+
+    /**
+     * Lejárt 'pending' javaslatok tömeges "seprése" — a kör 37. pontja
+     * ("Do not scan all historical proposals on every page request"): ez
+     * az UPDATE az indexelt (status, expires_at) oszlopokra szűkül, NEM
+     * a teljes tábla beolvasása — a listázó/lekérdező metódusok hívják
+     * meg minden tényleges olvasás ELŐTT (lásd ActionProposalService::
+     * listProposals()/getProposal()), hogy egy már lejárt javaslat SOSE
+     * jelenjen meg "pending"-ként a felületen, anélkül, hogy egy külön,
+     * ütemezett worker-re lenne szükség csak ehhez.
+     */
+    public function sweepExpiredActionProposals(): int
+    {
+        $now = date('Y-m-d H:i:s');
+        $stmt = $this->pdo->prepare("UPDATE ai_action_proposals SET status = 'expired', updated_at = ? WHERE status = 'pending' AND expires_at <= ?");
+        $stmt->execute([$now, $now]);
+        return $stmt->rowCount();
     }
 
     // ---------------------------------------------------------------

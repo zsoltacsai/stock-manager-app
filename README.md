@@ -4293,6 +4293,210 @@ végpontig futtatott ellenőrzések:
   futó tesztek (`tests/AiDailyIntelligenceCrossProviderTest.php`)
   bizonyítják a protokoll-szintű helyességet.
 
+### AI Action Proposals — javaslat és emberi jóváhagyás (Fázis 8A)
+
+**KRITIKUS, mindent meghatározó szabály**: ez a fázis egy KONTROLLÁLT
+javaslat/jóváhagyás munkafolyamatot vezet be — az AI **javaslatot
+KÉSZÍTHET**, de **SOSE hajtja végre a javasolt üzleti műveletet**. A
+teljes életciklus itt ér véget:
+
+```
+AI-megállapítás (AnomalyDetector) → Javaslat (ActionProposal) →
+  Emberi felülvizsgálat → Jóváhagyás / Elutasítás
+```
+
+A "Jóváhagyás" **KIZÁRÓLAG a javaslat állapotát** változtatja meg
+(`pending` → `approved`) — **NEM** jelenti azt, hogy a javasolt készlet-,
+ár-, rendelés-, kassza-, vevő- vagy számlaváltoztatás ténylegesen
+megtörtént. Ez a fázis SZÁNDÉKOSAN **NEM** implementál semmilyen
+tényleges üzleti írást — a jövőbeli, validált backend-végrehajtás egy
+KÜLÖN, jövőbeli Fázis 8B feladata, ide NEM tartozik.
+
+#### Architektúra
+
+- **`src/Ai/ActionProposal.php`** — a javaslat típusos, READ-ONLY
+  modellje: a szigorú `TYPES`/`STATUSES`/`AGENTS` whitelistek ÉS a
+  bounded méretkorlátok (entitásnév/elutasítás-indoklás/evidence-JSON/
+  proposal-JSON) EGY helyen. A `STATUSES` listában **SZÁNDÉKOSAN NINCS**
+  `'executed'` állapot — lásd fent.
+- **`src/Ai/ActionProposalService.php`** — az EGYETLEN hely, ahol
+  javaslat létrejöhet/érvényesíthető/jóváhagyható/elutasítható. Minden
+  mező VALIDÁLT, DETERMINISZTIKUS forrásból (AnomalyDetector-találat +
+  friss `products`-lekérdezés) származik — a böngésző SOSE tud
+  közvetlenül, tetszőleges típussal/entitással/evidence-szel javaslatot
+  létrehozni (a végpontok kizárólag `id`-t fogadnak el az
+  elbíráláshoz, lásd lent).
+- **Javaslat-típusok** (`ActionProposal::TYPES`): `inventory_review`
+  (készlet-felülvizsgálat), `reorder_draft` (utánrendelés-vizsgálat),
+  `sales_review` (eladás-visszaesés felülvizsgálata). Determinisztikus
+  leképezés a MEGLÉVŐ `AnomalyDetector`-találat-típusokból
+  (`ActionProposalService::ELIGIBLE_FINDING_TYPES`) — a modell SOSE
+  dönt arról, mely javaslat-típus jöjjön létre.
+- **Jogosultsági szűrés** — csak `entity_type === 'product'` ÉS
+  `severity` `critical`/`high` találatokból jön létre javaslat
+  (`ActionProposalService::isEligibleFinding()`) — alacsony súlyosság,
+  elégtelen adat (`data_quality`, sose kerül az `anomalies` listába) és
+  bolt-szintű (pl. visszáru-arány) találatok SOSE válnak javaslattá.
+
+#### Determinisztikus evidence
+
+Minden javaslat `evidence_json` mezője a HÁTTÉRBŐL, SOSE az LLM-től
+származik: `product_id`/`product_name`/`current_stock` (friss
+`Database::findProductById()`-lekérdezés a javaslat létrehozásának
+pillanatában) + a MÁR kiszámított `metric`/`current_value`/
+`baseline_value`/`change_percent`/`severity`/`reason_code` (az
+`AnomalyDetector::buildRecord()` eredményéből, változtatás nélkül). A
+"Javasolt lépés" (`proposal_json`) szövege is DETERMINISZTIKUS sablon
+(`ActionProposalService::describeProposedAction()`), nem LLM-generált.
+
+#### Duplikátum-elnyomás és lejárat
+
+- **Fingerprint** — `sha256(proposal_type|entity_type|entity_id|
+  reason_code|period_label)` (`ActionProposalService::
+  computeFingerprint()`) — SOSE tartalmaz időbélyeget/véletlen
+  azonosítót/szabad szöveget. Egyedi index az `ai_action_proposals.
+  fingerprint` oszlopon + `INSERT ... WHERE NOT EXISTS` atomi minta
+  (UGYANAZ, mint `Database::claimAiDailyReportSlot()`/
+  `openCashSession()`) — egy ismétlődő napi találat SOSE hoz létre
+  második sort, FÜGGETLENÜL attól, hogy az elsőt már elbírálták-e.
+- **Lejárat (TTL)** — `ai_action_proposal_ttl_hours` (alapértelmezett
+  48 óra), KÖZPONTOSÍTVA `ActionProposal::DEFAULT_TTL_HOURS`-ban. Egy
+  lejárt `pending` sor `expired`-re vált — vagy lusta "söpréssel"
+  (`Database::sweepExpiredActionProposals()`, minden listázás/
+  lekérdezés ELŐTT lefut, indexelt `(status, expires_at)` feltétellel,
+  NEM teljes táblatárolás), vagy magánál a jóváhagyási kísérletnél.
+
+#### Elavulás-ellenőrzés (stale validation) jóváhagyás előtt
+
+**KRITIKUS védelmi lépés** (`ActionProposalService::isStale()`):
+jóváhagyás ELŐTT a szolgáltatás ÚJRA lekérdezi a termék TÉNYLEGES
+készletét, és összeveti a javaslat LÉTREHOZÁSAKORI, tárolt
+`evidence.current_stock` értékével. Bármilyen eltérés (pl. időközben
+beérkezett egy rendelés, vagy egy pénztáros eladta a maradék készletet)
+a javaslatot atomikusan `stale`-re állítja — **SOSE hagyható jóvá a
+régi adat alapján**. Ez a MEGLÉVŐ termék NEM létezése (törölt termék)
+esetén is `stale`-t eredményez.
+
+#### Atomi állapotátmenetek és konkurrencia
+
+`Database::approveActionProposal()`/`rejectActionProposal()`/
+`markActionProposalStale()`/`expireActionProposal()` mindegyike
+UGYANAZT az `UPDATE ... WHERE id = ? AND status = 'pending' [AND
+expires_at > ?]` mintát követi, mint a MEGLÉVŐ `closeCashSession()`
+(Fázis 1) — a `rowCount() === 1` az EGYETLEN döntési pont, SOSE egy
+megelőző `SELECT`. Mivel mind a négy átmenet UGYANAZZAL a
+`status = 'pending'` feltétellel versenyez ugyanarra a sorra, két
+egyidejű kérés közül (jóváhagyás+jóváhagyás, jóváhagyás+elutasítás,
+vagy jóváhagyás+elavulás-jelölés) **garantáltan csak az egyik**
+sikerülhet — valódi, `proc_open`-alapú, 12 párhuzamos folyamatot
+indító tesztek bizonyítják ezt (`tests/
+ActionProposalConcurrencyTest.php`), nem csak szekvenciális
+feltételezés.
+
+#### Beállítások és aktiválás
+
+`Beállítások → AI asszisztens`: `ai_action_proposals_enabled`
+(alapértelmezetten **KIKAPCSOLVA**, még akkor is, ha `ai_enabled`/
+`ai_daily_intelligence_enabled` már be van kapcsolva — a kör 11.
+pontjának explicit követelménye) + `ai_action_proposal_ttl_hours`
+(1–720 óra közé korlátozva).
+
+#### Napi Intelligencia integráció
+
+`AiDailyIntelligence::maybeCreateActionProposals()` — a napi
+determinisztikus gyűjtés (`gatherContext()`) UTÁN, a szintézis-hívás
+ELŐTT fut le, KIZÁRÓLAG ha `ai_action_proposals_enabled=true`. Minden,
+már priorizált `anomalies`-találatra meghívja
+`ActionProposalService::createFromFinding()`-et — a tényleges
+jogosultsági/duplikátum-döntés TELJES egészében a service felelőssége.
+Egy esetleges hiba itt SOSE buktathatja meg magát a napi jelentés
+generálását (try/catch, `error_log`).
+
+#### Copilot-integráció (SZÁNDÉKOSAN nincs)
+
+A kör 25. pontja explicit tiltja, hogy a Copilot jóváhagyhasson/
+elutasíthasson javaslatot ("Do not add approval as an LLM tool").
+Ennél a fázisnál egy lépéssel tovább menve: az `AiCopilot.php`
+**EGYETLEN sora sem módosult** — a MEGLÉVŐ, pontosan három
+(`ask_inventory_agent`/`ask_sales_agent`/`ask_anomaly_agent`) eszközt
+tartalmazó, auditált `ToolRegistry`-je változatlan (lásd
+`tests/ActionProposalCopilotBoundaryTest.php`, ami ezt forrás- ÉS
+futásidejű ellenőrzéssel is bizonyítja). A Copilot jelenleg NEM tud
+javaslatokat listázni/magyarázni — ez egy explicit, dokumentált
+jövőbeli bővítési lehetőség (lásd "Ismert korlátok" lent), nem
+hiányosság.
+
+#### UI
+
+`AI Asszisztens → Javaslatok` fül (`webroot/ai-asszisztens.php`+`.js`):
+szűrhető/lapozható lista (állapot/típus szerint), részletnézet
+(típus/forrás/entitás/javasolt lépés/bizonyíték/lejárat/állapot/
+elbíráló/indoklás), Jóváhagyás/Elutasítás gombok — mindkettő explicit
+figyelmezteti a felhasználót, hogy üzleti művelet NEM történik. A
+dupla-submit ellen a gombok a kérés alatt le vannak tiltva, sikeres
+elbírálás UTÁN a részletnézet ÉS a lista is azonnal frissül (valódi
+böngészőben ellenőrizve, lásd lent).
+
+#### Végpontok, Client/Server, biztonság
+
+| Végpont | Metódus | Jogosultság |
+|---|---|---|
+| `ai-action-proposals-list.php` | GET | `require_admin` |
+| `ai-action-proposal-detail.php` | GET | `require_admin` |
+| `ai-action-proposal-approve.php` | POST | `require_admin` + CSRF |
+| `ai-action-proposal-reject.php` | POST | `require_admin` + CSRF |
+
+Mind a négy a MEGLÉVŐ admin-kapun (`require_admin()`) és a
+`_bootstrap.php` globális CSRF-rétegén megy át — UGYANAZZAL az
+indoklással, mint minden AI-végpont. Kliens node-on a MEGLÉVŐ
+`ClientProxy` változtatás nélkül továbbítja ezeket a Szerverre — a
+Kliens SOSE hoz létre/perzisztál javaslatot helyben, SOSE futtat
+jóváhagyási logikát helyben (valódi, két-folyamatos HTTP-teszttel
+bizonyítva, lásd `tests/ActionProposalClientServerHttpTest.php`).
+`Auth::currentStaffId()` NULLABLE marad az elbírálásnál — egy dolgozói
+PIN-rendszer nélküli telepítésen (lásd `cash-session-open.php` UGYANEZEN
+mintája) a jóváhagyás/elutasítás ekkor is sikeres, csak
+`reviewed_by` marad `NULL`.
+
+#### Automatizált tesztek (Fázis 8A)
+
+- `tests/ActionProposalServiceTest.php` (25) — modell/validáció/
+  fingerprint/duplikátum/TTL/jóváhagyás/elutasítás/elavulás/audit.
+- `tests/ActionProposalConcurrencyTest.php` (3) — VALÓDI, 12
+  párhuzamos `proc_open`-folyamatos bizonyíték: konkurrens jóváhagyás,
+  jóváhagyás+elutasítás verseny, lejárt javaslat sose hagyható jóvá.
+- `tests/AiDailyIntelligenceProposalIntegrationTest.php` (7) —
+  kikapcsolt beállítás/jogosult találat/alacsony súlyosság/elégtelen
+  adat/duplikátum ismételt napi futás mellett/evidence-pontosság/a
+  napi jelentés generálása független marad a beállítástól.
+- `tests/ActionProposalEndpointHttpTest.php` (23) — VALÓDI HTTP,
+  hitelesítés/jogosultság/CSRF/lista/részlet/jóváhagyás/elutasítás/
+  hibaesetek, ÉS közvetlen adatbázis-ellenőrzéssel bizonyítva, hogy a
+  jóváhagyás UTÁN a termék készlete VÁLTOZATLAN maradt.
+- `tests/ActionProposalClientServerHttpTest.php` (3) — VALÓDI, két
+  `php -S`-folyamatos Kliens+Szerver, a fenti Client/Server garanciák
+  bizonyítására.
+- `tests/ActionProposalCopilotBoundaryTest.php` (2) — a Copilot
+  ToolRegistry-je pontosan a három eredeti eszközt tartalmazza, a
+  forráskód sose hivatkozik `ActionProposal`-ra.
+
+#### Valódi böngésző-ellenőrzés (Fázis 8A)
+
+A tényleges fejlesztői példányon (`php -S`, valódi `data/stock.sqlite`)
+egy valódi javaslat lett létrehozva (`ActionProposalService`-en
+keresztül, közvetlen PHP CLI-hívással, mivel valódi Ollama-alapú Napi
+Intelligencia-generálás ehhez nem szükséges — a javaslat-modell/
+-szolgáltatás LLM-hívás nélkül dolgozik), majd a `Javaslatok` fülön
+böngészőben megnyitva, jóváhagyva, illetve (egy második javaslatnál)
+indoklással elutasítva — mindkét művelet AZONNAL, helyes visszajelzéssel
+frissítette a részletnézetet és a listát. Ez a valódi ellenőrzés
+fedezett fel és javított egy tényleges hibát: az `approve.php`/
+`reject.php` végpontok kezdetben hibásan 401-et adtak vissza egy
+dolgozói PIN-rendszer NÉLKÜLI (üres `staff` tábla) telepítésen — a
+javítás UTÁN (lásd fent "Auth::currentStaffId() NULLABLE marad")
+mindkét művelet helyesen sikeres volt. A teszt-adatok (termék+javaslat)
+a böngésző-ellenőrzés UTÁN törölve lettek a fejlesztői adatbázisból.
+
 ### Ismert korlátok
 
 - **Kizárólag olvasás** — sem az Inventory, sem a Sales, sem az Anomaly
@@ -4456,3 +4660,33 @@ végpontig futtatott ellenőrzések:
   jelvénnyel) — egy éppen folyamatban lévő napi-jelentés-generálás
   állapotát az admin-nak manuálisan (fül újranyitásával/frissítéssel)
   kell újra lekérdeznie.
+- **AI Action Proposals (Fázis 8A) NEM egy negyedik agent** — a MEGLÉVŐ
+  `AnomalyDetector`-találatokból épül, saját anomália-/forgalmi logika
+  NÉLKÜL; minden ilyen jellegű változtatás a MEGLÉVŐ `AnomalyDetector`/
+  `AnomalyTools` fájlokban történik, a javaslat-generálás automatikusan
+  örökli.
+- **A javaslat-generálásnak jelenleg EGYETLEN útvonala van: a Napi
+  Intelligencia** — a kör 23. pontjának OPCIONÁLIS "Javaslat készítése"
+  UI-gombja (egyedi termékre, az Inventory/Sales/Anomaly agent-oldalakon)
+  ebben a körben NEM készült el; `ActionProposal::AGENTS` ezért
+  SZÁNDÉKOSAN csak `daily_intelligence`-et tartalmazza. Ez egy
+  dokumentált, jövőbeli bővítési lehetőség, nem hiányosság.
+- **A Copilot jelenleg NEM tudatos a javaslatokról** — nem tudja őket
+  listázni/magyarázni (a kör 25. pontja ezt csak MEGENGEDTE, nem írta
+  elő) — ez is egy jövőbeli bővítési lehetőség, ami az `AiCopilot.php`
+  MEGLÉVŐ, pontosan három eszközt tartalmazó `ToolRegistry`-jét egy
+  ÚJ, kizárólag olvasásra képes negyedik eszközzel bővítené (SOSE
+  jóváhagyási/elutasítási képességgel — az explicit TILOS marad).
+- **Az elavulás-ellenőrzés (stale validation) jelenleg KIZÁRÓLAG a
+  `current_stock` mezőt hasonlítja össze** — determinisztikus,
+  szigorú egyezés-vizsgálat (bármilyen eltérés elavulttá tesz, nincs
+  "elég közeli" tolerancia-sáv). Ha egy jövőbeli javaslat-típus más
+  kulcsfontosságú mezőt is hordozna, az `ActionProposalService::
+  isStale()` bővítése szükséges hozzá.
+- **Fázis 8B (validált backend-végrehajtás) NINCS ebben a körben** — a
+  jóváhagyás KIZÁRÓLAG a javaslat állapotát változtatja meg, SOSE
+  hajt végre tényleges készlet-, ár-, rendelés-, kassza-, vevő- vagy
+  számlaváltoztatást. Egy jóváhagyott javaslat alapján a tényleges
+  üzleti lépést az érintett FountainTrade-felületen (pl. Beszerzések,
+  Árucikkek) a boltvezető/dolgozó manuálisan hajtja végre — ez a
+  Fázis 8A szándékolt, végleges hatásköre, nem egy átmeneti korlát.

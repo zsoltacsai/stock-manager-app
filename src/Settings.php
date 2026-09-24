@@ -325,6 +325,16 @@ class Settings
         'ai_daily_intelligence_hour'           => 7,
         'ai_daily_intelligence_max_findings'   => 10,
         'ai_daily_intelligence_notify_enabled' => true,
+
+        // Fázis 8A — AI Action Proposals + Human Approval. A kör 11.
+        // pontja explicit követelménye: "AI Action Proposals must NOT
+        // silently become active just because ai_enabled = true / daily_
+        // intelligence = true" — ezért KÜLÖN kapcsoló, alapból KIKAPCSOLVA,
+        // még akkor is, ha mindkét fenti már be van kapcsolva. A TTL
+        // (a kör 13. pontja: "Add a configurable or centrally defined
+        // TTL") KÖZPONTOSÍTVA, csak ActionProposalService olvassa.
+        'ai_action_proposals_enabled'   => false,
+        'ai_action_proposal_ttl_hours'  => 48,
     ];
 
     public function __construct(string $path)

@@ -9,6 +9,7 @@ require_once __DIR__ . '/AgentRunResult.php';
 require_once __DIR__ . '/Tools/AnomalyTools.php';
 require_once __DIR__ . '/Tools/SalesTools.php';
 require_once __DIR__ . '/Tools/InventoryTools.php';
+require_once __DIR__ . '/ActionProposalService.php';
 
 /**
  * Fázis 7 — napi AI-összefoglaló, "operational composition of existing
@@ -90,6 +91,8 @@ PROMPT;
             ]);
             return ['status' => 'failed', 'error' => 'Az adatgyűjtés sikertelen — a napi jelentés nem készült el.'];
         }
+
+        $this->maybeCreateActionProposals($reportDate, $context);
 
         // Szándékosan ÜRES ToolRegistry — lásd az osztály docblokkja: a
         // kontextus MÁR teljes, a modellnek SOSE kell (és SOSE tud) eszközt
@@ -181,6 +184,42 @@ PROMPT;
             'sales_comparison' => $salesComparison,
             'inventory_low_stock' => $lowStock['products'],
         ];
+    }
+
+    /**
+     * Fázis 8A — a kör 24. pontja: a napi jelentés OPCIONÁLISAN javaslatot
+     * hozhat létre a MÁR összegyűjtött (self::gatherContext()), determi-
+     * nisztikusan priorizált `anomalies` listából, KIZÁRÓLAG ha
+     * `ai_action_proposals_enabled` be van kapcsolva (a kör 11. pontja —
+     * ez SOSE aktiválódik csak azért, mert ez a napi jelentés maga
+     * engedélyezve van). A tényleges jogosultsági/duplikátum-döntést
+     * TELJES egészében az ActionProposalService hozza (SOSE ez a metódus
+     * dönt) — ez itt csak a hívási pont, minden findingre. A javaslat-
+     * létrehozás hibája SOSE buktathatja meg magát a napi jelentés
+     * generálását (a kör "AI failures cannot affect normal POS operation"
+     * elve, lásd a jelen fájl osztály-docblokkja is).
+     */
+    private function maybeCreateActionProposals(string $reportDate, array $context): void
+    {
+        if (empty($this->appSettings['ai_action_proposals_enabled'])) {
+            return;
+        }
+        try {
+            $report = $this->db->getAiDailyReport($reportDate);
+            $sourceRunId = $report['id'] ?? null;
+            $service = new ActionProposalService($this->db, $this->appSettings);
+            foreach ($context['anomalies'] as $finding) {
+                $service->createFromFinding(
+                    $finding,
+                    'daily_intelligence',
+                    $this->provider->name(),
+                    null,
+                    $sourceRunId !== null ? (int) $sourceRunId : null
+                );
+            }
+        } catch (Throwable $e) {
+            error_log('[fountaintrade] AiDailyIntelligence action proposal generálás sikertelen: ' . $e->getMessage());
+        }
     }
 
     /**

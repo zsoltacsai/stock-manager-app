@@ -720,4 +720,35 @@ CREATE TABLE IF NOT EXISTS ai_daily_reports (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_daily_reports_date ON ai_daily_reports(report_date);
 
+-- Fázis 8A — AI Action Proposals + Human Approval (lásd
+-- Database::migrateV31ActionProposals() docblokkja). Egyedi index a
+-- fingerprint oszlopon — ez a duplikátum-elnyomás elsődleges védelme.
+CREATE TABLE IF NOT EXISTS ai_action_proposals (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_type     VARCHAR(32) NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'pending',   -- pending|approved|rejected|expired|stale
+    agent             VARCHAR(32) NOT NULL,
+    provider          VARCHAR(32),
+    model             VARCHAR(64),
+    source_run_id     INTEGER,
+    entity_type       VARCHAR(32) NOT NULL,
+    entity_id         INTEGER NOT NULL,
+    entity_name       VARCHAR(191),
+    evidence_json     TEXT,
+    proposal_json     TEXT,
+    fingerprint       VARCHAR(128) NOT NULL,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at        TEXT NOT NULL,
+    reviewed_at       TEXT,
+    reviewed_by       INTEGER,
+    rejection_reason  VARCHAR(500)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_action_proposals_status ON ai_action_proposals(status);
+CREATE INDEX IF NOT EXISTS idx_ai_action_proposals_created_at ON ai_action_proposals(created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_action_proposals_expires_at ON ai_action_proposals(expires_at);
+CREATE INDEX IF NOT EXISTS idx_ai_action_proposals_agent ON ai_action_proposals(agent);
+CREATE INDEX IF NOT EXISTS idx_ai_action_proposals_type ON ai_action_proposals(proposal_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_action_proposals_fingerprint ON ai_action_proposals(fingerprint);
+
 INSERT INTO schema_version (version) SELECT 16 WHERE NOT EXISTS (SELECT 1 FROM schema_version);

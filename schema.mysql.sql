@@ -755,5 +755,35 @@ CREATE TABLE IF NOT EXISTS ai_daily_reports (
     UNIQUE KEY idx_ai_daily_reports_date (report_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Fázis 8A — AI Action Proposals + Human Approval (lásd schema.sql
+-- azonos szakasza / Database::migrateV31ActionProposals()).
+CREATE TABLE IF NOT EXISTS ai_action_proposals (
+    id                INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    proposal_type     VARCHAR(32) NOT NULL,
+    status            VARCHAR(16) NOT NULL DEFAULT 'pending',
+    agent             VARCHAR(32) NOT NULL,
+    provider          VARCHAR(32),
+    model             VARCHAR(64),
+    source_run_id     INT,
+    entity_type       VARCHAR(32) NOT NULL,
+    entity_id         INT NOT NULL,
+    entity_name       VARCHAR(191),
+    evidence_json     TEXT,
+    proposal_json     TEXT,
+    fingerprint       VARCHAR(128) NOT NULL,
+    created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at        DATETIME NOT NULL,
+    reviewed_at       DATETIME NULL,
+    reviewed_by       INT NULL,
+    rejection_reason  VARCHAR(500),
+    INDEX idx_ai_action_proposals_status (status),
+    INDEX idx_ai_action_proposals_created_at (created_at),
+    INDEX idx_ai_action_proposals_expires_at (expires_at),
+    INDEX idx_ai_action_proposals_agent (agent),
+    INDEX idx_ai_action_proposals_type (proposal_type),
+    UNIQUE KEY idx_ai_action_proposals_fingerprint (fingerprint)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 INSERT INTO schema_version (version)
 SELECT 16 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM schema_version);

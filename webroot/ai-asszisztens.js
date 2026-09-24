@@ -128,6 +128,9 @@
     } else if (urlParams.get('tab') === 'history') {
         const historyBtn = document.querySelector('.tab-btn[data-tab="tab-ai-history"]');
         if (historyBtn) historyBtn.click();
+    } else if (urlParams.get('tab') === 'proposals') {
+        const proposalsBtn = document.querySelector('.tab-btn[data-tab="tab-ai-proposals"]');
+        if (proposalsBtn) proposalsBtn.click();
     }
 
     // ------------------------------------------------------------------
@@ -308,5 +311,177 @@
     if (dailyDateSelect) {
         dailyDateSelect.addEventListener('change', () => loadDailyReport(dailyDateSelect.value));
         loadDailyReportDates();
+    }
+
+    // ------------------------------------------------------------------
+    // Fázis 8A — Javaslatok (a kör 21/22. pontja). KRITIKUS: a "Jóváhagyás"
+    // gomb KIZÁRÓLAG a javaslat állapotát változtatja — SOSE jelenít meg
+    // "készlet módosítva"/"rendelés létrehozva"-jellegű szöveget, mert
+    // ilyen üzleti művelet ebben a fázisban SOSE történik.
+    // ------------------------------------------------------------------
+    const proposalsBody = document.getElementById('ai-proposals-body');
+    const proposalsSummary = document.getElementById('ai-proposals-summary');
+    const proposalsPrevBtn = document.getElementById('ai-proposals-prev-btn');
+    const proposalsNextBtn = document.getElementById('ai-proposals-next-btn');
+    const proposalsFilterStatus = document.getElementById('ai-proposals-filter-status');
+    const proposalsFilterType = document.getElementById('ai-proposals-filter-type');
+    const proposalsFilterBtn = document.getElementById('ai-proposals-filter-btn');
+    const proposalDetailBox = document.getElementById('ai-proposal-detail-box');
+    const proposalDetailBody = document.getElementById('ai-proposal-detail-body');
+    const proposalDetailCloseBtn = document.getElementById('ai-proposal-detail-close-btn');
+    const proposalApproveBtn = document.getElementById('ai-proposal-approve-btn');
+    const proposalRejectBtn = document.getElementById('ai-proposal-reject-btn');
+    const proposalRejectReason = document.getElementById('ai-proposal-reject-reason');
+    const proposalDetailFeedback = document.getElementById('ai-proposal-detail-feedback');
+    const proposalDetailActions = document.getElementById('ai-proposal-detail-actions');
+
+    const PROPOSAL_TYPE_LABELS = {
+        inventory_review: 'Készlet-felülvizsgálat',
+        reorder_draft: 'Utánrendelés-vizsgálat',
+        sales_review: 'Eladás-felülvizsgálat',
+    };
+    const PROPOSAL_STATUS_LABELS = {
+        pending: '⏳ Függőben',
+        approved: '✓ Jóváhagyva',
+        rejected: '✗ Elutasítva',
+        expired: '⌛ Lejárt',
+        stale: '⚠ Elavult',
+    };
+
+    const PROPOSALS_PAGE_SIZE = 20;
+    let proposalsPage = 1;
+    let proposalsHasMore = false;
+    let currentProposalId = null;
+    let currentProposalData = null;
+
+    function renderProposalDetailRows(p) {
+        const evidenceLines = Object.entries(p.evidence || {}).map(([k, v]) => `${k}: ${v}`).join(' · ');
+        const rows = [
+            ['Típus', PROPOSAL_TYPE_LABELS[p.proposal_type] || p.proposal_type],
+            ['Forrás (agent)', p.agent],
+            ['Entitás', p.entity_name || '—'],
+            ['Javasolt lépés', (p.proposed_action && p.proposed_action.summary) || '—'],
+            ['Bizonyíték', evidenceLines || '—'],
+            ['Létrehozva', p.created_at],
+            ['Lejárat', p.expires_at],
+            ['Állapot', PROPOSAL_STATUS_LABELS[p.status] || p.status],
+            ['Elbírálva', p.reviewed_at || '—'],
+            ['Elutasítás indoka', p.rejection_reason || '—'],
+        ];
+        proposalDetailBody.innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${String(v)}</td></tr>`).join('');
+        proposalDetailActions.style.display = p.status === 'pending' ? '' : 'none';
+    }
+
+    async function loadProposals() {
+        if (!proposalsBody) return;
+        proposalsBody.innerHTML = '<tr><td colspan="7" class="muted">Betöltés…</td></tr>';
+        const params = new URLSearchParams({ page: String(proposalsPage), page_size: String(PROPOSALS_PAGE_SIZE) });
+        if (proposalsFilterStatus.value) params.set('status', proposalsFilterStatus.value);
+        if (proposalsFilterType.value) params.set('proposal_type', proposalsFilterType.value);
+        try {
+            const res = await fetch('/api/ai-action-proposals-list.php?' + params.toString());
+            const data = await res.json();
+            if (!res.ok || !data.ok) throw new Error(data.error || 'ismeretlen hiba');
+            proposalsHasMore = !!data.has_more;
+            if (!data.proposals.length) {
+                proposalsBody.innerHTML = '<tr><td colspan="7" class="muted">Nincs találat.</td></tr>';
+            } else {
+                proposalsBody.innerHTML = data.proposals.map(p => `
+                    <tr style="cursor:pointer;" data-id="${p.id}">
+                        <td>${PROPOSAL_TYPE_LABELS[p.proposal_type] || p.proposal_type}</td>
+                        <td>${p.entity_name || '—'}</td>
+                        <td>${SEVERITY_LABELS[(p.evidence && p.evidence.severity) || ''] || (p.evidence && p.evidence.severity) || '—'}</td>
+                        <td>${p.created_at || ''}</td>
+                        <td>${p.expires_at || ''}</td>
+                        <td>${PROPOSAL_STATUS_LABELS[p.status] || p.status}</td>
+                        <td>${p.status === 'pending' ? 'Megnyitás →' : '—'}</td>
+                    </tr>
+                `).join('');
+                proposalsBody.querySelectorAll('tr[data-id]').forEach(row => {
+                    row.addEventListener('click', () => loadProposalDetail(row.dataset.id));
+                });
+            }
+            proposalsSummary.textContent = `${data.total} találat — ${proposalsPage}. oldal`;
+            proposalsPrevBtn.disabled = proposalsPage <= 1;
+            proposalsNextBtn.disabled = !proposalsHasMore;
+        } catch (err) {
+            proposalsBody.innerHTML = `<tr><td colspan="7" class="muted">Hiba: ${err.message}</td></tr>`;
+        }
+    }
+
+    async function loadProposalDetail(id) {
+        currentProposalId = id;
+        proposalDetailFeedback.textContent = '';
+        proposalDetailFeedback.className = 'modal-feedback';
+        proposalRejectReason.value = '';
+        try {
+            const res = await fetch('/api/ai-action-proposal-detail.php?id=' + encodeURIComponent(id));
+            const data = await res.json();
+            if (!res.ok || !data.ok) throw new Error(data.error || 'ismeretlen hiba');
+            currentProposalData = data.proposal;
+            renderProposalDetailRows(currentProposalData);
+            proposalDetailBox.style.display = '';
+        } catch (err) {
+            proposalDetailBody.innerHTML = `<tr><td colspan="2" class="muted">Hiba: ${err.message}</td></tr>`;
+            proposalDetailBox.style.display = '';
+            proposalDetailActions.style.display = 'none';
+        }
+    }
+
+    async function reviewProposal(action) {
+        if (!currentProposalId) return;
+        const btn = action === 'approve' ? proposalApproveBtn : proposalRejectBtn;
+        proposalApproveBtn.disabled = true;
+        proposalRejectBtn.disabled = true;
+        proposalDetailFeedback.textContent = 'Feldolgozás…';
+        proposalDetailFeedback.className = 'modal-feedback';
+        try {
+            const endpoint = action === 'approve' ? '/api/ai-action-proposal-approve.php' : '/api/ai-action-proposal-reject.php';
+            const body = action === 'approve' ? { id: currentProposalId } : { id: currentProposalId, reason: proposalRejectReason.value.trim() };
+            const res = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.ok) throw new Error(data.error || 'A művelet nem sikerült.');
+            proposalDetailFeedback.textContent = action === 'approve'
+                ? 'A javaslat jóváhagyva. Üzleti művelet nem történt.'
+                : 'A javaslat elutasítva.';
+            proposalDetailFeedback.className = 'modal-feedback success';
+            if (currentProposalData) {
+                currentProposalData.status = data.status;
+                renderProposalDetailRows(currentProposalData);
+            }
+            loadProposals();
+        } catch (err) {
+            proposalDetailFeedback.textContent = 'Hiba: ' + err.message;
+            proposalDetailFeedback.className = 'modal-feedback error';
+        } finally {
+            proposalApproveBtn.disabled = false;
+            proposalRejectBtn.disabled = false;
+        }
+    }
+
+    if (proposalsFilterBtn) {
+        proposalsFilterBtn.addEventListener('click', () => { proposalsPage = 1; loadProposals(); });
+    }
+    if (proposalsPrevBtn) {
+        proposalsPrevBtn.addEventListener('click', () => { if (proposalsPage > 1) { proposalsPage--; loadProposals(); } });
+    }
+    if (proposalsNextBtn) {
+        proposalsNextBtn.addEventListener('click', () => { if (proposalsHasMore) { proposalsPage++; loadProposals(); } });
+    }
+    if (proposalDetailCloseBtn) {
+        proposalDetailCloseBtn.addEventListener('click', () => { proposalDetailBox.style.display = 'none'; currentProposalId = null; });
+    }
+    if (proposalApproveBtn) {
+        proposalApproveBtn.addEventListener('click', () => reviewProposal('approve'));
+    }
+    if (proposalRejectBtn) {
+        proposalRejectBtn.addEventListener('click', () => reviewProposal('reject'));
+    }
+    if (proposalsBody) {
+        loadProposals();
     }
 })();

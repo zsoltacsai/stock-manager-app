@@ -57,6 +57,8 @@ require_once __DIR__ . '/../src/Ai/CopilotRunResult.php';
 require_once __DIR__ . '/../src/Ai/Agents/AiCopilot.php';
 require_once __DIR__ . '/../src/Ai/OllamaProvisioner.php';
 require_once __DIR__ . '/../src/Ai/AiDailyIntelligence.php';
+require_once __DIR__ . '/../src/Ai/ActionProposal.php';
+require_once __DIR__ . '/../src/Ai/ActionProposalService.php';
 
 /**
  * Minden tesztfüggvény saját, egyszer használatos SQLite fájllal dolgozik

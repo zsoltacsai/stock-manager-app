@@ -44,6 +44,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <button class="tab-btn active" data-tab="tab-ai-chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path></svg>Asszisztens</button>
             <button class="tab-btn" data-tab="tab-ai-history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v4l3 3"></path><circle cx="12" cy="12" r="9"></circle></svg>Előzmények</button>
             <button class="tab-btn" data-tab="tab-ai-daily"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>Napi intelligencia</button>
+            <button class="tab-btn" data-tab="tab-ai-proposals"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>Javaslatok</button>
         </div>
 
         <div id="tab-ai-chat" class="tab-panel active">
@@ -158,6 +159,57 @@ if (!Auth::isLoggedIn($appSettings)) {
                     <strong>Jelentés</strong>
                     <p id="ai-daily-report-text" style="white-space:pre-wrap;"></p>
                 </div>
+            </div>
+        </div>
+
+        <div id="tab-ai-proposals" class="tab-panel">
+            <p class="muted" style="margin-top:0;">
+                Az AI (Napi intelligencia) által talált, determinisztikus adatokból készült javaslatok —
+                <strong>jóváhagyás vagy elutasítás KIZÁRÓLAG a javaslat állapotát változtatja meg, üzleti
+                művelet (készlet-, ár-, rendelés-, kassza-, vevő- vagy számlaváltoztatás) NEM történik.</strong>
+            </p>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+                <select id="ai-proposals-filter-status">
+                    <option value="pending">Függőben</option>
+                    <option value="">Összes állapot</option>
+                    <option value="approved">Jóváhagyva</option>
+                    <option value="rejected">Elutasítva</option>
+                    <option value="expired">Lejárt</option>
+                    <option value="stale">Elavult</option>
+                </select>
+                <select id="ai-proposals-filter-type">
+                    <option value="">Összes típus</option>
+                    <option value="inventory_review">Készlet-felülvizsgálat</option>
+                    <option value="reorder_draft">Utánrendelés-vizsgálat</option>
+                    <option value="sales_review">Eladás-felülvizsgálat</option>
+                </select>
+                <button id="ai-proposals-filter-btn" class="btn btn-secondary" style="width:auto; padding:8px 14px;" type="button">Szűrés</button>
+            </div>
+            <table class="sample-table">
+                <thead><tr><th>Típus</th><th>Entitás</th><th>Súlyosság</th><th>Létrehozva</th><th>Lejárat</th><th>Állapot</th><th>Művelet</th></tr></thead>
+                <tbody id="ai-proposals-body"><tr><td colspan="7" class="muted">Betöltés…</td></tr></tbody>
+            </table>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+                <span class="muted" id="ai-proposals-summary"></span>
+                <div>
+                    <button id="ai-proposals-prev-btn" class="btn btn-secondary" style="width:auto; padding:6px 12px;" type="button">Előző</button>
+                    <button id="ai-proposals-next-btn" class="btn btn-secondary" style="width:auto; padding:6px 12px;" type="button">Következő</button>
+                </div>
+            </div>
+
+            <div id="ai-proposal-detail-box" style="display:none; border-top:1px solid var(--border); margin-top:16px; padding-top:16px;">
+                <strong>Javaslat részletei</strong>
+                <p class="modal-feedback" style="margin-top:6px;">Ez a fázis csak a javaslat jóváhagyását/elutasítását rögzíti; üzleti művelet nem kerül végrehajtásra.</p>
+                <table class="sample-table" style="margin-top:8px;">
+                    <tbody id="ai-proposal-detail-body"></tbody>
+                </table>
+                <div id="ai-proposal-detail-actions" style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <button id="ai-proposal-approve-btn" class="btn btn-primary" style="width:auto; padding:8px 16px;" type="button">Jóváhagyás</button>
+                    <input type="text" id="ai-proposal-reject-reason" placeholder="Elutasítás indoklása (opcionális)" style="flex:1; min-width:200px;">
+                    <button id="ai-proposal-reject-btn" class="btn btn-secondary" style="width:auto; padding:8px 16px;" type="button">Elutasítás</button>
+                </div>
+                <p id="ai-proposal-detail-feedback" class="modal-feedback"></p>
+                <button id="ai-proposal-detail-close-btn" class="btn btn-secondary" style="width:auto; padding:6px 12px; margin-top:8px;" type="button">Bezárás</button>
             </div>
         </div>
     </div>

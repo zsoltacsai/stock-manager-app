@@ -2176,6 +2176,20 @@ class Database
         $this->pdo->prepare('DELETE FROM client_sessions WHERE registered_client_id = ?')->execute([$registeredClientId]);
     }
 
+    public function deleteClientSessionsForStaff(int $staffId): void
+    {
+        $this->pdo->prepare('DELETE FROM client_sessions WHERE staff_id = ?')->execute([$staffId]);
+    }
+
+    public function isStaffActive(?int $staffId): bool
+    {
+        if (!$staffId) {
+            return false;
+        }
+        $staff = $this->findStaffById($staffId);
+        return $staff !== null && (int) $staff['is_active'] === 1;
+    }
+
     // ---- Önfrissítés (GitHub Release-alapú) ----
 
     private const UPDATE_TERMINAL_STATES = ['idle', 'completed', 'failed', 'rolled_back', 'manual_recovery_required'];
@@ -5536,7 +5550,7 @@ class Database
             return false;
         }
         $staff = $this->findStaffById($staffId);
-        return $staff !== null && $staff['role'] === 'admin';
+        return $staff !== null && $staff['role'] === 'admin' && (int) $staff['is_active'] === 1;
     }
 
     // ---------------------------------------------------------------
@@ -5597,6 +5611,14 @@ class Database
             foreach ($sale['items'] ?? [] as $si) {
                 $originalItemsById[(int) $si['id']] = $si;
             }
+            // A korlát a kérésen belüli ÖSSZESÍTETT mennyiségre vonatkozik
+            // tételenként — egy ismételt sale_item_id-jű sor sose kerülheti
+            // meg a visszavehető mennyiséget.
+            $requestedBySaleItem = [];
+            foreach ($items as $item) {
+                $saleItemId = (int) ($item['sale_item_id'] ?? 0);
+                $requestedBySaleItem[$saleItemId] = ($requestedBySaleItem[$saleItemId] ?? 0) + (int) $item['qty'];
+            }
             foreach ($items as $item) {
                 $saleItemId = (int) ($item['sale_item_id'] ?? 0);
                 $original = $originalItemsById[$saleItemId] ?? null;
@@ -5604,7 +5626,7 @@ class Database
                     continue; // nincs eredeti tétel-adat átadva (pl. régi hívó) — nem tudjuk itt ellenőrizni
                 }
                 $maxReturnable = (int) $original['qty'] - ($alreadyReturned[$saleItemId] ?? 0);
-                if ((int) $item['qty'] > $maxReturnable) {
+                if ((int) $item['qty'] <= 0 || $requestedBySaleItem[$saleItemId] > $maxReturnable) {
                     throw new RuntimeException("\"{$item['name']}\" tételből időközben már csak $maxReturnable db vihető vissza.");
                 }
             }

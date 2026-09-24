@@ -46,10 +46,15 @@ foreach ($sale['items'] as $si) {
 }
 $alreadyReturned = $db->getReturnedQuantitiesForSale($saleId);
 
+if (!is_array($requestedItems)) {
+    send_json(['error' => 'Érvénytelen visszáru-tétellista.'], 400);
+}
+
 $itemsToReturn = [];
+$seenSaleItemIds = [];
 foreach ($requestedItems as $req) {
-    $saleItemId = (int) ($req['sale_item_id'] ?? 0);
-    $qty = (int) ($req['qty'] ?? 0);
+    $saleItemId = (int) (is_array($req) ? ($req['sale_item_id'] ?? 0) : 0);
+    $qty = (int) (is_array($req) ? ($req['qty'] ?? 0) : 0);
 
     if ($qty <= 0) {
         continue;
@@ -57,6 +62,13 @@ foreach ($requestedItems as $req) {
     if (!isset($saleItemsById[$saleItemId])) {
         send_json(['error' => "Ismeretlen eladási tétel: #$saleItemId"], 400);
     }
+    // Egy tétel egy kérésen belül csak EGYSZER szerepelhet — különben a
+    // soronkénti visszavehető-mennyiség ellenőrzés ismétléssel megkerülhető
+    // lenne (több sor, együtt az eladott mennyiségnél többet visszavéve).
+    if (isset($seenSaleItemIds[$saleItemId])) {
+        send_json(['error' => "Ugyanaz az eladási tétel (#$saleItemId) többször szerepel a kérésben."], 400);
+    }
+    $seenSaleItemIds[$saleItemId] = true;
 
     $original = $saleItemsById[$saleItemId];
     $maxReturnable = (int) $original['qty'] - ($alreadyReturned[$saleItemId] ?? 0);

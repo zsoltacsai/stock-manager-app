@@ -543,3 +543,155 @@ Describe 'Kassza .ico — jelenlét és shortcut-integráció (regresszió: kor�
         $mainScriptText | Should Match '\$shortcut\.WorkingDirectory\s*='
     }
 }
+
+Describe 'Biztonsági audit F-04 — Get-FountainTradeAclPlan (legkisebb jogosultság, döntési logika)' {
+    $ownerSid = 'S-1-5-21-1111111111-2222222222-3333333333-1001'
+    $plan = Get-FountainTradeAclPlan -InstallPath 'C:\ProgramData\FountainTrade' -OwnerSid $ownerSid
+    $mainScriptText = Get-Content (Join-Path $PSScriptRoot '..\install-windows.ps1') -Raw
+
+    It 'A BUILTIN\Users SEHOL nem kap RX-nél erősebb jogot' {
+        foreach ($step in $plan) {
+            foreach ($arg in $step.Arguments) {
+                if ($arg -like '*S-1-5-32-545:*') { $arg | Should Be '*S-1-5-32-545:(OI)(CI)RX' }
+            }
+        }
+    }
+
+    It 'Első lépésként /reset /T törli a korábbi explicit (pl. régi rekurzív Users:Modify) bejegyzéseket' {
+        $plan[0].Arguments | Should Be @('C:\ProgramData\FountainTrade', '/reset', '/T', '/C', '/Q')
+    }
+
+    It 'A gyökér megszünteti az öröklést, és csak SYSTEM/Administrators/telepítő fiók írhat' {
+        $root = $plan[1].Arguments -join ' '
+        $root | Should Match '/inheritance:r'
+        $root | Should Match ([regex]::Escape("*${ownerSid}:(OI)(CI)M"))
+        $root | Should Match ([regex]::Escape('*S-1-5-18:(OI)(CI)F'))
+        $root | Should Match ([regex]::Escape('*S-1-5-32-544:(OI)(CI)F'))
+    }
+
+    It 'A config/data/invoices mappák öröklés nélküliek, és a Users-nek SEMMILYEN joga nincs rajtuk' {
+        foreach ($sub in @('config', 'data', 'invoices')) {
+            $step = $plan | Where-Object { $_.Path -eq (Join-Path 'C:\ProgramData\FountainTrade' $sub) }
+            $step | Should Not BeNullOrEmpty
+            ($step.Arguments -join ' ') | Should Match '/inheritance:r'
+            ($step.Arguments -join ' ') | Should Not Match 'S-1-5-32-545'
+            ($step.Arguments -join ' ') | Should Match ([regex]::Escape("*${ownerSid}:(OI)(CI)M"))
+        }
+    }
+
+    It 'Idempotens: ugyanarra a bemenetre bájtra azonos tervet ad (újrafuttatott telepítő)' {
+        $again = Get-FountainTradeAclPlan -InstallPath 'C:\ProgramData\FountainTrade' -OwnerSid $ownerSid
+        ($again | ForEach-Object { $_.Arguments -join '|' }) -join "`n" | Should Be (($plan | ForEach-Object { $_.Arguments -join '|' }) -join "`n")
+    }
+
+    It 'install-windows.ps1 már NEM ad rekurzív Users:Modify jogot, és szerepkörtől függetlenül a tervet alkalmazza' {
+        $mainScriptText | Should Not Match 'S-1-5-32-545:\(OI\)\(CI\)M'
+        $mainScriptText | Should Match 'Invoke-FountainTradeAclPlan -Plan \(Get-FountainTradeAclPlan -InstallPath \$InstallPath'
+        $mainScriptText.IndexOf('Invoke-FountainTradeAclPlan') | Should BeLessThan $mainScriptText.IndexOf('$topologySetArgs')
+    }
+}
+
+Describe 'Biztonsági audit F-04 — ACL-terv VALÓDI alkalmazása egy ideiglenes könyvtárfán (Windows, saját tulajdonú mappa)' {
+    $isWindowsHost = $env:OS -eq 'Windows_NT'
+    $usersSid = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-545')
+    $writeLikeRights = [System.Security.AccessControl.FileSystemRights]::WriteData -bor
+        [System.Security.AccessControl.FileSystemRights]::AppendData -bor
+        [System.Security.AccessControl.FileSystemRights]::Delete -bor
+        [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [System.Security.AccessControl.FileSystemRights]::TakeOwnership
+
+    function Get-UsersRules([string]$path) {
+        (Get-Acl -LiteralPath $path).Access | Where-Object {
+            $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $usersSid.Value
+        }
+    }
+
+    $tempRoot = $null
+    BeforeEach {
+        $tempRoot = Join-Path $env:TEMP "ft-acl-live-test-$(Get-Random)"
+        foreach ($d in @('webroot', 'src', 'tools', 'config', 'data', 'invoices')) { New-Item -ItemType Directory -Path (Join-Path $tempRoot $d) -Force | Out-Null }
+        Set-Content -Path (Join-Path $tempRoot 'webroot\index.php') -Value '<?php'
+        Set-Content -Path (Join-Path $tempRoot 'tools\run-server-hidden.vbs') -Value "' launcher"
+        Set-Content -Path (Join-Path $tempRoot 'config\installer-generated.php') -Value '<?php return [];'
+        Set-Content -Path (Join-Path $tempRoot 'data\settings.json') -Value '{}'
+        # A RÉGI telepítő viselkedésének szimulálása — ezt a tervnek el kell távolítania.
+        & icacls $tempRoot /grant '*S-1-5-32-545:(OI)(CI)M' /T /Q | Out-Null
+    }
+    AfterEach {
+        if ($tempRoot -and (Test-Path $tempRoot)) {
+            & icacls $tempRoot /reset /T /C /Q | Out-Null
+            Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'Alkalmazás (kétszer, idempotensen) után a Users sehol nem írhat, config/data/invoices-hoz nem is fér hozzá, a telepítő fiók viszont írhat' -Skip:(-not $isWindowsHost) {
+        $ownerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        Invoke-FountainTradeAclPlan -Plan (Get-FountainTradeAclPlan -InstallPath $tempRoot -OwnerSid $ownerSid)
+        Invoke-FountainTradeAclPlan -Plan (Get-FountainTradeAclPlan -InstallPath $tempRoot -OwnerSid $ownerSid)
+
+        foreach ($rel in @('', 'webroot', 'webroot\index.php', 'src', 'tools', 'tools\run-server-hidden.vbs')) {
+            $rules = Get-UsersRules (Join-Path $tempRoot $rel)
+            @($rules).Count | Should BeGreaterThan 0
+            foreach ($r in $rules) { ($r.FileSystemRights -band $writeLikeRights) | Should Be 0 }
+        }
+        foreach ($rel in @('config', 'config\installer-generated.php', 'data', 'data\settings.json', 'invoices')) {
+            @(Get-UsersRules (Join-Path $tempRoot $rel)).Count | Should Be 0
+        }
+
+        { Add-Content -Path (Join-Path $tempRoot 'data\settings.json') -Value ' ' -ErrorAction Stop } | Should Not Throw
+        { Set-Content -Path (Join-Path $tempRoot 'data\uj-futasideju-fajl.txt') -Value 'x' -ErrorAction Stop } | Should Not Throw
+    }
+}
+
+Describe 'Biztonsági audit F-01 — Resolve-ServerAppPasswordAction (Szerver app-jelszó döntési logika)' {
+    $mainScriptText = Get-Content (Join-Path $PSScriptRoot '..\install-windows.ps1') -Raw
+
+    It 'Nem-Szerver szerepkörben sose kér/állít jelszót' {
+        Resolve-ServerAppPasswordAction -NodeRole 'standalone' | Should Be 'skip'
+        Resolve-ServerAppPasswordAction -NodeRole 'client' -EnvPasswordProvided $true | Should Be 'skip'
+    }
+    It 'Szerver: meglévő jelszót sose ír felül (idempotens újrafuttatás)' {
+        Resolve-ServerAppPasswordAction -NodeRole 'server' -HasPassword $true -EnvPasswordProvided $true | Should Be 'keep'
+    }
+    It 'Szerver, nincs jelszó: környezeti változó > interaktív bekérés; nem-interaktívan jelszó nélkül MEGÁLL' {
+        Resolve-ServerAppPasswordAction -NodeRole 'server' -EnvPasswordProvided $true -NonInteractive $true | Should Be 'use_env'
+        Resolve-ServerAppPasswordAction -NodeRole 'server' -NonInteractive $false | Should Be 'prompt'
+        Resolve-ServerAppPasswordAction -NodeRole 'server' -NonInteractive $true | Should Be 'fail'
+    }
+    It 'install-windows.ps1 Szerver módban meghívja, és a jelszót sose adja át parancssori argumentumként' {
+        $mainScriptText | Should Match 'if \(\$NodeRole -eq ''server''\) \{\s+\$appPasswordToolPath'
+        $mainScriptText | Should Match 'Resolve-ServerAppPasswordAction'
+        $mainScriptText | Should Not Match '--password'
+    }
+}
+
+Describe 'Biztonsági audit F-01 — Invoke-FountainTradeAppPasswordTool (valódi PHP, stdin, UTF-8)' {
+    $candidates = @('C:\tools\php83\php.exe', (Get-Command php.exe -ErrorAction SilentlyContinue).Source)
+    $phpExe = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+    $tempRoot = $null
+
+    BeforeEach {
+        $tempRoot = Join-Path $env:TEMP "ft-app-password-test-$(Get-Random)"
+        foreach ($d in @('src', 'tools', 'data')) { New-Item -ItemType Directory -Path (Join-Path $tempRoot $d) -Force | Out-Null }
+        Copy-Item (Join-Path $PSScriptRoot '..\src\Settings.php') (Join-Path $tempRoot 'src\Settings.php')
+        Copy-Item (Join-Path $PSScriptRoot '..\tools\installer-set-app-password.php') (Join-Path $tempRoot 'tools\installer-set-app-password.php')
+    }
+    AfterEach {
+        if ($tempRoot -and (Test-Path $tempRoot)) { Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'Ékezetes jelszó stdin-en át, UTF-8-ban tárolódik (a böngészős bejelentkezéssel egyezni fog)' -Skip:(-not $phpExe) {
+        $tool = Join-Path $tempRoot 'tools\installer-set-app-password.php'
+        (Invoke-FountainTradeAppPasswordTool -PhpExe $phpExe -ToolPath $tool -Action 'status').Json.has_password | Should Be $false
+
+        $set = Invoke-FountainTradeAppPasswordTool -PhpExe $phpExe -ToolPath $tool -Action 'set' -Password 'Árvíztűrő-Jelszó-9'
+        $set.ExitCode | Should Be 0
+        $set.Json.changed | Should Be $true
+
+        $hash = (Get-Content (Join-Path $tempRoot 'data\settings.json') -Raw -Encoding UTF8 | ConvertFrom-Json).app_password_hash
+        $verifyScript = Join-Path $tempRoot 'verify.php'
+        Set-Content -Path $verifyScript -Encoding Ascii -Value '<?php echo password_verify(hex2bin($argv[1]), $argv[2]) ? "ok" : "no";'
+        $hex = ([System.BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes('Árvíztűrő-Jelszó-9')) -replace '-', '').ToLower()
+        (& $phpExe $verifyScript $hex $hash) | Should Be 'ok'
+    }
+}

@@ -15,9 +15,9 @@ require_once __DIR__ . '/AppVersion.php';
  *   2) regisztrált kliens megtalálható?
  *   3) aktív?
  *   4) nincs visszavonva?
- *   5) időbélyeg érvényes (±120s)?
- *   6) nonce érvényes és még nem használt?
- *   7) aláírás helyes (constant-time összehasonlítás)?
+ *   5) időbélyeg érvényes (±120s), nonce formailag érvényes?
+ *   6) aláírás helyes (constant-time összehasonlítás)?
+ *   7) nonce még nem használt? (claim KIZÁRÓLAG érvényes aláírás után)
  *   8) csak ezután folytatódhat a kérés tényleges feldolgozása.
  *
  * Kifelé (a hívó felé, ami végül a böngészőig jut) SOSE ad eltérő,
@@ -71,21 +71,26 @@ final class ClientAuthenticator
             return $this->fail('invalid_timestamp');
         }
 
-        // 6) nonce érvényes és még nem használt? — atomikus claim, lásd ClientNonceStore.
         $nonce = (string) ($_SERVER['HTTP_X_CLIENT_NONCE'] ?? '');
         if ($nonce === '' || !preg_match('/^[a-f0-9]{16,64}$/i', $nonce)) {
             return $this->fail('invalid_nonce_format');
         }
-        if (!ClientNonceStore::claim($clientId, $nonce, self::TIMESTAMP_WINDOW_SECONDS)) {
-            return $this->fail('reused_nonce');
-        }
 
-        // 7) aláírás helyes? — a Szerveren a MÁR levezetett secret_hash a
-        // kulcs (lásd ClientHmac.php docblockja), sose a nyers titok.
+        // 6) aláírás helyes? — a Szerveren a MÁR levezetett secret_hash a
+        // kulcs (lásd ClientHmac.php docblockja), sose a nyers titok. A
+        // nonce az aláírt kanonikus sztring része, ezért az aláírás-
+        // ellenőrzés a nonce-claim ELŐTT futhat.
         $signature = (string) ($_SERVER['HTTP_X_CLIENT_SIGNATURE'] ?? '');
         $canonical = ClientHmac::canonicalString($method, $pathAndQuery, $timestamp, $nonce, $body);
         if (!ClientHmac::verify($canonical, $signature, (string) $client['secret_hash'])) {
             return $this->fail('invalid_signature');
+        }
+
+        // 7) nonce még nem használt? — atomikus claim, lásd ClientNonceStore.
+        // Csak hitelesen aláírt kérés foglalhat nonce-ot: egy érvénytelen
+        // aláírású kérés így sose növelheti a nonce-tárat.
+        if (!ClientNonceStore::claim($clientId, $nonce, self::TIMESTAMP_WINDOW_SECONDS)) {
+            return $this->fail('reused_nonce');
         }
 
         // 8) minden ellenőrzés sikeres — a hívó innentől folytathatja.

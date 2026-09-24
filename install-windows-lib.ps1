@@ -370,3 +370,96 @@ function Get-FountainTradeBindHost {
     if ($NodeRole -eq 'server') { return '0.0.0.0' }
     return 'localhost'
 }
+
+# Pure — a telepítési könyvtár legkisebb jogosultságú ACL-terve (icacls
+# argumentumlisták, sorrendben). A PHP szerver és a cron-feladatok a
+# telepítő fiókjával ($OwnerSid) futnak (Register-ScheduledTask explicit
+# principal nélkül) — egyedül ez a fiók (+ SYSTEM/Administrators) írhat.
+# A BUILTIN\Users (pl. pénztáros Windows-fiókok) a kódot csak olvashatja/
+# futtathatja, a config/ (kliens-titok), data/ (adatbázis, API-kulcsok,
+# mentés-kulcs) és invoices/ (vevőadatok) mappákhoz pedig NINCS hozzáférése.
+# A ProgramData-tól öröklött "Users: fájl létrehozása" jog is megszűnik
+# (/inheritance:r), így új fájl (pl. egy .php) sem hozható létre a webroot-ban.
+# Idempotens: /reset /T minden korábbi explicit bejegyzést (pl. a régebbi
+# telepítők rekurzív "Users: Modify" jogát) eltávolít, mielőtt a terv újra
+# felépül.
+function Get-FountainTradeAclPlan {
+    param(
+        [Parameter(Mandatory)][string]$InstallPath,
+        [Parameter(Mandatory)][string]$OwnerSid
+    )
+    $system = '*S-1-5-18'
+    $admins = '*S-1-5-32-544'
+    $users = '*S-1-5-32-545'
+    $owner = "*$OwnerSid"
+
+    $plan = @(
+        @{ Path = $InstallPath; Arguments = @($InstallPath, '/reset', '/T', '/C', '/Q') },
+        @{ Path = $InstallPath; Arguments = @($InstallPath, '/inheritance:r', '/grant:r', "${system}:(OI)(CI)F", "${admins}:(OI)(CI)F", "${owner}:(OI)(CI)M", "${users}:(OI)(CI)RX", '/C', '/Q') }
+    )
+    foreach ($sub in @('config', 'data', 'invoices')) {
+        $subPath = Join-Path $InstallPath $sub
+        $plan += @{ Path = $subPath; Arguments = @($subPath, '/inheritance:r', '/grant:r', "${system}:(OI)(CI)F", "${admins}:(OI)(CI)F", "${owner}:(OI)(CI)M", '/C', '/Q') }
+    }
+    return ,$plan
+}
+
+function Invoke-FountainTradeAclPlan {
+    param([Parameter(Mandatory)][object[]]$Plan)
+    foreach ($step in $Plan) {
+        if (-not (Test-Path -LiteralPath $step.Path)) {
+            New-Item -ItemType Directory -Force -Path $step.Path | Out-Null
+        }
+        $icaclsArgs = $step.Arguments
+        & icacls @icaclsArgs | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "icacls sikertelen: $($step.Path) (kilépési kód: $LASTEXITCODE)"
+        }
+    }
+}
+
+# Pure — Szerver szerepkörben a közvetlen (nem proxyzott) API-forgalom
+# MINDIG hitelesítést igényel (Auth::isEnabled()), ezért egy jelszó nélküli
+# Szerver felülete zárva maradna. Ez dönti el, mit tegyen a telepítő:
+# 'skip' (nem Szerver), 'keep' (már van jelszó — idempotens újrafuttatás),
+# 'use_env' (FOUNTAINTRADE_APP_PASSWORD), 'prompt' (interaktív bekérés),
+# 'fail' (nem-interaktív, jelszó nélkül — sose telepítünk nyitott Szervert).
+function Resolve-ServerAppPasswordAction {
+    param(
+        [Parameter(Mandatory)][ValidateSet('standalone', 'server', 'client')][string]$NodeRole,
+        [bool]$HasPassword = $false,
+        [bool]$EnvPasswordProvided = $false,
+        [bool]$NonInteractive = $false
+    )
+    if ($NodeRole -ne 'server') { return 'skip' }
+    if ($HasPassword) { return 'keep' }
+    if ($EnvPasswordProvided) { return 'use_env' }
+    if ($NonInteractive) { return 'fail' }
+    return 'prompt'
+}
+
+# A jelszó KIZÁRÓLAG stdin-en megy a PHP-eszköznek (sose argumentumként —
+# az a folyamatlistában látszana), a UTF-8 bájtjainak base64-ében: a
+# Windows PowerShell 5.1 a natív programnak csövezett szöveget a konzol
+# kódlapjára kódolja ($OutputEncoding-tól függetlenül — élő teszttel
+# igazolva, az ékezetes betűk '?'-lé váltak), ami egy böngészőből soha
+# nem egyező jelszó-hash-t eredményezne.
+function Invoke-FountainTradeAppPasswordTool {
+    param(
+        [Parameter(Mandatory)][string]$PhpExe,
+        [Parameter(Mandatory)][string]$ToolPath,
+        [Parameter(Mandatory)][ValidateSet('status', 'set')][string]$Action,
+        [string]$Password
+    )
+    if ($Action -eq 'set') {
+        $encodedPassword = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Password))
+        $output = $encodedPassword | & $PhpExe $ToolPath "--action=$Action" '--stdin=base64'
+    } else {
+        $output = & $PhpExe $ToolPath "--action=$Action"
+    }
+    $exitCode = $LASTEXITCODE
+    $rawText = ($output -join "`n")
+    $json = $null
+    try { $json = $rawText | ConvertFrom-Json } catch { }
+    return @{ ExitCode = $exitCode; Json = $json; Raw = $rawText }
+}

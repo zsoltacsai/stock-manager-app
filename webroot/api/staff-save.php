@@ -38,6 +38,12 @@ if ($db->listStaff(true) && !$db->isStaffAdmin(Auth::currentStaffId())) {
 
 $isNew = empty($input['id']);
 $id = $db->saveStaff($input);
+if (!$isNew && empty($input['is_active'])) {
+    // Inaktiváláskor a dolgozó MEGLÉVŐ Kliens-munkamenetei azonnal
+    // visszavonódnak (a direkt PHP-sessionöket a _bootstrap.php minden
+    // kérésnél az aktív-állapot alapján szűri).
+    $db->deleteClientSessionsForStaff($id);
+}
 
 // Dolgozó-felvétel/-szerkesztés naplózása (1.4.0, lásd a kör 12.
 // pontja) — a `details` SOSE tartalmazza a PIN-kódot, csak azt, hogy

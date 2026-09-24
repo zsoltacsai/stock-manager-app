@@ -179,11 +179,14 @@ final class ClientLastSeenVersionHttpTest extends TestCase
     public function testLastSeenVersionAppearsInTheAdminClientsListResponse(): void
     {
         $jarPath = sys_get_temp_dir() . '/sm_lastseenver_admin_' . bin2hex(random_bytes(6)) . '.txt';
-        $status = $this->requestWithJar('GET', '/api/auth-status.php', null, [], $jarPath);
-        $csrf = $status['json']['csrf_token'];
-        $this->requestWithJar('POST', '/api/security-settings-save.php', [
-            'app_password_enabled' => true, 'new_password' => 'lastseenver-teszt-jelszo', 'new_password_confirm' => 'lastseenver-teszt-jelszo',
-        ], ['X-CSRF-Token' => $csrf], $jarPath);
+        // Biztonsági audit F-01: egy Szerveren névtelenül már nem lehet
+        // app-jelszót beállítani — a telepítő (tools/installer-set-app-
+        // password.php) megfelelője itt a settings.json közvetlen írása.
+        (new Settings(self::$serverRoot . '/data/settings.json'))->save([
+            'app_password_hash' => password_hash('lastseenver-teszt-jelszo', PASSWORD_DEFAULT),
+            'app_password_enabled' => true,
+        ]);
+        $this->requestWithJar('GET', '/api/auth-status.php', null, [], $jarPath);
         $this->requestWithJar('POST', '/api/login.php', ['password' => 'lastseenver-teszt-jelszo'], [], $jarPath);
 
         $res = $this->requestWithJar('GET', '/api/clients-list.php', null, [], $jarPath);

@@ -33,18 +33,16 @@ final class ClientSessionBridge
      * `Auth::setCurrentStaff()`-ot már a hívó (staff-login.php) elvégezte,
      * ez itt semmit sem ad hozzá.
      */
-    public static function establishStaffSession(Database $db, array $appSettings): void
+    public static function establishStaffSession(Database $db, array $appSettings, int $staffId): void
     {
         $registeredClientId = Auth::proxiedRegisteredClientId();
         if ($registeredClientId === null) {
             return; // direkt kérés — nincs mit hídalni
         }
 
-        $staffId = Auth::currentStaffId();
-        if ($staffId === null) {
-            return; // elvileg sose fordulhat elő itt (a hívó már ellenőrizte a PIN-t), de defenzíven no-op
-        }
-
+        // A $staffId a hívó (staff-login.php) által ÉPP ellenőrzött PIN
+        // tulajdonosa — SOSE Auth::currentStaffId(), ami egy már meglévő
+        // (akár másik dolgozóhoz tartozó) client_sessions sort adna vissza.
         $csrfToken = bin2hex(random_bytes(32));
         $csrfTokenHash = hash('sha256', $csrfToken);
         $timeoutMinutes = (int) ($appSettings['session_timeout_minutes'] ?? 240);

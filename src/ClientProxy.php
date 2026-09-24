@@ -81,6 +81,18 @@ final class ClientProxy
             return;
         }
 
+        // A proxy maga csatolja a Kliens-munkamenethez tartozó CSRF-tokent a
+        // Szerver felé — ezért egy állapotváltoztató böngésző-kérést CSAK a
+        // Kliens SAJÁT eredetéről továbbítunk (egy másik localhost-porton
+        // futó, "same-site" oldal se hamisíthasson ilyen kérést).
+        $requestMethod = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+        if (!in_array($requestMethod, ['GET', 'HEAD', 'OPTIONS'], true) && !self::isSameOriginBrowserRequest()) {
+            http_response_code(403);
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['error' => 'Érvénytelen kérés-eredet — töltsd újra az oldalt.', 'csrf_required' => true], JSON_UNESCAPED_UNICODE);
+            return;
+        }
+
         // Fázis 2, Checkpoint 4 — verzió-kompatibilitás/health kapu, MINDEN
         // továbbítás előtt. TTL-cache mögött áll (lásd ClientServerHealth —
         // NEM ping minden egyes kérésnél), és PONTOSAN a design 8. pontjának
@@ -587,6 +599,35 @@ final class ClientProxy
         $headers[] = 'Expect:';
 
         return $headers;
+    }
+
+    /**
+     * Böngésző által beállított, JS-ből nem hamisítható fejlécek alapján:
+     * Sec-Fetch-Site (ha jelen van) csak same-origin/none lehet, az Origin
+     * (ha jelen van) pedig pontosan a Kliens saját host[:port]-ja. Origin
+     * nélküli kérés (nem-böngésző hívó, pl. curl) nem CSRF-vektor.
+     */
+    private static function isSameOriginBrowserRequest(): bool
+    {
+        $fetchSite = strtolower(trim((string) ($_SERVER['HTTP_SEC_FETCH_SITE'] ?? '')));
+        if ($fetchSite !== '' && !in_array($fetchSite, ['same-origin', 'none'], true)) {
+            return false;
+        }
+
+        $origin = trim((string) ($_SERVER['HTTP_ORIGIN'] ?? ''));
+        if ($origin === '') {
+            return true;
+        }
+        $parts = parse_url($origin);
+        if (!is_array($parts) || empty($parts['host']) || !in_array(strtolower((string) ($parts['scheme'] ?? '')), ['http', 'https'], true)) {
+            return false; // pl. "null" (sandboxolt/file:// eredet)
+        }
+        $defaultPort = strtolower((string) $parts['scheme']) === 'https' ? 443 : 80;
+        $originHostPort = strtolower((string) $parts['host']) . ((isset($parts['port']) && (int) $parts['port'] !== $defaultPort) ? ':' . (int) $parts['port'] : '');
+
+        $host = strtolower(trim((string) ($_SERVER['HTTP_HOST'] ?? '')));
+        $host = preg_replace('/:(80|443)$/', '', $host) ?? $host;
+        return $host !== '' && hash_equals($host, $originHostPort);
     }
 
     /** A $_SERVER HTTP_FOO_BAR alakját emberi Foo-Bar fejléc-névvé alakítja vissza (csak megjelenítési célra). */

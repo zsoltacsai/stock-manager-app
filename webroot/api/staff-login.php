@@ -40,5 +40,5 @@ Auth::setCurrentStaff($staff);
 // válaszfejlécben adja vissza (lásd ClientSessionBridge.php docblockja) —
 // a lenti send_json() válasza emiatt SZÁNDÉKOSAN nem változik.
 require_once __DIR__ . '/../../src/ClientSessionBridge.php';
-ClientSessionBridge::establishStaffSession($db, $appSettings);
+ClientSessionBridge::establishStaffSession($db, $appSettings, (int) $staff['id']);
 send_json(['ok' => true, 'staff' => $staff]);

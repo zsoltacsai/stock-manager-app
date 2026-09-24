@@ -303,7 +303,7 @@ async function loadAiDailySummary() {
             return;
         }
         box.innerHTML = `
-            <p style="margin-top:0;">Jelentés elkészült — <strong>${report.findings_count}</strong> jelentős megállapítás.</p>
+            <p style="margin-top:0;">Jelentés elkészült — <strong>${window.escapeHtml(report.findings_count)}</strong> jelentős megállapítás.</p>
             <p class="muted" style="margin-bottom:0;"><a href="ai-asszisztens.php?tab=daily">Napi intelligencia megtekintése →</a></p>
         `;
     } catch (err) {

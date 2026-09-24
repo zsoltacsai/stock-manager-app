@@ -97,6 +97,10 @@ PHP);
         // Admin munkamenet közvetlenül a Szerveren, hogy beállíthassuk az AI-t.
         self::$adminJar = self::$serverRoot . '/admin-cookies.txt';
         self::directRequest(self::$serverPort, 'GET', '/api/auth-status.php', null, [], self::$adminJar);
+        // Biztonsági audit F-01: Szerver szerepkörben a közvetlen (nem proxyzott)
+        // admin-hívásokhoz alkalmazás-jelszavas bejelentkezés kell.
+        (new Settings(self::$serverRoot . '/data/settings.json'))->save(['app_password_hash' => password_hash('szerver-teszt-jelszo', PASSWORD_DEFAULT), 'app_password_enabled' => true]);
+        self::directRequest(self::$serverPort, 'POST', '/api/login.php', ['password' => 'szerver-teszt-jelszo'], [], self::$adminJar);
         $csrf = self::directRequest(self::$serverPort, 'GET', '/api/auth-status.php', null, [], self::$adminJar)['json']['csrf_token'];
         self::directRequest(self::$serverPort, 'POST', '/api/staff-login.php', ['pin' => '55221'], ['X-CSRF-Token' => $csrf], self::$adminJar);
         $csrf2 = self::directRequest(self::$serverPort, 'GET', '/api/auth-status.php', null, [], self::$adminJar)['json']['csrf_token'];

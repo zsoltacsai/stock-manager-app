@@ -36,6 +36,9 @@ require_once __DIR__ . '/AiUsage.php';
  */
 final class AgentRunner
 {
+    /** A modell által kért, NEM regisztrált eszköz neve sose kerül tovább nyersen — ez a rögzített helyettesítő. */
+    public const UNKNOWN_TOOL_EVENT_NAME = 'unknown_tool';
+
     public function __construct(
         private readonly AiProviderInterface $provider,
         private readonly ToolRegistry $registry,
@@ -52,6 +55,20 @@ final class AgentRunner
     ) {
         if ($this->maxIterations < 1) {
             throw new InvalidArgumentException('A maxIterations legalább 1 kell legyen.');
+        }
+    }
+
+    /**
+     * A tools_used lista (naplózás/UI) KIZÁRÓLAG whitelistelt, regisztrált
+     * eszközneveket tartalmazhat — egy ismeretlen (a modell által kitalált
+     * vagy prompt-injekcióval sugallt) név sose válik "megbízható" adattá.
+     *
+     * @param string[] $toolsUsed
+     */
+    private function recordToolUse(array &$toolsUsed, ToolCall $call): void
+    {
+        if ($this->registry->has($call->name) && !in_array($call->name, $toolsUsed, true)) {
+            $toolsUsed[] = $call->name;
         }
     }
 
@@ -88,9 +105,7 @@ final class AgentRunner
             $conversation->addAssistantMessage($response->content, $response->toolCalls);
 
             foreach ($response->toolCalls as $call) {
-                if (!in_array($call->name, $toolsUsed, true)) {
-                    $toolsUsed[] = $call->name;
-                }
+                $this->recordToolUse($toolsUsed, $call);
                 $result = $this->registry->execute($call);
                 $conversation->addToolResult($result);
                 $toolCallCount++;
@@ -178,9 +193,8 @@ final class AgentRunner
             $conversation->addAssistantMessage($response->content, $response->toolCalls);
 
             foreach ($response->toolCalls as $call) {
-                if (!in_array($call->name, $toolsUsed, true)) {
-                    $toolsUsed[] = $call->name;
-                }
+                $this->recordToolUse($toolsUsed, $call);
+                $eventToolName = $this->registry->has($call->name) ? $call->name : self::UNKNOWN_TOOL_EVENT_NAME;
                 // A kör 4/5. pontja — a tool_call_started/completed
                 // ESEMÉNYEK IDE, a TÉNYLEGES ToolRegistry-végrehajtás köré
                 // kötve keletkeznek (SOSE a provider stream-parszolása
@@ -188,9 +202,9 @@ final class AgentRunner
                 // "folyamatban" állapot mindig a VALÓDI végrehajtást
                 // tükrözi, nem egy provider-oldali, esetleg korábbi
                 // esemény időzítését.
-                $onEvent(AiStreamEvent::toolCallStarted($call->id, $call->name, AiToolLabels::forTool($call->name)));
+                $onEvent(AiStreamEvent::toolCallStarted($call->id, $eventToolName, AiToolLabels::forTool($eventToolName)));
                 $result = $this->registry->execute($call);
-                $onEvent(AiStreamEvent::toolCallCompleted($call->id, $call->name, $result->success));
+                $onEvent(AiStreamEvent::toolCallCompleted($call->id, $eventToolName, $result->success));
                 $conversation->addToolResult($result);
                 $toolCallCount++;
             }

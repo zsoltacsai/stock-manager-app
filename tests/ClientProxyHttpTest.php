@@ -273,6 +273,49 @@ final class ClientProxyHttpTest extends TestCase
         $this->assertSame('application/json', $data['content_type']);
     }
 
+    // -----------------------------------------------------------------
+    // Biztonsági audit F-08 — a proxy maga csatolja a Kliens-munkamenet
+    // CSRF-tokenjét, ezért állapotváltoztató kérést CSAK a Kliens saját
+    // eredetéről továbbít (egy másik localhost-port is "same-site"!).
+    // -----------------------------------------------------------------
+
+    public function testCrossOriginStateChangingRequestIsRefusedBeforeReachingServer(): void
+    {
+        $payload = json_encode(['x' => 1]);
+        foreach ([
+            'más localhost-port (same-site, cross-origin)' => ['Origin' => 'http://127.0.0.1:1'],
+            'idegen eredet' => ['Origin' => 'http://evil.example'],
+            'null eredet' => ['Origin' => 'null'],
+            'Sec-Fetch-Site: same-site' => ['Sec-Fetch-Site' => 'same-site'],
+            'Sec-Fetch-Site: cross-site, egyező Origin' => ['Sec-Fetch-Site' => 'cross-site', 'Origin' => self::$clientBaseUrl],
+        ] as $label => $headers) {
+            $res = self::request('POST', self::$clientBaseUrl . '/api/_test-fixture.php?mode=json', $payload, ['Content-Type' => 'text/plain'] + $headers);
+            $this->assertSame(403, $res['status'], $label);
+            $data = json_decode($res['body'], true);
+            $this->assertTrue($data['csrf_required'] ?? false, $label);
+            $this->assertArrayNotHasKey('method', $data, "$label: a kérés NEM juthatott el a Szerverig.");
+        }
+    }
+
+    public function testSameOriginOrNonBrowserStateChangingRequestIsStillForwarded(): void
+    {
+        $payload = json_encode(['x' => 1]);
+        foreach ([
+            'egyező Origin' => ['Origin' => self::$clientBaseUrl, 'Sec-Fetch-Site' => 'same-origin'],
+            'nincs Origin (nem-böngésző hívó)' => [],
+        ] as $label => $headers) {
+            $res = self::request('POST', self::$clientBaseUrl . '/api/_test-fixture.php?mode=json', $payload, ['Content-Type' => 'application/json'] + $headers);
+            $this->assertSame(200, $res['status'], $label);
+            $this->assertSame('POST', json_decode($res['body'], true)['method'], $label);
+        }
+    }
+
+    public function testSafeMethodsAreNotSubjectToTheOriginCheck(): void
+    {
+        $res = self::request('GET', self::$clientBaseUrl . '/api/_test-fixture.php?mode=json', null, ['Origin' => 'http://evil.example', 'Sec-Fetch-Site' => 'cross-site']);
+        $this->assertSame(200, $res['status']);
+    }
+
     public function testHostHeaderSeenByServerIsTheServerItselfNotTheClient(): void
     {
         // A Kliens saját (böngésző felé mutatott) Host fejlécét SOSE

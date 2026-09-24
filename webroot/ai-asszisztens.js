@@ -1,4 +1,8 @@
 (function () {
+    // Minden szerver/adatbázis/modell eredetű érték (terméknév, entity_name,
+    // evidence, eszköznév, hibaüzenet stb.) KIZÁRÓLAG ezen keresztül kerülhet
+    // innerHTML-sablonba — lásd tests/AiUiEscapingTest.php.
+    const esc = window.escapeHtml;
     const statusLine = document.getElementById('ai-status-line');
     const disabledNotice = document.getElementById('ai-disabled-notice');
     const form = document.getElementById('ai-assistant-form');
@@ -163,7 +167,7 @@
         }
         const toolsUsed = doneOrData.tools_used || [];
         if (toolsUsed.length) {
-            toolsUsedList.innerHTML = toolsUsed.map(t => `<li>${t}</li>`).join('');
+            toolsUsedList.innerHTML = toolsUsed.map(t => `<li>${esc(t)}</li>`).join('');
             toolsUsedBox.style.display = '';
         } else {
             toolsUsedBox.style.display = 'none';
@@ -399,14 +403,14 @@
                 historyBody.innerHTML = '<tr><td colspan="7" class="muted">Nincs találat.</td></tr>';
             } else {
                 historyBody.innerHTML = data.entries.map(e => `
-                    <tr style="cursor:pointer;" data-id="${e.id}">
-                        <td>${e.created_at || ''}</td>
-                        <td>${AGENT_LABELS[e.agent] || e.agent || '—'}</td>
-                        <td>${PROVIDER_LABELS[e.provider] || e.provider || '—'}</td>
-                        <td>${e.model || '—'}</td>
-                        <td>${(e.tools_used || []).length}</td>
-                        <td>${fmtDuration(e.duration_ms)}</td>
-                        <td>${STATUS_TEXT[e.status] || e.status}</td>
+                    <tr style="cursor:pointer;" data-id="${esc(e.id)}">
+                        <td>${esc(e.created_at || '')}</td>
+                        <td>${esc(AGENT_LABELS[e.agent] || e.agent || '—')}</td>
+                        <td>${esc(PROVIDER_LABELS[e.provider] || e.provider || '—')}</td>
+                        <td>${esc(e.model || '—')}</td>
+                        <td>${esc((e.tools_used || []).length)}</td>
+                        <td>${esc(fmtDuration(e.duration_ms))}</td>
+                        <td>${esc(STATUS_TEXT[e.status] || e.status)}</td>
                     </tr>
                 `).join('');
                 historyBody.querySelectorAll('tr[data-id]').forEach(row => {
@@ -417,7 +421,7 @@
             historyPrevBtn.disabled = historyPage <= 1;
             historyNextBtn.disabled = !historyHasMore;
         } catch (err) {
-            historyBody.innerHTML = `<tr><td colspan="7" class="muted">Hiba: ${err.message}</td></tr>`;
+            historyBody.innerHTML = `<tr><td colspan="7" class="muted">Hiba: ${esc(err.message)}</td></tr>`;
         }
     }
 
@@ -447,10 +451,10 @@
                 ['Hibakategória', FAILURE_CATEGORY_LABELS[e.failure_category] || e.failure_category || '—'],
                 ['Hiba', e.detail_error || '—'],
             ];
-            historyDetailBody.innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${String(v)}</td></tr>`).join('');
+            historyDetailBody.innerHTML = rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('');
             historyDetailBox.style.display = '';
         } catch (err) {
-            historyDetailBody.innerHTML = `<tr><td colspan="2" class="muted">Hiba: ${err.message}</td></tr>`;
+            historyDetailBody.innerHTML = `<tr><td colspan="2" class="muted">Hiba: ${esc(err.message)}</td></tr>`;
             historyDetailBox.style.display = '';
         }
     }
@@ -500,7 +504,7 @@
         dailyProviderModel.textContent = (PROVIDER_LABELS[report.provider] || report.provider || '—') + (report.model ? ' — ' + report.model : '');
         dailyStatus.textContent = report.status === 'completed' ? '✓ Elkészült' : (report.status === 'failed' ? '✗ Sikertelen: ' + (report.error || '') : report.status);
         if (report.findings && report.findings.length) {
-            dailyFindingsList.innerHTML = report.findings.map(f => `<li><strong>${SEVERITY_LABELS[f.severity] || f.severity}</strong> — ${f.entity_name || ''} (${f.metric || f.type}${f.change_percent !== undefined && f.change_percent !== null ? ': ' + f.change_percent + '%' : ''})</li>`).join('');
+            dailyFindingsList.innerHTML = report.findings.map(f => `<li><strong>${esc(SEVERITY_LABELS[f.severity] || f.severity)}</strong> — ${esc(f.entity_name || '')} (${esc(f.metric || f.type)}${esc(f.change_percent !== undefined && f.change_percent !== null ? ': ' + f.change_percent + '%' : '')})</li>`).join('');
             dailyFindingsBox.style.display = '';
         } else {
             dailyFindingsBox.style.display = 'none';
@@ -531,7 +535,7 @@
                 renderDailyReport(null);
                 return;
             }
-            dailyDateSelect.innerHTML = data.reports.map(r => `<option value="${r.report_date}">${r.report_date}${r.has_significant_findings ? ' ⚠' : ''}</option>`).join('');
+            dailyDateSelect.innerHTML = data.reports.map(r => `<option value="${esc(r.report_date)}">${esc(r.report_date)}${esc(r.has_significant_findings ? ' ⚠' : '')}</option>`).join('');
             dailyDateSelect.value = data.reports[0].report_date;
             loadDailyReport(data.reports[0].report_date);
         } catch (err) {
@@ -610,7 +614,7 @@
             ['Elbírálva', p.reviewed_at || '—'],
             ['Elutasítás indoka', p.rejection_reason || '—'],
         ];
-        proposalDetailBody.innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${String(v)}</td></tr>`).join('');
+        proposalDetailBody.innerHTML = rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('');
 
         // Jóváhagyás/Elutasítás — KIZÁRÓLAG 'pending'-nél.
         proposalDetailActions.style.display = p.status === 'pending' ? '' : 'none';
@@ -656,13 +660,13 @@
                 proposalsBody.innerHTML = '<tr><td colspan="7" class="muted">Nincs találat.</td></tr>';
             } else {
                 proposalsBody.innerHTML = data.proposals.map(p => `
-                    <tr style="cursor:pointer;" data-id="${p.id}">
-                        <td>${PROPOSAL_TYPE_LABELS[p.proposal_type] || p.proposal_type}</td>
-                        <td>${p.entity_name || '—'}</td>
-                        <td>${SEVERITY_LABELS[(p.evidence && p.evidence.severity) || ''] || (p.evidence && p.evidence.severity) || '—'}</td>
-                        <td>${p.created_at || ''}</td>
-                        <td>${p.expires_at || ''}</td>
-                        <td>${PROPOSAL_STATUS_LABELS[p.status] || p.status}</td>
+                    <tr style="cursor:pointer;" data-id="${esc(p.id)}">
+                        <td>${esc(PROPOSAL_TYPE_LABELS[p.proposal_type] || p.proposal_type)}</td>
+                        <td>${esc(p.entity_name || '—')}</td>
+                        <td>${esc(SEVERITY_LABELS[(p.evidence && p.evidence.severity) || ''] || (p.evidence && p.evidence.severity) || '—')}</td>
+                        <td>${esc(p.created_at || '')}</td>
+                        <td>${esc(p.expires_at || '')}</td>
+                        <td>${esc(PROPOSAL_STATUS_LABELS[p.status] || p.status)}</td>
                         <td>Megnyitás →</td>
                     </tr>
                 `).join('');
@@ -674,7 +678,7 @@
             proposalsPrevBtn.disabled = proposalsPage <= 1;
             proposalsNextBtn.disabled = !proposalsHasMore;
         } catch (err) {
-            proposalsBody.innerHTML = `<tr><td colspan="7" class="muted">Hiba: ${err.message}</td></tr>`;
+            proposalsBody.innerHTML = `<tr><td colspan="7" class="muted">Hiba: ${esc(err.message)}</td></tr>`;
         }
     }
 
@@ -695,7 +699,7 @@
             renderProposalDetailRows(currentProposalData);
             proposalDetailBox.style.display = '';
         } catch (err) {
-            proposalDetailBody.innerHTML = `<tr><td colspan="2" class="muted">Hiba: ${err.message}</td></tr>`;
+            proposalDetailBody.innerHTML = `<tr><td colspan="2" class="muted">Hiba: ${esc(err.message)}</td></tr>`;
             proposalDetailBox.style.display = '';
             proposalDetailActions.style.display = 'none';
         }

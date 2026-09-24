@@ -74,6 +74,10 @@ másolása közben megkérdezi:
          KIZÁRÓLAG a helyi alhálózatról (LocalSubnet) engedélyez
          bejövő kapcsolatot — internetről közvetlenül SOSE lesz
          emiatt elérhető;
+       - bekér egy ALKALMAZÁS-JELSZÓT (legalább 8 karakter): Szerver
+         módban a helyi hálózatról érkező böngésző-hozzáférés mindig
+         bejelentkezést igényel (nem-interaktív telepítésnél a
+         FOUNTAINTRADE_APP_PASSWORD környezeti változóban kell megadni);
        - az admin "Kliensek" oldalon (Beállítások menü) tudsz majd
          Kliens-gépeket regisztrálni (ott kapod meg az egyszeri
          Client ID / Client Secret párost, amit a következő pontban
@@ -497,6 +501,13 @@ Elfelejtett alkalmazás-jelszó
      szövegszerkesztőben, és állítsd "app_password_enabled": false
      értékre, mentsd el, majd indítsd újra a szervert. Ezután
      Beállítások → Biztonság alatt állíts be új jelszót.
+  -> SZERVER szerepkörben ez NEM működik (ott a jelszó mindig kötelező).
+     Helyette a Szerver gépen, rendszergazdai parancssorban, a
+     telepítési mappából:
+         echo UjJelszo123 | C:\tools\php83\php.exe tools\installer-set-app-password.php --action=set --force
+     (legalább 8 karakter; ékezetes jelszóhoz inkább a telepítőt futtasd
+     újra a jelszó törlése után, mert a Windows parancssor kódlapja
+     elronthatja az ékezeteket).
 
 Nem tudod eldönteni, hogy "rendben van-e" a rendszer, vagy hogy miért
 nem szinkronizál/mentődik valami

@@ -230,12 +230,62 @@ final class AiAgentRunnerTest extends TestCase
         $result = $runner->run('sys', 'kérdés');
 
         $this->assertTrue($result->success);
-        // Az ismeretlen eszköz nevét is "használtként" tartjuk nyilván (a
-        // hívási kísérlet ténye), de a végrehajtás maga ToolResult::fail()-t
-        // adott — ez a második chat()-hívás üzeneteiben ellenőrizhető.
+        // Az ismeretlen eszköz nevét SOSE tartjuk "használtként" nyilván
+        // (lásd testMaliciousUnknownToolNameIsNeverRecordedAsUsed), a
+        // végrehajtás maga ToolResult::fail()-t adott — ez a második
+        // chat()-hívás üzeneteiben ellenőrizhető.
+        $this->assertSame([], $result->toolsUsed);
         $secondCallMessages = $provider->receivedMessages[1];
         $toolMessages = array_values(array_filter($secondCallMessages, fn ($m) => $m['role'] === 'tool'));
         $this->assertStringContainsString('Ismeretlen eszköz', $toolMessages[0]['content']);
+    }
+
+    public function testMaliciousUnknownToolNameIsNeverRecordedAsUsed(): void
+    {
+        $payload = '<svg/onload=alert(document.domain)>';
+        $executed = false;
+        $provider = new FakeAiProvider([
+            new AiChatResponse(null, [new ToolCall('c1', $payload, []), new ToolCall('c2', 'real_tool', [])]),
+            new AiChatResponse('Kész.', []),
+        ]);
+        $registry = new ToolRegistry();
+        $registry->register($this->tool('real_tool', function (array $a) use (&$executed) {
+            $executed = true;
+            return ['ok' => true];
+        }));
+        $runner = new AgentRunner($provider, $registry, 5);
+
+        $result = $runner->run('sys', 'kérdés');
+
+        $this->assertTrue($result->success);
+        $this->assertSame(['real_tool'], $result->toolsUsed, 'Csak a whitelistelt, ténylegesen regisztrált eszköz kerülhet a tools_used listába.');
+        $this->assertTrue($executed);
+    }
+
+    public function testRunStreamingMaliciousUnknownToolNameNeverReachesEventsOrToolsUsed(): void
+    {
+        $payload = '<svg/onload=alert(document.domain)>';
+        $provider = new FakeAiProvider([
+            new AiChatResponse(null, [new ToolCall('c1', $payload, [])]),
+            new AiChatResponse('Folytatva.', []),
+        ]);
+        $runner = new AgentRunner($provider, new ToolRegistry(), 5);
+
+        $events = [];
+        $result = $runner->runStreaming('sys', 'kérdés', function (AiStreamEvent $e) use (&$events) {
+            $events[] = $e;
+        }, 'inventory');
+
+        $this->assertTrue($result->success);
+        $this->assertSame([], $result->toolsUsed);
+        $toolEvents = array_values(array_filter($events, fn (AiStreamEvent $e) => str_starts_with($e->type, 'tool_call_')));
+        $this->assertNotEmpty($toolEvents);
+        foreach ($toolEvents as $e) {
+            $this->assertSame(AgentRunner::UNKNOWN_TOOL_EVENT_NAME, $e->payload['name']);
+        }
+        foreach ($events as $e) {
+            $this->assertStringNotContainsString('<svg', (string) json_encode($e->payload), 'A nyers, modell által kitalált eszköznév sose kerülhet a böngésző felé menő eseménybe.');
+        }
     }
 
     public function testToolFailureIsFedBackToModelAndRunCanStillSucceed(): void

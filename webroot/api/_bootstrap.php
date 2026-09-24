@@ -76,6 +76,7 @@ require_once __DIR__ . '/../../src/Settings.php';
 require_once __DIR__ . '/../../src/Auth.php';
 
 $config = require __DIR__ . '/../../config/config.php';
+Auth::setNodeRole((string) ($config['node_role'] ?? 'standalone'));
 
 // Fázis 2, Checkpoint 3 — topology guard a worker/cron-végpontokra. EGY
 // Kliensnek STRUKTURÁLISAN nincs saját adatbázisa, amin egy WooCommerce/NAV/
@@ -261,7 +262,13 @@ if ($isCronScript) {
             && (int) $clientSessionRow['registered_client_id'] === (int) $clientAuthResult['registeredClient']['id']
             && strtotime((string) $clientSessionRow['expires_at']) > time()
         ) {
-            Auth::setProxiedClientSession($clientSessionRow);
+            if ($db->isStaffActive((int) $clientSessionRow['staff_id'])) {
+                Auth::setProxiedClientSession($clientSessionRow);
+            } else {
+                // Időközben inaktivált dolgozó — a munkamenete a kérés
+                // ELŐTT visszavonódik, sose ad tovább jogosultságot.
+                $db->deleteClientSession((string) $clientSessionRow['client_session_id']);
+            }
         }
     }
 
@@ -271,10 +278,18 @@ if ($isCronScript) {
         echo json_encode(['error' => 'Bejelentkezés szükséges.', 'auth_required' => true], JSON_UNESCAPED_UNICODE);
         exit;
     }
-} elseif (!in_array($currentScript, $authWhitelist, true) && !Auth::isLoggedIn($appSettings)) {
-    http_response_code(401);
-    echo json_encode(['error' => 'Bejelentkezés szükséges.', 'auth_required' => true], JSON_UNESCAPED_UNICODE);
-    exit;
+} elseif (!in_array($currentScript, $authWhitelist, true)) {
+    if (!Auth::isLoggedIn($appSettings)) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Bejelentkezés szükséges.', 'auth_required' => true], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    // Egy időközben inaktivált dolgozó MEGLÉVŐ session-je se hordozhasson
+    // tovább dolgozói (pl. vezetői) jogosultságot.
+    $sessionStaffId = Auth::currentStaffId();
+    if ($sessionStaffId !== null && !$db->isStaffActive($sessionStaffId)) {
+        Auth::setCurrentStaff(null);
+    }
 }
 
 // CSRF-védelem — a session-cookie SameSite=Strict már önmagában is erős

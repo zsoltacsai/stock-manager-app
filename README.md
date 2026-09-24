@@ -2754,6 +2754,77 @@ network`-öt tartalmazna `app_password_enabled: false` mellett, az
 alkalmazás akkor is bejelentkezést követel meg (fail closed), nem esik
 vissza csendben jelszó nélküli módra.
 
+### Biztonsági invariánsok (a 2026-09-24-i red-team audit javításai)
+
+Az alábbi szabályokat egy független audit (F-01…F-09) nyomán vezettük be;
+mindegyiket regressziós teszt védi (a fájlnevek zárójelben). Ez NEM
+jelenti, hogy az alkalmazás minden szempontból auditált — az audit
+kifejezetten nem vizsgált mélyen több területet (pl. MySQL-mód, NAV/
+Számlázz.hu XML, XLS-parszerek), és szándékosan nyitva maradt pontok is
+vannak (lásd a lista végét).
+
+- **Szerver szerepkör hitelesítése (F-01)** — `node_role = server` esetén a
+  közvetlen (nem proxyzott) API-forgalom és az oldalak MINDIG
+  bejelentkezést igényelnek, a `settings.json` tartalmától függetlenül
+  (`Auth::isEnabled()`); jelszó hiányában a Szerver zárva marad (fail
+  closed). A telepítő Szerver módban bekéri az alkalmazás-jelszót
+  (interaktívan, vagy `FOUNTAINTRADE_APP_PASSWORD` környezeti változóból;
+  nem-interaktívan jelszó nélkül megáll), és azt kizárólag stdin-en adja át
+  a `tools/installer-set-app-password.php`-nak. A HMAC-kal hitelesített
+  Kliens-forgalomra az app-jelszó réteg nem vonatkozik (ott a gépszintű
+  HMAC + a dolgozói `client_sessions` a kapu). Elfelejtett jelszó egy
+  Szerveren: rendszergazdai parancssorból
+  `echo <új jelszó> | php tools/installer-set-app-password.php --action=set --force`
+  (`SecurityRemediationServerAuthHttpTest`, `InstallerAppPasswordCliTest`).
+- **AI felület kimenet-escape-elése (F-02)** — az `ai-asszisztens.js`
+  minden `innerHTML`-sablonja minden interpolációt a `window.escapeHtml`-en
+  (`esc`) visz át; minden más megjelenítés `textContent`. A terméknév-
+  validáció NEM az XSS elleni védelem (`AiUiEscapingTest`). CSP-t ebben a
+  körben nem vezettünk be: az oldalak inline szkripteket/eseménykezelőket
+  használnak, egy `'unsafe-inline'`-os CSP pedig nem adna valódi védelmet.
+- **Visszáru-aggregáció (F-03)** — egy visszáru-kérésben egy eladási tétel
+  csak egyszer szerepelhet (`return-create.php`), és a
+  `Database::processReturn()` tranzakción belül a kérés tételenkénti
+  ÖSSZESÍTETT mennyiségét veti össze a még visszavehetővel
+  (`ReturnAggregationTest`).
+- **Telepítési ACL-modell (F-04)** — a telepítési könyvtárba csak a
+  telepítő fiók (ezzel futnak a PHP szerver és a cron-feladatok), a
+  SYSTEM és az Administrators írhat; a többi helyi felhasználó (pl.
+  pénztáros Windows-fiók) a kódot csak olvashatja/futtathatja, a
+  `config/`, `data/` és `invoices/` mappákhoz pedig nincs hozzáférése. Az
+  öröklés megszűnik, a korábbi telepítők rekurzív "Users: Modify" joga
+  újratelepítéskor törlődik (`Get-FountainTradeAclPlan`, Pester).
+- **Dolgozó-inaktiválás (F-05)** — az admin-ellenőrzés az `is_active`
+  mezőt is figyeli; egy inaktivált dolgozó meglévő böngésző-sessionje minden
+  kérésnél elveszti a dolgozói azonosságát, Kliens-munkamenetei azonnal
+  (és kérésenként is) visszavonódnak.
+- **Eszköz-whitelist a tools_used-ban (F-06)** — az `AgentRunner` csak
+  regisztrált eszköz nevét rögzíti "használtként"; ismeretlen (a modell
+  által kitalált) név sose kerül a naplóba vagy a böngésző felé menő
+  eseménybe (helyette `unknown_tool`) (`AiAgentRunnerTest`).
+- **HMAC nonce-sorrend (F-07)** — a nonce-t csak ÉRVÉNYES aláírású kérés
+  foglalhatja le; érvénytelen aláírás sose növeli a nonce-tárat, a
+  visszajátszás-védelem érvényes kérésekre változatlan.
+- **Kliens-oldali CSRF-modell (F-08)** — a Kliens böngésző↔Kliens hopján
+  a `SameSite=Strict` session mellett a `ClientProxy` állapotváltoztató
+  kérést CSAK a Kliens saját eredetéről továbbít (`Origin` pontos
+  egyezése, `Sec-Fetch-Site` nem lehet same-site/cross-site) — egy másik
+  localhost-porton futó oldal sem hamisíthat kérést a proxy által
+  automatikusan csatolt munkamenet-CSRF-tokennel. A Szerver továbbra is a
+  `client_sessions`-höz kötött CSRF-tokent ellenőrzi.
+- **Kliens-munkamenet azonossági határa (F-09)** — egy proxyzott kérés
+  dolgozói azonossága KIZÁRÓLAG a validált `client_sessions` sorból jöhet;
+  sose esik vissza a Szerver saját PHP-sessionjére (akkor sem, ha a kérés
+  egy érvényes Szerver-sütit hordoz); dolgozói munkamenet nélkül maga a
+  HMAC-kal hitelesített gép sem számít "bejelentkezettnek" (pl. token
+  nélküli nyugta-lekérdezésnél) (`SecurityRemediationClientServerHttpTest`).
+
+Szándékosan NEM ebben a körben javított audit-pontok: F-10 (termékkép-
+fájl törlése másik termék nevében), F-11 (bal szélső `X-Forwarded-For`
+bizalma loopback-proxy mögött), P-01 (Kliens↔Szerver forgalom TLS nélkül),
+P-02 (a Beállítások GET nem-admin számára is olvasható, titkok nélkül),
+P-03 (erőforrás-visszaélés: feltöltések/importok mérete).
+
 ### Bejelentkezés (opcionális, kikapcsolható "Helyi" üzemmódban)
 
 Beállítások → Biztonság fülön kapcsolható be egy alkalmazás-szintű jelszó

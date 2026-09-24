@@ -103,6 +103,20 @@ final class Auth
      */
     public static function isEnabled(array $settings): bool
     {
+        // Egy HMAC-kal hitelesített, proxyzott Kliens-kérésnél az
+        // alkalmazás-jelszó réteg nem értelmezhető (a böngésző PHP-sessionje
+        // a Kliens gépén él) — ott a gépszintű HMAC + a client_sessions-alapú
+        // dolgozói munkamenet a kapu, lásd _bootstrap.php.
+        if (self::$proxiedRegisteredClientId !== null) {
+            return false;
+        }
+        // Szerver szerepkörben a LAN felé nyitott telepítés közvetlen
+        // (nem proxyzott) forgalma SOSE lehet névtelen — a settings.json
+        // tartalmától függetlenül (fail closed, lásd README "Szerver
+        // szerepkör hitelesítési invariánsa").
+        if (self::nodeRole() === 'server') {
+            return true;
+        }
         if (($settings['deployment_mode'] ?? 'local') === 'network') {
             return true;
         }
@@ -111,6 +125,12 @@ final class Auth
 
     public static function isLoggedIn(array $settings): bool
     {
+        // Proxyzott kérésnél "bejelentkezett" = van validált dolgozói
+        // client_sessions sor (a gépszintű HMAC önmagában nem elég, pl. a
+        // token nélküli nyugta-lekérdezéshez).
+        if (self::$proxiedRegisteredClientId !== null) {
+            return self::$proxiedClientSession !== null;
+        }
         self::ensureSession();
 
         if (!self::isEnabled($settings)) {
@@ -193,6 +213,23 @@ final class Auth
     /** Fázis 2 — melyik regisztrált kliens-gép hitelesítette magát (HMAC) az aktuális kérésnél; null, ha nem proxyzott kérés. */
     private static ?int $proxiedRegisteredClientId = null;
 
+    private static ?string $nodeRole = null;
+
+    /** _bootstrap.php a MÁR betöltött $config alapján állítja; null esetén a config.php-ból olvassuk. */
+    public static function setNodeRole(?string $role): void
+    {
+        self::$nodeRole = $role;
+    }
+
+    private static function nodeRole(): string
+    {
+        if (self::$nodeRole === null) {
+            $config = require __DIR__ . '/../config/config.php';
+            self::$nodeRole = (string) ($config['node_role'] ?? 'standalone');
+        }
+        return self::$nodeRole;
+    }
+
     public static function setProxiedRegisteredClientId(?int $id): void
     {
         self::$proxiedRegisteredClientId = $id;
@@ -222,6 +259,12 @@ final class Auth
         // böngésző-forgalma), a meglévő, változatlan viselkedés fut.
         if (self::$proxiedClientSession !== null) {
             return (int) self::$proxiedClientSession['staff_id'];
+        }
+        // Proxyzott kérésnél a dolgozói azonosság KIZÁRÓLAG a validált
+        // client_sessions sorból jöhet — sose a Szerver saját, a kéréssel
+        // esetleg (sütiként) együtt érkező PHP-sessionjéből.
+        if (self::$proxiedRegisteredClientId !== null) {
+            return null;
         }
         self::ensureSession();
         return isset($_SESSION['staff_id']) ? (int) $_SESSION['staff_id'] : null;

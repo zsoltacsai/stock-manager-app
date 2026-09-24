@@ -131,6 +131,31 @@ ellenőrzése, ha rendelkezésre áll. Lásd README "Fázis 11" alszakasz.
   CPU-terhelés, hanem hogy a gép a `qwen3:8b`-t kizárólag CPU-n futtatja
   (`size_vram: 0`), GPU-gyorsítás nélkül.
 
+### Security — független red-team audit javításai (F-01…F-09)
+
+- **F-01 (HIGH)** — Szerver szerepkörben a közvetlen API-/oldal-forgalom
+  mindig bejelentkezést igényel (fail closed); a telepítő Szerver módban
+  bekéri az alkalmazás-jelszót (stdin-en át adja a PHP-eszköznek).
+- **F-02 (HIGH)** — az AI Asszisztens oldal minden `innerHTML`-
+  interpolációja escape-elve (terméknév/entity_name/evidence/eszköznév/
+  napi findings/hibaüzenet) — valódi böngészőben reprodukált tárolt XSS.
+- **F-03 (HIGH)** — visszárunál egy eladási tétel többszöri felsorolásával
+  már nem lehet az eladottnál többet visszatéríteni (endpoint-elutasítás +
+  tranzakción belüli összesített ellenőrzés).
+- **F-04 (HIGH)** — a Windows telepítő már nem ad rekurzív "Users:
+  Modify" jogot a teljes telepítésre; legkisebb jogosultságú ACL-modell.
+- **F-05 (MEDIUM)** — inaktivált (admin) dolgozó meglévő sessionje/Kliens-
+  munkamenete is elveszti a jogosultságát.
+- **F-06 (MEDIUM)** — a modell által kitalált, nem regisztrált eszköznév
+  sose kerül a `tools_used`-ba vagy a böngésző felé menő eseménybe.
+- **F-07 (LOW)** — HMAC-nonce csak érvényes aláírás után foglalódik.
+- **F-08 (LOW)** — a `ClientProxy` állapotváltoztató kérést csak a Kliens
+  saját eredetéről (Origin/Sec-Fetch-Site) továbbít.
+- **F-09 (LOW)** — proxyzott kérés dolgozói azonossága sose esik vissza a
+  Szerver saját PHP-sessionjére.
+- Nyitva maradt, ebben a körben szándékosan nem javított pontok: F-10,
+  F-11, P-01, P-02, P-03 (lásd README "Biztonsági invariánsok").
+
 ### Tests
 
 - Fázis 10: `AiRetryPolicyTest` (9 teszt), `AiAuditLoggerTest` (5 teszt),

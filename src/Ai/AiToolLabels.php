@@ -31,6 +31,7 @@ final class AiToolLabels
         'get_stock_status' => 'Készletállapot ellenőrzése…',
         'get_low_stock_products' => 'Alacsony készletű termékek lekérdezése…',
         'get_product_sales_velocity' => 'Fogyási ütem elemzése…',
+        'unknown_tool' => 'Ismeretlen eszköz — elutasítva',
         'get_inventory_movements' => 'Készletmozgások ellenőrzése…',
     ];
 

@@ -445,15 +445,18 @@ if (-not (Test-Path (Join-Path $InstallPath 'webroot\index.php'))) {
     Exit-WithFailureSummary "Nem található FountainTrade a célkönyvtárban: $InstallPath" "Futtasd a telepítőt -SkipDownload nélkül, vagy add meg helyesen a -InstallPath paramétert."
 }
 
-# Írható mappák a jövőben ACL-t is kaphatnak (lásd 4. pont) — nem-admin
-# napi használó (pénztáros) is tudjon írni a data/invoices/assets alá,
-# még ha a telepítés maga admin jogból is történt.
+# Legkisebb jogosultság (lásd Get-FountainTradeAclPlan): a PHP szerver és a
+# cron-feladatok a telepítő fiókjával futnak — csak ez a fiók (+ SYSTEM/
+# Administrators) írhat a telepítésbe; a többi helyi felhasználó (pl.
+# pénztáros Windows-fiók) a kódot csak olvashatja, a config/data/invoices
+# mappákhoz pedig nem fér hozzá.
 Write-Step "Telepítési könyvtár jogosultságainak beállítása"
 try {
-    icacls $InstallPath /grant '*S-1-5-32-545:(OI)(CI)M' /T /Q | Out-Null
-    Write-Ok "A beépített 'Users' csoport Módosítás jogot kapott a célkönyvtárra (nem-admin napi használathoz)."
+    $installerOwnerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    Invoke-FountainTradeAclPlan -Plan (Get-FountainTradeAclPlan -InstallPath $InstallPath -OwnerSid $installerOwnerSid)
+    Write-Ok "Jogosultságok beállítva: írás csak a telepítő fióknak/rendszergazdáknak; config/data/invoices más helyi felhasználók számára nem elérhető."
 } catch {
-    Write-Warn2 "Az ACL beállítása sikertelen (nem kritikus, ha ugyanaz a fiók telepít és használja az appot): $($_.Exception.Message)"
+    Exit-WithFailureSummary "A telepítési könyvtár jogosultságainak beállítása sikertelen: $($_.Exception.Message)" "Futtasd a telepítőt rendszergazdaként; egy hiányos ACL mellett a telepítés nem biztonságos."
 }
 
 # -------------------------------------------------------------------
@@ -752,6 +755,62 @@ $NodeRole = $resolvedNodeRole
 # -AsSecureString miatt sose látja a nyers értéket visszhangozva.
 $roleLabel = switch ($NodeRole) { 'server' { 'Szerver' } 'client' { 'Kliens' } default { 'Önálló gép' } }
 Write-Ok "Node-szerepkör: $roleLabel"
+
+# Szerver szerepkörben a LAN felől érkező közvetlen API-forgalom MINDIG
+# hitelesítést igényel (Auth::isEnabled()) — jelszó nélkül a Szerver
+# felülete zárva maradna, ezért itt állítjuk be az alkalmazás-jelszót.
+# Nincs olyan paraméter, ami ezt kikapcsolná.
+if ($NodeRole -eq 'server') {
+    $appPasswordToolPath = Join-Path $InstallPath 'tools\installer-set-app-password.php'
+    if (-not (Test-Path $appPasswordToolPath)) {
+        Exit-WithFailureSummary "Hiányzik a tools\installer-set-app-password.php a telepített FountainTrade-ből." "A letöltött/másolt csomag hiányos vagy régebbi — próbáld újra a telepítést."
+    }
+    $appPasswordStatus = Invoke-FountainTradeAppPasswordTool -PhpExe $phpExe -ToolPath $appPasswordToolPath -Action 'status'
+    if ($appPasswordStatus.ExitCode -ne 0 -or -not $appPasswordStatus.Json -or -not $appPasswordStatus.Json.ok) {
+        Exit-WithFailureSummary "Az alkalmazás-jelszó állapota nem olvasható: $($appPasswordStatus.Raw)" "Ellenőrizd a data\settings.json fájlt, majd futtasd újra a telepítőt."
+    }
+    $appPasswordAction = Resolve-ServerAppPasswordAction -NodeRole 'server' `
+        -HasPassword ([bool]$appPasswordStatus.Json.has_password) `
+        -EnvPasswordProvided (-not [string]::IsNullOrEmpty($env:FOUNTAINTRADE_APP_PASSWORD)) `
+        -NonInteractive ([bool]$env:FOUNTAINTRADE_NONINTERACTIVE)
+    $newAppPassword = $null
+    switch ($appPasswordAction) {
+        'keep' { Write-Ok "Az alkalmazás-jelszó már be van állítva (Szerver mód) — változatlan." }
+        'fail' {
+            Exit-WithFailureSummary "Szerver módhoz alkalmazás-jelszó szükséges, de nem-interaktív módban nincs megadva." "Add meg a FOUNTAINTRADE_APP_PASSWORD környezeti változóban (legalább 8 karakter), vagy futtasd a telepítőt interaktívan."
+        }
+        'use_env' { $newAppPassword = $env:FOUNTAINTRADE_APP_PASSWORD }
+        'prompt' {
+            Write-Host ""
+            Write-Host "Szerver módban a helyi hálózatról érkező böngésző-hozzáféréshez alkalmazás-jelszó szükséges (legalább 8 karakter)." -ForegroundColor Yellow
+            for ($attempt = 1; $attempt -le 3 -and -not $newAppPassword; $attempt++) {
+                $first = Read-Host "Alkalmazás-jelszó" -AsSecureString
+                $second = Read-Host "Alkalmazás-jelszó újra" -AsSecureString
+                $firstPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($first))
+                $secondPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($second))
+                if ($firstPlain -ne $secondPlain) {
+                    Write-Warn2 "A két jelszó nem egyezik."
+                } elseif ($firstPlain.Length -lt 8) {
+                    Write-Warn2 "A jelszó legalább 8 karakter legyen."
+                } else {
+                    $newAppPassword = $firstPlain
+                }
+            }
+            if (-not $newAppPassword) {
+                Exit-WithFailureSummary "Nem sikerült érvényes alkalmazás-jelszót megadni." "Futtasd újra a telepítőt."
+            }
+        }
+    }
+    if ($newAppPassword) {
+        $appPasswordSet = Invoke-FountainTradeAppPasswordTool -PhpExe $phpExe -ToolPath $appPasswordToolPath -Action 'set' -Password $newAppPassword
+        $newAppPassword = $null
+        if ($appPasswordSet.ExitCode -ne 0 -or -not $appPasswordSet.Json -or -not $appPasswordSet.Json.ok) {
+            $appPasswordError = if ($appPasswordSet.Json) { $appPasswordSet.Json.error } else { $appPasswordSet.Raw }
+            Exit-WithFailureSummary "Az alkalmazás-jelszó beállítása sikertelen: $appPasswordError" "Ellenőrizd a jelszó hosszát (legalább 8 karakter), majd futtasd újra a telepítőt."
+        }
+        Write-Ok "Alkalmazás-jelszó beállítva (Szerver mód — a böngészős bejelentkezéshez szükséges)."
+    }
+}
 
 # -------------------------------------------------------------------
 # Ollama (helyi AI) telepítés — Fázis 6, Rész B. KIZÁRÓLAG Önálló gép/

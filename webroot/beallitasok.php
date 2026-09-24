@@ -1033,7 +1033,77 @@ if (!Auth::isLoggedIn($appSettings)) {
             </p>
             <label for="ai-max-output-tokens">Válasz max. hossza (token, opcionális)</label>
             <input type="text" id="ai-max-output-tokens" placeholder="üresen hagyva: nincs korlát">
-            <button id="settings-save-ai-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Mentés</button>
+
+            <div style="border-top:1px solid var(--border); margin-top:16px; padding-top:16px;">
+                <strong>Streamelés és UX</strong>
+                <div class="toggle-line">
+                    <span>Élő (streamelt) válasz megjelenítése</span>
+                    <button type="button" class="toggle-switch" id="ai-streaming-enabled"></button>
+                </div>
+                <p class="muted" style="margin-top:-6px;">
+                    Bekapcsolva az AI Asszisztens oldal folyamatosan, érkezés közben jeleníti meg a
+                    választ és az ügynök/eszköz-hívási lépéseket. Kikapcsolva a régi, "egyben érkező"
+                    módra vált — csak akkor van rá szükség, ha egy köztes proxy/tűzfal nem engedi át
+                    helyesen a streamelt (chunked) HTTP-válaszokat.
+                </p>
+                <div class="toggle-line">
+                    <span>Token-használat és becsült költség megjelenítése</span>
+                    <button type="button" class="toggle-switch" id="ai-show-usage-cost"></button>
+                </div>
+            </div>
+
+            <div style="border-top:1px solid var(--border); margin-top:16px; padding-top:16px;">
+                <strong>Kontextus-korlátok</strong>
+                <p class="muted" style="margin-top:4px;">
+                    Egy hosszú beszélgetés/sok eszköz-hívás esetén ezek a korlátok tartják kordában a
+                    modellnek küldött adat méretét — a MEGLÉVŐ üzeneteket a legrégebbiektől kezdve
+                    tömöríti (nem törli végleg, csak az adott válaszból hagyja ki), és minden egyes
+                    eszköz-eredményt is levág, mielőtt a modellhez kerülne.
+                </p>
+                <label for="ai-max-context-messages">Legfeljebb ennyi üzenet a beszélgetésben</label>
+                <input type="text" id="ai-max-context-messages" placeholder="60">
+                <label for="ai-max-input-chars">Kérdés max. hossza (karakter)</label>
+                <input type="text" id="ai-max-input-chars" placeholder="4000">
+                <label for="ai-max-tool-result-chars">Egy eszköz-eredmény max. hossza (karakter)</label>
+                <input type="text" id="ai-max-tool-result-chars" placeholder="4000">
+                <label for="ai-max-total-context-chars">Teljes kontextus max. hossza (karakter)</label>
+                <input type="text" id="ai-max-total-context-chars" placeholder="60000">
+            </div>
+
+            <div style="border-top:1px solid var(--border); margin-top:16px; padding-top:16px;">
+                <strong>Költség- és sebesség-korlátok</strong>
+                <label for="ai-max-tool-calls">Legfeljebb ennyi eszköz-hívás kérdésenként</label>
+                <input type="text" id="ai-max-tool-calls" placeholder="20">
+                <label for="ai-max-estimated-cost-per-request">Becsült költség-korlát kérdésenként (USD, opcionális)</label>
+                <input type="text" id="ai-max-estimated-cost-per-request" placeholder="üresen hagyva: nincs korlát">
+                <p class="muted" style="margin-top:-6px;">
+                    Csak azoknál a providereknél/modelleknél érvényesíthető, amelyeknél tényleges,
+                    ismert árazási adat áll rendelkezésre — jelenleg a helyi (Ollama) futtatás
+                    díjmentes, Anthropic/OpenAI esetén a rendszer nem tesz közzé ellenőrizetlen
+                    árazást, így ott ez a korlát nem lép működésbe.
+                </p>
+                <label for="ai-min-seconds-between-requests">Legalább ennyi másodperc két kérdés között (dolgozónként)</label>
+                <input type="text" id="ai-min-seconds-between-requests" placeholder="2">
+            </div>
+
+            <div style="border-top:1px solid var(--border); margin-top:16px; padding-top:16px;">
+                <strong>Modell-választás összetett kérdésekhez (opcionális)</strong>
+                <p class="muted" style="margin-top:4px;">
+                    A Copilot (általános asszisztens) — mivel több ügynököt is összehangolhat — ide
+                    állítható be egy ERŐSEBB modellre, míg a Készlet/Forgalom/Anomália ügynökök
+                    továbbra is a fenti alap modellt használják. Üresen hagyva mindegyik a fenti alap
+                    modellt használja. Ez a döntés MINDIG szerver-oldali beállítás, a böngésző sose
+                    választhat modellt.
+                </p>
+                <label for="ai-local-model-complex">Ollama — összetett modell</label>
+                <input type="text" id="ai-local-model-complex" placeholder="üresen hagyva: az alap modell">
+                <label for="ai-anthropic-model-complex">Anthropic — összetett modell</label>
+                <input type="text" id="ai-anthropic-model-complex" placeholder="üresen hagyva: az alap modell">
+                <label for="ai-openai-model-complex">OpenAI — összetett modell</label>
+                <input type="text" id="ai-openai-model-complex" placeholder="üresen hagyva: az alap modell">
+            </div>
+
+            <button id="settings-save-ai-btn" class="btn btn-primary" style="width:auto; padding:10px 18px; margin-top:16px;">Mentés</button>
             <p id="settings-ai-feedback" class="modal-feedback"></p>
 
             <div style="border-top:1px solid var(--border); margin-top:24px; padding-top:16px;">

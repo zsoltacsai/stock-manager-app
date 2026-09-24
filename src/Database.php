@@ -6366,6 +6366,30 @@ class Database
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    /**
+     * Fázis 9 — AiRateLimiter.php egyetlen lekérdezése: a MEGLÉVŐ
+     * audit_log-ból (amit az AiAuditLogger minden AI-futás után ír,
+     * `action = 'ai_agent_run'`) a LEGUTÓBBI futás időpontja, ugyanarra
+     * a $staffId-re (NULL-biztos egyezéssel — egy dolgozói PIN-rendszer
+     * nélküli telepítésen $staffId maga is NULL lehet, lásd
+     * AiRateLimiter.php docblokkja). NINCS új tábla — a kör 19. pontja
+     * explicit elve: "do not create a completely separate... subsystem."
+     */
+    public function getLastAiAgentRunAt(?int $staffId): ?string
+    {
+        $stmt = $this->pdo->prepare("
+            SELECT created_at FROM audit_log
+            WHERE action = 'ai_agent_run' AND (
+                (staff_id IS NULL AND ? IS NULL) OR staff_id = ?
+            )
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+        ");
+        $stmt->execute([$staffId, $staffId]);
+        $value = $stmt->fetchColumn();
+        return $value !== false ? (string) $value : null;
+    }
+
     // ---------------------------------------------------------------
     // Rendszeresemény-napló (1.4.0, "Operations & Reliability") — lásd
     // migrateV26SystemEvents() docblokkja az audit_log-tól való
@@ -6575,9 +6599,82 @@ class Database
         $row['iterations'] = $detail['iterations'] ?? null;
         $row['duration_ms'] = $detail['duration_ms'] ?? null;
         $row['detail_error'] = $detail['error'] ?? null;
+        // Fázis 9 — a webroot/api/ai-agent-stream.php ÁLTAL, UGYANEBBE a
+        // MEGLÉVŐ technical_detail JSON-ba írt új mezők felszínre hozása —
+        // séma-módosítás NÉLKÜL (lásd a kör 20. pontja). Egy RÉGEBBI, Fázis
+        // 9 ELŐTTI sornál ezek mind hiányoznak a JSON-ból, ezért itt
+        // biztonságosan `null`-ra esnek — a frontend ebből tudja, hogy
+        // "nincs ilyen adat", nem "0 volt".
+        $row['streamed'] = $detail['streamed'] ?? null;
+        $row['input_tokens'] = $detail['input_tokens'] ?? null;
+        $row['output_tokens'] = $detail['output_tokens'] ?? null;
+        $row['total_tokens'] = $detail['total_tokens'] ?? null;
+        $row['estimated_cost'] = $detail['estimated_cost'] ?? null;
+        $row['limit_reached'] = $detail['limit_reached'] ?? null;
+        $row['context_compacted'] = $detail['context_compacted'] ?? null;
         unset($row['technical_detail']);
 
         return $row;
+    }
+
+    /**
+     * Fázis 9 — a Dashboard AI-kártyájához (lásd webroot/api/dashboard-
+     * summary.php): a MAI naptári nap 'ai'/'agent_run' system_events
+     * sorainak összesítése. A JSON-dekódolás PHP-oldalon történik (mint
+     * decorateAiHistoryRow()-nál) — nem SQL-ben, hogy SQLite/MySQL alatt
+     * egyaránt egyszerűen és hordozhatóan működjön.
+     *
+     * ŐSZINTESÉGI SZABÁLY (lásd AiPricing.php docblokkja): ha akár EGYETLEN
+     * mai futásnak is ismeretlen (null) volt a becsült költsége (pl.
+     * Anthropic/OpenAI egy még nem árazott modellel), a végösszeg NEM
+     * jelenik meg hamisan pontosként — `has_unknown_cost_runs` jelzi ezt,
+     * a hívó ebből dönt a "+ ismeretlen X futásnál" jellegű megjelenítésről.
+     *
+     * @return array{run_count:int, last_run_at:?string, total_tokens:?int, estimated_cost_total:?float, has_unknown_cost_runs:bool}
+     */
+    public function getAiTodayUsageSummary(): array
+    {
+        $today = date('Y-m-d');
+        $stmt = $this->pdo->prepare("
+            SELECT technical_detail, created_at FROM system_events
+            WHERE category = 'ai' AND event_type = 'agent_run' AND created_at >= ?
+            ORDER BY created_at DESC
+        ");
+        $stmt->execute([$today . ' 00:00:00']);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        $totalCost = 0.0;
+        $hasKnownCost = false;
+        $hasUnknownCost = false;
+        $totalTokens = 0;
+        $hasTokens = false;
+
+        foreach ($rows as $row) {
+            $detail = json_decode((string) ($row['technical_detail'] ?? ''), true);
+            if (!is_array($detail)) {
+                continue;
+            }
+            if (array_key_exists('estimated_cost', $detail)) {
+                if ($detail['estimated_cost'] !== null) {
+                    $totalCost += (float) $detail['estimated_cost'];
+                    $hasKnownCost = true;
+                } else {
+                    $hasUnknownCost = true;
+                }
+            }
+            if (isset($detail['total_tokens']) && $detail['total_tokens'] !== null) {
+                $totalTokens += (int) $detail['total_tokens'];
+                $hasTokens = true;
+            }
+        }
+
+        return [
+            'run_count' => count($rows),
+            'last_run_at' => $rows[0]['created_at'] ?? null,
+            'total_tokens' => $hasTokens ? $totalTokens : null,
+            'estimated_cost_total' => $hasKnownCost ? round($totalCost, 4) : null,
+            'has_unknown_cost_runs' => $hasUnknownCost,
+        ];
     }
 
     // ---------------------------------------------------------------

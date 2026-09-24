@@ -4705,6 +4705,212 @@ végpont 200 OK-t adott, és a lista is azonnal frissült. A teszt-adatok
 (termék+javaslat+piszkozat) a böngésző-ellenőrzés UTÁN törölve lettek a
 fejlesztői adatbázisból.
 
+### Fázis 9 — Copilot UX + streaming, kontextus-/költség-korlátok
+
+A cél a MEGLÉVŐ agent-architektúra (Fázis 1-8B, változatlan) megtartása
+mellett a Copilot/asszisztens élmény érdemi javítása: élő (streamelt)
+válaszok, jobb folyamat-visszajelzés, determinisztikus kontextus-/
+költség-korlátok, becsült-költség láthatóság és szerver-oldali
+modell-útválasztás. **Nincs új domain-agent, nincs új provider, nincs új
+üzleti művelet, nincs RAG/vektoros keresés, nincs tartós szemantikus
+memória, nincs autonóm háttér-futtatás** — ez a kör KIZÁRÓLAG a meglévő,
+olvasásra-korlátozott ügynökök körüli UX/megfigyelhetőségi réteget bővíti.
+
+#### Streamelési protokollok — providerenként eltérő, egységesített alakra hozva
+
+A három Provider natív streamelési protokollja teljesen különböző — mindegyik
+a HIVATALOS dokumentáció alapján lett implementálva, majd egyetlen,
+provider-független eseménytípus-készletre (`AiStreamEvent`) fordítva:
+
+- **Ollama `/api/chat` (`stream:true`)** — NDJSON (nem SSE), soronként egy
+  teljes JSON-objektum; `message.content` DELTA (konkatenálandó); a
+  `tool_calls` MINDIG egyetlen, teljes darabban érkezik (a szerver oldali
+  parser sose tör darabra egy eszköz-hívást); a végső, `"done":true` sor
+  hordozza a `prompt_eval_count`/`eval_count` token-számokat (ezek
+  hiányozhatnak is, ha 0 lenne — `omitempty`).
+- **Anthropic Messages API** — SSE (`event: <típus>` + `data: <json>`);
+  `content_block_delta` két altípusa: `text_delta` (szöveg, konkatenálandó)
+  és `input_json_delta` (`partial_json` STRING-darabok, blokkononta
+  pufferelve, KIZÁRÓLAG a `content_block_stop`-nál dekódolva — SOSE
+  részleges JSON-ból, lásd lent "Biztonság"); a token-használat a
+  `message_start`+`message_delta` eseményekből épül (utóbbi felülírja/
+  kumulálja).
+- **OpenAI Responses API** — SSE, `response.output_item.done` esemény adja
+  a szerver által MÁR TELJESEN összeállított végleges elemet (a `reasoning`
+  item `encrypted_content`-jével együtt) — nincs kézi delta-újraépítés a
+  hiteles kimenethez, csak a `response.output_text.delta`/
+  `response.function_call_arguments.delta` szolgál élő UX-célra; a
+  `store:false` + reasoning-modell melletti pontos visszajátszás
+  (`buildResponseFromOutput()`) MOST már streamelt és nem-streamelt
+  hívásnál is UGYANARRÓL az egy közös kódútvonalról történik.
+
+**Biztonság — SOSE fut eszköz részleges JSON-argumentumból.** A streamelt
+`tool_call_arguments_delta` esemény KIZÁRÓLAG UI-célra (élő "gépel..."
+jellegű visszajelzés) létezik — a tényleges `ToolRegistry::execute()` MINDIG
+csak a MÁR teljesen összeállított, érvényesen dekódolt hívást kapja meg,
+providertől függetlenül.
+
+#### `AiStreamEvent` — a kizárólagos, providerfüggetlen eseményalak
+
+`src/Ai/AiStreamEvent.php` egy szigorú whitelist (`agent_started`,
+`text_delta`, `tool_call_started`, `tool_call_arguments_delta`,
+`tool_call_completed`, `agent_completed`, `usage`, `final`, `error`, és a
+HTTP-végpont saját záró `done` eseménye) — egy Provider natív eseménye
+(NDJSON-sor, `content_block_delta`, `response.output_text.delta`) SOSE jut
+túl a saját Provider-osztályán. `AgentRunner::runStreaming()` (lásd
+`src/Ai/AgentRunner.php`) emeli a tool-call életciklus-eseményeket a
+TÉNYLEGES `ToolRegistry::execute()` köré (`tool_call_started` ELŐTTE,
+`tool_call_completed` UTÁNA) — ez garantálja, hogy egy eszköz-progressz
+esemény mindig a valódi végrehajtást tükrözi, sose egy előre feltételezett
+állapotot. A Copilot `ask_*_agent` meta-eszközei EGYSZERŰ eszközök a saját
+`ToolRegistry`-jében — így ugyanez a generikus mechanizmus automatikusan,
+az `InventoryAgent`/`SalesAgent`/`AnomalyAgent` belső kódjának módosítása
+NÉLKÜL ad valósághű al-ügynök-progresszt.
+
+**Transzparens fallback** — ha egy Provider nem implementálja az opcionális
+`AiStreamingProviderInterface`-t, VAGY az admin kikapcsolta a
+`ai_streaming_enabled` beállítást, `runStreaming()` egyetlen, nem-streamelt
+`chat()`-hívásból szintetizál egy `text_delta` + `usage` eseménypárt — a
+frontend és a HTTP-végpont szemszögéből a folyamat NEM változik, csak a
+szöveg egyetlen darabban, nem folyamatosan érkezik.
+
+#### Kontextus-korlátok és tömörítés (`ConversationManager`)
+
+`src/Ai/AiContextLimits.php` (admin-konfigurálható, lásd Beállítások)
+négy determinisztikus korlátot ad: max. üzenetszám a beszélgetésben, max.
+kérdés-hossz, max. egy-eszköz-eredmény-hossz, max. teljes kontextus-hossz.
+`ConversationManager` fordulónkénti (egy assistant-üzenet + a hozzá tartozó
+eszköz-eredmények = egy "forduló") FIFO-tömörítést végez, ha túllépi a
+korlátot — a rendszer-/felhasználói üzenetet ÉS az utolsó fordulót SOSE
+dobja el (ez zárja ki a végtelen ciklust, és megőrzi az aktuális forduló
+bizonyítékait). Egy eszköz-eredmény KÉTLÉPCSŐS levágást kap, mielőtt a
+kontextusba kerülne: (1) a legnagyobb lista-mezőt ismételt felezéssel
+csökkenti, amíg a méret-korlát alá nem kerül; (2) ha ez sem elég, a TELJES
+payloadot egy kicsi, MINDIG érvényes JSON "csonkított boríték" objektumra
+cseréli — SOSE vág bele nyers JSON-stringbe (ami érvénytelen JSON-t
+eredményezne).
+
+#### Költség-/sebesség-korlátok
+
+- **`maxToolCalls`** (tiszta darabszám) — `AgentRunner`-en belül,
+  futásonként érvényesítve, árazási adat nélkül is működik.
+- **`maxEstimatedCostPerRequest`** (dollár-alapú) — KIZÁRÓLAG a Copilot
+  al-ügynök-szétosztási szintjén érvényesítve (minden al-ügynök-hívás előtt
+  ellenőrizve/összegezve, lásd `AiCopilot::buildToolRegistry()`), NEM egy
+  megosztott, minden konstruktoron átvezetett költség-számláló objektummal —
+  tudatos egyszerűsítés.
+- **`AiRateLimiter`** — a MEGLÉVŐ `audit_log` táblára épül (`action =
+  'ai_agent_run'` sorok), nincs új tábla; konfigurálható várakozási idő két
+  kérés között, dolgozónként (NULL-biztos `staff_id`-egyezéssel).
+
+#### Árazási őszinteség (`AiPricing`)
+
+`src/Ai/AiPricing.php` árazási táblája KIZÁRÓLAG egy `local` (Ollama)
+bejegyzést tartalmaz, $0-val — ez egy alkalmazás-szabály kijelentés
+("helyi futtatás, nincs API-díj"), NEM piaci állítás. Anthropic/OpenAI
+bejegyzések SZÁNDÉKOSAN HIÁNYOZNAK — ebben a szimulált fejlesztői
+környezetben a konfigurált modellnevek (pl. `claude-sonnet-5`, `gpt-6-sol`)
+fiktívek/jövőbeliek, valós, ellenőrizhető árazási adat nélkül; a becsléshez
+kitalált számot beírni megtévesztő lenne. `AiPricing::estimate()` ezért
+`null`-t ad vissza (SOSE 0-t vagy egy találgatást) minden olyan
+provider/modell-kombinációra, ami nincs a táblában — a UI ezt "nem ismert
+ehhez a modellhez" szöveggel jelzi, sose hamis pontossággal.
+
+#### Modell-útválasztás (`AiProviderFactory::resolveModel()`)
+
+A Copilot MINDIG a `'complex'` komplexitású modellt kéri (ha az admin
+beállított egyet a `*_model_complex` mezőkben — lásd Beállítások), a három
+domain-agent MINDIG a `'default'` (alap) modellt. Ha nincs beállítva
+komplex modell, csendben visszaesik az alap modellre (opt-in, nem
+kötelező). Ez a döntés KIZÁRÓLAG admin-oldali beállítás — a böngésző SOSE
+befolyásolhatja, melyik modell fut le.
+
+#### Client/Server streamelés (`ClientProxy::forwardStreaming()`)
+
+A MEGLÉVŐ `ClientProxy::forward()` (`CURLOPT_RETURNTRANSFER => true`) a
+TELJES Szerver-választ pufferelte volna, mielőtt bármit visszaküldött a
+böngészőnek — SSE-nél elfogadhatatlan. Egy ÚJ, KIZÁRÓLAG az
+`ai-agent-stream.php` fájlnév-fehérlistára (`STREAMING_SCRIPTS`) érvényes
+relé-útvonal (`forwardStreaming()`) `CURLOPT_HEADERFUNCTION`/
+`CURLOPT_WRITEFUNCTION`-nel darabonként, ahogy megérkeznek, továbbítja a
+Szerver fejléceit/törzsét — ugyanaz a minta, mint amit a 3 Provider saját
+`executeStreamingRequest()` segédfüggvénye használ a másik hopon. A
+gép-szintű HMAC-hitelesítés elutasítását (401 + `ClientAuthenticator`
+egységes hibaüzenete) "best effort" ismeri fel: mivel egy IGAZI SSE-válasz
+sosem 401-gyel kezdődik (a Szerver `require_admin()`-je MÉG a
+`text/event-stream` fejléc előtt lefut), egy 401-es válasz törzse mindig
+egy rövid, egyetlen darabban érkező JSON, amit a kód pufferelve vizsgál meg,
+MIELŐTT bármit kiküldene. A relé megszakítás-biztos: ha a böngésző lezárja
+a kapcsolatot, a `CURLOPT_WRITEFUNCTION` `connection_aborted()`-ot
+ellenőrizve `0`-t ad vissza, ami azonnal megszakítja a Kliens↔Szerver
+hop-ot is — SOSE fut tovább feleslegesen a háttérben. VALÓDI, két
+`php -S`-folyamatos, IDŐZÍTÉS-alapú teszt (`tests/
+ClientProxyStreamingHttpTest.php`) bizonyítja, hogy egy két, mesterséges
+késleltetéssel elválasztott SSE-eseményt küldő Szerver-válasz ELSŐ eseménye
+majdnem azonnal, a MÁSODIK pedig csak a késleltetés UTÁN érkezik meg a
+Kliens↔Szerver↔teszt-kliens teljes láncon át — ez zárja ki, hogy a Kliens
+csendben visszatérjen pufferelt viselkedésre.
+
+#### Frontend — élő válasz, folyamat-visszajelzés, megszakítás
+
+`webroot/api/ai-agent-stream.php` egyetlen, ÁLTALÁNOS SSE-végpont mind a
+négy agent-hez (`{agent, message}` bemenet, ugyanaz a szerver-oldali
+kiválasztási fehérlista, mint a meglévő, VÁLTOZATLAN, nem-streamelt
+`ai-copilot.php`/`ai-inventory.php`/`ai-sales.php`/`ai-anomaly.php`
+végpontoknál). A böngésző oldalon `webroot/ai-asszisztens.js` `fetch()` +
+`ReadableStream`-mel olvassa a `data: <json>\n\n` keretezésű törzset —
+SZÁNDÉKOSAN NEM natív `EventSource` (az csak GET-et támogatna, nem tudna
+CSRF-fejlécet/JSON-törzset küldeni, ami ellentétes lenne a meglévő,
+minden AI-végponton egységes POST+CSRF-konvencióval). Élő
+agent-/eszköz-progressz sorok, folyamatosan bővülő válaszszöveg, egy
+`AbortController`-alapú "Mégse" gomb (biztonságosan megszakítja a
+streamet anélkül, hogy bármilyen Fázis 8A/8B üzleti állapotot érintene —
+a Copilot sose hoz létre javaslatot streamelés közben, csak a KÜLÖN,
+változatlanul nem-streamelt Napi Intelligencia teszi ezt), és a záró
+`done` esemény alapján megjelenő provider/modell/token-használat/becsült-
+költség sáv (a `ai_show_usage_cost` beállítástól függően). Ha az admin
+kikapcsolja a streamelést, VAGY a böngésző nem támogatja a
+`ReadableStream`-et, a felület automatikusan visszaesik a régi, teljesen
+szinkron végpontokra — a felhasználó szemszögéből csak annyi változik,
+hogy a válasz egyben, nem folyamatosan jelenik meg.
+
+#### AI-előzmények és Dashboard bővítése — séma-módosítás nélkül
+
+A `system_events.technical_detail` MÁR eleve szabad-alakú JSON — a Fázis 9
+mezők (`streamed`, `input_tokens`, `output_tokens`, `total_tokens`,
+`estimated_cost`, `limit_reached`, `context_compacted`) egyszerűen
+hozzáadódnak az `ai-agent-stream.php` által írt JSON-hoz, migráció nélkül;
+`Database::decorateAiHistoryRow()` bővült ezek felszínre hozásával (egy
+Fázis 9 ELŐTTI sornál mindegyik `null`, nem hamis 0). A Dashboard "Mai AI
+összefoglaló" kártyája egy ÚJ `Database::getAiTodayUsageSummary()`
+metóduson keresztül (a MEGLÉVŐ `system_events`-ből, extra hálózati hívás
+NÉLKÜL) mutatja a mai futásszámot, utolsó futás idejét, összes tokent és —
+ŐSZINTÉN, `has_unknown_cost_runs` jelzéssel, ha bármelyik mai futásnak
+ismeretlen volt az ára — a becsült összköltséget.
+
+#### Valódi, éles Ollama-ellenőrzés (Fázis 9)
+
+A fejlesztői környezetben TÉNYLEGESEN futó, helyi Ollama-példány (`qwen3:8b`,
+CPU-n, "thinking"-képes reasoning modell) ellen valódi böngésző-teszt
+történt: egy Inventory-agent kérdés végigfutott a teljes streamelt
+útvonalon — `agent_started` → valódi `get_low_stock_products` eszköz-hívás
+(`tool_call_started`/`tool_call_completed` élő jelzéssel) → a válaszszöveg
+SZAVANKÉNT, folyamatosan jelent meg a böngészőben → a záró `done` esemény
+helyes token-számokat (bemenet/kimenet) és a helyi providernek megfelelő
+$0.0000 becsült költséget hordozta. Ez a valódi teszt fedezett fel és
+segített kijavítani egy tényleges hibát is: a `CopilotRunResult` (lásd
+`src/Ai/CopilotRunResult.php`) NEM emelte át a `usage`/`streamed`/
+`limitReached`/`wasCompacted` mezőket a mögöttes `AgentRunResult`-ból — ez
+a szimulált (`FakeAiProvider`-es) tesztekben csendes PHP-warningként
+maradt észrevétlen, de az éles `ai-agent-stream.php` végpontban valódi
+hibát okozott volna minden Copilot-streamelt kérésnél. Egy lassú (CPU-n
+futó, több percig tartó) kérésnél a beállított `ai_timeout_seconds`
+lejárta után a rendszer helyesen, összeomlás NÉLKÜL kezelte a helyzetet: a
+már megérkezett részleges válaszszöveg megmaradt látva, és egy őszinte
+hibaüzenet jelent meg — ez bizonyítja a "SOSE fusson eszköz részleges
+adatból" és a "biztonságos megszakítás" elveket valódi, nem szimulált lassú
+modell mellett is.
+
 ### Ismert korlátok
 
 - **Kizárólag olvasás** — sem az Inventory, sem a Sales, sem az Anomaly
@@ -4925,3 +5131,35 @@ fejlesztői adatbázisból.
   "do not blindly retry" egy kétértelmű állapotra), de azt jelenti,
   hogy egy ténylegesen elakadt (nem csak lassan futó) végrehajtás nem
   észlelhető/oldható fel azonnal a UI-ból.
+- **Az Anthropic/OpenAI streamelés valódi API-kulccsal még NINCS élesben
+  ellenőrizve** (Fázis 9) — az implementáció idején egyik providerhez sem
+  állt rendelkezésre biztonságosan konfigurált, valódi API-kulcs; mindkét
+  Provider `chatStream()`-je KIZÁRÓLAG kontrollált, a hivatalos
+  dokumentáció alapján realisztikusan felépített SSE-stub-szerverek ellen
+  lett bizonyítva (lásd `tests/AiAnthropicProviderStreamingTest.php`,
+  `tests/AiOpenAiProviderStreamingTest.php`). A helyi (Ollama) streamelés
+  ezzel szemben VALÓDI, futó Ollama-példánnyal, éles böngésző-teszttel
+  bizonyítottan működik (lásd fent). Ha egy admin valódi Anthropic/OpenAI
+  kulcsot állít be, első streamelt kérdés előtt mindenképp végezz egy
+  manuális, ténylegesen eszköz-hívást igénylő tesztet.
+- **Az `AiPricing` KIZÁRÓLAG a helyi (Ollama, $0) bejegyzést tartalmazza**
+  — Anthropic/OpenAI költség-becslés jelenleg mindig "nem ismert ehhez a
+  modellhez" (lásd fent "Árazási őszinteség") — ez SZÁNDÉKOS, nem
+  hiányosság, amíg a ténylegesen konfigurált modellek valós, ellenőrzött
+  árazása nem kerül be a táblába egy KÜLÖN, erre a célra szánt körben.
+- **A `ClientProxy` streamelő relé-útvonala KIZÁRÓLAG az
+  `ai-agent-stream.php` fájlnévre érvényes fehérlista-alapon** — egy
+  jövőbeli, MÁSIK streamelő végpont hozzáadásánál a `ClientProxy::
+  STREAMING_SCRIPTS` konstanst is bővíteni kell, különben az a végpont
+  csendben a régi, teljesen pufferelt útvonalon menne át Kliens-módban
+  (funkcionálisan működne, csak nem élne streamelve).
+- **A streamelt Kliens↔Szerver relé a gép-szintű 401-elutasítást "best
+  effort" ismeri fel** (lásd fent) — ez egy rövid, egyetlen darabban
+  érkező hibaválaszra támaszkodik; egy szélsőségesen szegmentált TCP-
+  kapcsolat elméletileg több darabra bonthatná ezt is, ekkor a health-jelzés
+  pontatlan lehetne (a tényleges 401-válasz relézése a böngésző felé ettől
+  függetlenül továbbra is helyesen működik).
+- **A Dashboard "Asszisztens (Copilot)" mai összesítője a MEGLÉVŐ
+  `system_events` naplóra épül, nem egy dedikált, indexelt statisztikai
+  táblára** — ugyanaz a korlát, mint az AI-előzmények szűrésénél (lásd
+  fent) — alacsony/közepes napi AI-használatnál elhanyagolható.

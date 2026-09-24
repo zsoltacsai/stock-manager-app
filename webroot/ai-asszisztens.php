@@ -67,7 +67,9 @@ if (!Auth::isLoggedIn($appSettings)) {
                 <label for="ai-question" style="margin-top:12px;">Kérdésed</label>
                 <textarea id="ai-question" rows="3" placeholder="pl. Melyik termékekből fogunk várhatóan kifogyni?"></textarea>
                 <button id="ai-ask-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Kérdezd a FountainTrade-et</button>
+                <button id="ai-cancel-btn" class="btn btn-secondary" style="width:auto; padding:10px 18px; display:none;" type="button">Mégse</button>
                 <p id="ai-ask-feedback" class="modal-feedback"></p>
+                <ul id="ai-progress-list" style="display:none; margin:6px 0 0 20px; padding:0; font-size:0.9em; color:var(--muted);"></ul>
 
                 <div id="ai-answer-box" style="display:none; border-top:1px solid var(--border); margin-top:20px; padding-top:16px;">
                     <strong>Agent:</strong> <span id="ai-answer-agent"></span>
@@ -81,6 +83,7 @@ if (!Auth::isLoggedIn($appSettings)) {
                         <strong style="font-size:0.9em;">Használt eszközök:</strong>
                         <ul id="ai-tools-used-list" style="margin:4px 0 0 20px; font-size:0.9em; color:var(--muted);"></ul>
                     </div>
+                    <div id="ai-usage-box" style="display:none; margin-top:10px; font-size:0.8em; color:var(--muted); border-top:1px dashed var(--border); padding-top:8px;"></div>
                 </div>
             </div>
 

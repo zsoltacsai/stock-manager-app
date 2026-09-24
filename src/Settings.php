@@ -347,6 +347,51 @@ class Settings
         // fogyás-adat) miatt a determinisztikus számítás túl nagy
         // mennyiséget adna.
         'ai_reorder_draft_max_quantity' => 500,
+
+        // Fázis 9 — Copilot UX + streamelés + kontextus-/költség-kezelés.
+        // Streamelés: SZÁNDÉKOSAN alapból BEKAPCSOLVA (ellentétben az AI
+        // KÉPESSÉG-kapcsolókkal fentebb, pl. ai_action_proposals_enabled)
+        // — ez NEM egy új AI-KÉPESSÉG/hozzáférési kör, csak a MÁR
+        // engedélyezett AI válaszának MEGJELENÍTÉSI módja, ÉS a kör 9.
+        // pontja szerint MINDIG biztonságosan visszaesik a MEGLÉVŐ,
+        // szinkron útra, ha bármi nem támogatja — nincs "csendes
+        // aktiválás"-kockázat, amit a többi kapcsoló véd.
+        'ai_streaming_enabled' => true,
+
+        // Kontextus-korlátok (a kör 10. pontja) — lásd AiContextLimits::
+        // fromSettings() a pontos felhasználásért.
+        'ai_max_context_messages'    => 60,
+        'ai_max_input_chars'         => 4000,
+        'ai_max_tool_result_chars'   => 4000,
+        'ai_max_total_context_chars' => 60000,
+
+        // Költség-/erőforrás-korlátok (a kör 16. pontja) — lásd
+        // AiCostLimits::fromSettings(). A dollár-alapú korlát
+        // alapértelmezetten KIKAPCSOLVA (null) — egy admin, aki ismert,
+        // ellenőrzött árazású providert/modellt használ, explicit
+        // beállíthatja (lásd AiPricing.php docblokkja: Anthropic/OpenAI
+        // esetén jelenleg NINCS ellenőrzött árazási adat, tehát ez a
+        // korlát rájuk gyakorlatilag nem érvényesíthető, amíg admin
+        // vagy egy jövőbeli frissítés fel nem tölti az AiPricing táblát).
+        'ai_max_tool_calls'                  => 20,
+        'ai_max_estimated_cost_per_request'  => null,
+        'ai_show_usage_cost'                 => true,
+
+        // Modell-útválasztás (a kör 17. pontja) — determinisztikus,
+        // KIZÁRÓLAG admin által konfigurált fehérlistás modellnevek
+        // közt választ (SOSE böngésző-bemenet alapján). Üresen hagyva a
+        // MEGLÉVŐ (fenti) alap-modellre esik vissza mindkét esetben —
+        // ez a beállítás ezért NEM kötelező, csendben no-op marad, amíg
+        // egy admin explicit meg nem adja.
+        'ai_local_model_complex'    => '',
+        'anthropic_model_complex'   => '',
+        'openai_model_complex'      => '',
+
+        // Egyszerű, "véletlen dupla-kattintás elleni" lassítás (a kör
+        // 19. pontja: "accidental abuse", NEM egy teljes, második
+        // hitelesítési/rate-limit alrendszer) — a MEGLÉVŐ audit_log-ot
+        // használja fel (lásd AiRateLimiter.php), nincs új tábla.
+        'ai_min_seconds_between_requests' => 2,
     ];
 
     public function __construct(string $path)

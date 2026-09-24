@@ -108,6 +108,21 @@ $systemStatus = HealthMonitor::computeOverallStatus(HealthMonitor::computeCompon
 $todayTopProducts = $db->getTopProductsReport($today, $today, null, 0, 5);
 $nowTs = time();
 
+// Fázis 9 — a Dashboard AI-kártyája: provider/modell a MEGLÉVŐ admin-only
+// Beállításokból (a böngésző ezt sose választja meg, lásd a kör 23.
+// pontja), a mai futás-számláló/tokenek/becsült költség pedig a MEGLÉVŐ
+// audit-naplóból épül (lásd Database::getAiTodayUsageSummary() — nincs új
+// tábla, nincs extra hálózati hívás a providerhez, csak egy helyi
+// lekérdezés). Ha az AI ki van kapcsolva, a többi mező null marad — a
+// frontend ebből dönti el, hogy egyáltalán megjelenítse-e a kártyát.
+$aiProviderName = (string) ($appSettings['ai_provider'] ?? 'local');
+$aiConfiguredModel = match ($aiProviderName) {
+    'anthropic' => (string) ($appSettings['anthropic_model'] ?? ''),
+    'openai' => (string) ($appSettings['openai_model'] ?? ''),
+    default => (string) ($appSettings['ai_local_model'] ?? ''),
+};
+$aiTodayUsage = !empty($appSettings['ai_enabled']) ? $db->getAiTodayUsageSummary() : null;
+
 send_json([
     'date' => [
         'iso'       => $today,
@@ -168,4 +183,15 @@ send_json([
         'provider' => $invoiceProvider,
     ],
     'woocommerce_configured' => !empty($config['woocommerce']['store_url']) && !empty($config['woocommerce']['consumer_key']),
+    'ai' => [
+        'enabled' => !empty($appSettings['ai_enabled']),
+        'provider' => $aiProviderName,
+        'model' => $aiConfiguredModel,
+        'show_usage_cost' => (bool) ($appSettings['ai_show_usage_cost'] ?? true),
+        'today_run_count' => $aiTodayUsage['run_count'] ?? null,
+        'last_run_at' => $aiTodayUsage['last_run_at'] ?? null,
+        'today_total_tokens' => $aiTodayUsage['total_tokens'] ?? null,
+        'today_estimated_cost' => $aiTodayUsage['estimated_cost_total'] ?? null,
+        'today_has_unknown_cost_runs' => $aiTodayUsage['has_unknown_cost_runs'] ?? false,
+    ],
 ]);

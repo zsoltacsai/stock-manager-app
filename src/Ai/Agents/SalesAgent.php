@@ -6,6 +6,9 @@ require_once __DIR__ . '/../AiProviderInterface.php';
 require_once __DIR__ . '/../ToolRegistry.php';
 require_once __DIR__ . '/../AgentRunner.php';
 require_once __DIR__ . '/../AgentRunResult.php';
+require_once __DIR__ . '/../AiContextLimits.php';
+require_once __DIR__ . '/../AiCostLimits.php';
+require_once __DIR__ . '/../AiStreamEvent.php';
 require_once __DIR__ . '/../Tools/SalesTools.php';
 require_once __DIR__ . '/../Tools/InventoryTools.php';
 
@@ -54,12 +57,33 @@ PROMPT;
 
     public function answer(string $question): AgentRunResult
     {
+        return $this->buildRunner()->run(self::SYSTEM_INSTRUCTION, $question);
+    }
+
+    /**
+     * Fázis 9 — lásd InventoryAgent::answerStreaming() azonos docblokkja.
+     *
+     * @param callable(AiStreamEvent):void $onEvent
+     */
+    public function answerStreaming(string $question, callable $onEvent): AgentRunResult
+    {
+        return $this->buildRunner()->runStreaming(self::SYSTEM_INSTRUCTION, $question, $onEvent, self::name());
+    }
+
+    private function buildRunner(): AgentRunner
+    {
         $registry = new ToolRegistry();
         SalesTools::registerAll($registry, $this->db, $this->appSettings);
         InventoryTools::registerAll($registry, $this->db, $this->appSettings);
 
-        $runner = new AgentRunner($this->provider, $registry, $this->maxIterations);
-        return $runner->run(self::SYSTEM_INSTRUCTION, $question);
+        return new AgentRunner(
+            $this->provider,
+            $registry,
+            $this->maxIterations,
+            AiContextLimits::fromSettings($this->appSettings),
+            AiCostLimits::fromSettings($this->appSettings),
+            (bool) ($this->appSettings['ai_streaming_enabled'] ?? true)
+        );
     }
 
     public static function name(): string

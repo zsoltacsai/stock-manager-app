@@ -120,6 +120,63 @@ function renderTodayStatus(data) {
     `;
 }
 
+// Fázis 9 — a "Mai AI összefoglaló" kártya MOST KÉT, egymástól FÜGGETLEN
+// forrásból tölt (loadAiDailySummary() admin-only napi jelentés, ÉS
+// renderAiUsageStatus() bárkinek elérhető dashboard-summary.php-adat) —
+// mindkettő PÁRHUZAMOSAN fut le (lásd loadDashboard()/loadAiDailySummary()
+// hívása lent), ezért a kártya látszását NEM szabad egyik résznek
+// egyoldalúan "display:none"-ra állítania a másik tartalmát felülírva.
+// Helyette mindkettő a SAJÁT dobozának láthatóságát jelzi (data-visible),
+// és egy közös függvény dönti el a kártya összesített láthatóságát.
+function updateAiDailyCardVisibility() {
+    const card = document.getElementById('dash-ai-daily-card');
+    if (!card) return;
+    const dailyBox = document.getElementById('dash-ai-daily-status');
+    const usageBox = document.getElementById('dash-ai-usage-status');
+    const anyVisible = (dailyBox && dailyBox.dataset.visible === '1') || (usageBox && usageBox.dataset.visible === '1');
+    card.style.display = anyVisible ? '' : 'none';
+}
+
+const AI_PROVIDER_LABELS = { local: 'Ollama', anthropic: 'Anthropic', openai: 'OpenAI' };
+
+// Fázis 9 — a Copilot/asszisztens mai használati összesítője. Provider/
+// modell a MEGLÉVŐ admin-only Beállításokból jön (a böngésző sose
+// befolyásolja), a futásszám/tokenek/becsült költség a MEGLÉVŐ
+// audit-naplóból (lásd Database::getAiTodayUsageSummary()) — MINDEZ a
+// dashboard-summary.php válaszában már benne van, nincs extra kérés.
+function renderAiUsageStatus(ai) {
+    const card = document.getElementById('dash-ai-daily-card');
+    const box = document.getElementById('dash-ai-usage-status');
+    if (!box) return;
+    if (!ai || !ai.enabled) {
+        box.style.display = 'none';
+        box.dataset.visible = '0';
+        updateAiDailyCardVisibility();
+        return;
+    }
+    box.style.display = '';
+    box.dataset.visible = '1';
+
+    const providerLabel = AI_PROVIDER_LABELS[ai.provider] || ai.provider || '—';
+    const parts = [`${providerLabel}${ai.model ? ' — ' + ai.model : ''}`];
+    parts.push(`ma ${ai.today_run_count ?? 0} futás`);
+    if (ai.last_run_at) {
+        parts.push(`utolsó: ${ai.last_run_at.slice(11, 16)}`);
+    }
+    if (ai.today_total_tokens !== null && ai.today_total_tokens !== undefined) {
+        parts.push(`${ai.today_total_tokens} token`);
+    }
+    if (ai.show_usage_cost) {
+        if (ai.today_estimated_cost !== null && ai.today_estimated_cost !== undefined) {
+            parts.push(`becsült költség: $${Number(ai.today_estimated_cost).toFixed(4)}${ai.today_has_unknown_cost_runs ? ' (részleges — néhány futásnál nem volt megállapítható)' : ''}`);
+        } else if (ai.today_run_count > 0 && ai.today_has_unknown_cost_runs) {
+            parts.push('becsült költség: nem állapítható meg');
+        }
+    }
+    box.innerHTML = `<p class="muted" style="margin:0; font-size:0.9em;">Asszisztens (Copilot): ${parts.filter(Boolean).join(' · ')}</p>`;
+    updateAiDailyCardVisibility();
+}
+
 function renderTopProducts(products) {
     const box = document.getElementById('dash-top-products');
     box.innerHTML = products.length
@@ -156,6 +213,7 @@ async function loadDashboard() {
         renderTodayStatus(data);
         renderTopProducts(data.today_top_products);
         renderPaymentMethods(data.today_payment_methods);
+        renderAiUsageStatus(data.ai);
     } catch (err) {
         document.getElementById('dash-date').textContent = 'Dashboard';
         document.getElementById('dash-nameday').textContent = '';
@@ -225,7 +283,8 @@ async function loadAiDailySummary() {
         const today = new Date().toISOString().slice(0, 10);
         const data = await fetchJson('/api/ai-daily-report.php?date=' + today);
         const report = data.report;
-        card.style.display = '';
+        box.dataset.visible = '1';
+        updateAiDailyCardVisibility();
 
         if (!report) {
             box.innerHTML = '<p class="muted" style="margin:0;">Nincs még elkészült jelentés.</p>';
@@ -248,9 +307,13 @@ async function loadAiDailySummary() {
             <p class="muted" style="margin-bottom:0;"><a href="ai-asszisztens.php?tab=daily">Napi intelligencia megtekintése →</a></p>
         `;
     } catch (err) {
-        // Nem-admin dolgozónál (403) vagy AI-hiba esetén a kártya csendben
-        // rejtve marad — ez NEM egy hiba, amit a Dashboardon meg kellene
-        // jeleníteni minden felhasználónak.
-        card.style.display = 'none';
+        // Nem-admin dolgozónál (403) vagy AI-hiba esetén EZ a doboz
+        // (napi jelentés) csendben rejtve marad — ez NEM egy hiba, amit a
+        // Dashboardon meg kellene jeleníteni minden felhasználónak. A
+        // kártya összesített láthatóságát updateAiDailyCardVisibility()
+        // dönti el — ha a (mindenki számára elérhető) Copilot-használati
+        // doboz közben már látszik, a kártya emiatt NEM tűnik el.
+        box.dataset.visible = '0';
+        updateAiDailyCardVisibility();
     }
 }

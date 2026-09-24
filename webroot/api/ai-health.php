@@ -50,10 +50,19 @@ if ($providerName === 'anthropic') {
     send_json(['enabled' => true, 'status' => 'unavailable', 'message' => 'Ismeretlen AI-provider beállítás.', 'model' => null]);
 }
 
+// Fázis 9 — a frontend ebből dönti el, próbálkozzon-e egyáltalán
+// `fetch()`+`ReadableStream`-alapú streameléssel (lásd ai-asszisztens.js),
+// és hogy megjelenítse-e a usage/becsült-költség adatokat — MINDKETTŐ a
+// MEGLÉVŐ, admin-only Beállítások-értékből jön, a böngésző SOSE
+// befolyásolhatja (lásd a kör 23. pontja "no arbitrary model selection
+// from browser" elve, ami itt is érvényes: ez csak MEGJELENÍTÉSI döntés,
+// nem egy új jogosultság).
 send_json([
     'enabled' => true,
     'provider' => $providerName,
     'status' => $availability->status,
     'message' => $availability->message,
     'model' => $model,
+    'streaming_enabled' => (bool) ($appSettings['ai_streaming_enabled'] ?? true),
+    'show_usage_cost' => (bool) ($appSettings['ai_show_usage_cost'] ?? true),
 ]);

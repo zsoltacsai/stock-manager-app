@@ -3,9 +3,11 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/AiProviderInterface.php';
+require_once __DIR__ . '/AiStreamingProviderInterface.php';
 require_once __DIR__ . '/AiProviderException.php';
 require_once __DIR__ . '/ToolDefinition.php';
 require_once __DIR__ . '/ToolCall.php';
+require_once __DIR__ . '/AiUsage.php';
 
 /**
  * OpenAI Responses API (https://api.openai.com/v1/responses) kliens —
@@ -85,8 +87,23 @@ require_once __DIR__ . '/ToolCall.php';
  *    láncolásra — a fenti gyorsítótár a dokumentáció saját "manually
  *    replay the complete response history" ajánlott mintáját követi,
  *    ami kifejezetten `store:false`/stateless üzemmódhoz készült.
+ *
+ * Fázis 9 — streamelés (`chatStream()`, a kör 2/3. pontja, hivatalos
+ * OpenAPI-generált SDK-típusok alapján, 2026-09-24-én ellenőrizve): SSE,
+ * `data: <json>` sorok, a JSON `"type"` mezője az esemény neve (pl.
+ * `response.output_text.delta`, `response.function_call_arguments.delta`,
+ * `response.output_item.done`, `response.completed`). KRITIKUS
+ * EGYSZERŰSÍTÉS: a `response.output_item.done` esemény MÁR a szerver
+ * által összeállított, VÉGLEGES elemet adja (`item`, `output_index`) —
+ * ez output_index szerint kulcsolva PONTOSAN megegyezik a nem-streamelt
+ * `$decoded['output']` egy elemével (reasoning-elemekkel/
+ * encrypted_content-tel együtt), ezért NINCS szükség saját,
+ * darabonkénti function_call_arguments.delta-összefűzésre a VÉGSŐ
+ * ToolCall-okhoz — azokat is `buildResponseFromOutput()` (a chat()-tel
+ * MEGOSZTOTT metódus) építi, garantálva a reasoning item replay
+ * ($rawOutputBatches) helyes működését streamelt válaszra is.
  */
-final class OpenAiProvider implements AiProviderInterface
+final class OpenAiProvider implements AiProviderInterface, AiStreamingProviderInterface
 {
     /**
      * Az adott PHP-példány saját futása alatt kapott, eszköz-hívást
@@ -155,9 +172,27 @@ final class OpenAiProvider implements AiProviderInterface
             throw new AiProviderException('Az OpenAI válasza váratlan szerkezetű (hiányzó "output" mező).', 'malformed_response');
         }
 
+        return $this->buildResponseFromOutput($decoded['output'], is_array($decoded['usage'] ?? null) ? $decoded['usage'] : null);
+    }
+
+    /**
+     * MEGOSZTOTT a chat() ÉS chatStream() között — KRITIKUS, hogy a
+     * `$rawOutputBatches` (reasoning item replay, lásd az osztály
+     * docblokkja) bookkeeping-je AZONOS módon fusson, függetlenül attól,
+     * hogy a végső `output` tömb egy darabban vagy streamelve (a kör 3.
+     * pontja szerinti `response.output_item.done` eseményekből
+     * összegyűjtve, lásd chatStream()) érkezett — egy eltérés itt
+     * ÉSZREVÉTLENÜL eltörné a reasoning-folytonosságot egy streamelt,
+     * több-körös eszköz-hívási beszélgetésben.
+     *
+     * @param array<int,mixed> $output
+     * @param array<string,mixed>|null $usageRaw
+     */
+    private function buildResponseFromOutput(array $output, ?array $usageRaw): AiChatResponse
+    {
         $textParts = [];
         $toolCalls = [];
-        foreach ($decoded['output'] as $item) {
+        foreach ($output as $item) {
             if (!is_array($item)) {
                 continue;
             }
@@ -195,12 +230,152 @@ final class OpenAiProvider implements AiProviderInterface
         if ($toolCalls) {
             $this->rawOutputBatches[] = [
                 'callIds' => array_map(static fn (ToolCall $c) => $c->id, $toolCalls),
-                'items' => $decoded['output'],
+                'items' => $output,
             ];
         }
 
+        // A kör 14. pontja — a végleges (`response.completed`) usage
+        // KIZÁRÓLAG a terminális eseményben/válaszban érkezik.
+        $usage = null;
+        if ($usageRaw !== null) {
+            $inputTokens = isset($usageRaw['input_tokens']) ? (int) $usageRaw['input_tokens'] : null;
+            $outputTokens = isset($usageRaw['output_tokens']) ? (int) $usageRaw['output_tokens'] : null;
+            $totalTokens = isset($usageRaw['total_tokens']) ? (int) $usageRaw['total_tokens'] : null;
+            $reasoningTokens = isset($usageRaw['output_tokens_details']['reasoning_tokens'])
+                ? (int) $usageRaw['output_tokens_details']['reasoning_tokens'] : null;
+            $cachedTokens = isset($usageRaw['input_tokens_details']['cached_tokens'])
+                ? (int) $usageRaw['input_tokens_details']['cached_tokens'] : null;
+            $usage = new AiUsage($inputTokens, $outputTokens, $totalTokens, $reasoningTokens, $cachedTokens);
+        }
+
         $content = $textParts ? implode("\n", array_filter($textParts, static fn ($t) => $t !== '')) : null;
-        return new AiChatResponse($content === '' ? null : $content, $toolCalls);
+        return new AiChatResponse($content === '' ? null : $content, $toolCalls, $usage);
+    }
+
+    /**
+     * @param array<int,array{role:string,content:?string,tool_calls?:array,tool_call_id?:string,name?:string}> $messages
+     * @param ToolDefinition[] $tools
+     * @param callable(AiStreamEvent):void $onEvent
+     */
+    public function chatStream(array $messages, array $tools, callable $onEvent): AiChatResponse
+    {
+        [$instructions, $input] = $this->translateMessages($messages);
+
+        $body = ['model' => $this->model, 'input' => $input, 'store' => false, 'stream' => true];
+        if ($instructions !== '') {
+            $body['instructions'] = $instructions;
+        }
+        if ($tools) {
+            $body['tools'] = array_map(static fn (ToolDefinition $t) => [
+                'type' => 'function',
+                'name' => $t->name,
+                'description' => $t->description,
+                'parameters' => $t->inputSchema,
+            ], $tools);
+        }
+        if ($this->maxOutputTokens !== null && $this->maxOutputTokens > 0) {
+            $body['max_output_tokens'] = $this->maxOutputTokens;
+        }
+
+        /** @var array<int,array<string,mixed>> $outputItemsByIndex */
+        $outputItemsByIndex = [];
+        $usageRaw = null;
+        $streamError = null;
+        $sawTerminal = false;
+
+        $handleEvent = function (array $obj) use (&$outputItemsByIndex, &$usageRaw, &$streamError, &$sawTerminal, $onEvent): void {
+            $type = (string) ($obj['type'] ?? '');
+            switch ($type) {
+                case 'response.output_item.added':
+                    // A "kész" elem-tartalom a response.output_item.done
+                    // eseményben jön (lásd lent) — itt csak a tool-hívás
+                    // KEZDETI jelzését (call_id + name MÁR itt megvan)
+                    // emittáljuk UX-célra.
+                    $item = $obj['item'] ?? [];
+                    if (is_array($item) && ($item['type'] ?? '') === 'function_call') {
+                        $onEvent(AiStreamEvent::toolCallStarted((string) ($item['call_id'] ?? ''), (string) ($item['name'] ?? '')));
+                    }
+                    break;
+                case 'response.output_text.delta':
+                    $delta = (string) ($obj['delta'] ?? '');
+                    if ($delta !== '') {
+                        $onEvent(AiStreamEvent::textDelta($delta));
+                    }
+                    break;
+                case 'response.output_item.done':
+                    // A SZERVER MÁR összeállította a teljes, végleges elemet
+                    // (message/function_call/reasoning, minden mezővel,
+                    // pl. reasoning esetén encrypted_content) — ez PONTOSAN
+                    // megegyezik a nem-streamelt válasz egy $decoded['output']
+                    // elemével, tehát nincs szükség saját, manuális
+                    // töredék-összefűzésre.
+                    $index = (int) ($obj['output_index'] ?? count($outputItemsByIndex));
+                    if (isset($obj['item']) && is_array($obj['item'])) {
+                        $outputItemsByIndex[$index] = $obj['item'];
+                    }
+                    break;
+                case 'response.completed':
+                case 'response.incomplete':
+                    $sawTerminal = true;
+                    $resp = $obj['response'] ?? [];
+                    if (is_array($resp) && isset($resp['usage']) && is_array($resp['usage'])) {
+                        $usageRaw = $resp['usage'];
+                    }
+                    break;
+                case 'response.failed':
+                    $resp = $obj['response'] ?? [];
+                    $err = is_array($resp) ? ($resp['error'] ?? []) : [];
+                    $streamError = (string) (is_array($err) ? ($err['message'] ?? 'ismeretlen hiba') : 'ismeretlen hiba');
+                    break;
+                case 'error':
+                    // A kör 2. pontja szerinti kutatás — mindkét alakot
+                    // kezeljük: lapos {type:'error',message:...} ÉS
+                    // beágyazott {type:'error',error:{message:...}}.
+                    $err = $obj['error'] ?? $obj;
+                    $streamError = (string) (is_array($err) ? ($err['message'] ?? 'ismeretlen hiba') : 'ismeretlen hiba');
+                    break;
+                default:
+                    // Minden más (reasoning/content_part/egyéb beépített
+                    // eszköz-esemény) a kör 2. pontja szerint SZÁNDÉKOSAN
+                    // figyelmen kívül marad — ismeretlen jövőbeli
+                    // esemény-típus SOSE fatális.
+                    break;
+            }
+        };
+
+        $sseBuffer = '';
+        self::executeStreamingRequest(rtrim($this->baseUrl, '/') . '/v1/responses', $body, $this->headers(), $this->timeoutSeconds, function (string $chunk) use (&$sseBuffer, $handleEvent): void {
+            $sseBuffer .= $chunk;
+            while (($pos = strpos($sseBuffer, "\n")) !== false) {
+                $line = rtrim(substr($sseBuffer, 0, $pos), "\r");
+                $sseBuffer = substr($sseBuffer, $pos + 1);
+                if ($line === '' || !str_starts_with($line, 'data:')) {
+                    continue;
+                }
+                $data = trim(substr($line, 5));
+                if ($data === '[DONE]') {
+                    continue;
+                }
+                $obj = json_decode($data, true);
+                if (is_array($obj)) {
+                    $handleEvent($obj);
+                }
+            }
+        });
+
+        if ($streamError !== null) {
+            throw new AiProviderException("Az OpenAI API hibát adott vissza streamelés közben: $streamError", 'http_error');
+        }
+        if (!$sawTerminal) {
+            throw new AiProviderException('Az OpenAI streamelt válasza váratlanul megszakadt (nincs záró esemény).', 'malformed_response');
+        }
+
+        ksort($outputItemsByIndex);
+        $response = $this->buildResponseFromOutput(array_values($outputItemsByIndex), $usageRaw);
+        if ($response->usage !== null) {
+            $onEvent(AiStreamEvent::usage($response->usage));
+        }
+        return $response;
     }
 
     public function checkAvailability(): AiAvailability
@@ -335,6 +510,49 @@ final class OpenAiProvider implements AiProviderInterface
             }
         }
         return null;
+    }
+
+    /**
+     * Fázis 9 — lásd AnthropicProvider::executeStreamingRequest() azonos
+     * docblokkja (megszakítás-kezelés/curl-mechanika/stream-előtti
+     * HTTP-hiba explicit ellenőrzése).
+     *
+     * @param string[] $headers
+     * @param callable(string):void $onChunk
+     */
+    private static function executeStreamingRequest(string $url, array $body, array $headers, int $timeoutSeconds, callable $onChunk): void
+    {
+        $ch = curl_init($url);
+        $aborted = false;
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_POSTFIELDS => json_encode($body),
+            CURLOPT_CONNECTTIMEOUT => min(10, $timeoutSeconds),
+            CURLOPT_TIMEOUT => $timeoutSeconds,
+            CURLOPT_WRITEFUNCTION => static function ($curlHandle, string $data) use ($onChunk, &$aborted): int {
+                if (connection_aborted()) {
+                    $aborted = true;
+                    return 0;
+                }
+                $onChunk($data);
+                return strlen($data);
+            },
+        ]);
+
+        $ok = curl_exec($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        if ($ok === false && !$aborted) {
+            $errno = curl_errno($ch);
+            $err = curl_error($ch);
+            curl_close($ch);
+            $kind = $errno === CURLE_OPERATION_TIMEDOUT ? 'timeout' : 'unavailable';
+            throw new AiProviderException("Az OpenAI API nem érhető el vagy nem válaszolt időben ($err).", $kind);
+        }
+        curl_close($ch);
+        if ($status >= 400) {
+            throw new AiProviderException("Az OpenAI API hibát adott vissza (HTTP $status) streamelés előtt.", $status === 401 || $status === 403 ? 'auth_error' : ($status === 429 ? 'rate_limit' : 'http_error'));
+        }
     }
 
     private function executeRequest(array $body)

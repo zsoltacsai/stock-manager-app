@@ -236,4 +236,130 @@ final class AiAgentRunnerTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         new AgentRunner(new FakeAiProvider([]), new ToolRegistry(), 0);
     }
+
+    // -----------------------------------------------------------------
+    // Fázis 9 — runStreaming() — a FakeAiProvider SOSE implementálja az
+    // AiStreamingProviderInterface-t, tehát ezek a tesztek KIZÁRÓLAG a
+    // "transzparens fallback" ágat (egyetlen chat()-hívásból szintetizált
+    // text_delta+usage) bizonyítják — a VALÓDI, hálózati-szintű
+    // provider-streamelést a 3 dedikált Provider-tesztfájl (Ai
+    // LocalProviderStreamingTest/AiAnthropicProviderStreamingTest/
+    // AiOpenAiProviderStreamingTest) és a cross-provider streamelt
+    // Copilot-teszt (AiCopilotStreamingCrossProviderRegressionTest) adja.
+    // -----------------------------------------------------------------
+
+    public function testRunStreamingEmitsFullEventLifecycleForToolCallThenFinal(): void
+    {
+        $provider = new FakeAiProvider([
+            new AiChatResponse(null, [new ToolCall('c1', 'get_number', [])]),
+            new AiChatResponse('A szám 42.', []),
+        ]);
+        $registry = new ToolRegistry();
+        $registry->register($this->tool('get_number', fn (array $a) => ['number' => 42]));
+        $runner = new AgentRunner($provider, $registry, 5);
+
+        $events = [];
+        $result = $runner->runStreaming('sys', 'mi a szám?', function (AiStreamEvent $e) use (&$events) {
+            $events[] = $e;
+        }, 'inventory');
+
+        $this->assertTrue($result->success);
+        $this->assertSame('A szám 42.', $result->answer);
+        $this->assertFalse($result->streamed, 'A FakeAiProvider nem streamelés-képes — a fallback-ágnak streamed=false-t kell jeleznie.');
+
+        $types = array_map(fn (AiStreamEvent $e) => $e->type, $events);
+        $this->assertSame('agent_started', $types[0]);
+        $this->assertContains('tool_call_started', $types);
+        $this->assertContains('tool_call_completed', $types);
+        $this->assertContains('text_delta', $types, 'A fallback-ágnak a teljes választ EGYETLEN text_delta eseményként kell szintetizálnia.');
+        $this->assertContains('final', $types);
+        $this->assertSame('agent_completed', end($types));
+
+        // A tool_call_started ELŐBB kell, mint a tool_call_completed — az
+        // esemény-sorrend a TÉNYLEGES végrehajtást kell, hogy tükrözze.
+        $startedIndex = array_search('tool_call_started', $types, true);
+        $completedIndex = array_search('tool_call_completed', $types, true);
+        $this->assertLessThan($completedIndex, $startedIndex);
+    }
+
+    public function testRunStreamingNeverExecutesToolBeyondCostLimitMaxToolCalls(): void
+    {
+        $callCount = 0;
+        $script = [];
+        for ($i = 0; $i < 5; $i++) {
+            $script[] = new AiChatResponse(null, [new ToolCall("c$i", 'counted_tool', [])]);
+        }
+        $provider = new FakeAiProvider($script);
+        $registry = new ToolRegistry();
+        $registry->register($this->tool('counted_tool', function (array $a) use (&$callCount) {
+            $callCount++;
+            return ['ok' => true];
+        }));
+        // maxIterations bőven elég lenne (10), de a maxToolCalls=2 korlátnak
+        // KELL megállítania a futást ELŐBB — ez bizonyítja, hogy a két
+        // korlát (iteráció vs. tényleges eszköz-végrehajtás-darabszám)
+        // egymástól FÜGGETLENÜL érvényesül.
+        $runner = new AgentRunner($provider, $registry, 10, null, new AiCostLimits(2, null));
+
+        $events = [];
+        $result = $runner->runStreaming('sys', 'kérdés', function (AiStreamEvent $e) use (&$events) {
+            $events[] = $e;
+        }, 'inventory');
+
+        $this->assertFalse($result->success);
+        $this->assertSame('tool_call_limit', $result->limitReached);
+        $this->assertLessThanOrEqual(2, $callCount, 'A tényleges eszköz-VÉGREHAJTÁS sose lépheti túl a beállított korlátot.');
+
+        $types = array_map(fn (AiStreamEvent $e) => $e->type, $events);
+        $this->assertContains('error', $types, 'A limit elérésekor egy error eseménynek kell érkeznie, mielőtt a hívás leáll.');
+    }
+
+    public function testRunStreamingEmitsErrorEventOnProviderFailure(): void
+    {
+        $provider = new FakeAiProvider([
+            new AiProviderException('kapcsolódási hiba', 'unavailable'),
+        ]);
+        $registry = new ToolRegistry();
+        $runner = new AgentRunner($provider, $registry, 5);
+
+        $events = [];
+        $result = $runner->runStreaming('sys', 'kérdés', function (AiStreamEvent $e) use (&$events) {
+            $events[] = $e;
+        }, 'inventory');
+
+        $this->assertFalse($result->success);
+        $this->assertSame('Az AI-modell jelenleg nem érhető el.', $result->error);
+
+        $types = array_map(fn (AiStreamEvent $e) => $e->type, $events);
+        $this->assertContains('error', $types);
+        // A hiba-üzenetnek a böngésző felé is a BIZTONSÁGOS, előre
+        // meghatározott szöveget kell hordoznia — SOSE a nyers kivétel
+        // szövegét ("kapcsolódási hiba"), ami provider-belső részletet
+        // szivárogtatna ki.
+        $errorEvent = array_values(array_filter($events, fn (AiStreamEvent $e) => $e->type === 'error'))[0];
+        $this->assertStringNotContainsString('kapcsolódási hiba', $errorEvent->payload['message']);
+    }
+
+    public function testRunStreamingUnknownToolIsRejectedButRunContinuesWithoutExecution(): void
+    {
+        $executed = false;
+        $provider = new FakeAiProvider([
+            new AiChatResponse(null, [new ToolCall('c1', 'nem_letezo_eszkoz', [])]),
+            new AiChatResponse('Folytatva a hiba után is.', []),
+        ]);
+        $registry = new ToolRegistry();
+        $registry->register($this->tool('valos_eszkoz', function (array $a) use (&$executed) {
+            $executed = true;
+            return ['ok' => true];
+        }));
+        $runner = new AgentRunner($provider, $registry, 5);
+
+        $events = [];
+        $result = $runner->runStreaming('sys', 'kérdés', function (AiStreamEvent $e) use (&$events) {
+            $events[] = $e;
+        }, 'inventory');
+
+        $this->assertTrue($result->success);
+        $this->assertFalse($executed, 'Egy ismeretlen eszköznév SOSE futtathat le semmilyen VALÓDI, regisztrált eszközt.');
+    }
 }

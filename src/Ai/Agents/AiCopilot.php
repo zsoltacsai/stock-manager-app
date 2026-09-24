@@ -7,6 +7,11 @@ require_once __DIR__ . '/../ToolRegistry.php';
 require_once __DIR__ . '/../AgentRunner.php';
 require_once __DIR__ . '/../AgentRunResult.php';
 require_once __DIR__ . '/../CopilotRunResult.php';
+require_once __DIR__ . '/../AiContextLimits.php';
+require_once __DIR__ . '/../AiCostLimits.php';
+require_once __DIR__ . '/../AiPricing.php';
+require_once __DIR__ . '/../AiStreamEvent.php';
+require_once __DIR__ . '/../AiProviderFactory.php';
 require_once __DIR__ . '/InventoryAgent.php';
 require_once __DIR__ . '/SalesAgent.php';
 require_once __DIR__ . '/AnomalyAgent.php';
@@ -88,13 +93,92 @@ PROMPT;
     {
         $agentsUsedOrder = [];
         $agentResults = [];
-        $callCount = 0;
+        $registry = $this->buildToolRegistry($question, $agentsUsedOrder, $agentResults);
 
-        $invoke = function (string $agentName, object $agent, string $subQuestion) use (&$agentsUsedOrder, &$agentResults, &$callCount): array {
+        $runner = new AgentRunner(
+            $this->provider,
+            $registry,
+            $this->maxIterations,
+            AiContextLimits::fromSettings($this->appSettings),
+            AiCostLimits::fromSettings($this->appSettings),
+            (bool) ($this->appSettings['ai_streaming_enabled'] ?? true)
+        );
+        $runResult = $runner->run(self::SYSTEM_INSTRUCTION, $question);
+
+        return CopilotRunResult::fromRun($runResult, $agentsUsedOrder, $agentResults);
+    }
+
+    /**
+     * Fázis 9 — a kör 6. pontja: streamelt Copilot-válasz. UGYANAZ az
+     * üzleti logika (eszköz-regisztráció/hívás-limit/költség-korlát),
+     * mint answer() — lásd buildToolRegistry() — KIZÁRÓLAG a végrehajtó
+     * (AgentRunner::run() → runStreaming()) tér el. Az `ask_*_agent`
+     * eszközök tool_call_started/completed eseményei (lásd AgentRunner::
+     * runStreaming() docblokkja) AUTOMATIKUSAN, a MEGLÉVŐ, változatlan
+     * ToolRegistry-végrehajtás köré kötve keletkeznek — az InventoryAgent/
+     * SalesAgent/AnomalyAgent EGYETLEN sora sem módosult, mégis valódi,
+     * "Készletadatok elemzése…" jellegű progresszió-eseményt kap a UI.
+     *
+     * @param callable(AiStreamEvent):void $onEvent
+     */
+    public function answerStreaming(string $question, callable $onEvent): CopilotRunResult
+    {
+        $agentsUsedOrder = [];
+        $agentResults = [];
+        $registry = $this->buildToolRegistry($question, $agentsUsedOrder, $agentResults);
+
+        $runner = new AgentRunner(
+            $this->provider,
+            $registry,
+            $this->maxIterations,
+            AiContextLimits::fromSettings($this->appSettings),
+            AiCostLimits::fromSettings($this->appSettings),
+            (bool) ($this->appSettings['ai_streaming_enabled'] ?? true)
+        );
+        $runResult = $runner->runStreaming(self::SYSTEM_INSTRUCTION, $question, $onEvent, self::name());
+
+        return CopilotRunResult::fromRun($runResult, $agentsUsedOrder, $agentResults);
+    }
+
+    /**
+     * A kör 16. pontja — "max provider calls per Copilot run" KERESZT-
+     * ügynök-hívásos védelme: a MEGLÉVŐ MAX_AGENT_CALLS (darabszám)
+     * MELLETT egy OPCIONÁLIS, becsült-dollár alapú felső korlát is
+     * érvényesül a sub-agent-hívások SOROZATÁN — mivel minden
+     * `$agent->answer()` hívás saját AgentRunResult::$usage-et ad
+     * vissza, ez KÖZVETLENÜL, ÚJ megosztott állapot (pl. egy külön
+     * "tracker" objektum átadása minden agent-konstruktorba) NÉLKÜL
+     * összegezhető — lásd $invoke docblokkja lent.
+     *
+     * @param array<int,string> $agentsUsedOrder REFERENCIA — a hívó fél 3 üres tömbjét tölti fel.
+     * @param array<string,array{success:bool,tools_used:string[],error:?string}> $agentResults REFERENCIA.
+     */
+    private function buildToolRegistry(string $question, array &$agentsUsedOrder, array &$agentResults): ToolRegistry
+    {
+        $callCount = 0;
+        $costSoFar = 0.0;
+        $costLimits = AiCostLimits::fromSettings($this->appSettings);
+        $configuredModel = $this->configuredModel();
+        $providerName = $this->provider->name();
+
+        $invoke = function (string $agentName, object $agent, string $subQuestion) use (&$agentsUsedOrder, &$agentResults, &$callCount, &$costSoFar, $costLimits, $configuredModel, $providerName): array {
             if ($callCount >= self::MAX_AGENT_CALLS) {
                 return [
                     'success' => false,
                     'error' => 'Elérted a Copilot maximális ügynök-hívási számát (' . self::MAX_AGENT_CALLS . ') ebben a kérdésben — foglald össze a mostanáig kapott eredményeket a felhasználónak.',
+                ];
+            }
+            // A kör 16. pontja — "no proposal/action execution may be
+            // triggered by hitting a cost limit": ez a korlát KIZÁRÓLAG
+            // a TOVÁBBI sub-agent-hívást tiltja le (a modell ezután
+            // kénytelen a meglévő eredményekkel összefoglalni), SOSE
+            // szakít meg egy MÁR folyamatban lévő üzleti műveletet — a
+            // Copilot amúgy is KIZÁRÓLAG olvasásra képes (lásd az
+            // osztály docblokkja).
+            if ($costLimits->maxEstimatedCostPerRequest !== null && $costSoFar >= $costLimits->maxEstimatedCostPerRequest) {
+                return [
+                    'success' => false,
+                    'error' => 'Elérted a megengedett becsült AI-költség-korlátot ebben a kérdésben — foglald össze a mostanáig kapott eredményeket a felhasználónak.',
                 ];
             }
             $callCount++;
@@ -104,6 +188,12 @@ PROMPT;
 
             /** @var AgentRunResult $result */
             $result = $agent->answer($subQuestion);
+            if ($result->usage !== null) {
+                $estimate = AiPricing::estimate($providerName, $configuredModel, $result->usage);
+                if ($estimate !== null) {
+                    $costSoFar += $estimate['cost'];
+                }
+            }
             $agentResults[$agentName] = [
                 'success' => $result->success,
                 'tools_used' => $result->toolsUsed,
@@ -168,10 +258,26 @@ PROMPT;
             }
         ));
 
-        $runner = new AgentRunner($this->provider, $registry, $this->maxIterations);
-        $runResult = $runner->run(self::SYSTEM_INSTRUCTION, $question);
+        return $registry;
+    }
 
-        return CopilotRunResult::fromRun($runResult, $agentsUsedOrder, $agentResults);
+    /**
+     * A kör 17. pontja — a Copilot MINDIG a "complex" útválasztási ágat
+     * jelenti (több, akár kereszt-domainos ügynök-hívás, magasabb
+     * elvárt komplexitás) — ha az admin beállított "komplex" modellt
+     * (lásd AiProviderFactory::create() $complexity paramétere, amit a
+     * hívó végpont ETTŐL FÜGGETLENÜL, de UGYANEZZEL a döntéssel ad át a
+     * providerpéldány létrehozásakor), az ITT is tükröződik — különben
+     * a naplózott/árazáshoz használt modellnév ELTÉRNE a ténylegesen
+     * használt providerpéldányétól.
+     */
+    private function configuredModel(): string
+    {
+        return match ($this->provider->name()) {
+            'anthropic' => AiProviderFactory::resolveModel($this->appSettings, 'anthropic_model', 'anthropic_model_complex', true),
+            'openai' => AiProviderFactory::resolveModel($this->appSettings, 'openai_model', 'openai_model_complex', true),
+            default => AiProviderFactory::resolveModel($this->appSettings, 'ai_local_model', 'ai_local_model_complex', true),
+        };
     }
 
     public static function name(): string

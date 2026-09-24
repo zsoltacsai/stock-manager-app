@@ -44,6 +44,21 @@ final class ClientProxy
     private const CONNECT_TIMEOUT_SECONDS = 5;
     private const TIMEOUT_SECONDS = 20;
 
+    /**
+     * Fázis 9, kör 8. pontja — a MEGLÉVŐ (fenti, teljesen pufferelt)
+     * proxy-útvonal mellé, KIZÁRÓLAG ehhez a whitelisthez tartozó
+     * végponthoz, egy streamelés-tudatos relé-útvonal (lásd
+     * forwardStreaming()). SOSE a böngésző dönti el, hogy egy kérés
+     * streamel-e — ez egy szerver-oldali, fájlnév alapú fehérlista,
+     * ugyanaz a garancia, mint amit maga a Szerver oldali
+     * `webroot/api/ai-agent-stream.php` is ad ("no arbitrary model/endpoint
+     * selection from browser").
+     */
+    private const STREAMING_SCRIPTS = ['ai-agent-stream.php'];
+
+    /** Egy streamelt AI-válasz (több agent-hívás, hosszabb helyi modell) jóval túlnyúlhat a normál 20s-en. */
+    private const STREAMING_TIMEOUT_SECONDS = 300;
+
     /** @var array{server_url?: string, client_id?: string, client_secret?: string} */
     private array $clientConfig;
 
@@ -127,6 +142,11 @@ final class ClientProxy
 
         $headers = $this->buildOutboundHeaders($method, $bodyForSigning ?? $body, $multipartContentTypeOverride);
 
+        if (in_array($scriptName, self::STREAMING_SCRIPTS, true)) {
+            $this->forwardStreaming($targetUrl, $method, $body, $headers);
+            return;
+        }
+
         $ch = curl_init($targetUrl);
         if ($ch === false) {
             $this->respondWithNetworkError('curl_init sikertelen.');
@@ -181,6 +201,196 @@ final class ClientProxy
         http_response_code($status);
         $this->relayResponseHeaders($rawHeaders);
         echo $responseBody;
+    }
+
+    /**
+     * Fázis 9, kör 8. pontja — streamelés-tudatos relé-útvonal, KIZÁRÓLAG
+     * a `self::STREAMING_SCRIPTS` fehérlistán szereplő végpontokhoz (ma
+     * egyetlen ilyen van: `ai-agent-stream.php`). A fenti `forward()`
+     * `CURLOPT_RETURNTRANSFER => true`-ja a TELJES szerver-választ
+     * memóriába pufferelné, mielőtt bármit visszaküldene — ez SSE-nél
+     * elfogadhatatlan (a böngésző csak a válasz VÉGÉN kapná meg az összes
+     * eseményt, a teljes "élő" progresszió elveszne). Itt ehelyett
+     * `CURLOPT_HEADERFUNCTION`/`CURLOPT_WRITEFUNCTION` relézi a Szerver
+     * fejléceit/törzsét DARABONKÉNT, ahogy megérkeznek — ugyanaz a minta,
+     * mint amit a 3 Provider (`LocalProvider`/`AnthropicProvider`/
+     * `OpenAiProvider`) `executeStreamingRequest()` segédfüggvénye is
+     * használ a saját (Szerver↔LLM-provider) hopjához.
+     *
+     * A fejléc-szűrés (`Set-Cookie`/hop-by-hop/session-híd fejlécek
+     * kihagyása) SZÁNDÉKOSAN ugyanazt a listát alkalmazza, mint
+     * `filterResponseHeaderLines()`/`captureSessionBridgeHeaders()` — nem
+     * egy párhuzamos, eltérő szabályrendszer, csak soronkénti (nem egy
+     * összegyűjtött string feletti) alkalmazása.
+     *
+     * A gép-szintű hitelesítés elutasításának (401 + a
+     * ClientAuthenticator egységes hibaüzenete) felismerése "best effort":
+     * mivel egy IGAZI SSE-válasz sosem 401-gyel kezdődik (a Szerver
+     * `require_admin()`-je MÉG a `text/event-stream` fejléc kiküldése
+     * ELŐTT fut le — lásd `webroot/api/ai-agent-stream.php` teteje), egy
+     * 401-es válasz törzse mindig egy rövid, EGYETLEN darabban megérkező
+     * JSON — ezért elég csak az ELSŐ törzs-darabot megvizsgálni, mielőtt
+     * bármit kiküldenénk (lásd `$firstChunkBuffer` lent).
+     *
+     * @param string[] $headers
+     */
+    private function forwardStreaming(string $targetUrl, string $method, string $body, array $headers): void
+    {
+        $ch = curl_init($targetUrl);
+        if ($ch === false) {
+            $this->respondWithNetworkError('curl_init sikertelen.');
+            return;
+        }
+
+        $statusCode = 200;
+        $filteredHeaderLines = [];
+        $sessionBridge = ['session_id' => null, 'csrf_token' => null, 'cleared' => false];
+
+        $headerFn = function ($curlHandle, string $headerLine) use (&$statusCode, &$filteredHeaderLines, &$sessionBridge): int {
+            $trimmed = trim($headerLine);
+            if (preg_match('#^HTTP/\S+\s+(\d{3})#', $trimmed, $m)) {
+                // Új fejléc-blokk kezdődik (pl. egy 100 Continue köztes válasz után a
+                // tényleges válasz) — a korábban gyűjtött sorokat eldobjuk, csak az
+                // UTOLSÓ blokk számít, ugyanúgy, mint filterResponseHeaderLines()-ban.
+                $statusCode = (int) $m[1];
+                $filteredHeaderLines = [];
+                return strlen($headerLine);
+            }
+            if ($trimmed === '' || !str_contains($trimmed, ':')) {
+                return strlen($headerLine);
+            }
+            [$name, $value] = explode(':', $trimmed, 2);
+            $lower = strtolower(trim($name));
+            switch ($lower) {
+                case 'x-client-session-id':
+                    $sessionBridge['session_id'] = trim($value);
+                    return strlen($headerLine);
+                case 'x-client-csrf-token':
+                    $sessionBridge['csrf_token'] = trim($value);
+                    return strlen($headerLine);
+                case 'x-client-session-cleared':
+                    $sessionBridge['cleared'] = trim($value) === '1';
+                    return strlen($headerLine);
+            }
+            if ($lower === 'set-cookie' || $lower === 'content-length' || in_array($lower, self::HOP_BY_HOP_HEADERS, true)) {
+                return strlen($headerLine);
+            }
+            $filteredHeaderLines[] = trim($name) . ': ' . trim($value);
+            return strlen($headerLine);
+        };
+
+        $headersFlushed = false;
+        $firstChunkBuffer = '';
+        $isMachineAuthRejection = false;
+        $flushHeadersOnce = function () use (&$headersFlushed, &$statusCode, &$filteredHeaderLines, &$sessionBridge): void {
+            if ($headersFlushed) {
+                return;
+            }
+            $headersFlushed = true;
+            if ($sessionBridge['session_id'] !== null && $sessionBridge['csrf_token'] !== null) {
+                Auth::ensureSessionStarted();
+                $_SESSION['ft_client_session_id'] = $sessionBridge['session_id'];
+                $_SESSION['ft_client_csrf_token'] = $sessionBridge['csrf_token'];
+            }
+            if ($sessionBridge['cleared']) {
+                Auth::ensureSessionStarted();
+                unset($_SESSION['ft_client_session_id'], $_SESSION['ft_client_csrf_token']);
+            }
+            http_response_code($statusCode);
+            foreach ($filteredHeaderLines as $line) {
+                header($line, false);
+            }
+            while (ob_get_level() > 0) {
+                @ob_end_flush();
+            }
+        };
+
+        $writeFn = function ($curlHandle, string $chunk) use (&$headersFlushed, &$firstChunkBuffer, &$isMachineAuthRejection, &$statusCode, $flushHeadersOnce): int {
+            // Az ELSŐ darabot (max ~8 KB-ig gyűjtve, egy rövid hibaválasz
+            // sosem nagyobb ennél) pufferbe vesszük, hogy a gép-szintű
+            // 401-elutasítást felismerhessük, MIELŐTT bármit kiküldenénk —
+            // utána a normál streamelt esetben (státusz 200) minden
+            // további darab azonnal, pufferelés nélkül megy tovább.
+            if (!$headersFlushed && $statusCode === 401 && strlen($firstChunkBuffer) < 8192) {
+                $firstChunkBuffer .= $chunk;
+                if (str_contains($firstChunkBuffer, 'Hitelesítés sikertelen.')) {
+                    $isMachineAuthRejection = true;
+                }
+                if (strlen($firstChunkBuffer) < 8192 && !str_ends_with($chunk, "\n")) {
+                    // Még várhatunk egy következő darabra (curl gyakran egyetlen
+                    // híváskor adja az egész kis JSON-t, de biztos, ami biztos).
+                    return strlen($chunk);
+                }
+                $flushHeadersOnce();
+                echo $firstChunkBuffer;
+                @flush();
+                return strlen($chunk);
+            }
+
+            $flushHeadersOnce();
+            echo $chunk;
+            @flush();
+
+            // Fázis 9, kör 24. pontja — megszakítás-biztonság: ha a böngésző
+            // lezárta a kapcsolatot (pl. a UI "Mégse" gombja AbortController-
+            // rel), NE olvassuk tovább a Szerver streamjét a végtelenségig —
+            // 0 visszaadása a curl-t azonnali megszakításra kényszeríti,
+            // ugyanaz a minta, mint a 3 Provider executeStreamingRequest()-je.
+            if (connection_aborted()) {
+                return 0;
+            }
+            return strlen($chunk);
+        };
+
+        set_time_limit(self::STREAMING_TIMEOUT_SECONDS + 30);
+        curl_setopt_array($ch, [
+            CURLOPT_CUSTOMREQUEST => $method,
+            CURLOPT_RETURNTRANSFER => false,
+            CURLOPT_HEADER => false,
+            CURLOPT_HEADERFUNCTION => $headerFn,
+            CURLOPT_WRITEFUNCTION => $writeFn,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_CONNECTTIMEOUT => self::CONNECT_TIMEOUT_SECONDS,
+            CURLOPT_TIMEOUT => self::STREAMING_TIMEOUT_SECONDS,
+        ]);
+        if ($method !== 'GET' && $method !== 'HEAD') {
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+        }
+
+        $ok = curl_exec($ch);
+        $curlErrno = curl_errno($ch);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+
+        if ($ok === false && !$headersFlushed) {
+            // A kapcsolat MÉG a válasz-fejlécek előtt szakadt meg — ugyanúgy
+            // kezelhető, mint a nem-streamelt forward() hibaága.
+            $this->respondWithNetworkError($curlError);
+            return;
+        }
+        // Ha $headersFlushed már igaz volt, a böngésző már kapott valamennyi
+        // választ (pl. maga szakította meg, lásd connection_aborted() fent) —
+        // ilyenkor MÁR nem küldhetünk új hibaválaszt, csak a health-jelet
+        // rögzítjük alább.
+
+        if (!$headersFlushed && strlen($firstChunkBuffer) > 0) {
+            // A stream a "várunk egy következő darabra" ágban ért véget
+            // (a Szerver lezárta a kapcsolatot, mielőtt elértük a 8 KB-os
+            // határt vagy egy sorvéget) — a pufferelt (rövid, biztosan
+            // hiba-) választ még mindig ki kell küldeni.
+            $flushHeadersOnce();
+            echo $firstChunkBuffer;
+            @flush();
+        }
+
+        ClientServerHealth::recordRequestOutcome(
+            $this->clientConfig,
+            $curlErrno === 0 && !$isMachineAuthRejection,
+            $isMachineAuthRejection
+                ? 'A Szerver elutasította a Kliens gép-szintű hitelesítését.'
+                : ($curlErrno !== 0 ? 'streaming: ' . $curlError : null)
+        );
     }
 
     /**

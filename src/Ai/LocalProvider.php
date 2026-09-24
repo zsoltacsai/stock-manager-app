@@ -3,9 +3,11 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/AiProviderInterface.php';
+require_once __DIR__ . '/AiStreamingProviderInterface.php';
 require_once __DIR__ . '/AiProviderException.php';
 require_once __DIR__ . '/ToolDefinition.php';
 require_once __DIR__ . '/ToolCall.php';
+require_once __DIR__ . '/AiUsage.php';
 
 /**
  * Ollama HTTP API-n (/api/chat, /api/tags) keresztül beszélő provider —
@@ -21,8 +23,21 @@ require_once __DIR__ . '/ToolCall.php';
  * store, Számlázz.hu stb.) — az Ollama base URL viszont ALAPÉRTELMEZETTEN
  * és tipikusan pont loopback (127.0.0.1:11434), az az elvárt, normális
  * eset, nem egy kizárandó SSRF-célpont.
+ *
+ * Fázis 9 — streamelés (`chatStream()`, a kör 2/3. pontja). Az Ollama
+ * natív `/api/chat` végpontja `"stream": true` esetén NEM SSE, hanem
+ * NDJSON-t ad (soronként egy-egy teljes JSON-objektum, `Content-Type:
+ * application/x-ndjson`, sorvég-elválasztó, SOSE `event:`/`data:`
+ * prefix). Minden sor `message.content` mezője DELTA (nem kumulatív),
+ * FŰZNI kell. Az eszköz-hívások (`message.tool_calls`) a hivatalos
+ * dokumentáció/szerver-forráskód szerint MINDIG TELJESEN, egy darabban
+ * érkeznek (SOSE töredezett JSON-argumentumként) — ez a provider ezért
+ * SOSE emittál `tool_call_arguments_delta`-t, csak a kész hívást gyűjti
+ * össze, PONTOSAN úgy, mint a szinkron chat(). A token-használat
+ * (`prompt_eval_count`/`eval_count`) KIZÁRÓLAG az utolsó, `"done":true`
+ * sorban érkezik.
  */
-final class LocalProvider implements AiProviderInterface
+final class LocalProvider implements AiProviderInterface, AiStreamingProviderInterface
 {
     public function __construct(
         private readonly string $baseUrl,
@@ -73,39 +88,149 @@ final class LocalProvider implements AiProviderInterface
 
         $message = $decoded['message'];
         $content = isset($message['content']) && $message['content'] !== '' ? (string) $message['content'] : null;
-
-        $toolCalls = [];
-        if (!empty($message['tool_calls']) && is_array($message['tool_calls'])) {
-            foreach ($message['tool_calls'] as $i => $rawCall) {
-                if (!is_array($rawCall) || !isset($rawCall['function']) || !is_array($rawCall['function'])) {
-                    continue;
-                }
-                $fn = $rawCall['function'];
-                $name = (string) ($fn['name'] ?? '');
-                if ($name === '') {
-                    continue;
-                }
-                $arguments = $fn['arguments'] ?? [];
-                // Az Ollama jellemzően már dekódolt tömbként adja az
-                // argumentumokat, de néhány modell/verzió JSON-stringként —
-                // mindkettőt kezeljük, hamis "malformed" hiba nélkül.
-                if (is_string($arguments)) {
-                    $decodedArgs = json_decode($arguments, true);
-                    $arguments = is_array($decodedArgs) ? $decodedArgs : [];
-                }
-                if (!is_array($arguments)) {
-                    $arguments = [];
-                }
-                // Az Ollama tool_calls bejegyzései nem mindig adnak saját
-                // id-t (ellentétben az OpenAI formátummal) — generálunk
-                // egyet, hogy a ConversationManager/AgentRunner a tool-
-                // eredményt egyértelműen vissza tudja korrelálni.
-                $id = isset($rawCall['id']) && $rawCall['id'] !== '' ? (string) $rawCall['id'] : 'call_' . $i . '_' . substr(md5($name . microtime(true)), 0, 8);
-                $toolCalls[] = new ToolCall($id, $name, $arguments);
-            }
-        }
+        $toolCalls = self::parseToolCalls(is_array($message['tool_calls'] ?? null) ? $message['tool_calls'] : []);
 
         return new AiChatResponse($content, $toolCalls);
+    }
+
+    /**
+     * A kör 2. pontja szerinti kutatás (Ollama szerver-forráskód):
+     * `function.arguments` MINDIG teljes JSON-objektum (SOSE töredezett
+     * string), az `id` OPCIONÁLIS (régebbi szerver-verziók nem adják) —
+     * ez a metódus MEGOSZTOTT chat() ÉS chatStream() között, hogy a két
+     * kódútvonal garantáltan AZONOS módon értelmezze a nyers választ.
+     *
+     * @param array<int,mixed> $rawToolCalls
+     * @return ToolCall[]
+     */
+    private static function parseToolCalls(array $rawToolCalls): array
+    {
+        $toolCalls = [];
+        foreach ($rawToolCalls as $i => $rawCall) {
+            if (!is_array($rawCall) || !isset($rawCall['function']) || !is_array($rawCall['function'])) {
+                continue;
+            }
+            $fn = $rawCall['function'];
+            $name = (string) ($fn['name'] ?? '');
+            if ($name === '') {
+                continue;
+            }
+            $arguments = $fn['arguments'] ?? [];
+            // Az Ollama jellemzően már dekódolt tömbként adja az
+            // argumentumokat, de néhány modell/verzió JSON-stringként —
+            // mindkettőt kezeljük, hamis "malformed" hiba nélkül.
+            if (is_string($arguments)) {
+                $decodedArgs = json_decode($arguments, true);
+                $arguments = is_array($decodedArgs) ? $decodedArgs : [];
+            }
+            if (!is_array($arguments)) {
+                $arguments = [];
+            }
+            // Az Ollama tool_calls bejegyzései nem mindig adnak saját
+            // id-t (ellentétben az OpenAI formátummal) — generálunk
+            // egyet, hogy a ConversationManager/AgentRunner a tool-
+            // eredményt egyértelműen vissza tudja korrelálni.
+            $id = isset($rawCall['id']) && $rawCall['id'] !== '' ? (string) $rawCall['id'] : 'call_' . $i . '_' . substr(md5($name . microtime(true)), 0, 8);
+            $toolCalls[] = new ToolCall($id, $name, $arguments);
+        }
+        return $toolCalls;
+    }
+
+    /**
+     * @param array<int,array{role:string,content:?string,tool_calls?:array,tool_call_id?:string,name?:string}> $messages
+     * @param ToolDefinition[] $tools
+     * @param callable(AiStreamEvent):void $onEvent
+     */
+    public function chatStream(array $messages, array $tools, callable $onEvent): AiChatResponse
+    {
+        $toolRegistrySchemas = array_map(static function (ToolDefinition $t) {
+            return [
+                'type' => 'function',
+                'function' => ['name' => $t->name, 'description' => $t->description, 'parameters' => $t->inputSchema],
+            ];
+        }, $tools);
+
+        $body = ['model' => $this->model, 'messages' => $messages, 'stream' => true];
+        if ($toolRegistrySchemas) {
+            $body['tools'] = $toolRegistrySchemas;
+        }
+        if ($this->maxOutputTokens !== null && $this->maxOutputTokens > 0) {
+            $body['options'] = ['num_predict' => $this->maxOutputTokens];
+        }
+
+        $content = '';
+        $rawToolCalls = [];
+        $doneChunk = null;
+        $streamError = null;
+
+        $handleLine = function (string $line) use (&$content, &$rawToolCalls, &$doneChunk, &$streamError, $onEvent): void {
+            $line = trim($line);
+            if ($line === '') {
+                return;
+            }
+            $obj = json_decode($line, true);
+            if (!is_array($obj)) {
+                // Hibásan formázott/csonka sor — a kör 24. pontja
+                // ("malformed event") szerint SOSE dobjuk el a teljes
+                // streamet emiatt, egyszerűen figyelmen kívül hagyjuk ezt
+                // az egy sort.
+                return;
+            }
+            if (isset($obj['error'])) {
+                $streamError = (string) $obj['error'];
+                return;
+            }
+            $message = $obj['message'] ?? null;
+            if (is_array($message)) {
+                if (isset($message['content']) && $message['content'] !== '') {
+                    $delta = (string) $message['content'];
+                    $content .= $delta;
+                    $onEvent(AiStreamEvent::textDelta($delta));
+                }
+                if (!empty($message['tool_calls']) && is_array($message['tool_calls'])) {
+                    foreach ($message['tool_calls'] as $tc) {
+                        $rawToolCalls[] = $tc;
+                    }
+                }
+            }
+            if (!empty($obj['done'])) {
+                $doneChunk = $obj;
+            }
+        };
+
+        $buffer = '';
+        self::executeStreamingRequest($this->baseUrl . '/api/chat', $body, $this->timeoutSeconds, function (string $chunk) use (&$buffer, $handleLine): void {
+            $buffer .= $chunk;
+            while (($pos = strpos($buffer, "\n")) !== false) {
+                $handleLine(substr($buffer, 0, $pos));
+                $buffer = substr($buffer, $pos + 1);
+            }
+        });
+        if (trim($buffer) !== '') {
+            $handleLine($buffer);
+        }
+
+        if ($streamError !== null) {
+            throw new AiProviderException("Az Ollama hibát adott vissza streamelés közben: $streamError", 'http_error');
+        }
+        if ($doneChunk === null) {
+            throw new AiProviderException('Az Ollama streamelt válasza váratlanul megszakadt (nincs záró "done" esemény).', 'malformed_response');
+        }
+
+        $toolCalls = self::parseToolCalls($rawToolCalls);
+
+        // A kör 14. pontja — a token-használat KIZÁRÓLAG a záró "done"
+        // eseményben érkezik; hiányzó mezőnél NULL marad (SOSE 0-t
+        // "hazudunk" egy valójában ismeretlen értékre).
+        $inputTokens = isset($doneChunk['prompt_eval_count']) ? (int) $doneChunk['prompt_eval_count'] : null;
+        $outputTokens = isset($doneChunk['eval_count']) ? (int) $doneChunk['eval_count'] : null;
+        $totalTokens = ($inputTokens !== null || $outputTokens !== null) ? ($inputTokens ?? 0) + ($outputTokens ?? 0) : null;
+        $usage = new AiUsage($inputTokens, $outputTokens, $totalTokens);
+        if ($usage->inputTokens !== null || $usage->outputTokens !== null) {
+            $onEvent(AiStreamEvent::usage($usage));
+        }
+
+        return new AiChatResponse($content !== '' ? $content : null, $toolCalls, $usage);
     }
 
     public function checkAvailability(): AiAvailability
@@ -137,6 +262,51 @@ final class LocalProvider implements AiProviderInterface
         }
 
         return AiAvailability::modelError("A konfigurált modell (\"{$this->model}\") nincs letöltve ebben az Ollama-példányban.");
+    }
+
+    /**
+     * Fázis 9 — streamelt cURL-hívás: `CURLOPT_WRITEFUNCTION`-nel a
+     * bájtok ÉRKEZÉSKOR (nem a teljes válasz végén) jutnak el az
+     * `$onChunk` callback-hez — ez adja a "élő" NDJSON-feldolgozást
+     * (lásd chatStream()). A kör 22. pontja — megszakítás: minden
+     * bájt-darab előtt `connection_aborted()`-et ellenőrzünk; ha a
+     * böngésző-kapcsolat időközben megszakadt, 0-t adunk vissza, ami a
+     * curl-t biztonságosan leállítja (SOSE hagy félkész üzleti
+     * műveletet — ez a metódus amúgy is KIZÁRÓLAG a modell-válasz
+     * generálásáról szól, a Fázis 8B végrehajtás ettől függetlenül,
+     * KÜLÖN emberi lépésként történik).
+     *
+     * @param callable(string):void $onChunk
+     */
+    private static function executeStreamingRequest(string $url, array $body, int $timeoutSeconds, callable $onChunk): void
+    {
+        $ch = curl_init($url);
+        $aborted = false;
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_POSTFIELDS => json_encode($body),
+            CURLOPT_CONNECTTIMEOUT => min(10, $timeoutSeconds),
+            CURLOPT_TIMEOUT => $timeoutSeconds,
+            CURLOPT_WRITEFUNCTION => static function ($curlHandle, string $data) use ($onChunk, &$aborted): int {
+                if (connection_aborted()) {
+                    $aborted = true;
+                    return 0;
+                }
+                $onChunk($data);
+                return strlen($data);
+            },
+        ]);
+
+        $ok = curl_exec($ch);
+        if ($ok === false && !$aborted) {
+            $errno = curl_errno($ch);
+            $err = curl_error($ch);
+            curl_close($ch);
+            $kind = $errno === CURLE_OPERATION_TIMEDOUT ? 'timeout' : 'unavailable';
+            throw new AiProviderException("Az Ollama nem érhető el vagy nem válaszolt időben ($err).", $kind);
+        }
+        curl_close($ch);
     }
 
     /**

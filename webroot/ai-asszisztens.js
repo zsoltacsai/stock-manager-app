@@ -13,6 +13,16 @@
     const toolsUsedList = document.getElementById('ai-tools-used-list');
     const agentsUsedBox = document.getElementById('ai-agents-used-box');
     const agentsUsedText = document.getElementById('ai-agents-used-text');
+    const cancelBtn = document.getElementById('ai-cancel-btn');
+    const progressList = document.getElementById('ai-progress-list');
+    const usageBox = document.getElementById('ai-usage-box');
+
+    // Fázis 9 — mindkettő a MEGLÉVŐ, admin-only Beállítások-értékből jön
+    // (lásd api/ai-health.php), a böngésző SOSE befolyásolja — csak
+    // MEGJELENÍTÉSI/útvonal-választási döntés ezen az oldalon.
+    let aiStreamingEnabled = true;
+    let aiShowUsageCost = true;
+    let currentAbortController = null;
 
     // Fázis 4 (Sales Agent) — egyetlen oldal, egy "Agent" választóval, két
     // KÜLÖN végponttal (lásd a kör 12. pontja: "Keep this minimal. Do NOT
@@ -52,11 +62,24 @@
             const providerLabel = PROVIDER_LABELS[data.provider] || 'Ollama';
             statusLine.textContent = providerLabel + ': ' + (STATUS_LABELS[data.status] || data.status) + (data.model ? ' — ' + data.model : '');
             askBtn.disabled = data.status !== 'available';
+            aiStreamingEnabled = data.streaming_enabled !== false;
+            aiShowUsageCost = data.show_usage_cost !== false;
         } catch (err) {
             statusLine.textContent = 'Nem sikerült lekérdezni az AI állapotát.';
         }
     }
 
+    // Fázis 9 — a kör 6/9. pontja: elsődlegesen a streamelő végpontot
+    // (ai-agent-stream.php) használjuk, ami MINDEN agent-hez ugyanazt a
+    // progresszív (agent/eszköz-életciklus) UX-et adja — MÉG akkor is, ha
+    // a ténylegesen konfigurált provider/modell maga nem tud hálózati
+    // szinten streamelni (lásd AgentRunner::runStreaming() "transparent
+    // fallback" ága: ilyenkor is kapunk agent_started/tool_call_*/final
+    // eseményeket, csak a szöveg egyetlen darabban érkezik). A RÉGI,
+    // nem-streamelt végpontokra (askSync) KIZÁRÓLAG akkor esünk vissza, ha
+    // az admin kifejezetten kikapcsolta (ai_streaming_enabled=false —
+    // lásd api/ai-health.php) VAGY a böngésző nem támogatja a
+    // ReadableStream-et — SOSE a válasz TARTALMA alapján döntünk.
     askBtn.addEventListener('click', async () => {
         const question = questionInput.value.trim();
         if (!question) {
@@ -64,11 +87,214 @@
             askFeedback.className = 'modal-feedback error';
             return;
         }
+        const agent = agentSelect ? agentSelect.value : 'inventory';
+        const canStream = aiStreamingEnabled && typeof window.ReadableStream !== 'undefined';
+        if (canStream) {
+            await askStreaming(agent, question);
+        } else {
+            await askSync(agent, question);
+        }
+    });
+
+    if (cancelBtn) {
+        cancelBtn.addEventListener('click', () => {
+            if (currentAbortController) {
+                currentAbortController.abort();
+            }
+        });
+    }
+
+    const LIMIT_LABELS = {
+        tool_call_limit: 'A kérdés megválaszolásához túl sok eszközhívás lett volna szükséges — próbáld egyszerűbben megfogalmazni.',
+        cost_limit: 'A beállított költség-korlát elérve — a válasz emiatt megszakadt.',
+    };
+
+    function addProgressLine(text) {
+        if (!progressList) return;
+        const li = document.createElement('li');
+        li.textContent = text;
+        li.dataset.state = 'active';
+        progressList.appendChild(li);
+        progressList.style.display = '';
+    }
+
+    function markLastProgressDone(success) {
+        if (!progressList) return;
+        const items = progressList.querySelectorAll('li[data-state="active"]');
+        const last = items[items.length - 1];
+        if (last) {
+            last.dataset.state = 'done';
+            last.textContent = (success ? '✓ ' : '✗ ') + last.textContent;
+        }
+    }
+
+    function renderUsageBox(payload) {
+        if (!usageBox) return;
+        if (!aiShowUsageCost || !payload || !payload.usage) {
+            usageBox.style.display = 'none';
+            return;
+        }
+        const u = payload.usage;
+        const parts = [];
+        if (u.input_tokens !== null && u.input_tokens !== undefined) parts.push(`bemenet: ${u.input_tokens} token`);
+        if (u.output_tokens !== null && u.output_tokens !== undefined) parts.push(`kimenet: ${u.output_tokens} token`);
+        if (!parts.length) {
+            usageBox.style.display = 'none';
+            return;
+        }
+        parts.push(payload.estimated_cost !== null && payload.estimated_cost !== undefined
+            ? `becsült költség: $${Number(payload.estimated_cost).toFixed(4)}`
+            : 'becsült költség: nem ismert ehhez a modellhez');
+        parts.push(payload.streamed ? 'élő streamelés' : 'egyben érkezett válasz');
+        usageBox.textContent = parts.join(' · ');
+        usageBox.style.display = '';
+    }
+
+    function renderFinalMeta(doneOrData) {
+        if (answerAgent) answerAgent.textContent = AGENT_LABELS[doneOrData.agent] || doneOrData.agent;
+        const agentsUsed = doneOrData.agents_used || [];
+        if (agentsUsedBox && agentsUsedText) {
+            if (agentsUsed.length) {
+                agentsUsedText.textContent = agentsUsed.map(a => AGENT_LABELS[a] || a).join(', ');
+                agentsUsedBox.style.display = '';
+            } else {
+                agentsUsedBox.style.display = 'none';
+            }
+        }
+        const toolsUsed = doneOrData.tools_used || [];
+        if (toolsUsed.length) {
+            toolsUsedList.innerHTML = toolsUsed.map(t => `<li>${t}</li>`).join('');
+            toolsUsedBox.style.display = '';
+        } else {
+            toolsUsedBox.style.display = 'none';
+        }
+    }
+
+    async function askStreaming(agent, question) {
         askBtn.disabled = true;
+        if (cancelBtn) cancelBtn.style.display = '';
         answerBox.style.display = 'none';
+        if (usageBox) usageBox.style.display = 'none';
+        if (progressList) { progressList.innerHTML = ''; progressList.style.display = 'none'; }
         askFeedback.textContent = 'Gondolkodom…';
         askFeedback.className = 'modal-feedback';
-        const agent = agentSelect ? agentSelect.value : 'inventory';
+        answerText.textContent = '';
+
+        currentAbortController = new AbortController();
+        let answerSoFar = '';
+        let donePayload = null;
+
+        try {
+            const res = await fetch('/api/ai-agent-stream.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agent, message: question }),
+                signal: currentAbortController.signal,
+            });
+            if (!res.ok) {
+                let data = {};
+                try { data = await res.json(); } catch (e) { /* nem JSON törzs — az általános hibaüzenet marad */ }
+                if (res.status === 429 && data.retry_after_seconds) {
+                    throw new Error(`Túl gyorsan érkezett a kérés — várj ${data.retry_after_seconds} másodpercet.`);
+                }
+                throw new Error(data.error || `Az AI-asszisztens nem tudott válaszolni (HTTP ${res.status}).`);
+            }
+            if (!res.body || !res.body.getReader) {
+                // Fázis 9 — a kör 9. pontja "automatic safe fallback": ha a
+                // böngésző ténylegesen nem tudja olvasni a törzset
+                // darabokban, essünk vissza a régi, teljesen szinkron
+                // útvonalra, MIELŐTT bármit megjelenítenénk.
+                await askSync(agent, question);
+                return;
+            }
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                let sep;
+                while ((sep = buffer.indexOf('\n\n')) !== -1) {
+                    const frame = buffer.slice(0, sep);
+                    buffer = buffer.slice(sep + 2);
+                    const dataLine = frame.split('\n').find(l => l.startsWith('data:'));
+                    if (!dataLine) continue;
+                    let evt;
+                    try { evt = JSON.parse(dataLine.slice(5).trim()); } catch (e) { continue; }
+                    const payload = evt.payload || {};
+                    switch (evt.type) {
+                        case 'agent_started':
+                            addProgressLine(payload.label || `${AGENT_LABELS[payload.agent] || payload.agent} elindult…`);
+                            break;
+                        case 'tool_call_started':
+                            addProgressLine(payload.label || `Eszköz: ${payload.name}…`);
+                            break;
+                        case 'tool_call_completed':
+                            markLastProgressDone(payload.success !== false);
+                            break;
+                        case 'text_delta':
+                            answerSoFar += payload.text || '';
+                            answerText.textContent = answerSoFar;
+                            answerBox.style.display = '';
+                            break;
+                        case 'final':
+                            answerSoFar = payload.answer || answerSoFar;
+                            answerText.textContent = answerSoFar;
+                            answerBox.style.display = '';
+                            break;
+                        case 'error':
+                            askFeedback.textContent = 'Hiba: ' + (payload.message || 'ismeretlen hiba');
+                            askFeedback.className = 'modal-feedback error';
+                            break;
+                        case 'done':
+                            donePayload = payload;
+                            break;
+                    }
+                }
+            }
+
+            if (progressList) progressList.style.display = 'none';
+
+            if (donePayload) {
+                renderFinalMeta(donePayload);
+                renderUsageBox(donePayload);
+                if (donePayload.success) {
+                    askFeedback.textContent = '';
+                } else {
+                    askFeedback.textContent = 'Hiba: ' + (donePayload.limit_reached
+                        ? (LIMIT_LABELS[donePayload.limit_reached] || donePayload.limit_reached)
+                        : 'Az AI-asszisztens nem tudott válaszolni.');
+                    askFeedback.className = 'modal-feedback error';
+                }
+            } else {
+                askFeedback.textContent = '';
+            }
+        } catch (err) {
+            if (progressList) progressList.style.display = 'none';
+            if (err.name === 'AbortError') {
+                askFeedback.textContent = 'Megszakítva.';
+                askFeedback.className = 'modal-feedback';
+            } else {
+                askFeedback.textContent = 'Hiba: ' + err.message;
+                askFeedback.className = 'modal-feedback error';
+            }
+        } finally {
+            askBtn.disabled = false;
+            if (cancelBtn) cancelBtn.style.display = 'none';
+            currentAbortController = null;
+        }
+    }
+
+    async function askSync(agent, question) {
+        askBtn.disabled = true;
+        answerBox.style.display = 'none';
+        if (usageBox) usageBox.style.display = 'none';
+        if (progressList) progressList.style.display = 'none';
+        askFeedback.textContent = 'Gondolkodom…';
+        askFeedback.className = 'modal-feedback';
         const endpoint = AGENT_ENDPOINTS[agent] || AGENT_ENDPOINTS.inventory;
         try {
             const res = await fetch(endpoint, {
@@ -81,30 +307,16 @@
                 throw new Error(data.error || 'Az AI-asszisztens nem tudott válaszolni.');
             }
             askFeedback.textContent = '';
-            if (answerAgent) answerAgent.textContent = AGENT_LABELS[data.agent] || data.agent;
             answerText.textContent = data.answer;
             answerBox.style.display = '';
-            if (agentsUsedBox && agentsUsedText) {
-                if (data.agents_used && data.agents_used.length) {
-                    agentsUsedText.textContent = data.agents_used.map(a => AGENT_LABELS[a] || a).join(', ');
-                    agentsUsedBox.style.display = '';
-                } else {
-                    agentsUsedBox.style.display = 'none';
-                }
-            }
-            if (data.tools_used && data.tools_used.length) {
-                toolsUsedList.innerHTML = data.tools_used.map(t => `<li>${t}</li>`).join('');
-                toolsUsedBox.style.display = '';
-            } else {
-                toolsUsedBox.style.display = 'none';
-            }
+            renderFinalMeta(data);
         } catch (err) {
             askFeedback.textContent = 'Hiba: ' + err.message;
             askFeedback.className = 'modal-feedback error';
         } finally {
             askBtn.disabled = false;
         }
-    });
+    }
 
     loadHealth();
 
@@ -208,10 +420,17 @@
                 ['Agent', AGENT_LABELS[e.agent] || e.agent || '—'],
                 ['Provider', PROVIDER_LABELS[e.provider] || e.provider || '—'],
                 ['Modell', e.model || '—'],
+                ['Szállítás', e.streamed === null || e.streamed === undefined ? '—' : (e.streamed ? 'élő streamelés' : 'egyben érkezett válasz')],
                 ['Időtartam', fmtDuration(e.duration_ms)],
                 ['Iterációk', e.iterations ?? '—'],
                 ['Eszközök', (e.tools_used || []).join(', ') || '(nincs)'],
                 ['Résztvevő ügynökök', e.agents_used ? e.agents_used.join(', ') : '—'],
+                ['Tokenek (be/ki)', (e.input_tokens ?? e.output_tokens) !== null && (e.input_tokens ?? e.output_tokens) !== undefined
+                    ? `${e.input_tokens ?? '?'} / ${e.output_tokens ?? '?'}` + (e.total_tokens !== null && e.total_tokens !== undefined ? ` (össz.: ${e.total_tokens})` : '')
+                    : '—'],
+                ['Becsült költség', e.estimated_cost !== null && e.estimated_cost !== undefined ? '$' + Number(e.estimated_cost).toFixed(4) : (e.input_tokens !== null && e.input_tokens !== undefined ? 'nem ismert ehhez a modellhez' : '—')],
+                ['Kontextus-tömörítés', e.context_compacted === null || e.context_compacted === undefined ? '—' : (e.context_compacted ? 'igen — a beszélgetés túllépte a korlátot' : 'nem')],
+                ['Elért korlát', e.limit_reached || '—'],
                 ['Állapot', STATUS_TEXT[e.status] || e.status],
                 ['Hiba', e.detail_error || '—'],
             ];

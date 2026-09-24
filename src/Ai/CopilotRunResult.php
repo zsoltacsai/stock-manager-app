@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/AiUsage.php';
+
 /**
  * Egy AiCopilot::answer() lefutásának strukturált eredménye — lásd
  * AgentRunResult (ugyanaz a minta egyetlen agent-futásra), ez itt a
@@ -29,6 +31,16 @@ final class CopilotRunResult
         public readonly array $toolsUsed,
         public readonly int $iterations,
         public readonly ?string $error,
+        // Fázis 9 — lásd AgentRunResult azonos docblokkja: OPCIONÁLIS,
+        // ADDITÍV mezők, egyenesen a szintézist végző AgentRunner-futás
+        // AgentRunResult-jából átemelve (NEM a résztvevő SUB-agentek
+        // usage-éből összesítve — a szintézis-hívás usage-e a mérvadó,
+        // ugyanaz az elv, mint a nem-streamelt CopilotRunResult::$answer
+        // is a szintézis-válaszból jön, nem a sub-agentekéből).
+        public readonly ?AiUsage $usage = null,
+        public readonly bool $streamed = false,
+        public readonly ?string $limitReached = null,
+        public readonly bool $wasCompacted = false,
     ) {
     }
 
@@ -54,7 +66,11 @@ final class CopilotRunResult
             $agentResults,
             $toolsUsed,
             $runResult->iterations,
-            $runResult->error
+            $runResult->error,
+            $runResult->usage,
+            $runResult->streamed,
+            $runResult->limitReached,
+            $runResult->wasCompacted
         );
     }
 }

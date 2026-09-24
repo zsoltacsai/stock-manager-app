@@ -80,6 +80,10 @@ if (!Auth::isLoggedIn($appSettings)) {
     <div class="import-card" id="dash-ai-daily-card" style="display:none;">
         <h2>Mai AI összefoglaló</h2>
         <div id="dash-ai-daily-status"></div>
+        <!-- Fázis 9 — Copilot/asszisztens használati összesítő (provider/
+             modell/mai futásszám/tokenek/becsült költség), UGYANABBÓL a
+             dashboard-summary.php hívásból, extra kérés nélkül. -->
+        <div id="dash-ai-usage-status" style="margin-top:10px; padding-top:10px; border-top:1px solid var(--border); display:none;"></div>
     </div>
 
     <!-- 5. 7 napos forgalmi trend -->

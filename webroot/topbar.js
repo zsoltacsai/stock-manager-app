@@ -346,6 +346,23 @@ if ('serviceWorker' in navigator) {
     const aiTestConnectionBtn = document.getElementById('ai-test-connection-btn');
     const aiTestConnectionFeedback = document.getElementById('ai-test-connection-feedback');
 
+    // Fázis 9 — streamelés/kontextus/költség-korlát/modell-választási
+    // beállítások, UGYANABBAN a mentési körben, mint a fenti alap AI-mezők
+    // (lásd settingsSaveAiBtn handler-je lent) — nincs külön "Speciális"
+    // mentés gomb, hogy ne kelljen két helyen kattintani.
+    const aiStreamingEnabled = document.getElementById('ai-streaming-enabled');
+    const aiShowUsageCost = document.getElementById('ai-show-usage-cost');
+    const aiMaxContextMessages = document.getElementById('ai-max-context-messages');
+    const aiMaxInputChars = document.getElementById('ai-max-input-chars');
+    const aiMaxToolResultChars = document.getElementById('ai-max-tool-result-chars');
+    const aiMaxTotalContextChars = document.getElementById('ai-max-total-context-chars');
+    const aiMaxToolCalls = document.getElementById('ai-max-tool-calls');
+    const aiMaxEstimatedCostPerRequest = document.getElementById('ai-max-estimated-cost-per-request');
+    const aiMinSecondsBetweenRequests = document.getElementById('ai-min-seconds-between-requests');
+    const aiLocalModelComplex = document.getElementById('ai-local-model-complex');
+    const aiAnthropicModelComplex = document.getElementById('ai-anthropic-model-complex');
+    const aiOpenaiModelComplex = document.getElementById('ai-openai-model-complex');
+
     const aiDailyEnabled = document.getElementById('ai-daily-enabled');
     const aiDailyHour = document.getElementById('ai-daily-hour');
     const aiDailyMaxFindings = document.getElementById('ai-daily-max-findings');
@@ -562,6 +579,18 @@ if ('serviceWorker' in navigator) {
         if (aiOpenaiTimeoutSeconds) aiOpenaiTimeoutSeconds.value = String(data.openai_timeout_seconds || 30);
         if (aiMaxIterations) aiMaxIterations.value = String(data.ai_max_iterations || 5);
         if (aiMaxOutputTokens) aiMaxOutputTokens.value = data.ai_max_output_tokens ? String(data.ai_max_output_tokens) : '';
+        if (aiStreamingEnabled) aiStreamingEnabled.classList.toggle('on', data.ai_streaming_enabled !== false);
+        if (aiShowUsageCost) aiShowUsageCost.classList.toggle('on', data.ai_show_usage_cost !== false);
+        if (aiMaxContextMessages) aiMaxContextMessages.value = String(data.ai_max_context_messages || 60);
+        if (aiMaxInputChars) aiMaxInputChars.value = String(data.ai_max_input_chars || 4000);
+        if (aiMaxToolResultChars) aiMaxToolResultChars.value = String(data.ai_max_tool_result_chars || 4000);
+        if (aiMaxTotalContextChars) aiMaxTotalContextChars.value = String(data.ai_max_total_context_chars || 60000);
+        if (aiMaxToolCalls) aiMaxToolCalls.value = String(data.ai_max_tool_calls || 20);
+        if (aiMaxEstimatedCostPerRequest) aiMaxEstimatedCostPerRequest.value = (data.ai_max_estimated_cost_per_request !== null && data.ai_max_estimated_cost_per_request !== undefined) ? String(data.ai_max_estimated_cost_per_request) : '';
+        if (aiMinSecondsBetweenRequests) aiMinSecondsBetweenRequests.value = String(data.ai_min_seconds_between_requests ?? 2);
+        if (aiLocalModelComplex) aiLocalModelComplex.value = data.ai_local_model_complex || '';
+        if (aiAnthropicModelComplex) aiAnthropicModelComplex.value = data.anthropic_model_complex || '';
+        if (aiOpenaiModelComplex) aiOpenaiModelComplex.value = data.openai_model_complex || '';
         if (aiDailyEnabled) aiDailyEnabled.classList.toggle('on', !!data.ai_daily_intelligence_enabled);
         if (aiDailyHour) aiDailyHour.value = String(data.ai_daily_intelligence_hour ?? 7);
         if (aiDailyMaxFindings) aiDailyMaxFindings.value = String(data.ai_daily_intelligence_max_findings ?? 10);
@@ -1806,6 +1835,8 @@ if ('serviceWorker' in navigator) {
 
     if (aiEnabled) aiEnabled.addEventListener('click', () => aiEnabled.classList.toggle('on'));
     if (aiProvider) aiProvider.addEventListener('change', () => toggleAiProviderFields(aiProvider.value));
+    if (aiStreamingEnabled) aiStreamingEnabled.addEventListener('click', () => aiStreamingEnabled.classList.toggle('on'));
+    if (aiShowUsageCost) aiShowUsageCost.addEventListener('click', () => aiShowUsageCost.classList.toggle('on'));
 
     if (settingsSaveAiBtn) {
         settingsSaveAiBtn.addEventListener('click', async () => {
@@ -1831,6 +1862,18 @@ if ('serviceWorker' in navigator) {
                         openai_timeout_seconds: aiOpenaiTimeoutSeconds ? (parseInt(aiOpenaiTimeoutSeconds.value, 10) || 30) : 30,
                         ai_max_iterations: parseInt(aiMaxIterations.value, 10) || 5,
                         ai_max_output_tokens: aiMaxOutputTokens.value.trim() ? parseInt(aiMaxOutputTokens.value, 10) : null,
+                        ai_streaming_enabled: aiStreamingEnabled ? aiStreamingEnabled.classList.contains('on') : true,
+                        ai_show_usage_cost: aiShowUsageCost ? aiShowUsageCost.classList.contains('on') : true,
+                        ai_max_context_messages: aiMaxContextMessages ? (parseInt(aiMaxContextMessages.value, 10) || 60) : 60,
+                        ai_max_input_chars: aiMaxInputChars ? (parseInt(aiMaxInputChars.value, 10) || 4000) : 4000,
+                        ai_max_tool_result_chars: aiMaxToolResultChars ? (parseInt(aiMaxToolResultChars.value, 10) || 4000) : 4000,
+                        ai_max_total_context_chars: aiMaxTotalContextChars ? (parseInt(aiMaxTotalContextChars.value, 10) || 60000) : 60000,
+                        ai_max_tool_calls: aiMaxToolCalls ? (parseInt(aiMaxToolCalls.value, 10) || 20) : 20,
+                        ai_max_estimated_cost_per_request: aiMaxEstimatedCostPerRequest && aiMaxEstimatedCostPerRequest.value.trim() ? parseFloat(aiMaxEstimatedCostPerRequest.value) : null,
+                        ai_min_seconds_between_requests: aiMinSecondsBetweenRequests ? (parseInt(aiMinSecondsBetweenRequests.value, 10) || 0) : 2,
+                        ai_local_model_complex: aiLocalModelComplex ? aiLocalModelComplex.value.trim() : '',
+                        anthropic_model_complex: aiAnthropicModelComplex ? aiAnthropicModelComplex.value.trim() : '',
+                        openai_model_complex: aiOpenaiModelComplex ? aiOpenaiModelComplex.value.trim() : '',
                     }),
                 });
                 const data = await res.json();

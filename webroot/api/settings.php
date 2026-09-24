@@ -95,7 +95,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Logikai (be/ki) mezők. FONTOS: 'maintenance_mode_active' SZÁNDÉKOSAN
     // NINCS itt — azt kizárólag az UpdateInstaller állíthatja, lásd
     // Settings::DEFAULTS docblockja.
-    $boolFields = ['auto_sync_enabled', 'printer_enabled', 'backup_enabled', 'szamlazz_send_email', 'nav_test_mode', 'nav_queue_enabled', 'nav_incoming_sync_enabled', 'receipt_show_logo', 'loyalty_enabled', 'printer_auto_print_enabled', 'printer_qr_enabled', 'update_auto_check_enabled', 'update_auto_install_enabled', 'ai_enabled', 'ai_daily_intelligence_enabled', 'ai_daily_intelligence_notify_enabled', 'ai_action_proposals_enabled'];
+    $boolFields = ['auto_sync_enabled', 'printer_enabled', 'backup_enabled', 'szamlazz_send_email', 'nav_test_mode', 'nav_queue_enabled', 'nav_incoming_sync_enabled', 'receipt_show_logo', 'loyalty_enabled', 'printer_auto_print_enabled', 'printer_qr_enabled', 'update_auto_check_enabled', 'update_auto_install_enabled', 'ai_enabled', 'ai_daily_intelligence_enabled', 'ai_daily_intelligence_notify_enabled', 'ai_action_proposals_enabled', 'ai_streaming_enabled', 'ai_show_usage_cost'];
     foreach ($boolFields as $field) {
         if (isset($input[$field])) {
             $update[$field] = (bool) $input[$field];
@@ -250,6 +250,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Settings::DEFAULTS['ai_reorder_draft_max_quantity'] docblokkja).
     if (isset($input['ai_reorder_draft_max_quantity'])) {
         $update['ai_reorder_draft_max_quantity'] = max(1, min(100000, (int) $input['ai_reorder_draft_max_quantity']));
+    }
+    // Fázis 9 — kontextus-/költség-korlátok és modell-útválasztás (a
+    // bool mezők — ai_streaming_enabled/ai_show_usage_cost — a fenti
+    // $boolFields listában vannak).
+    if (isset($input['ai_max_context_messages'])) {
+        $update['ai_max_context_messages'] = max(4, min(500, (int) $input['ai_max_context_messages']));
+    }
+    if (isset($input['ai_max_input_chars'])) {
+        $update['ai_max_input_chars'] = max(200, min(20000, (int) $input['ai_max_input_chars']));
+    }
+    if (isset($input['ai_max_tool_result_chars'])) {
+        $update['ai_max_tool_result_chars'] = max(500, min(50000, (int) $input['ai_max_tool_result_chars']));
+    }
+    if (isset($input['ai_max_total_context_chars'])) {
+        $update['ai_max_total_context_chars'] = max(4000, min(500000, (int) $input['ai_max_total_context_chars']));
+    }
+    if (isset($input['ai_max_tool_calls'])) {
+        $update['ai_max_tool_calls'] = max(1, min(200, (int) $input['ai_max_tool_calls']));
+    }
+    if (array_key_exists('ai_max_estimated_cost_per_request', $input)) {
+        $raw = $input['ai_max_estimated_cost_per_request'];
+        $update['ai_max_estimated_cost_per_request'] = ($raw === null || $raw === '') ? null : max(0.0, min(1000.0, (float) $raw));
+    }
+    if (isset($input['ai_min_seconds_between_requests'])) {
+        $update['ai_min_seconds_between_requests'] = max(0, min(60, (int) $input['ai_min_seconds_between_requests']));
+    }
+    // A "komplex" modell-fehérlista mezők SZABAD SZÖVEGKÉNT kerülnek
+    // mentésre (lásd Settings::DEFAULTS docblokkja) — de a TÉNYLEGES
+    // FELHASZNÁLÁS (AiProviderFactory::create()) ezt SOSE böngésző-
+    // kérésből olvassa ki közvetlenül, KIZÁRÓLAG ebből a mentett,
+    // admin-szerkesztett beállításból (lásd a kör 17. pontja: "Never
+    // accept an arbitrary model name directly from browser input" — ez
+    // a garancia itt, a beállítás-mentés és a tényleges kérés-idejű
+    // modell-választás SZÉTVÁLASZTÁSÁVAL áll fenn).
+    foreach (['ai_local_model_complex', 'anthropic_model_complex', 'openai_model_complex'] as $modelField) {
+        if (isset($input[$modelField])) {
+            $update[$modelField] = mb_substr(trim((string) $input[$modelField]), 0, 100);
+        }
     }
     if (isset($input['audit_log_retention_days'])) {
         $update['audit_log_retention_days'] = max(1, (int) $input['audit_log_retention_days']);

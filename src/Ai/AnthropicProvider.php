@@ -5,6 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/AiProviderInterface.php';
 require_once __DIR__ . '/AiStreamingProviderInterface.php';
 require_once __DIR__ . '/AiProviderException.php';
+require_once __DIR__ . '/AiRetryPolicy.php';
 require_once __DIR__ . '/ToolDefinition.php';
 require_once __DIR__ . '/ToolCall.php';
 require_once __DIR__ . '/AiUsage.php';
@@ -84,7 +85,8 @@ final class AnthropicProvider implements AiProviderInterface, AiStreamingProvide
             ], $tools);
         }
 
-        $decoded = $this->executeRequest($body);
+        // Fázis 10 — lásd AiRetryPolicy.php docblokkja.
+        $decoded = AiRetryPolicy::run(fn () => $this->executeRequest($body));
 
         if (!isset($decoded['content']) || !is_array($decoded['content'])) {
             throw new AiProviderException('Az Anthropic válasza váratlan szerkezetű (hiányzó "content" mező).', 'malformed_response');
@@ -476,7 +478,19 @@ final class AnthropicProvider implements AiProviderInterface, AiStreamingProvide
         // helyzetet a kör 24. pontja szerinti teszt ("API error") itt, a
         // HTTP-státusz explicit ellenőrzésével fedi le.
         if ($status >= 400) {
-            throw new AiProviderException("Az Anthropic API hibát adott vissza (HTTP $status) streamelés előtt.", $status === 401 || $status === 403 ? 'auth_error' : ($status === 429 ? 'rate_limit' : 'http_error'));
+            // Fázis 10 — a kör 8/17. pontja: EZ a besorolás korábban
+            // ELTÉRT a lenti executeRequest()/executeGet() ugyanerre a
+            // logikára írt, teljesebb változatától (hiányzott az 5xx →
+            // 'unavailable' ág) — ugyanaz a HTTP-státusz emiatt MÁS
+            // kategóriát kapott aszerint, hogy streamelt vagy nem-streamelt
+            // hívásban fordult elő. Most egységes mindhárom helyen.
+            $kind = match (true) {
+                $status === 401, $status === 403 => 'auth_error',
+                $status === 429 => 'rate_limit',
+                $status >= 500 => 'unavailable',
+                default => 'http_error',
+            };
+            throw new AiProviderException("Az Anthropic API hibát adott vissza (HTTP $status) streamelés előtt.", $kind);
         }
     }
 

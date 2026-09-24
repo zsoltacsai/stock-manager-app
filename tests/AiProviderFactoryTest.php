@@ -88,7 +88,11 @@ final class AiProviderFactoryTest extends TestCase
             AiProviderFactory::create($settings);
             $this->fail('Exception várt volt.');
         } catch (AiProviderException $e) {
-            $this->assertSame('unavailable', $e->kind);
+            // Fázis 10 — a kör 17. pontja: ez egy KONFIGURÁCIÓS hiba
+            // (érvénytelen beállítás-érték), nem egy valódi hálózati
+            // elérhetetlenség — a kettő korábban tévesen ugyanazt az
+            // 'unavailable' kategóriát kapta.
+            $this->assertSame('configuration_error', $e->kind);
         }
     }
 

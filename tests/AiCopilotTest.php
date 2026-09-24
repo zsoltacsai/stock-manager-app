@@ -278,6 +278,47 @@ final class AiCopilotTest extends TestCase
         $this->assertStringContainsString('maximális', $lastToolMessage['content']);
     }
 
+    public function testCostLimitStopsFurtherSubAgentCallsWithoutExecutingThem(): void
+    {
+        // Fázis 10 — a kör 11. pontja: a hívásszám-korláttól (fent)
+        // FÜGGETLEN, dollár-alapú korlát — 'anthropic'/'claude-sonnet-5'
+        // néven (lásd AiPricing.php, Fázis 10-ben hivatalosan ellenőrzött
+        // árazással), hogy a becslés VALÓDI, nem-nulla dollárérték legyen.
+        $db = tests_new_database();
+        $usage = new AiUsage(1_000_000, 1_000_000, 2_000_000); // $12 becsült költség claude-sonnet-5-nél
+        $secondAgentInvoked = false;
+        $provider = new FakeAiProvider([
+            new AiChatResponse(null, [
+                new ToolCall('c1', 'ask_inventory_agent', ['question' => 'q1']),
+                new ToolCall('c2', 'ask_sales_agent', ['question' => 'q2 — már a költség-korlát felett']),
+            ]),
+            new AiChatResponse('inventory válasz', [], $usage),
+            // A második (sales) hívás SOSE fogyaszt scriptelt választ —
+            // a Copilot MÁR a költség-korlát miatt utasítja el, mielőtt
+            // a SalesAgent ténylegesen lefutna.
+            new AiChatResponse('Végleges válasz az egy elért ügynök alapján.', []),
+        ], 'anthropic');
+        $appSettings = [
+            'ai_provider' => 'anthropic',
+            'anthropic_model' => 'claude-sonnet-5',
+            'ai_max_estimated_cost_per_request' => 1.0, // $1 — az első hívás $12-je MÁR túllépi
+        ];
+        $copilot = new AiCopilot($provider, $db, $appSettings, 5);
+
+        $result = $copilot->answer('Mindent mondj el mindenről.');
+
+        $this->assertTrue($result->success, 'A Copilotnak biztonságosan, a meglévő részeredményekből kell összefoglalnia, NEM elszállnia a korlát elérésekor.');
+        $this->assertSame(['inventory'], $result->agentsUsed, 'A második (sales) ügynök SOSE indulhatott el — a korlátot MÁR az első hívás elérte.');
+        $this->assertCount(1, $result->agentResults);
+        // 1 (copilot) + 1 (valódi inventory-futás) + 1 (copilot szintézis)
+        // — a sales-hívási kísérlet NEM indított új nested futást.
+        $this->assertSame(3, $provider->callCount());
+
+        $toolMessages = array_values(array_filter($provider->receivedMessages[2], fn ($m) => $m['role'] === 'tool'));
+        $lastToolMessage = end($toolMessages);
+        $this->assertStringContainsString('költség-korlátot', $lastToolMessage['content']);
+    }
+
     // ------------------------------------------------------------------
     // 10-11: agent-hiba / részleges agent-hiba
     // ------------------------------------------------------------------

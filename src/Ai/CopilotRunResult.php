@@ -41,6 +41,9 @@ final class CopilotRunResult
         public readonly bool $streamed = false,
         public readonly ?string $limitReached = null,
         public readonly bool $wasCompacted = false,
+        // Fázis 10 — lásd AgentRunResult::$failureCategory azonos
+        // docblokkja.
+        public readonly ?string $failureCategory = null,
     ) {
     }
 
@@ -70,7 +73,8 @@ final class CopilotRunResult
             $runResult->usage,
             $runResult->streamed,
             $runResult->limitReached,
-            $runResult->wasCompacted
+            $runResult->wasCompacted,
+            $runResult->failureCategory
         );
     }
 }

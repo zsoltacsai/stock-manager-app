@@ -6612,6 +6612,11 @@ class Database
         $row['estimated_cost'] = $detail['estimated_cost'] ?? null;
         $row['limit_reached'] = $detail['limit_reached'] ?? null;
         $row['context_compacted'] = $detail['context_compacted'] ?? null;
+        // Fázis 10 — a kör 17. pontja: az AiProviderException::$kind
+        // (lásd ott a teljes felsorolást) — KIZÁRÓLAG akkor van kitöltve,
+        // ha a hiba egy tényleges provider-kivételből származott (lásd
+        // AgentRunResult::$failureCategory docblokkja).
+        $row['failure_category'] = $detail['failure_category'] ?? null;
         unset($row['technical_detail']);
 
         return $row;

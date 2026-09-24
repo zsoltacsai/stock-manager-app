@@ -20,15 +20,23 @@ final class FakeAiProvider implements AiProviderInterface
     /** @var array<int,array> minden chat()-nek átadott üzenet-lista, hívási sorrendben */
     public array $receivedMessages = [];
 
-    /** @param array<int,AiChatResponse|AiProviderException> $script */
-    public function __construct(array $script)
+    /**
+     * @param array<int,AiChatResponse|AiProviderException> $script
+     * @param string $providerName Fázis 10 — opcionális, alapból 'fake'
+     *   (a MEGLÉVŐ hívási helyek változatlanok maradnak); egy VALÓS
+     *   providernévre (pl. 'anthropic') állítva a scriptelt válaszokban
+     *   szereplő AiUsage-ből az AiPricing::estimate() ténylegesen valódi,
+     *   ellenőrzött dollár-becslést tud adni — ez kell a költség-korlát
+     *   (nem csak a hívásszám-korlát) determinisztikus teszteléséhez.
+     */
+    public function __construct(array $script, private readonly string $providerName = 'fake')
     {
         $this->script = $script;
     }
 
     public function name(): string
     {
-        return 'fake';
+        return $this->providerName;
     }
 
     public function chat(array $messages, array $tools): AiChatResponse
@@ -53,6 +61,51 @@ final class FakeAiProvider implements AiProviderInterface
     public function callCount(): int
     {
         return $this->callIndex;
+    }
+}
+
+/**
+ * Fázis 10 — a kör 7. pontja: a MEGLÉVŐ FakeAiProvider SOSE implementálja
+ * az AiStreamingProviderInterface-t, ezért a `runStreaming()` "admin
+ * kikapcsolta a streamelést" ágát (streamingEnabled=false, DE a provider
+ * MAGA képes lenne streamelni) eddig SEMMI nem különböztette meg a
+ * "provider egyáltalán nem streamelés-képes" ágtól — ez a fake bizonyítja
+ * a kettő közötti VALÓDI, önálló elágazást (lásd AgentRunner::
+ * runStreaming() `$this->streamingEnabled && $provider instanceof
+ * AiStreamingProviderInterface` feltétele).
+ */
+final class FakeStreamingAiProvider implements AiProviderInterface, AiStreamingProviderInterface
+{
+    public int $chatStreamCallCount = 0;
+    public int $chatCallCount = 0;
+
+    public function __construct(private readonly AiChatResponse $response)
+    {
+    }
+
+    public function name(): string
+    {
+        return 'fake_streaming';
+    }
+
+    public function chat(array $messages, array $tools): AiChatResponse
+    {
+        $this->chatCallCount++;
+        return $this->response;
+    }
+
+    public function chatStream(array $messages, array $tools, callable $onEvent): AiChatResponse
+    {
+        $this->chatStreamCallCount++;
+        if ($this->response->content !== null) {
+            $onEvent(AiStreamEvent::textDelta($this->response->content));
+        }
+        return $this->response;
+    }
+
+    public function checkAvailability(): AiAvailability
+    {
+        return AiAvailability::available();
     }
 }
 
@@ -361,5 +414,47 @@ final class AiAgentRunnerTest extends TestCase
 
         $this->assertTrue($result->success);
         $this->assertFalse($executed, 'Egy ismeretlen eszköznév SOSE futtathat le semmilyen VALÓDI, regisztrált eszközt.');
+    }
+
+    public function testStreamingEnabledFalseForcesFallbackEvenWhenProviderCanStream(): void
+    {
+        // Fázis 10 — a kör 7/18. pontja: EGY, ténylegesen streamelés-
+        // képes provider (chatStream() implementálva), DE
+        // streamingEnabled=false az AgentRunner konstruktorában —
+        // ennek KELL, hogy kikényszerítse a szinkron chat()-visszaesést,
+        // a provider saját chatStream()-jét EGYSZER SE hívva meg.
+        $provider = new FakeStreamingAiProvider(new AiChatResponse('Kikapcsolt streamelés válasza.', []));
+        $registry = new ToolRegistry();
+        $runner = new AgentRunner($provider, $registry, 5, null, null, false);
+
+        $events = [];
+        $result = $runner->runStreaming('sys', 'kérdés', function (AiStreamEvent $e) use (&$events) {
+            $events[] = $e;
+        }, 'inventory');
+
+        $this->assertTrue($result->success);
+        $this->assertFalse($result->streamed, 'streamingEnabled=false esetén a válasznak SOSE szabad streamedként jelentkeznie.');
+        $this->assertSame(0, $provider->chatStreamCallCount, 'A provider SAJÁT chatStream()-je SOSE hívódhat meg, ha az admin kikapcsolta a streamelést.');
+        $this->assertSame(1, $provider->chatCallCount);
+
+        $types = array_map(fn (AiStreamEvent $e) => $e->type, $events);
+        $this->assertContains('text_delta', $types, 'A kikapcsolt streamelés ágának is szintetizálnia kell egy text_delta eseményt (UX-átlátszóság).');
+    }
+
+    public function testStreamingEnabledTrueActuallyUsesProviderChatStreamWhenCapable(): void
+    {
+        // A pozitív eset ellenőrzése is szükséges — enélkül a fenti
+        // teszt önmagában nem bizonyítaná, hogy a flag ténylegesen
+        // MINDKÉT irányban helyesen működik.
+        $provider = new FakeStreamingAiProvider(new AiChatResponse('Bekapcsolt streamelés válasza.', []));
+        $registry = new ToolRegistry();
+        $runner = new AgentRunner($provider, $registry, 5, null, null, true);
+
+        $result = $runner->runStreaming('sys', 'kérdés', function (AiStreamEvent $e) {}, 'inventory');
+
+        $this->assertTrue($result->success);
+        $this->assertTrue($result->streamed);
+        $this->assertSame(1, $provider->chatStreamCallCount);
+        $this->assertSame(0, $provider->chatCallCount, 'Ha a provider ténylegesen streamelt, a szinkron chat()-nek SOSE szabad meghívódnia ugyanahhoz a körhöz.');
     }
 }

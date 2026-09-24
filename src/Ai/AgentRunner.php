@@ -74,7 +74,7 @@ final class AgentRunner
             try {
                 $response = $this->provider->chat($conversation->toArray(), $this->registry->all());
             } catch (AiProviderException $e) {
-                return AgentRunResult::fail('Az AI-modell jelenleg nem érhető el.', $toolsUsed, $iteration, $usage, false, null, $conversation->wasCompacted());
+                return AgentRunResult::fail('Az AI-modell jelenleg nem érhető el.', $toolsUsed, $iteration, $usage, false, null, $conversation->wasCompacted(), $e->kind);
             }
             $usage = AiUsage::merge($usage, $response->usage);
 
@@ -161,7 +161,7 @@ final class AgentRunner
                 }
             } catch (AiProviderException $e) {
                 $onEvent(AiStreamEvent::error('Az AI-modell jelenleg nem érhető el.'));
-                return AgentRunResult::fail('Az AI-modell jelenleg nem érhető el.', $toolsUsed, $iteration, $usage, $streamedAtLeastOnce, null, $conversation->wasCompacted());
+                return AgentRunResult::fail('Az AI-modell jelenleg nem érhető el.', $toolsUsed, $iteration, $usage, $streamedAtLeastOnce, null, $conversation->wasCompacted(), $e->kind);
             }
             $usage = AiUsage::merge($usage, $response->usage);
 

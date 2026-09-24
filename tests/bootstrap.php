@@ -38,6 +38,7 @@ require_once __DIR__ . '/../src/ClientSessionBridge.php';
 require_once __DIR__ . '/../src/ClientProxy.php';
 require_once __DIR__ . '/../src/AppVersion.php';
 require_once __DIR__ . '/../src/ClientServerHealth.php';
+require_once __DIR__ . '/../src/Ai/AiRetryPolicy.php';
 require_once __DIR__ . '/../src/Ai/LocalProvider.php';
 require_once __DIR__ . '/../src/Ai/OllamaHealth.php';
 require_once __DIR__ . '/../src/Ai/AnthropicProvider.php';

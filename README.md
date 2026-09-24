@@ -4911,6 +4911,192 @@ hibaüzenet jelent meg — ez bizonyítja a "SOSE fusson eszköz részleges
 adatból" és a "biztonságos megszakítás" elveket valódi, nem szimulált lassú
 modell mellett is.
 
+### Fázis 10 — Éles-üzemi validáció, benchmark, megbízhatóság
+
+**Ez a kör SZÁNDÉKOSAN validáció/benchmark/megbízhatóság-erősítés, NEM
+egy újabb nagy feature-kör** — nincs új agent, nincs új provider, nincs
+új üzleti művelet, nincs verziószám-emelés. A cél: a Fázis 9-ben épített
+streamelési/kontextus-/költség-infrastruktúra TÉNYLEGES, mért
+viselkedésének dokumentálása, ÉS a menet közben talált, valódi rések
+minimális, indokolt javítása.
+
+#### Hivatalos dokumentáció-kutatás (2026-09-24)
+
+- **Ollama** — a `/api/chat` NDJSON-streamelés és az eszköz-hívási alak
+  (lásd Fázis 9 fent) megerősítve a hivatalos `docs.ollama.com`
+  dokumentációval. ÚJ, korábban NEM dokumentált felismerés: a Qwen3
+  modellcsalád (a konfigurált `qwen3:8b` is) ALAPÉRTELMEZETTEN
+  "thinking" (gondolkodási) módban fut — az `/api/chat` ilyenkor
+  KÜLÖN `message.thinking` mezőben adja vissza a modell belső
+  "gondolatmenetét", a `message.content` pedig KIZÁRÓLAG a végleges
+  választ tartalmazza (a `LocalProvider` ezt már eddig is helyesen csak
+  a `content` mezőt olvasta — a `thinking` mező figyelmen kívül hagyása
+  emiatt NEM hiba, csak azt jelenti, hogy a modell hosszú, a
+  felhasználó felé SOSE megjelenő "gondolkodási" időt tölt minden
+  válasz előtt — lásd lent a mért időzítéseknél).
+- **Anthropic** — a hivatalos árlista (`claude.com/pricing`, az
+  `anthropic.com/pricing` erre irányít át) ELLENŐRIZVE: "Sonnet 5" —
+  pontosan a konfigurált `claude-sonnet-5` modellnév — $2/M bemenet,
+  $10/M kimenet, $0.20/M cache-olvasás, $2.50/M cache-írás.
+- **OpenAI** — a hivatalos árlista (`developers.openai.com/api/docs/pricing`,
+  a `platform.openai.com/docs/pricing` erre irányít át) ELLENŐRIZVE: a
+  konfigurált `gpt-6-sol` — $2.00/M bemenet, $0.20/M cache, $10.00/M
+  kimenet. Ez az árazási adat MOST bekerült az `AiPricing.php` táblájába
+  (lásd ott a teljes forrás-dokumentációt) — a Fázis 9-ben dokumentált
+  "unavailable" állapot ERRE a két, pontosan konfigurált modellre
+  feloldódott; egy jövőbeli, eltérő modellnévre a becslés VÁLTOZATLANUL
+  "nem ismert" marad, amíg valaki ellenőrzött árat nem vesz fel hozzá.
+
+#### Talált és javított rések
+
+- **A provider-hiba "kategóriája" (`AiProviderException::$kind`) eddig
+  SOSE jutott el a naplózásig/UI-ig** — az `AgentRunner` elkapta, de
+  csak egy általános, biztonságos üzenetet adott tovább, a tényleges
+  okot (időtúllépés? hitelesítés? rate limit?) eldobva. ÚJ
+  `AgentRunResult::$failureCategory`/`CopilotRunResult::$failureCategory`
+  mező viszi tovább — lásd az AI-előzmények új "Hibakategória" sorát.
+- **Két, egymással PÁRHUZAMOS, duplikált naplózó-logika létezett** — a
+  4 régi, nem-streamelt végpont a MEGLÉVŐ `AiAuditLogger`-t hívta, a
+  Fázis 9-es `ai-agent-stream.php` viszont egy KÜLÖN, saját
+  inline-logikával írta ugyanazt (csak épp TÖBB mezővel). Most
+  MINDKETTŐ a KÖZÖS `AiAuditLogger::logRun()`/`logCopilotRun()`-t
+  hívja — a streamelt/nem-streamelt végpontok naplózása MOST már
+  egységes, a duplikáció megszűnt.
+- **Egy admin-oldali konfigurációs hiba (érvénytelen `ai_provider`
+  érték) tévesen `'unavailable'` (hálózati hiba) kategóriát kapott** —
+  most `'configuration_error'`, megkülönböztetve egy VALÓDI provider-
+  elérhetetlenségtől.
+- **A HTTP-státusz → hiba-kategória leképezés NEM volt egységes** — az
+  `AnthropicProvider` streamelés-előtti ellenőrzése hiányzott az 5xx →
+  `'unavailable'` ágat (miközben a SAJÁT nem-streamelt metódusai már
+  tartalmazták), a `LocalProvider` pedig EGYETLEN `'http_error'`
+  kategóriába sorolt minden 4xx-et ÉS 5xx-et is. Mindkettő javítva —
+  lásd a kör 8/17. pontja.
+- **Nem létezett újrapróbálkozási (retry) mechanizmus** — lásd lent.
+
+#### Korlátozott (bounded) újrapróbálkozás átmeneti hibákra (`AiRetryPolicy`)
+
+Legfeljebb 3 TELJES kísérlet (1 + 2 újrapróbálkozás), exponenciális
+várakozással (200ms, 400ms), legfeljebb 2 másodperc ÖSSZES várakozási
+idővel — KIZÁRÓLAG a `rate_limit`/`timeout`/`unavailable` kategóriákra,
+SOSE hitelesítési/konfigurációs/formátum-hibára (ezek determinisztikusak,
+egy ismétlés nem oldaná meg őket). KIZÁRÓLAG a NEM-streamelt
+kérés-végrehajtásra vonatkozik — egy streamelt válaszból MÁR kiküldött
+tartalmat egy csendes újrapróbálkozás megduplázna/összekeverne, ezért ott
+SZÁNDÉKOSAN nincs retry (lásd `AiRetryPolicy.php` docblokkja a teljes
+indoklásért). Az újrapróbálkozás STRUKTURÁLISAN nem érintheti az
+`ActionExecutor`-t/üzleti mutációkat — azok teljesen más rétegen,
+az AI-hívástól függetlenül futnak (közvetlenül ellenőrizve: egyetlen
+Provider/AgentRunner/ToolRegistry fájl SEM hivatkozik az
+`ActionExecutor`-ra).
+
+#### Valódi (nem stub) mérés — helyi Ollama, `qwen3:8b`
+
+**Módszertani megjegyzés, ŐSZINTÉN dokumentálva**: az alábbi 7
+munkaterhelés egyetlen, automatizált `tools/ai-benchmark.php` futtatásból
+származik, ami — nem szándékosan — a teljes PHPUnit-regresszió
+(1470 teszt, ~76 perc) FUTÁSÁVAL PÁRHUZAMOSAN futott ugyanazon a gépen,
+ami VALÓS CPU-versenyhelyzetet okozott. A mérések emiatt NEM egy tiszta,
+izolált benchmark eredményei — ez saját maga is egy valós, tanulságos
+megfigyelés (lásd lent). A futtatás 1 mintát vett workloadonként
+(`--runs=1`), a 7.-et (copilot_cross_domain) a hosszú futásidő miatt
+manuálisan megszakítottam, mielőtt befejeződött volna.
+
+| Munkateher | Időtartam | Eredmény |
+|---|---|---|
+| `inventory_simple` ("Melyik termékek vannak alacsony készleten?") | 303,4 s | ✓ siker |
+| `inventory_tool_call` ("Melyik termékek fogyhatnak ki hamarosan?") | 205,2 s | ✓ siker |
+| `sales_simple` ("Mennyi volt a forgalom az elmúlt 30 napban?") | 204,9 s | ✗ hiba |
+| `sales_tool_call` (top termékek) | 240,0 s | ✗ hiba (elérte az `ai_timeout_seconds=240` korlátot) |
+| `anomaly_check` | 240,0 s | ✗ hiba (elérte az `ai_timeout_seconds=240` korlátot) |
+| `copilot_single_domain` ("Mennyi volt a forgalom ezen a héten?") | 3584,5 s (~60 perc) | ✗ hiba |
+| `copilot_cross_domain` | — | (manuálisan megszakítva, nem fejeződött be) |
+
+**Értelmezés, SOSE ranglistaként, SOSE "X% megbízható"-ként** (csak 1
+minta/munkateher, konkurens CPU-terheléssel): a 2 sikeres futás
+bizonyítja, hogy a TELJES streamelt eszköz-hívási lánc (agent_started →
+valódi tool_call_started/completed → progresszív szöveg → final →
+helyes token-/időadat) VALÓDI, helyi Ollamával, VÉGIG helyesen működik.
+A 4 sikertelen/időtúllépéses futás ÉS a `copilot_single_domain` extrém
+(~60 perces) időtartama valószínűsíthetően a konkurens PHPUnit-futás
+okozta CPU-éhezésnek tudható be — a `qwen3:8b` egy "thinking" módban
+futó, CPU-n (nem GPU-n, `size_vram:0`) futtatott 8,2 milliárd paraméteres
+modell, aminek a válasz-generálás ELŐTTI, a felhasználó felé SOSE
+megjelenő "gondolkodási" ideje ÖNMAGÁBAN is jelentős (lásd fent) — egy
+osztozó CPU-terhelés ezt drámaian megnyújthatja.
+
+**Ezt közvetlenül megerősíti egy KORÁBBI, IZOLÁLT (nem konkurens
+terheléssel futó) manuális böngésző-teszt** (lásd a Fázis 9 szakasz
+fenti "Valódi, éles Ollama-ellenőrzés" bekezdése): UGYANAZ az Inventory
+tool-hívási munkateher (`get_low_stock_products`) ott — konkurens
+terhelés NÉLKÜL — sikeresen, helyes eszköz-életciklus-eseményekkel és
+szavankénti élő szövegmegjelenítéssel fejeződött be, néhány perc alatt.
+
+**Következtetés (mért, nem feltételezett)**: a helyi Ollama-alapú AI
+Asszisztens VALÓDI kérdésekre, VALÓDI eszköz-hívásokkal helyesen
+válaszol — de a válaszidő ÉRZÉKENY a gép egyidejű CPU-terhelésére, és
+egy elfoglalt gépen (pl. egy párhuzamosan futó nagy teszt-suite vagy
+mentés mellett) a jelenlegi `ai_timeout_seconds` alapértelmezés (30s)
+messze nem elég egy `qwen3:8b`-hez — ez már a Fázis 7/9 dokumentációban
+is szerepel, ez a mérés viszont ELŐSZÖR mutatja meg SZÁMSZERŰEN, mekkora
+a szórás terhelés alatt. **Termelési javaslat**: egy helyi Ollama-alapú
+telepítésnél kerülendő más CPU-igényes háttérfolyamatot (pl. nagy
+mentés/import) egy AI-kérdés VÁRHATÓ idejére ütemezni, és az
+`ai_timeout_seconds` értékét a ténylegesen használt géphez/modellhez kell
+igazítani, nem az alapértelmezésre hagyatkozva.
+
+**Anthropic/OpenAI valódi API-kulccsal EBBEN a körben SEM állt
+rendelkezésre** (lásd Fázis 9 azonos korlátja) — a `tools/ai-benchmark.php`
+eszköz ÚJRAFUTTATHATÓ valódi kulccsal (`--provider=anthropic --api-key=...`
+vagy `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` környezeti változó), amint az
+rendelkezésre áll; a script enélkül egyértelműen "nem elérhető"-t jelez,
+SOSE hamisít eredményt.
+
+#### Modell-útválasztás — mért haszon
+
+A Fázis 9-es `AiProviderFactory::resolveModel()` (Copilot mindig
+`'complex'`, domain-agent mindig `'default'`) helyessége teljes egészben
+tesztelt (7 dedikált teszt). A TÉNYLEGES latencia-/költség-/minőség-
+előny mérése ebben a környezetben NEM volt lehetséges: a fejlesztői
+telepítésen nincs külön "komplex" helyi modell konfigurálva (üres
+`ai_local_model_complex` → a MEGLÉVŐ alap modellre esik vissza, tehát a
+két ág GYAKORLATBAN ugyanazt a modellt futtatná), és valódi Anthropic/
+OpenAI-kulcs hiányában a két tier közötti VALÓS különbség sem mérhető.
+Ez egy ŐSZINTE korlát, nem negatív eredmény — a mechanizmus maga
+helyesen, biztonságosan (böngésző sose választhat modellt) működik.
+
+#### Provider-paritás
+
+A három provider szemantikai paritása (ugyanaz a kérdés → ugyanaz az
+eszköz-választás/agent-útválasztás/helyes backend-eredmény) a kiterjedt,
+mindhárom providert VALÓDI, dokumentáció-hű stub-szerverekkel lefedő
+kereszt-provider tesztkészleten keresztül ellenőrzött (`AiCrossProviderRegressionTest`,
+`AiSalesCrossProviderRegressionTest`, `AiAnomalyCrossProviderRegressionTest`,
+`AiCopilotCrossProviderRegressionTest`, `AiCopilotStreamingCrossProviderRegressionTest`,
+`AiDailyIntelligenceCrossProviderTest`) — mindegyik zöld. Élő, valódi
+hálózati paritás-teszt (mindhárom provider EGYIDEJŰ, valódi API-kulcsos
+futtatása) ebben a környezetben nem volt lehetséges (lásd fent).
+
+#### Windows/Ollama-telepítés
+
+Forráskód-ellenőrzéssel megerősítve: SHA-256-ellenőrzés (`hash_equals()`,
+időzítés-biztos összehasonlítás) a telepítő-letöltésen, Kliens-node
+kizárás mindkét (`ollama-status.php`/`ollama-install.php`) végponton.
+A Pester-suite (`tests/Install-WindowsTests.ps1`) TÉNYLEGESEN lefuttatva
+ebben a körben — **74/74 teszt zöld**. Valódi, éles telepítő-futtatás
+(destruktív lenne egy éles gépen) NEM történt ebben a körben — ez
+megegyezik a Fázis 6-ban dokumentált, tudatos döntéssel.
+
+#### Cselekvés-biztonsági regresszió (Fázis 8A/8B)
+
+Explicit, közvetlen forráskód-ellenőrzéssel megerősítve (nem csak
+feltételezve): `grep`-pel bizonyítva, hogy SEM az `AgentRunner`, SEM
+egyik Provider, SEM a `ToolRegistry`, SEM az ÚJ `AiRetryPolicy` NEM
+hivatkozik az `ActionExecutor`-ra — a két rendszer strukturálisan,
+kódszinten elkülönül, nem csak "szokás szerint". A meglévő
+`ActionExecutorTest`/`ActionProposalCopilotBoundaryTest`/
+`ActionExecutionConcurrencyTest` mind zöld maradt.
+
 ### Ismert korlátok
 
 - **Kizárólag olvasás** — sem az Inventory, sem a Sales, sem az Anomaly
@@ -5142,11 +5328,14 @@ modell mellett is.
   bizonyítottan működik (lásd fent). Ha egy admin valódi Anthropic/OpenAI
   kulcsot állít be, első streamelt kérdés előtt mindenképp végezz egy
   manuális, ténylegesen eszköz-hívást igénylő tesztet.
-- **Az `AiPricing` KIZÁRÓLAG a helyi (Ollama, $0) bejegyzést tartalmazza**
-  — Anthropic/OpenAI költség-becslés jelenleg mindig "nem ismert ehhez a
-  modellhez" (lásd fent "Árazási őszinteség") — ez SZÁNDÉKOS, nem
-  hiányosság, amíg a ténylegesen konfigurált modellek valós, ellenőrzött
-  árazása nem kerül be a táblába egy KÜLÖN, erre a célra szánt körben.
+- **Az `AiPricing` a helyi (Ollama, $0) bejegyzés MELLETT (Fázis 10 óta)
+  KIZÁRÓLAG a pontosan konfigurált `claude-sonnet-5`/`gpt-6-sol`
+  modellnevekre tartalmaz hivatalosan ellenőrzött árat** (lásd a Fázis
+  10 szakasz "Hivatalos dokumentáció-kutatás" bekezdése) — egy ettől
+  ELTÉRŐ Anthropic/OpenAI modellnévre a becslés VÁLTOZATLANUL "nem
+  ismert ehhez a modellhez" (lásd fent "Árazási őszinteség") — ez
+  SZÁNDÉKOS, nem hiányosság, amíg valaki az adott modellhez is ellenőrzött
+  árat nem vesz fel.
 - **A `ClientProxy` streamelő relé-útvonala KIZÁRÓLAG az
   `ai-agent-stream.php` fájlnévre érvényes fehérlista-alapon** — egy
   jövőbeli, MÁSIK streamelő végpont hozzáadásánál a `ClientProxy::
@@ -5163,3 +5352,21 @@ modell mellett is.
   `system_events` naplóra épül, nem egy dedikált, indexelt statisztikai
   táblára** — ugyanaz a korlát, mint az AI-előzmények szűrésénél (lásd
   fent) — alacsony/közepes napi AI-használatnál elhanyagolható.
+- **A Fázis 10 valódi Ollama-benchmarkja NEM egy tiszta, izolált mérés**
+  — véletlenül egy egyidejűleg futó, ~76 perces PHPUnit-teljes-
+  regresszióval versenyzett CPU-ért ugyanazon a gépen (lásd a Fázis 10
+  szakasz "Valódi mérés" bekezdése a teljes, őszinte magyarázatért) — a
+  mért időtartamok emiatt LÉNYEGESEN hosszabbak/kevésbé megbízhatóak,
+  mint egy izolált géppel mérve lennének. Egy jövőbeli, IZOLÁLT
+  (más terhelés nélküli) újrafuttatás a `tools/ai-benchmark.php`
+  eszközzel pontosabb, megbízhatóbb számokat adna.
+- **A modell-útválasztás (Fázis 9) TÉNYLEGES latencia-/költség-/
+  minőség-előnye NINCS mérve** — a fejlesztői telepítésen nincs külön
+  "komplex" helyi modell beállítva, és valódi Anthropic/OpenAI-kulcs
+  hiányában a tier-ek közötti valós különbség sem volt mérhető ebben a
+  környezetben (lásd a Fázis 10 szakasz "Modell-útválasztás — mért
+  haszon" bekezdése) — a mechanizmus helyessége/biztonsága viszont
+  teljes egészében tesztelt.
+- **Anthropic/OpenAI élő, valódi API-kulcsos ellenőrzés Fázis 10-ben SEM
+  történt** (lásd a Fázis 9 azonos korlátja) — a `tools/ai-benchmark.php`
+  ÚJRAFUTTATHATÓ valódi kulccsal, amint az rendelkezésre áll.

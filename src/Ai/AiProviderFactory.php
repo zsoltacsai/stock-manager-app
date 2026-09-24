@@ -48,9 +48,15 @@ final class AiProviderFactory
 
         if (!in_array($providerName, self::ALLOWED_PROVIDERS, true)) {
             self::logInvalidProvider($db, $appSettings, $providerName);
+            // Fázis 10 — a kör 17. pontja: ez egy KONFIGURÁCIÓS hiba (az
+            // admin ír be érvénytelen `ai_provider` értéket), NEM egy
+            // valódi hálózati/provider-oldali elérhetetlenség — a kettő
+            // eddig tévesen ugyanazt az 'unavailable' kategóriát kapta,
+            // ami a naplózásban/diagnosztikában összemosta a két,
+            // gyökeresen eltérő elhárítási utat igénylő esetet.
             throw new AiProviderException(
                 "Ismeretlen AI-provider beállítás: \"$providerName\".",
-                'unavailable'
+                'configuration_error'
             );
         }
 

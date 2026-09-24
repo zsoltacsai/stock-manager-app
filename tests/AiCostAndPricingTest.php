@@ -6,10 +6,16 @@ use PHPUnit\Framework\TestCase;
 
 /**
  * Fázis 9 — AiUsage/AiPricing/AiCostLimits determinisztikus tesztjei
- * (a kör 28. pontja). SOSE feltételez konkrét, ellenőrizetlen dollár-
- * árat Anthropic/OpenAI-ra (lásd AiPricing.php docblokkja, miért NINCS
- * ott ilyen bejegyzés jelenleg) — a tesztek KIZÁRÓLAG a KÖZPONTOSÍTOTT
- * AiPricing::TABLE-ből olvasott, tényleges eredményt ellenőrzik.
+ * (a kör 28. pontja). SOSE feltételez konkrét dollár-árat, amit az
+ * AiPricing::TABLE (lásd ott a docblokkja) ténylegesen, hivatalos
+ * forrással dokumentáltan NEM tartalmaz — a tesztek KIZÁRÓLAG a
+ * KÖZPONTOSÍTOTT táblából ténylegesen olvasott eredményt ellenőrzik.
+ *
+ * Fázis 10 — a `claude-sonnet-5`/`gpt-6-sol` bejegyzések hivatalos
+ * providerdokumentáció-kutatással ellenőrizve, valós árral bekerültek a
+ * táblába (lásd AiPricing.php docblokkja a forrásokért) — az "ismeretlen
+ * modell" teszteket ezért egy VALÓBAN nem-táblázott, kitalált jövőbeli
+ * modellnévre kell futtatni, nem erre a kettőre.
  */
 final class AiCostAndPricingTest extends TestCase
 {
@@ -57,11 +63,52 @@ final class AiCostAndPricingTest extends TestCase
     public function testUnknownProviderModelPairReturnsUnavailableNotZero(): void
     {
         $usage = new AiUsage(1000, 500, 1500);
-        // A jelen implementáció idején ELLENŐRIZETLEN Anthropic/OpenAI
-        // árazás miatt (lásd AiPricing.php docblokkja) ez KIZÁRÓLAG
-        // 'unavailable'-t (null) adhat — SOSE 0-t vagy kitalált összeget.
-        $result = AiPricing::estimate('anthropic', 'claude-sonnet-5', $usage);
+        // Egy VALÓBAN nem-táblázott, kitalált jövőbeli modellnév — ez
+        // KIZÁRÓLAG 'unavailable'-t (null) adhat, SOSE 0-t vagy kitalált
+        // összeget.
+        $result = AiPricing::estimate('anthropic', 'claude-sonnet-99-ismeretlen', $usage);
         $this->assertNull($result, 'Ellenőrizetlen árazású modellre a becslés MINDIG unavailable (null), SOSE kitalált szám.');
+    }
+
+    public function testKnownAnthropicModelReturnsOfficiallySourcedCost(): void
+    {
+        // Fázis 10 — claude.com/pricing hivatalos árlistája alapján
+        // (lásd AiPricing.php docblokkja): $2/M bemenet, $10/M kimenet.
+        $usage = new AiUsage(1_000_000, 1_000_000, 2_000_000);
+        $result = AiPricing::estimate('anthropic', 'claude-sonnet-5', $usage);
+        $this->assertNotNull($result);
+        $this->assertSame(12.0, $result['cost'], '1M bemenet ($2) + 1M kimenet ($10) = $12.');
+        $this->assertStringContainsString('claude.com/pricing', $result['source']);
+    }
+
+    public function testKnownAnthropicModelAppliesCachedInputDiscount(): void
+    {
+        $usage = new AiUsage(1_000_000, 0, 1_000_000, null, 400_000);
+        $result = AiPricing::estimate('anthropic', 'claude-sonnet-5', $usage);
+        $this->assertNotNull($result);
+        // 600k normál bemenet ($2/M) + 400k cache-olvasás ($0.20/M).
+        $this->assertEqualsWithDelta(1.28, $result['cost'], 0.000001);
+    }
+
+    public function testKnownOpenAiModelReturnsOfficiallySourcedCost(): void
+    {
+        // Fázis 10 — developers.openai.com/api/docs/pricing hivatalos
+        // árlistája alapján: $2/M bemenet, $10/M kimenet.
+        $usage = new AiUsage(1_000_000, 1_000_000, 2_000_000);
+        $result = AiPricing::estimate('openai', 'gpt-6-sol', $usage);
+        $this->assertNotNull($result);
+        $this->assertSame(12.0, $result['cost']);
+        $this->assertStringContainsString('developers.openai.com', $result['source']);
+    }
+
+    public function testDifferentConfiguredAnthropicModelStillUnavailable(): void
+    {
+        // Ha az admin egy MÁSIK (a táblában nem szereplő) Anthropic
+        // modellre vált, a becslés ISMÉT unavailable — a Fázis 10
+        // ellenőrzés KIZÁRÓLAG a pontosan konfigurált két modellnévre
+        // szól, nem az egész Anthropic/OpenAI providerre.
+        $usage = new AiUsage(1000, 500, 1500);
+        $this->assertNull(AiPricing::estimate('anthropic', 'claude-opus-5-5', $usage));
     }
 
     public function testCompletelyUnknownProviderReturnsUnavailable(): void
@@ -79,7 +126,9 @@ final class AiCostAndPricingTest extends TestCase
     public function testIsKnownModelReflectsPricingTable(): void
     {
         $this->assertTrue(AiPricing::isKnownModel('local', 'qwen3:8b'));
-        $this->assertFalse(AiPricing::isKnownModel('anthropic', 'claude-sonnet-5'));
+        $this->assertTrue(AiPricing::isKnownModel('anthropic', 'claude-sonnet-5'));
+        $this->assertTrue(AiPricing::isKnownModel('openai', 'gpt-6-sol'));
+        $this->assertFalse(AiPricing::isKnownModel('anthropic', 'claude-opus-5-5'));
     }
 
     public function testCostLimitsFromSettingsAppliesDefaults(): void

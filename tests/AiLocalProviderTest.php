@@ -45,6 +45,9 @@ switch ($path) {
         } elseif ($mode === 'trigger_http_error') {
             http_response_code(500);
             echo json_encode(['error' => 'internal error']);
+        } elseif ($mode === 'trigger_client_error') {
+            http_response_code(400);
+            echo json_encode(['error' => 'invalid request']);
         } elseif ($mode === 'trigger_slow') {
             usleep(1500000);
             echo json_encode(['message' => ['role' => 'assistant', 'content' => 'lassú válasz']]);
@@ -162,10 +165,26 @@ PHP);
         $this->chatWithTrigger('trigger_not_json');
     }
 
-    public function testHttpErrorResponseThrows(): void
+    public function testServerErrorResponseThrowsAsUnavailable(): void
     {
+        // Fázis 10 — a kör 8/17. pontja: egy 5xx (pl. a modell még
+        // betöltés alatt) egy VALÓDI, jellemzően ÁTMENETI
+        // elérhetetlenség — 'unavailable', NEM 'http_error' (utóbbi
+        // determinisztikus 4xx kérés-hibát jelent, lásd lent).
         try {
             $this->chatWithTrigger('trigger_http_error');
+            $this->fail('Exception várt volt.');
+        } catch (AiProviderException $e) {
+            $this->assertSame('unavailable', $e->kind);
+        }
+    }
+
+    public function testClientErrorResponseThrowsAsHttpError(): void
+    {
+        // Egy 4xx (a kérés maga hibás) determinisztikus — SOSE
+        // 'unavailable' (ami újrapróbálást sugallna, lásd AiRetryPolicy.php).
+        try {
+            $this->chatWithTrigger('trigger_client_error');
             $this->fail('Exception várt volt.');
         } catch (AiProviderException $e) {
             $this->assertSame('http_error', $e->kind);

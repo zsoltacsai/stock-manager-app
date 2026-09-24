@@ -142,50 +142,19 @@ if ($runResult->usage !== null) {
     $estimatedCost = $estimate['cost'] ?? null;
 }
 
-// A kör 20. pontja — az AI-előzmények bővítése (streamelt/nem-streamelt,
-// tokenek, becsült költség, limit-állapot) — UGYANAZON a MEGLÉVŐ,
-// technical_detail JSON-nal dolgozó mechanizmuson keresztül (nincs séma-
-// módosítás, lásd a kör 20. pontja "follow normal migration patterns,
-// if needed" — itt NEM szükséges).
-try {
-    $technicalDetail = [
-        'agent' => $agentName,
-        'provider' => $provider->name(),
-        'model' => $configuredModel,
-        'tools_used' => $toolsUsed,
-        'agents_used' => $agentsUsed ?: null,
-        'iterations' => $runResult->iterations,
-        'duration_ms' => (int) $durationMs,
-        'error' => $runResult->success ? null : mb_substr((string) $runResult->error, 0, 200),
-        'streamed' => $runResult->streamed,
-        'input_tokens' => $runResult->usage->inputTokens ?? null,
-        'output_tokens' => $runResult->usage->outputTokens ?? null,
-        'total_tokens' => $runResult->usage->totalTokens ?? null,
-        'estimated_cost' => $estimatedCost,
-        'limit_reached' => $runResult->limitReached,
-        'context_compacted' => $runResult->wasCompacted,
-    ];
-    $db->logSystemEvent(
-        'ai',
-        'agent_run',
-        $runResult->success ? 'info' : 'warning',
-        $runResult->success ? 'success' : 'failure',
-        $runResult->success ? "AI-agent futás sikeres ($agentName)." : "AI-agent futás sikertelen ($agentName).",
-        json_encode($technicalDetail, JSON_UNESCAPED_UNICODE),
-        (int) ($appSettings['system_events_retention_days'] ?? 14)
-    );
-    $auditDetails = sprintf(
-        'Kérdés: %s | Provider: %s | Modell: %s | Streamelt: %s | %s (%d ms)',
-        mb_substr($question, 0, 200),
-        $provider->name(),
-        $configuredModel,
-        $runResult->streamed ? 'igen' : 'nem',
-        $runResult->success ? 'Sikeres' : 'Sikertelen: ' . mb_substr((string) $runResult->error, 0, 100),
-        (int) $durationMs
-    );
-    $db->logAudit(Auth::currentStaffId(), 'ai_agent_run', 'ai_agent', null, $auditDetails, (int) ($appSettings['audit_log_retention_days'] ?? 30));
-} catch (Throwable $e) {
-    error_log('[fountaintrade] AI stream audit log sikertelen: ' . $e->getMessage());
+// Fázis 10 — a kör 16. pontja ("Do not create a parallel logging
+// system"): korábban ez a végpont EGY KÜLÖN, a négy nem-streamelt
+// végpont (ai-inventory.php stb.) AiAuditLogger-hívásaival PÁRHUZAMOS,
+// duplikált napló-logikát tartalmazott — a Fázis 9 mezők (streamed/
+// tokenek/becsült költség/limit_reached/context_compacted) csak ITT
+// íródtak. Most a MEGLÉVŐ, KÖZÖS AiAuditLogger::logRun()/logCopilotRun()
+// hívja — ezek MOST MÁR maguktól tartalmazzák ezeket a mezőket
+// (lásd AiAuditLogger::extendedFields()), plusz az ÚJ `failure_category`-t
+// is, ÚJ paraméter nélkül, egyenesen a $runResult-ból.
+if ($runResult instanceof CopilotRunResult) {
+    AiAuditLogger::logCopilotRun($db, $appSettings, Auth::currentStaffId(), $provider->name(), $configuredModel, $question, $runResult, $durationMs);
+} else {
+    AiAuditLogger::logRun($db, $appSettings, Auth::currentStaffId(), $agentName, $provider->name(), $configuredModel, $question, $runResult, $durationMs);
 }
 
 // A záró esemény MINDIG a válasz VÉGÉN megy — a UI ebből tudja, hogy a
@@ -204,4 +173,5 @@ $sendEvent(AiStreamEvent::make('done', [
     'usage' => $runResult->usage?->toArray(),
     'estimated_cost' => $estimatedCost,
     'limit_reached' => $runResult->limitReached,
+    'failure_category' => $runResult->failureCategory,
 ]));

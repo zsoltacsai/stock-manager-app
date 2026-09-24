@@ -365,6 +365,18 @@
     let historyHasMore = false;
 
     const STATUS_TEXT = { success: '✓ Sikeres', failure: '✗ Sikertelen', started: '… folyamatban' };
+    // Fázis 10 — lásd AiProviderException.php a teljes, hivatalos
+    // felsorolásért; a UI-ban KIZÁRÓLAG akkor jelenik meg, ha a mögöttes
+    // hiba ténylegesen egy provider-kivételből származott.
+    const FAILURE_CATEGORY_LABELS = {
+        configuration_error: 'Konfigurációs hiba (érvénytelen beállítás)',
+        unavailable: 'A provider nem érhető el (hálózati hiba)',
+        timeout: 'Időtúllépés',
+        auth_error: 'Hitelesítési hiba (API-kulcs)',
+        rate_limit: 'Korlátozva a provider által (rate limit)',
+        malformed_response: 'Érvénytelen/váratlanul félbeszakadt válasz',
+        http_error: 'Egyéb HTTP-hiba',
+    };
 
     function fmtDuration(ms) {
         if (ms === null || ms === undefined) return '—';
@@ -432,6 +444,7 @@
                 ['Kontextus-tömörítés', e.context_compacted === null || e.context_compacted === undefined ? '—' : (e.context_compacted ? 'igen — a beszélgetés túllépte a korlátot' : 'nem')],
                 ['Elért korlát', e.limit_reached || '—'],
                 ['Állapot', STATUS_TEXT[e.status] || e.status],
+                ['Hibakategória', FAILURE_CATEGORY_LABELS[e.failure_category] || e.failure_category || '—'],
                 ['Hiba', e.detail_error || '—'],
             ];
             historyDetailBody.innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${String(v)}</td></tr>`).join('');

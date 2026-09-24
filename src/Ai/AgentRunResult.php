@@ -26,6 +26,15 @@ final class AgentRunResult
         public readonly bool $streamed = false,
         public readonly ?string $limitReached = null,
         public readonly bool $wasCompacted = false,
+        // Fázis 10 — a kör 16/17. pontja: az AiProviderException::$kind
+        // (lásd ott a teljes felsorolást) — KIZÁRÓLAG akkor töltött ki,
+        // ha a hiba egy tényleges provider-kivételből származott;
+        // `limitReached`-hez (tool_call_limit/nincs végleges válasz a
+        // lépésszám-korláton belül) és az "üres válasz" esethez NEM
+        // tartozik provider-kivétel, ott marad `null` — ez SZÁNDÉKOS,
+        // nem hiányzó adat: ezeket a `limitReached` mező már önmagában
+        // egyértelműen azonosítja.
+        public readonly ?string $failureCategory = null,
     ) {
     }
 
@@ -50,7 +59,8 @@ final class AgentRunResult
         bool $streamed = false,
         ?string $limitReached = null,
         bool $wasCompacted = false,
+        ?string $failureCategory = null,
     ): self {
-        return new self(false, null, $toolsUsed, $iterations, $error, $usage, $streamed, $limitReached, $wasCompacted);
+        return new self(false, null, $toolsUsed, $iterations, $error, $usage, $streamed, $limitReached, $wasCompacted, $failureCategory);
     }
 }

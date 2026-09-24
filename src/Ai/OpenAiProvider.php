@@ -5,6 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/AiProviderInterface.php';
 require_once __DIR__ . '/AiStreamingProviderInterface.php';
 require_once __DIR__ . '/AiProviderException.php';
+require_once __DIR__ . '/AiRetryPolicy.php';
 require_once __DIR__ . '/ToolDefinition.php';
 require_once __DIR__ . '/ToolCall.php';
 require_once __DIR__ . '/AiUsage.php';
@@ -166,7 +167,8 @@ final class OpenAiProvider implements AiProviderInterface, AiStreamingProviderIn
             $body['max_output_tokens'] = $this->maxOutputTokens;
         }
 
-        $decoded = $this->executeRequest($body);
+        // Fázis 10 — lásd AiRetryPolicy.php docblokkja.
+        $decoded = AiRetryPolicy::run(fn () => $this->executeRequest($body));
 
         if (!isset($decoded['output']) || !is_array($decoded['output'])) {
             throw new AiProviderException('Az OpenAI válasza váratlan szerkezetű (hiányzó "output" mező).', 'malformed_response');

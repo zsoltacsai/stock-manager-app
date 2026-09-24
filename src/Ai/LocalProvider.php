@@ -5,6 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/AiProviderInterface.php';
 require_once __DIR__ . '/AiStreamingProviderInterface.php';
 require_once __DIR__ . '/AiProviderException.php';
+require_once __DIR__ . '/AiRetryPolicy.php';
 require_once __DIR__ . '/ToolDefinition.php';
 require_once __DIR__ . '/ToolCall.php';
 require_once __DIR__ . '/AiUsage.php';
@@ -80,7 +81,11 @@ final class LocalProvider implements AiProviderInterface, AiStreamingProviderInt
             $body['options'] = ['num_predict' => $this->maxOutputTokens];
         }
 
-        $decoded = self::executeRequest($this->baseUrl . '/api/chat', $body, $this->timeoutSeconds);
+        // Fázis 10 — lásd AiRetryPolicy.php docblokkja: KIZÁRÓLAG a
+        // nem-streamelt útvonalon, KIZÁRÓLAG valódi átmeneti hibákra
+        // (timeout/unavailable/rate_limit) — eszköz-végrehajtást/üzleti
+        // mutációt SOSE ismétel meg, mert ez a réteg azok ELŐTT fut le.
+        $decoded = AiRetryPolicy::run(fn () => self::executeRequest($this->baseUrl . '/api/chat', $body, $this->timeoutSeconds));
 
         if (!is_array($decoded) || !isset($decoded['message']) || !is_array($decoded['message'])) {
             throw new AiProviderException('Az Ollama válasza váratlan szerkezetű (hiányzó "message" mező).', 'malformed_response');
@@ -342,7 +347,14 @@ final class LocalProvider implements AiProviderInterface, AiStreamingProviderInt
         $decoded = json_decode((string) $response, true);
         if ($status >= 400) {
             $msg = is_array($decoded) && isset($decoded['error']) ? (string) $decoded['error'] : (string) $response;
-            throw new AiProviderException("Az Ollama hibát adott vissza (HTTP $status): $msg", 'http_error');
+            // Fázis 10 — a kör 8/17. pontja: 5xx (pl. a modell még
+            // betöltés alatt, vagy egy belső Ollama-hiba) egy VALÓDI,
+            // jellemzően ÁTMENETI elérhetetlenség, megkülönböztetendő
+            // egy determinisztikus 4xx kérés-hibától (lásd
+            // AiRetryPolicy.php — csak az 'unavailable' kategória
+            // újrapróbálható).
+            $kind = $status >= 500 ? 'unavailable' : 'http_error';
+            throw new AiProviderException("Az Ollama hibát adott vissza (HTTP $status): $msg", $kind);
         }
         if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
             throw new AiProviderException('Az Ollama válasza nem érvényes JSON.', 'malformed_response');

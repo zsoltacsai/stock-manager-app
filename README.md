@@ -5097,6 +5097,130 @@ kódszinten elkülönül, nem csak "szokás szerint". A meglévő
 `ActionExecutorTest`/`ActionProposalCopilotBoundaryTest`/
 `ActionExecutionConcurrencyTest` mind zöld maradt.
 
+### Fázis 11 — Valódi felhő-provider validáció (Anthropic/OpenAI)
+
+**Ez a kör is SZÁNDÉKOSAN validáció, NEM új feature-kör** — cél: az
+`AnthropicProvider`/`OpenAiProvider` VALÓDI, éles API-hívásokkal való
+ellenőrzése, ha van konfigurált kulcs, a Fázis 10 CPU-versenyhelyzet-
+torzításának megismétlése NÉLKÜL.
+
+**Anthropic/OpenAI kulcs EBBEN a környezetben SEM állt rendelkezésre** —
+sem a `data/settings.json`-ban, sem `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`
+környezeti változóként. Ezért, a kör "No Fake Green" elve szerint: **egyik
+provider sem jelölhető "usable"-nek** — `configured: nem`, `usable: nem`
+mindkettőre. Az ehhez kötött validációs pontok (5-13, 15-20, 22, 24 a kör
+saját számozása szerint) a MEGLÉVŐ, dokumentáció-hű stub-szerveres
+teszt­készleteken keresztül maradnak lefedve (lásd Fázis 9/10 fent) — ÚJ
+stub-teszt nem készült, mivel ez a kör a VALÓDI validációról szól, nem a
+stub-lefedettség bővítéséről.
+
+#### Hivatalos dokumentáció újra-ellenőrzése (2026-09-24)
+
+- **Anthropic Messages API** (`platform.claude.com/docs/en/api/messages`) —
+  a `tool_use`/`tool_result` blokk-alak, a streaming SSE-esemény-sorrend
+  VÁLTOZATLAN a Fázis 9/10 óta.
+- **OpenAI Responses API** (`developers.openai.com/api/reference/resources/responses/methods/create`) —
+  a `function_call_output` alak, az `usage.input_tokens_details`/
+  `output_tokens_details` mezők VÁLTOZATLANOK. **ÚJ, eddig NEM dokumentált
+  észrevétel**: az OpenAI árlistája egy "long context" díjszabási sávot is
+  tartalmaz (kb. a rövid kontextusos ár kétszerese, egy dokumentált
+  tokenküszöb felett) — a `AiPricing.php` ezt JELENLEG NEM modellezi.
+  **Nem javítottuk**: nincs bizonyíték rá, hogy a FountainTrade korlátozott
+  (agent-onkénti, tool-eredményekkel bővített) kontextusa valaha eléri ezt
+  a küszöböt — spekulatív komplexitás hozzáadása bizonyíték nélkül
+  ellentmondana a kör saját "no speculative fixes" elvének. Dokumentált
+  ismert korlátként rögzítve, nem hallgatva el.
+- **Anthropic/OpenAI árazás** (`claude-sonnet-5`, `gpt-6-sol`) — a Fázis
+  10-ben rögzített összegek ÚJRA-ELLENŐRIZVE, VÁLTOZATLANOK.
+
+#### Biztonsági regresszió — újra-megerősítve, közvetlen forráskód-ellenőrzéssel
+
+- `Settings::maskSecretFields()` minden settings-válaszból eltávolítja a
+  nyers API-kulcsokat (`*_set` logikai mezőkre cserélve) — egyik AI-végpont
+  sem küld nyers kulcsot a böngészőnek.
+- Egyik AI-végpont sem fogad el böngészőből érkező provider/modell-
+  felülbírálást (kizárólag egy readonly előzmény-lista SZŰRŐje létezik,
+  helyesen egy fehérlistás enumra korlátozva).
+- `new AnthropicProvider(...)`/`new OpenAiProvider(...)`/
+  `new LocalProvider(...)` a TELJES forráskódban KIZÁRÓLAG az
+  `AiProviderFactory`-ban és a 3 dedikált health-check osztályban
+  (`AnthropicHealth`/`OpenAiHealth`/`OllamaHealth`) fordul elő — nincs
+  máshol közvetlen provider-példányosítás, ami megkerülhetné a factory
+  konfiguráció-ellenőrzését.
+- `new ActionExecutor(...)` a TELJES forráskódban KIZÁRÓLAG az
+  `ai-action-proposal-execute.php` végpontban fordul elő — az
+  `AgentRunner`/streamelés/Copilot végig KIZÁRÓLAG a `ToolRegistry`-t
+  használja, az `ActionExecutor`-t SOSE éri el, strukturálisan (nem csak
+  szokás szerint) elkülönítve a Fázis 8A/8B jóváhagyás-alapú
+  végrehajtástól.
+- `AiRetryPolicy::run()` KIZÁRÓLAG a Provider saját HTTP-hívását
+  ismétli meg — a `ToolRegistry::execute()`/`ActionExecutor` ezen a
+  rétegen KÍVÜL esik, ezért egy újrapróbálkozás SOSE futtathat le
+  kétszer egy eszközt vagy üzleti műveletet (lásd `AiRetryPolicy.php`
+  docblokkja).
+
+#### Tiszta (izolált) alapmérés — Fázis 10 torzításának javítása
+
+A teljes PHPUnit-regresszió ebben a körben **EGYEDÜL, semmilyen más
+CPU-igényes folyamat NÉLKÜL** futott (tanulva a Fázis 10 konkurencia-
+torzításából): **1470 teszt, 6450 assertion, 0 hiba, 2 kihagyott** —
+ez a VALÓDI, torzítatlan Fázis 11 alapmérés.
+
+#### Tiszta (izolált) valódi Ollama-benchmark — a Fázis 10 hipotézisének felülvizsgálata
+
+A `tools/ai-benchmark.php`-t ÚJRA lefuttattuk, workloadonként 2 mintával
+(`--runs=2`), ezúttal **SEMMI más CPU-igényes folyamat nélkül** (nincs
+egyidejű PHPUnit-futás) — pontosan azt a torzítást kizárva, amit a Fázis
+10 dokumentált.
+
+| Munkateher | #1 | #2 |
+|---|---|---|
+| `inventory_simple` | ✓ 295,7 s | ✗ időtúllépés, 1246,3 s |
+| `inventory_tool_call` | ✗ időtúllépés, 1402,6 s | ✗ időtúllépés, 333,8 s |
+| `sales_simple` | ✗ időtúllépés, 180,0 s | ✗ időtúllépés, 271,8 s |
+| `sales_tool_call` | ✗ időtúllépés, 180,0 s | ✗ időtúllépés, 180,0 s |
+| `anomaly_check` | ✗ időtúllépés, 180,0 s | ✗ időtúllépés, 180,0 s |
+| `copilot_single_domain` | ✗ időtúllépés, 180,0 s | ✓ 6634,5 s (~110,6 perc) |
+| `copilot_cross_domain` | ✓ 1878,9 s (~31,3 perc) | ✓ 996,0 s (~16,6 perc) |
+
+**Összesen: 4/14 sikeres (28,6%), 10/14 időtúllépés (71,4%)** — mind a
+10 hiba helyesen `timeout` kategóriába sorolva (nem egy általános,
+félrevezető hiba — ez maga is megerősíti a Fázis 10 hiba-taxonómia
+munkáját).
+
+**Fontos, a Fázis 10 hipotézisét MÓDOSÍTÓ következtetés**: a Fázis 10
+azt feltételezte, hogy a mért lassúság ELSŐSORBAN az egyidejű PHPUnit-
+futás okozta CPU-versenyhelyzetnek tudható be. Ez a kör — TELJESEN
+izolált körülmények között, semmilyen konkurens terhelés nélkül — SZINTE
+UGYANOLYAN arányú időtúllépést mért (71,4% itt vs. a Fázis 10 4/6
+sikertelen munkaterhe). **Ez azt mutatja, hogy a CPU-verseny a Fázis
+10-ben LEGFELJEBB részben magyarázta a lassúságot — a fő ok a gép
+Ollama-beállítása**: az `ollama ps` megerősíti, hogy a `qwen3:8b`
+KIZÁRÓLAG CPU-n fut (`size_vram: 0`), GPU-gyorsítás NÉLKÜL, "thinking"
+módban — ez ÖNMAGÁBAN, egyéb terhelés nélkül is, több perces-akár
+két órás válaszidőt eredményez egy 8,2 milliárd paraméteres modellnél.
+
+A 4 sikeres futás (helyes `get_low_stock_products`/`get_sales_summary`
+eszköz-hívásokkal, a `copilot_cross_domain` esetén helyes
+`inventory`+`sales`(+`anomaly`) al-agent-útválasztással) bizonyítja: a
+TELJES streamelt eszköz-hívási/multi-agent lánc VALÓDI, helyi Ollamával
+VÉGIG helyesen működik — a probléma KIZÁRÓLAG válaszidő, nem
+helyesség. **Termelési javaslat pontosítva**: GPU-gyorsítás NÉLKÜLI
+CPU-only Ollama-telepítésnél egy 8B+ paraméteres, "thinking" módú modell
+ÖNMAGÁBAN, konkurens terhelés nélkül is percekig-órákig tartó válaszidőt
+adhat — ez NEM a FountainTrade AI-integráció hibája, hanem a helyi
+hardver/modell-választás korlátja; éles, több-perces válaszidőt nem
+toleráló helyi telepítésnél GPU-gyorsítás vagy kisebb modell javasolt.
+
+#### Eredmény — nincs szükséges kódmódosítás
+
+A dokumentáció-kutatás és a forráskód-ellenőrzés a Fázis 9/10-ben épített
+viselkedést MINDENÜTT pontosnak találta — ez a kör KIZÁRÓLAG validáció,
+kódmódosítás NEM történt (az `AiPricing.php` "long context" hiánya
+dokumentált, ismert korlát, nem javított hiba — lásd fent). A
+Pester-suite (`tests/Install-WindowsTests.ps1`) ÚJRA lefuttatva — **74/74
+teszt zöld**.
+
 ### Ismert korlátok
 
 - **Kizárólag olvasás** — sem az Inventory, sem a Sales, sem az Anomaly

@@ -4,12 +4,12 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
-## [Unreleased] — AI Copilot: javaslatok, végrehajtás és streaming (Fázis 8A/8B/9)
+## [Unreleased] — AI Copilot: javaslatok, végrehajtás, streaming és éles-üzemi validáció (Fázis 8A/8B/9/10/11)
 
 **Az 1.0 RC feature freeze alóli, egyenként jóváhagyott kivételek —
-NINCS verziószám-emelés ehhez a szakaszhoz**, a három kör (8A/8B/9)
+NINCS verziószám-emelés ehhez a szakaszhoz**, az öt kör (8A/8B/9/10/11)
 kódja már a `main`-en van, de formális kiadásként (release/tag) még
-nem lett elnevezve. Lásd README "AI Asszisztens" szakasza (Fázis 6-9
+nem lett elnevezve. Lásd README "AI Asszisztens" szakasza (Fázis 6-11
 alszakaszok) a teljes technikai indoklásért.
 
 ### Added — Fázis 8A: AI Action Proposals (javaslat + emberi jóváhagyás)
@@ -72,28 +72,89 @@ alszakaszok) a teljes technikai indoklásért.
   MEGLÉVŐ AI-előzményekbe/Dashboardba is felszínre hozva — séma-módosítás
   nélkül). Beállítások → AI asszisztens: teljes vezérlés a fentiekhez.
 
+### Changed — Fázis 10: éles-üzemi validáció, benchmark, megbízhatóság
+
+**Validáció/hardening kör, NEM új feature** — a Fázis 9-ben épített
+infrastruktúra TÉNYLEGES, mért viselkedésének dokumentálása, és a menet
+közben talált, valódi rések minimális javítása. Lásd README "Fázis 10"
+alszakasz a teljes technikai indoklásért.
+
+- **Provider-hiba-kategória végig a naplózásig/UI-ig** — új
+  `AgentRunResult::$failureCategory`/`CopilotRunResult::$failureCategory`
+  mező (időtúllépés/hitelesítés/rate-limit/stb. megkülönböztetve, nem
+  csak egy általános hibaüzenet) — új "Hibakategória" sor az
+  AI-előzményekben.
+- **Egységesített audit-naplózás** — a streamelt és nem-streamelt
+  végpontok korábbi, párhuzamos, duplikált naplózó-logikája megszűnt,
+  mindkettő a közös `AiAuditLogger::logRun()`/`logCopilotRun()`-t hívja.
+- **Pontosított HTTP-státusz → hiba-kategória leképezés** mindhárom
+  Providerben (érvénytelen `ai_provider` konfiguráció most
+  `configuration_error`, nem tévesen `unavailable`; `LocalProvider`
+  megkülönbözteti a 4xx-et az 5xx-től).
+- **Korlátozott (bounded) újrapróbálkozás** (`AiRetryPolicy`) átmeneti
+  (`rate_limit`/`timeout`/`unavailable`) hibákra — legfeljebb 3 kísérlet,
+  legfeljebb 2 másodperc összes várakozással, KIZÁRÓLAG a nem-streamelt
+  útvonalon (streamelt válasznál egy csendes ismétlés megduplázná a már
+  kiküldött tartalmat), strukturálisan elkülönítve az
+  `ActionExecutor`-tól/üzleti mutációktól.
+- **Két hivatalosan dokumentált, dátumozott árazási bejegyzés**
+  (`AiPricing.php`) a ténylegesen konfigurált `claude-sonnet-5`/
+  `gpt-6-sol` modellekhez (korábban csak a helyi Ollama $0 szerepelt).
+- Új, újrafuttatható `tools/ai-benchmark.php` CLI-eszköz a 7 kanonikus
+  munkateherhez (nem hamisít eredményt provider hiányában — egyértelműen
+  "nem elérhető"-t jelez).
+
+### Changed — Fázis 11: valódi felhő-provider (Anthropic/OpenAI) validáció
+
+**Validáció kör, NEM új feature, kódmódosítás NEM történt** — cél az
+`AnthropicProvider`/`OpenAiProvider` valódi API-kulccsal való
+ellenőrzése, ha rendelkezésre áll. Lásd README "Fázis 11" alszakasz.
+
+- Anthropic/OpenAI kulcs EBBEN a környezetben SEM állt rendelkezésre —
+  `configured: nem, usable: nem` mindkettőre, "No Fake Green" elv szerint
+  őszintén jelölve, nem szimulálva.
+- Hivatalos dokumentáció újra-ellenőrizve: Anthropic Messages API és
+  OpenAI Responses API protokollja, valamint a Fázis 10-es árazás
+  VÁLTOZATLAN. Új, dokumentált (nem javított) ismert korlát: az OpenAI
+  "long context" díjszabási sávja jelenleg NEM modellezett az
+  `AiPricing.php`-ban.
+- Biztonsági regresszió közvetlen forráskód-ellenőrzéssel ÚJRA
+  megerősítve: provider-példányosítás kizárólag a factory-n/health-check
+  osztályokon keresztül, `ActionExecutor` kizárólag a dedikált
+  végrehajtás-végponton, retry strukturálisan nem érhet el
+  eszköz-hívást/üzleti műveletet.
+- **Tiszta (izolált, konkurens terhelés NÉLKÜLI) valódi Ollama-benchmark**
+  megismételve a Fázis 10 konkurencia-torzításának kiküszöbölésével: 4/14
+  munkaterhelés-futás sikeres, 10/14 időtúllépés — SZINTE UGYANOLYAN
+  arányban, mint a Fázis 10 torzított mérése. Ez FELÜLVIZSGÁLJA a Fázis
+  10 hipotézisét: a lassúság fő oka NEM (kizárólag) a konkurens
+  CPU-terhelés, hanem hogy a gép a `qwen3:8b`-t kizárólag CPU-n futtatja
+  (`size_vram: 0`), GPU-gyorsítás nélkül.
+
 ### Tests
 
-- 3 dedikált Provider-streamelési tesztfájl (Ollama NDJSON/Anthropic
-  SSE/OpenAI SSE), `AiCopilotStreamingTest`,
-  `AiCopilotStreamingCrossProviderRegressionTest` (mindhárom provideren
-  keresztül, VALÓDI streamelt eseménysorozattal), `AiContextManagementTest`,
-  `AiCostAndPricingTest`, `AiModelRoutingTest`, `AiRateLimiterTest`,
-  `AiAgentStreamEndpointHttpTest` (valódi HTTP), `ClientProxyStreamingHttpTest`
-  (valódi, két-folyamatos, IDŐZÍTÉS-alapú bizonyíték a nem-pufferelt
-  relére), plusz `AiAgentRunnerTest` streamelési kiegészítései
-  (esemény-életciklus, korlát-érvényesítés, ismeretlen eszköz sose fut le).
-- Fázis 8A/8B: `ActionExecutorTest`, `ActionExecutionConcurrencyTest`
-  (valódi 12 párhuzamos folyamat), `ActionProposalExecuteEndpointHttpTest`,
-  `ActionExecuteClientServerHttpTest`.
-- Teljes regresszió: 1441/1441 teszt zöld (6271 assertion) a kör végén.
+- Fázis 10: `AiRetryPolicyTest` (9 teszt), `AiAuditLoggerTest` (5 teszt),
+  plusz kiegészítések a meglévő Provider-/kontextus-/árazás-
+  tesztkészletekben.
+- Fázis 11: nincs új tesztfájl (valódi validáció, nem stub-bővítés) — a
+  MEGLÉVŐ teljes tesztkészlet újra lefuttatva, izoláltan (nincs konkurens
+  CPU-terhelés).
+- Teljes regresszió a Fázis 11 végén: **1470/1470 teszt zöld (6450
+  assertion, 2 kihagyott)** — torzítatlan, izolált mérés.
+- Pester-suite (`tests/Install-WindowsTests.ps1`): 74/74 zöld, mindkét
+  körben újra lefuttatva.
 
 ### Known limitations
 
-- Anthropic/OpenAI VALÓDI API-kulccsal streamelve még NINCS élesben
-  ellenőrizve (csak kontrollált stub-szerverekkel) — a helyi (Ollama)
-  streamelés viszont valódi, futó példánnyal, élő böngésző-teszttel
-  bizonyítottan működik.
+- Anthropic/OpenAI VALÓDI API-kulccsal streamelve MÉG NINCS élesben
+  ellenőrizve (Fázis 9/10/11 mindegyike kulcs hiányában dokumentálta ezt
+  — csak kontrollált, dokumentáció-hű stub-szerverekkel bizonyított) — a
+  helyi (Ollama) streamelés viszont valódi, futó példánnyal, élő
+  böngésző-teszttel ÉS izolált benchmarkkal bizonyítottan helyesen
+  működik (bár lassan, GPU-gyorsítás nélküli gépen).
+- Az OpenAI "long context" díjszabási sávja NEM modellezett
+  `AiPricing.php`-ban (Fázis 11-ben felfedezve, bizonyíték hiányában
+  szándékosan nem implementálva).
 - A Copilot jelenleg NEM tudatos a javaslatokról (nem listázza/magyarázza
   őket) — dokumentált, jövőbeli bővítési lehetőség.
 - Nincs UI a `purchase_order_drafts` piszkozatok önálló böngészéséhez —

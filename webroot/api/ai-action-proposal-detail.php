@@ -3,6 +3,7 @@
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 require_once __DIR__ . '/../../src/Ai/ActionProposalService.php';
+require_once __DIR__ . '/../../src/Ai/ActionExecutor.php';
 
 // Fázis 8A — a kör 22. pontja: read-only részletnézet EGY javaslathoz.
 // Admin-only.
@@ -19,4 +20,7 @@ if ($row === null) {
     send_json(['error' => 'A megadott javaslat nem található.'], 404);
 }
 
-send_json(['ok' => true, 'proposal' => ActionProposal::fromRow($row)->toArray()]);
+$proposal = ActionProposal::fromRow($row)->toArray();
+$proposal['is_executable_type'] = ActionExecutor::isExecutableType($row['proposal_type']);
+
+send_json(['ok' => true, 'proposal' => $proposal]);

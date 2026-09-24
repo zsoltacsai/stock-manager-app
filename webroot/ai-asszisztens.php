@@ -199,7 +199,11 @@ if (!Auth::isLoggedIn($appSettings)) {
 
             <div id="ai-proposal-detail-box" style="display:none; border-top:1px solid var(--border); margin-top:16px; padding-top:16px;">
                 <strong>Javaslat részletei</strong>
-                <p class="modal-feedback" style="margin-top:6px;">Ez a fázis csak a javaslat jóváhagyását/elutasítását rögzíti; üzleti művelet nem kerül végrehajtásra.</p>
+                <p class="modal-feedback" style="margin-top:6px;">
+                    A "Jóváhagyás" KIZÁRÓLAG a javaslat állapotát rögzíti — üzleti művelet csak egy KÜLÖN,
+                    utólagos "Végrehajtás" lépésre történik, és csak a végrehajtható típusú javaslatoknál
+                    érhető el (jelenleg: utánrendelés-vizsgálat → beszerzési piszkozat).
+                </p>
                 <table class="sample-table" style="margin-top:8px;">
                     <tbody id="ai-proposal-detail-body"></tbody>
                 </table>
@@ -207,6 +211,14 @@ if (!Auth::isLoggedIn($appSettings)) {
                     <button id="ai-proposal-approve-btn" class="btn btn-primary" style="width:auto; padding:8px 16px;" type="button">Jóváhagyás</button>
                     <input type="text" id="ai-proposal-reject-reason" placeholder="Elutasítás indoklása (opcionális)" style="flex:1; min-width:200px;">
                     <button id="ai-proposal-reject-btn" class="btn btn-secondary" style="width:auto; padding:8px 16px;" type="button">Elutasítás</button>
+                </div>
+                <div id="ai-proposal-execute-actions" style="margin-top:10px; display:none;">
+                    <button id="ai-proposal-execute-btn" class="btn btn-primary" style="width:auto; padding:8px 16px;" type="button">Végrehajtás</button>
+                    <span id="ai-proposal-execute-state" class="muted" style="margin-left:8px;"></span>
+                </div>
+                <div id="ai-proposal-execution-result-box" style="display:none; margin-top:10px; border-top:1px dashed var(--border); padding-top:10px;">
+                    <strong style="font-size:0.9em;">Végrehajtás eredménye</strong>
+                    <p id="ai-proposal-execution-result-text" style="margin:4px 0 0;"></p>
                 </div>
                 <p id="ai-proposal-detail-feedback" class="modal-feedback"></p>
                 <button id="ai-proposal-detail-close-btn" class="btn btn-secondary" style="width:auto; padding:6px 12px; margin-top:8px;" type="button">Bezárás</button>

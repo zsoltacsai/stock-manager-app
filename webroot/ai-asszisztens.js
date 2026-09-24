@@ -334,18 +334,28 @@
     const proposalRejectReason = document.getElementById('ai-proposal-reject-reason');
     const proposalDetailFeedback = document.getElementById('ai-proposal-detail-feedback');
     const proposalDetailActions = document.getElementById('ai-proposal-detail-actions');
+    const proposalExecuteActions = document.getElementById('ai-proposal-execute-actions');
+    const proposalExecuteBtn = document.getElementById('ai-proposal-execute-btn');
+    const proposalExecuteState = document.getElementById('ai-proposal-execute-state');
+    const proposalExecutionResultBox = document.getElementById('ai-proposal-execution-result-box');
+    const proposalExecutionResultText = document.getElementById('ai-proposal-execution-result-text');
 
     const PROPOSAL_TYPE_LABELS = {
         inventory_review: 'Készlet-felülvizsgálat',
         reorder_draft: 'Utánrendelés-vizsgálat',
         sales_review: 'Eladás-felülvizsgálat',
     };
+    // Fázis 8B — a kör 4/19. pontja: a "Jóváhagyva" ÉS a "Végrehajtva"
+    // SOSE keverhető össze — külön státusz-szöveg mindegyikre.
     const PROPOSAL_STATUS_LABELS = {
         pending: '⏳ Függőben',
         approved: '✓ Jóváhagyva',
         rejected: '✗ Elutasítva',
         expired: '⌛ Lejárt',
         stale: '⚠ Elavult',
+        executing: '⏳ Végrehajtás folyamatban…',
+        executed: '✅ Végrehajtva',
+        execution_failed: '✗ Végrehajtás sikertelen',
     };
 
     const PROPOSALS_PAGE_SIZE = 20;
@@ -369,7 +379,34 @@
             ['Elutasítás indoka', p.rejection_reason || '—'],
         ];
         proposalDetailBody.innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${String(v)}</td></tr>`).join('');
+
+        // Jóváhagyás/Elutasítás — KIZÁRÓLAG 'pending'-nél.
         proposalDetailActions.style.display = p.status === 'pending' ? '' : 'none';
+
+        // Végrehajtás — a kör 19. pontja: KIZÁRÓLAG végrehajtható TÍPUSÚ
+        // javaslatoknál jelenik meg egyáltalán, ÉS csak 'approved'
+        // (első végrehajtás) vagy 'execution_failed' (újrapróbálkozás)
+        // állapotban aktív gombbal — 'executing'-nél letiltott,
+        // "Folyamatban…" szöveggel.
+        if (p.is_executable_type && (p.status === 'approved' || p.status === 'execution_failed' || p.status === 'executing')) {
+            proposalExecuteActions.style.display = '';
+            proposalExecuteBtn.disabled = p.status === 'executing';
+            proposalExecuteBtn.textContent = p.status === 'execution_failed' ? 'Újrapróbálás' : 'Végrehajtás';
+            proposalExecuteState.textContent = p.status === 'executing' ? 'Folyamatban…' : (p.status === 'execution_failed' ? (p.execution_error || 'Sikertelen.') : '');
+        } else {
+            proposalExecuteActions.style.display = 'none';
+        }
+
+        // Végrehajtás eredménye — csak 'executed'-nél, a kör 20. pontja
+        // szerinti strukturált eredményből, EGYÉRTELMŰ, "piszkozat"
+        // szóhasználattal (SOSE "elküldve"/"leadva").
+        if (p.status === 'executed' && p.execution_result && p.execution_result.action === 'reorder_draft') {
+            const r = p.execution_result;
+            proposalExecutionResultText.textContent = `Beszerzési rendelés tervezete létrehozva (#${r.reference_id}) — ${r.quantity} db.`;
+            proposalExecutionResultBox.style.display = '';
+        } else {
+            proposalExecutionResultBox.style.display = 'none';
+        }
     }
 
     async function loadProposals() {
@@ -394,7 +431,7 @@
                         <td>${p.created_at || ''}</td>
                         <td>${p.expires_at || ''}</td>
                         <td>${PROPOSAL_STATUS_LABELS[p.status] || p.status}</td>
-                        <td>${p.status === 'pending' ? 'Megnyitás →' : '—'}</td>
+                        <td>Megnyitás →</td>
                     </tr>
                 `).join('');
                 proposalsBody.querySelectorAll('tr[data-id]').forEach(row => {
@@ -409,16 +446,20 @@
         }
     }
 
+    async function fetchProposalDetail(id) {
+        const res = await fetch('/api/ai-action-proposal-detail.php?id=' + encodeURIComponent(id));
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || 'ismeretlen hiba');
+        return data.proposal;
+    }
+
     async function loadProposalDetail(id) {
         currentProposalId = id;
         proposalDetailFeedback.textContent = '';
         proposalDetailFeedback.className = 'modal-feedback';
         proposalRejectReason.value = '';
         try {
-            const res = await fetch('/api/ai-action-proposal-detail.php?id=' + encodeURIComponent(id));
-            const data = await res.json();
-            if (!res.ok || !data.ok) throw new Error(data.error || 'ismeretlen hiba');
-            currentProposalData = data.proposal;
+            currentProposalData = await fetchProposalDetail(id);
             renderProposalDetailRows(currentProposalData);
             proposalDetailBox.style.display = '';
         } catch (err) {
@@ -463,6 +504,47 @@
         }
     }
 
+    // Fázis 8B — a kör 13/19. pontja: a "Végrehajtás" EGY KÜLÖN, saját
+    // gomb/lépés — SOSE fut le automatikusan a jóváhagyáskor. A gomb a
+    // kérés alatt le van tiltva (dupla-kattintás elleni védelem), a
+    // válasz UTÁN pedig a friss szervertől kapott ÁLLAPOTOT (SOSE
+    // feltételezett sikert) jeleníti meg.
+    async function executeProposal() {
+        if (!currentProposalId) return;
+        proposalExecuteBtn.disabled = true;
+        proposalDetailFeedback.textContent = 'Végrehajtás folyamatban…';
+        proposalDetailFeedback.className = 'modal-feedback';
+        try {
+            const res = await fetch('/api/ai-action-proposal-execute.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: currentProposalId }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.ok) throw new Error(data.error || 'A végrehajtás nem sikerült.');
+            proposalDetailFeedback.textContent = data.already_executed
+                ? 'Ez a javaslat már korábban végrehajtásra került — az eredmény változatlan.'
+                : 'Végrehajtás sikeres.';
+            proposalDetailFeedback.className = 'modal-feedback success';
+            // Friss részletek lekérése a szervertől (SOSE feltételezett
+            // állapot) — ez frissíti az "Állapot"/"Végrehajtás eredménye"
+            // blokkot, a fenti visszajelző szöveg MEGŐRZÉSÉVEL (nem
+            // loadProposalDetail(), ami törölné azt).
+            currentProposalData = await fetchProposalDetail(currentProposalId);
+            renderProposalDetailRows(currentProposalData);
+            loadProposals();
+        } catch (err) {
+            proposalDetailFeedback.textContent = 'Hiba: ' + err.message;
+            proposalDetailFeedback.className = 'modal-feedback error';
+            try {
+                currentProposalData = await fetchProposalDetail(currentProposalId);
+                renderProposalDetailRows(currentProposalData);
+            } catch (e2) { /* a fenti hibaüzenet marad látható */ }
+        } finally {
+            proposalExecuteBtn.disabled = false;
+        }
+    }
+
     if (proposalsFilterBtn) {
         proposalsFilterBtn.addEventListener('click', () => { proposalsPage = 1; loadProposals(); });
     }
@@ -480,6 +562,9 @@
     }
     if (proposalRejectBtn) {
         proposalRejectBtn.addEventListener('click', () => reviewProposal('reject'));
+    }
+    if (proposalExecuteBtn) {
+        proposalExecuteBtn.addEventListener('click', executeProposal);
     }
     if (proposalsBody) {
         loadProposals();

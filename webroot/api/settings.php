@@ -246,6 +246,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($input['ai_action_proposal_ttl_hours'])) {
         $update['ai_action_proposal_ttl_hours'] = max(1, min(720, (int) $input['ai_action_proposal_ttl_hours']));
     }
+    // Fázis 8B — a végrehajtási mennyiség felső korlátja (lásd
+    // Settings::DEFAULTS['ai_reorder_draft_max_quantity'] docblokkja).
+    if (isset($input['ai_reorder_draft_max_quantity'])) {
+        $update['ai_reorder_draft_max_quantity'] = max(1, min(100000, (int) $input['ai_reorder_draft_max_quantity']));
+    }
     if (isset($input['audit_log_retention_days'])) {
         $update['audit_log_retention_days'] = max(1, (int) $input['audit_log_retention_days']);
     }

@@ -59,6 +59,7 @@ require_once __DIR__ . '/../src/Ai/OllamaProvisioner.php';
 require_once __DIR__ . '/../src/Ai/AiDailyIntelligence.php';
 require_once __DIR__ . '/../src/Ai/ActionProposal.php';
 require_once __DIR__ . '/../src/Ai/ActionProposalService.php';
+require_once __DIR__ . '/../src/Ai/ActionExecutor.php';
 
 /**
  * Minden tesztfüggvény saját, egyszer használatos SQLite fájllal dolgozik

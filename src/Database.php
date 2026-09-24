@@ -8,7 +8,7 @@ require_once __DIR__ . '/ClientHmac.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 31;
+    private const SCHEMA_VERSION = 32;
 
     private PDO $pdo;
     private string $driver;
@@ -216,6 +216,9 @@ class Database
             }
             if ($version < 31) {
                 $this->migrateV31ActionProposals();
+            }
+            if ($version < 32) {
+                $this->migrateV32ActionExecution();
             }
         }
 
@@ -1898,6 +1901,89 @@ class Database
                 $isMysql
                     ? 'CREATE UNIQUE INDEX idx_ai_action_proposals_fingerprint ON ai_action_proposals(fingerprint)'
                     : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_action_proposals_fingerprint ON ai_action_proposals(fingerprint)'
+            );
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+    }
+
+    /**
+     * Fázis 8B — Validated Action Execution. Két rész:
+     *
+     * 1. Hat ÚJ, végrehajtás-követő oszlop az ai_action_proposals táblán
+     *    (NEM külön execution_status oszlop — a MEGLÉVŐ `status` mezőt
+     *    bővíti a kör 4. pontja szerinti három ÚJ állapottal:
+     *    executing|executed|execution_failed — lásd ActionProposal.php
+     *    STATUSES docblokkja, miért NEM külön mező). A tényleges
+     *    végrehajtás-eredményt (`execution_result_json`) és a
+     *    determinisztikus végrehajtás-kulcsot (`execution_idempotency_key`)
+     *    is itt tároljuk — 1:1 kapcsolat a javaslattal, nincs ok külön
+     *    táblát nyitni csak ezekre.
+     *
+     * 2. ÚJ, SZÁNDÉKOSAN KICSI `purchase_order_drafts` tábla — lásd a kör
+     *    1./8./29. pontja: a MEGLÉVŐ `purchases`/`purchase_items` séma
+     *    ÁTVETT GOODS-at (ténylegesen beérkezett, készletet NÖVELŐ
+     *    tranzakciót) jelent — minden meglévő fogyasztója (getPurchase
+     *    Recommendations() "folyamatban" jelzése, getProductPurchaseHistory(),
+     *    wc_push_queue) erre az invariánsra épít. Egy "piszkozat" (még NEM
+     *    beérkezett, készletet NEM módosító) sort ebbe a táblába beszúrni
+     *    csendben MEGSÉRTENÉ ezt az invariánst máshol is. Ehelyett ez a
+     *    tábla egy SZÁNDÉKOSAN minimális, ÖNÁLLÓ, EGY-soros (nincs külön
+     *    tétel-tábla, mert egy Fázis 8A javaslat mindig PONTOSAN EGY
+     *    termékre vonatkozik) "beszerzési piszkozat" rekord — NEM egy
+     *    második, párhuzamos beszerzés-alrendszer: nincs saját
+     *    állapotgépe/workflow-ja/beszállító-integrációja, KIZÁRÓLAG egy
+     *    admin által később, a MEGLÉVŐ (változatlan) Beszerzés-felületen
+     *    manuálisan, kézzel rögzíthető valódi beszerzés forrásaként
+     *    szolgáló, átlátható jegyzék.
+     */
+    private function migrateV32ActionExecution(): void
+    {
+        $isMysql = $this->driver === 'mysql';
+        $pk = $isMysql ? 'INT UNSIGNED AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
+        $ts = $isMysql ? 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' : "TEXT NOT NULL DEFAULT (datetime('now'))";
+
+        $newColumns = [
+            'execution_started_at' => 'TEXT',
+            'executed_at' => 'TEXT',
+            'execution_failed_at' => 'TEXT',
+            'execution_result_json' => 'TEXT',
+            'execution_error' => $isMysql ? 'VARCHAR(500)' : 'TEXT',
+            'execution_idempotency_key' => 'VARCHAR(128)',
+        ];
+        foreach ($newColumns as $name => $definition) {
+            try {
+                $this->pdo->exec("ALTER TABLE ai_action_proposals ADD COLUMN $name $definition");
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+        }
+
+        try {
+            $this->pdo->exec("CREATE TABLE IF NOT EXISTS purchase_order_drafts (
+                id                     $pk,
+                proposal_id            INTEGER NOT NULL,
+                product_id             INTEGER NOT NULL,
+                product_name           VARCHAR(191) NOT NULL,
+                supplier_id            INTEGER,
+                quantity               INTEGER NOT NULL,
+                unit_cost_net          REAL,
+                unit_cost_gross        REAL,
+                estimated_total_net    REAL,
+                estimated_total_gross  REAL,
+                status                 VARCHAR(16) NOT NULL DEFAULT 'draft',
+                created_at             $ts
+            )" . ($isMysql ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : ''));
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        try {
+            $this->pdo->exec(
+                $isMysql
+                    ? 'CREATE UNIQUE INDEX idx_purchase_order_drafts_proposal_id ON purchase_order_drafts(proposal_id)'
+                    : 'CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_order_drafts_proposal_id ON purchase_order_drafts(proposal_id)'
+            );
+        } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+        try {
+            $this->pdo->exec(
+                $isMysql
+                    ? 'CREATE INDEX idx_purchase_order_drafts_product_id ON purchase_order_drafts(product_id)'
+                    : 'CREATE INDEX IF NOT EXISTS idx_purchase_order_drafts_product_id ON purchase_order_drafts(product_id)'
             );
         } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
     }
@@ -6776,6 +6862,157 @@ class Database
         $stmt = $this->pdo->prepare("UPDATE ai_action_proposals SET status = 'expired', updated_at = ? WHERE status = 'pending' AND expires_at <= ?");
         $stmt->execute([$now, $now]);
         return $stmt->rowCount();
+    }
+
+    // ---------------------------------------------------------------
+    // AI Action Execution — validált végrehajtás (Fázis 8B)
+    // ---------------------------------------------------------------
+
+    /**
+     * Atomi "foglalás" — UGYANAZ a minta, mint approveActionProposal()/
+     * markActionProposalStale(): a $fromStatuses lista bármelyikéből
+     * indulhat (első végrehajtás: 'approved'; újrapróbálkozás: 'execution_
+     * failed'), de a WHERE-feltétel (SOSE egy megelőző SELECT) az
+     * EGYETLEN döntési pont — két versengő hívás közül csak az egyik
+     * UPDATE-je talál még megfelelő állapotú sort. A determinisztikus
+     * végrehajtás-kulcsot (execution_idempotency_key — a kör 11. pontja:
+     * "based on proposal identity", SOSE véletlen) is ITT rögzítjük, a
+     * foglalással egy atomi lépésben.
+     *
+     * A WHERE-feltétel EGY további ággal is rendelkezik — UGYANAZZAL az
+     * "elavult 'running'/'executing' sor újra lefoglalható" mintával,
+     * mint claimAiDailyReportSlot() (lásd ott a docblokkja): ha a PHP-
+     * folyamat a claim UTÁN, de a tényleges tranzakció ELŐTT/KÖZBEN
+     * összeomlana, a sor SOSE ragadna örökre 'executing' állapotban —
+     * ez védi a kör 21/24.18. pontja ("ambiguous execution protected")
+     * elvárását anélkül, hogy VAKON újrapróbálná (csak a staleAfterMinutes
+     * ablakon TÚL, admin által ténylegesen látható/naplózott állapotban).
+     *
+     * @param string[] $fromStatuses
+     */
+    public function claimActionProposalExecution(int $id, array $fromStatuses, int $staleExecutingAfterMinutes = 30): bool
+    {
+        if (!$fromStatuses) {
+            return false;
+        }
+        $now = date('Y-m-d H:i:s');
+        $idempotencyKey = 'ai_proposal_' . $id;
+        $staleCutoff = date('Y-m-d H:i:s', strtotime("-$staleExecutingAfterMinutes minutes"));
+        $placeholders = implode(',', array_fill(0, count($fromStatuses), '?'));
+        $stmt = $this->pdo->prepare("
+            UPDATE ai_action_proposals
+            SET status = 'executing', execution_started_at = ?, execution_idempotency_key = ?, updated_at = ?
+            WHERE id = ? AND (status IN ($placeholders) OR (status = 'executing' AND execution_started_at < ?))
+        ");
+        $stmt->execute(array_merge([$now, $idempotencyKey, $now, $id], $fromStatuses, [$staleCutoff]));
+        return $stmt->rowCount() === 1;
+    }
+
+    /**
+     * A tényleges üzleti mutáció (pl. createPurchaseOrderDraft()) UTÁN,
+     * UGYANABBAN a nyitott tranzakcióban hívva (lásd ActionExecutor::
+     * execute()). Bound: a $resultJson hosszát a HÍVÓ (ActionExecutor)
+     * felelőssége korlátozni — UGYANAZ az elv, mint
+     * finalizeAiDailyReport() findings_json/report_text mezőinél (lásd
+     * ott a docblokkja) — ez a metódus csak perzisztál.
+     */
+    public function finalizeActionProposalExecution(int $id, string $resultJson): void
+    {
+        $now = date('Y-m-d H:i:s');
+        $stmt = $this->pdo->prepare("
+            UPDATE ai_action_proposals
+            SET status = 'executed', executed_at = ?, execution_result_json = ?, updated_at = ?
+            WHERE id = ? AND status = 'executing'
+        ");
+        $stmt->execute([$now, $resultJson, $now, $id]);
+    }
+
+    /**
+     * A jóváhagyás-előtti markActionProposalStale()-től (status='pending'
+     * kiindulás) SZÁNDÉKOSAN KÜLÖN metódus — ez a végrehajtás KÖZBEN
+     * (status='executing' kiindulás) felfedezett elavulásra vonatkozik
+     * (a kör 6. pontja: "re-fetch current business state" a tényleges
+     * mutáció ELŐTT is). A két hívási hely SOSE keveredhet össze egy
+     * közös, paraméterezett WHERE-feltétellel anélkül, hogy elveszítenénk
+     * az explicit dokumentációt, melyik eset mikor fordulhat elő.
+     */
+    public function markActionProposalExecutionStale(int $id): bool
+    {
+        $now = date('Y-m-d H:i:s');
+        $stmt = $this->pdo->prepare("UPDATE ai_action_proposals SET status = 'stale', updated_at = ? WHERE id = ? AND status = 'executing'");
+        $stmt->execute([$now, $id]);
+        return $stmt->rowCount() === 1;
+    }
+
+    /**
+     * Biztonságos, SOSE nyers kivétel-szöveget/stack trace-t tároló
+     * hiba-rögzítés — a hívó (ActionExecutor) felelőssége EGY bounded,
+     * biztonságos üzenetet átadni (lásd a kör 16. pontja: "no stack
+     * traces"), ez a metódus csak perzisztál.
+     */
+    public function failActionProposalExecution(int $id, string $boundedError): bool
+    {
+        $now = date('Y-m-d H:i:s');
+        $stmt = $this->pdo->prepare("
+            UPDATE ai_action_proposals
+            SET status = 'execution_failed', execution_failed_at = ?, execution_error = ?, updated_at = ?
+            WHERE id = ? AND status = 'executing'
+        ");
+        $stmt->execute([$now, $boundedError, $now, $id]);
+        return $stmt->rowCount() === 1;
+    }
+
+    /**
+     * ÚJ, SZÁNDÉKOSAN minimális "beszerzési piszkozat" sor — lásd
+     * Database::migrateV32ActionExecution() docblokkja, miért NEM a
+     * meglévő purchases/purchase_items táblába kerül. Egyedi index a
+     * proposal_id oszlopon — ez a végrehajtás-idempotencia MÁSODIK,
+     * DB-szintű védelmi rétege (az ELSŐ az atomi claimActionProposal
+     * Execution() állapotátmenet) — egy esetleges verseny esetén a
+     * második INSERT PDOException-t dobna (UNIQUE constraint), amit az
+     * ActionExecutor Throwable-ágon kap el és 'execution_failed'-ként
+     * rögzít, SOSE hoz létre két piszkozatot.
+     *
+     * @return int az új sor id-ja
+     */
+    public function createPurchaseOrderDraft(array $data): int
+    {
+        $stmt = $this->pdo->prepare('
+            INSERT INTO purchase_order_drafts (
+                proposal_id, product_id, product_name, supplier_id, quantity,
+                unit_cost_net, unit_cost_gross, estimated_total_net, estimated_total_gross,
+                status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, \'draft\', ?)
+        ');
+        $stmt->execute([
+            $data['proposal_id'],
+            $data['product_id'],
+            $data['product_name'],
+            $data['supplier_id'] ?? null,
+            $data['quantity'],
+            $data['unit_cost_net'] ?? null,
+            $data['unit_cost_gross'] ?? null,
+            $data['estimated_total_net'] ?? null,
+            $data['estimated_total_gross'] ?? null,
+            date('Y-m-d H:i:s'),
+        ]);
+        return (int) $this->pdo->lastInsertId();
+    }
+
+    public function getPurchaseOrderDraft(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM purchase_order_drafts WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    public function findPurchaseOrderDraftByProposalId(int $proposalId): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM purchase_order_drafts WHERE proposal_id = ?');
+        $stmt->execute([$proposalId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
     }
 
     // ---------------------------------------------------------------

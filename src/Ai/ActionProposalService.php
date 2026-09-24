@@ -371,8 +371,13 @@ final class ActionProposalService
      * csökkenés) elavulttá teszi a javaslatot — determinisztikus,
      * SZIGORÚ egyezés-vizsgálat, nincs "elég közeli" tolerancia-sáv,
      * amit valaki vitathatna.
+     *
+     * Fázis 8B — PUBLIC, mert az ActionExecutor UGYANEZT az ellenőrzést
+     * futtatja a végrehajtás-claim UTÁN, a tényleges mutáció ELŐTT (a
+     * kör 6. pontja: "Before execution, re-fetch current business
+     * state") — nincs ok duplikálni ezt a logikát egy második helyen.
      */
-    private function isStale(array $proposal): bool
+    public function isStale(array $proposal): bool
     {
         if ($proposal['entity_type'] !== 'product') {
             return false;

@@ -54,4 +54,75 @@ final class ActionProposalCopilotBoundaryTest extends TestCase
         sort($toolNames);
         $this->assertSame(['ask_anomaly_agent', 'ask_inventory_agent', 'ask_sales_agent'], $toolNames);
     }
+
+    // ------------------------------------------------------------------
+    // Fázis 8B — a kör 17. pontja: "DO NOT give the LLM an execute tool.
+    // Do NOT add execute_action/approve_proposal/reject_proposal to
+    // ToolRegistry." Forrás- ÉS futásidejű bizonyíték, hogy SEM a
+    // Copilot, SEM a három domain-agent nem kapott ilyen eszközt.
+    // ------------------------------------------------------------------
+
+    public function testNoAiSourceFileReferencesActionExecutorOrExecuteTools(): void
+    {
+        $srcDir = dirname(__DIR__) . '/src/Ai';
+        $forbiddenNeedles = ['execute_action', 'approve_proposal', 'reject_proposal'];
+        $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($srcDir, FilesystemIterator::SKIP_DOTS));
+        foreach ($iterator as $file) {
+            if ($file->getExtension() !== 'php') {
+                continue;
+            }
+            $path = $file->getPathname();
+            // Az ActionExecutor/ExecutableActionStrategy/Executors/* fájlok
+            // MAGUK a végrehajtási keretrendszer — értelemszerűen
+            // tartalmazzák a saját nevüket/fogalmaikat; ez a teszt azt
+            // ellenőrzi, hogy a TOOL-regisztráló agent-fájlok (Copilot/
+            // InventoryAgent/SalesAgent/AnomalyAgent) SOSE hivatkoznak
+            // ezekre mint LLM-nek felkínált eszközre.
+            if (str_contains($path, DIRECTORY_SEPARATOR . 'Executors' . DIRECTORY_SEPARATOR)
+                || str_ends_with($path, 'ActionExecutor.php')
+                || str_ends_with($path, 'ExecutableActionStrategy.php')
+                || str_ends_with($path, 'ActionExecutionStaleException.php')
+                || str_ends_with($path, 'ActionProposal.php')
+                || str_ends_with($path, 'ActionProposalService.php')
+            ) {
+                continue;
+            }
+            $source = strtolower((string) file_get_contents($path));
+            foreach ($forbiddenNeedles as $needle) {
+                $this->assertStringNotContainsString($needle, $source, "$path SOSE hivatkozhat '$needle'-re — az LLM nem kaphat végrehajtási/jóváhagyási eszközt.");
+            }
+        }
+    }
+
+    public function testInventorySalesAnomalyAgentToolRegistriesContainNoExecuteTool(): void
+    {
+        $db = tests_new_database();
+        $capturedByAgent = [];
+
+        foreach (['InventoryAgent', 'SalesAgent', 'AnomalyAgent'] as $agentClass) {
+            $captured = null;
+            $provider = new class($captured) implements AiProviderInterface {
+                private $captured;
+                public function __construct(&$captured) { $this->captured = &$captured; }
+                public function name(): string { return 'fake'; }
+                public function chat(array $messages, array $tools): AiChatResponse
+                {
+                    $this->captured = $tools;
+                    return new AiChatResponse('Teszt válasz.', []);
+                }
+                public function checkAvailability(): AiAvailability { return AiAvailability::available(); }
+            };
+            $agent = new $agentClass($provider, $db, []);
+            $agent->answer('Teszt kérdés.');
+            $capturedByAgent[$agentClass] = $captured;
+        }
+
+        foreach ($capturedByAgent as $agentClass => $tools) {
+            $this->assertNotNull($tools, "$agentClass nem kapott eszközlistát a teszthez.");
+            $toolNames = array_map(static fn(ToolDefinition $t) => strtolower($t->name), $tools);
+            foreach (['execute_action', 'approve_proposal', 'reject_proposal', 'execute'] as $forbidden) {
+                $this->assertNotContains($forbidden, $toolNames, "$agentClass ToolRegistry-je SOSE tartalmazhat '$forbidden' nevű eszközt.");
+            }
+        }
+    }
 }

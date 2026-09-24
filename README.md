@@ -4497,6 +4497,214 @@ javítás UTÁN (lásd fent "Auth::currentStaffId() NULLABLE marad")
 mindkét művelet helyesen sikeres volt. A teszt-adatok (termék+javaslat)
 a böngésző-ellenőrzés UTÁN törölve lettek a fejlesztői adatbázisból.
 
+### Validated Action Execution (Fázis 8B)
+
+**A folyamat teljes lánca**:
+
+```
+AI-megállapítás → Javaslat → Emberi jóváhagyás → Friss revalidáció →
+  Kontrollált backend-végrehajtás → Audit → Eredmény
+```
+
+**KRITIKUS BIZTONSÁGI SZABÁLY**: az AI/LLM SOSE hajt végre üzleti
+műveletet közvetlenül. A modell KIZÁRÓLAG azonosíthat/magyarázhat/
+javasolhat — a végrehajtás KIZÁRÓLAG egy MÁR jóváhagyott
+`ActionProposal`-ból, egy determinisztikus, LLM-hívás nélküli backend-
+komponensen (`ActionExecutor`) keresztül történhet.
+
+#### Architektúra
+
+- **`src/Ai/ActionExecutor.php`** — az EGYETLEN hely, ahol egy jóváhagyott
+  javaslat ténylegesen üzleti mutációvá válhat. Szigorú, KÓDBA ÉGETETT
+  `match`-leképezés (`EXECUTABLE_TYPES`, jelenleg KIZÁRÓLAG
+  `reorder_draft`) — SOSE dinamikus osztálynév-feloldás. `inventory_review`/
+  `sales_review` SOSE végrehajtható, informatív marad.
+- **`src/Ai/ExecutableActionStrategy.php`** — a konkrét végrehajtási
+  stratégiák szerződése; egy MÁR NYITOTT tranzakción belül fut.
+- **`src/Ai/Executors/ReorderDraftExecutor.php`** — a `reorder_draft`
+  EGYETLEN stratégiája (lásd lent, miért ÚJ, KÜLÖN táblába ír).
+- **`src/Ai/ActionExecutionStaleException.php`** — a stratégia EZT dobja,
+  ha az üzleti állapot már nem támasztja alá a javaslatot (az
+  `ActionExecutor` ezt `stale`-ként, NEM `execution_failed`-ként kezeli).
+
+#### Miért nem a meglévő `purchases` tábla?
+
+A kör 1./8./29. pontja kifejezetten megkövetelte a MEGLÉVŐ üzleti modell
+átvizsgálását, mielőtt bármit implementálnánk. A vizsgálat eredménye: a
+MEGLÉVŐ `purchases`/`purchase_items` tábla EREDETI (Fázis 1 előtti)
+jelentése "ténylegesen BEÉRKEZETT, készletet NÖVELŐ" beszerzés — minden
+meglévő fogyasztója (`Database::getPurchaseRecommendations()` "folyamatban"
+jelzése, `getProductPurchaseHistory()`, a WooCommerce-push-beütemezés)
+erre az invariánsra épít. Egy "piszkozat" (még NEM beérkezett, készletet
+NEM módosító) sort ebbe a táblába beszúrni csendben MEGSÉRTENÉ ezt az
+invariánst máshol is. A kör explicit engedte, hogy "ha egy külön
+végrehajtás-tábla tisztább a domainnek, azt kell használni" — ezért egy
+SZÁNDÉKOSAN minimális, ÖNÁLLÓ `purchase_order_drafts` tábla jött létre
+(lásd `Database::migrateV32ActionExecution()`): NEM egy második,
+párhuzamos beszerzés-alrendszer — nincs saját állapotgépe/workflow-ja/
+beszállító-integrációja, KIZÁRÓLAG egy admin által később, a MEGLÉVŐ
+(változatlan) Beszerzés-felületen manuálisan rögzíthető valódi beszerzés
+forrásaként szolgáló, átlátható jegyzék.
+
+A `reorder_draft` végrehajtása KIZÁRÓLAG:
+- ÚJ sort ír a `purchase_order_drafts` táblába.
+
+SOSE:
+- módosítja `products.stock_qty`-t;
+- módosítja `products.purchase_price_net`-et;
+- küld bármit beszállítónak/külső rendszernek;
+- hoz létre WooCommerce-push sort;
+- jelöli "beérkezettnek"/"kifizetettnek" a piszkozatot.
+
+#### Mennyiség-biztonság
+
+A végrehajtási mennyiséget SOSE a javaslat létrehozásakori evidence-e
+adja (a Fázis 8A `reorder_draft` evidence-e egyébként sem tartalmaz
+mennyiséget) — `ReorderDraftExecutor` MINDIG, a végrehajtás
+PILLANATÁBAN számítja, a MEGLÉVŐ, a Beszerzési javaslat oldal által is
+használt `PurchaseDecisionService::recommendedQuantity()`-vel (friss
+`products.low_stock_threshold`/`Database::getStockForecastBulk()`
+bemenetből), majd egy admin által állítható felső korlát
+(`ai_reorder_draft_max_quantity`, alapértelmezett 500) is védi.
+
+#### Friss revalidáció (stale validation)
+
+Az `ActionExecutor` a claim UTÁN, a tényleges mutáció ELŐTT ÚJRA
+lefuttatja a MEGLÉVŐ `ActionProposalService::isStale()` ellenőrzést
+(UGYANAZT, mint a Fázis 8A jóváhagyás-előtti revalidáció, most `public`
+láthatósággal, nem duplikálva) — ha a készlet időközben megváltozott, a
+javaslat `stale`-re vált, a végrehajtás LEÁLL. A `ReorderDraftExecutor`
+TOVÁBBI, saját ellenőrzéseket is végez: a termék létezik-e/nincs-e
+törölve, a kiszámított mennyiség pozitív-e (ha a készlet időközben
+rendben van, "nincs mit rendelni" → szintén `stale`).
+
+#### Állapotgép
+
+A MEGLÉVŐ `status` mező (NEM külön `execution_status` oszlop) HÁROM ÚJ
+értékkel bővült:
+
+```
+pending → approved → executing → executed
+                            └──→ stale            (üzleti állapot elavult)
+                            └──→ execution_failed  (technikai hiba)
+execution_failed → (retry, UGYANAZZAL az execute()-tal) → executing → …
+```
+
+"Jóváhagyva" és "Végrehajtva" SOSE keveredik — sem a backend, sem a UI
+szóhasználatában.
+
+#### Idempotencia és konkurrencia
+
+- **Claim** (`Database::claimActionProposalExecution()`) — atomi
+  `UPDATE ... WHERE status IN ('approved','execution_failed') OR
+  (status='executing' AND execution_started_at < staleCutoff)`, UGYANAZ
+  a minta, mint `approveActionProposal()`/`claimAiDailyReportSlot()`. A
+  determinisztikus végrehajtás-kulcsot (`execution_idempotency_key =
+  'ai_proposal_' . $id`) is itt rögzíti.
+- **Tranzakció** — a tényleges mutáció (`createPurchaseOrderDraft()`) ÉS
+  az állapot `executed`-re váltása (`finalizeActionProposalExecution()`)
+  UGYANABBAN a nyitott DB-tranzakcióban történik — vagy MINDKETTŐ
+  commitolódik, vagy EGYIK SEM (nincs "félkész" állapot).
+- **Duplikátum-védelem** — egy MÁR `executed` javaslatra az
+  `ActionExecutor` a PERZISZTÁLT eredményt adja vissza, SOSE fut le
+  újra a mutáció.
+- **"Elakadt" végrehajtás** (a folyamat a claim UTÁN, a tranzakció
+  ELŐTT/KÖZBEN összeomlik) — a `staleExecutingAfterMinutes` (alapértelmezett
+  30 perc, `ai_action_execution_stale_minutes`) ablakon BELÜL a sor
+  `already_executing`-ot ad (SOSE próbálja VAKON újra — a kör 21. pontja:
+  "do not blindly retry"), az ablakon TÚL újra lefoglalható.
+- **VALÓDI, 12 párhuzamos folyamatos bizonyíték**
+  (`tests/ActionExecutionConcurrencyTest.php`): két egyidejű végrehajtás
+  → pontosan EGY piszkozat; végrehajtás versenyhelyzetben egy közben
+  bekövetkező készletváltozással → NULLA mutáció (stale); két egyidejű
+  újrapróbálkozás egy sikertelen kísérlet után → pontosan EGY piszkozat.
+
+#### Jóváhagyás vs. végrehajtás — külön emberi döntési pont
+
+A UI-n a "Jóváhagyás" és a "Végrehajtás" KÉT KÜLÖN gomb, KÉT KÜLÖN
+kattintás — a jóváhagyás SOSE indít automatikus végrehajtást. Csak
+végrehajtható TÍPUSÚ, `approved` (vagy `execution_failed`,
+újrapróbálkozáshoz) állapotú javaslatoknál jelenik meg a "Végrehajtás"
+gomb; `executing` alatt a gomb le van tiltva ("Folyamatban…" felirattal).
+
+#### Végpont
+
+`POST /api/ai-action-proposal-execute.php` — `require_admin` + a MEGLÉVŐ
+globális CSRF-réteg. KIZÁRÓLAG a javaslat `id`-jét fogadja el a
+böngészőtől — SEMMILYEN egyéb paramétert (típus, mennyiség, beszállító,
+ár) nem fogad el; minden érték a szerveren, friss lekérdezésekből
+származik.
+
+#### Jogosultság, Client/Server, biztonság
+
+UGYANAZ az admin-only jogosultsági modell, mint a Fázis 8A jóváhagyás/
+elutasítás. A Kliens node a MEGLÉVŐ `ClientProxy`-n keresztül
+változtatás nélkül továbbítja a végrehajtási kérést — a Kliens SOSE
+futtat `ActionExecutor`-t helyben, SOSE mutál helyi adatot (a Kliensnek
+strukturálisan SOSE volt saját `data/` könyvtára/adatbázisa). Valódi,
+két-folyamatos HTTP-teszttel bizonyítva
+(`tests/ActionExecuteClientServerHttpTest.php`).
+
+#### Audit
+
+Teljes életciklus-naplózás a MEGLÉVŐ két mechanizmuson (`logSystemEvent`
++ `logAudit`) keresztül — `execution_requested`/`execution_started`/
+`execution_succeeded`/`execution_failed`/`execution_rejected`/`stale`/
+`concurrent_execution`. SOSE nyers kivétel-szöveget/stack trace-t —
+minden hibaüzenet bounded és a hívó felé egy előre megírt, biztonságos
+szöveg megy.
+
+#### Copilot/agentek — SOSE kapnak végrehajtási eszközt
+
+A kör 17. pontja explicit tiltja, hogy az LLM végrehajtási/jóváhagyási
+eszközt kapjon. Az `AiCopilot.php`/`InventoryAgent.php`/`SalesAgent.php`/
+`AnomalyAgent.php` EGYIKE sem módosult — mind a négy `ToolRegistry`-je
+forrás- ÉS futásidejű ellenőrzéssel bizonyítottan NEM tartalmaz
+`execute_action`/`approve_proposal`/`reject_proposal` nevű eszközt
+(`tests/ActionProposalCopilotBoundaryTest.php`).
+
+#### Napi Intelligencia
+
+Változatlan — továbbra is KIZÁRÓLAG javaslatot hozhat létre
+(`AiDailyIntelligence::maybeCreateActionProposals()`), a végrehajtáshoz
+SOHA nincs hozzáférése.
+
+#### Provider-neutralitás
+
+A végrehajtás a jóváhagyás UTÁN teljesen determinisztikus — az
+`ActionExecutor`/`ReorderDraftExecutor` SOSE hív AI-providert, a
+javaslatot generáló provider (Ollama/Anthropic/OpenAI) kizárólag
+metaadatként (`provider`/`model` oszlop) él tovább, a végrehajtási
+logikát NEM befolyásolja.
+
+#### Automatizált tesztek (Fázis 8B)
+
+- `tests/ActionExecutorTest.php` (19) — a kör 24. pontjának 18 esete +
+  1 kiegészítő (elakadt "executing" újra-lefoglalása az ablakon túl).
+- `tests/ActionExecutionConcurrencyTest.php` (3) — VALÓDI, 12 párhuzamos
+  `proc_open`-folyamatos bizonyíték (A/B/C eset, lásd fent).
+- `tests/ActionProposalExecuteEndpointHttpTest.php` (11) — VALÓDI HTTP,
+  hitelesítés/jogosultság/CSRF/érvénytelen-állapot/siker/duplikátum/
+  nincs kivétel-szivárgás/nincs valódi készletváltozás.
+- `tests/ActionExecuteClientServerHttpTest.php` (3) — VALÓDI, két
+  `php -S`-folyamatos Kliens+Szerver.
+- `tests/ActionProposalCopilotBoundaryTest.php` bővítve (+2) — SEM a
+  Copilot, SEM a három domain-agent nem kapott végrehajtási eszközt.
+
+#### Valódi böngésző-ellenőrzés (Fázis 8B)
+
+A tényleges fejlesztői példányon egy valódi, jóváhagyott, végrehajtható
+(`reorder_draft`) javaslat lett létrehozva (közvetlen `ActionProposalService`-
+hívással, LLM-hívás nélkül — a végrehajtási keretrendszer maga sem hív
+providert), majd a `Javaslatok` fülön böngészőben megnyitva és
+végrehajtva: az állapot AZONNAL "✓ Jóváhagyva"-ról "✅ Végrehajtva"-ra
+váltott, a "Végrehajtás" gomb eltűnt, és a "Beszerzési rendelés
+tervezete létrehozva (#1) — 17 db." szöveg jelent meg (a determinisztikusan
+kiszámított, VALÓDI mennyiséggel). A hálózati napló megerősítette, hogy a
+végpont 200 OK-t adott, és a lista is azonnal frissült. A teszt-adatok
+(termék+javaslat+piszkozat) a böngésző-ellenőrzés UTÁN törölve lettek a
+fejlesztői adatbázisból.
+
 ### Ismert korlátok
 
 - **Kizárólag olvasás** — sem az Inventory, sem a Sales, sem az Anomaly
@@ -4683,10 +4891,37 @@ a böngésző-ellenőrzés UTÁN törölve lettek a fejlesztői adatbázisból.
   "elég közeli" tolerancia-sáv). Ha egy jövőbeli javaslat-típus más
   kulcsfontosságú mezőt is hordozna, az `ActionProposalService::
   isStale()` bővítése szükséges hozzá.
-- **Fázis 8B (validált backend-végrehajtás) NINCS ebben a körben** — a
-  jóváhagyás KIZÁRÓLAG a javaslat állapotát változtatja meg, SOSE
-  hajt végre tényleges készlet-, ár-, rendelés-, kassza-, vevő- vagy
-  számlaváltoztatást. Egy jóváhagyott javaslat alapján a tényleges
-  üzleti lépést az érintett FountainTrade-felületen (pl. Beszerzések,
-  Árucikkek) a boltvezető/dolgozó manuálisan hajtja végre — ez a
-  Fázis 8A szándékolt, végleges hatásköre, nem egy átmeneti korlát.
+- **Fázis 8A-ban (a jóváhagyásig) a jóváhagyás önmagában SOSE hajt végre
+  üzleti műveletet** — ez változatlanul igaz Fázis 8B UTÁN is: a
+  jóváhagyás ÉS a végrehajtás KÉT KÜLÖN, ember által indított lépés
+  (lásd "Validated Action Execution (Fázis 8B)" fent).
+- **Fázis 8B KIZÁRÓLAG a `reorder_draft` típust teszi végrehajthatóvá,
+  ÉS csak egy beszerzési PISZKOZAT szintjéig** — a piszkozatot egy
+  admin a MEGLÉVŐ, változatlan Beszerzés-felületen kézzel viheti át
+  valódi beszerzéssé (lásd a README "Miért nem a meglévő `purchases`
+  tábla?" szakasza). `inventory_review`/`sales_review` továbbra is
+  KIZÁRÓLAG informatív marad — SOSE válik végrehajthatóvá.
+- **Nincs beszállítói/külső integráció** — a `purchase_order_drafts`
+  sor SOSE kerül elküldésre beszállítónak, e-mailben, vagy külső
+  procurement-API-n keresztül; ez explicit, szándékolt jövőbeli
+  bővítési terület (egy leendő Fázis 8C-szerű kör), nem hiányosság.
+- **Nincs UI a `purchase_order_drafts` piszkozatok önálló
+  böngészéséhez/listázásához** — a piszkozat eredménye (mennyiség,
+  azonosító) KIZÁRÓLAG a kiváltó `ActionProposal` "Javaslatok"
+  fülön/részletnézetében jelenik meg; egy admin, aki a piszkozatot meg
+  akarja találni, jelenleg az adatbázist vagy egy jövőbeli dedikált
+  admin-nézetet kell hogy használjon.
+- **A mennyiség-számítás egyetlen, MEGLÉVŐ képletre
+  (`PurchaseDecisionService::recommendedQuantity()`) épül** — nincs
+  beszállítónkénti minimum-rendelési-mennyiség/szállítási-idő
+  figyelembevétele (a jelenlegi adatmodell ezeket nem tárolja, lásd
+  `PurchaseDecisionService.php` osztály-docblokkja) — csak az admin
+  által állítható globális felső korlát (`ai_reorder_draft_max_quantity`)
+  védi a szélsőséges eseteket.
+- **Az "elakadt" (claim után összeomlott folyamat miatt `executing`-ben
+  ragadt) végrehajtás csak egy IDŐALAPÚ ablak (alapértelmezett 30 perc)
+  UTÁN foglalható újra** — eddig az ablakig egy admin `already_executing`
+  választ kap, ha újra próbálkozik; ez SZÁNDÉKOS (a kör 21. pontja:
+  "do not blindly retry" egy kétértelmű állapotra), de azt jelenti,
+  hogy egy ténylegesen elakadt (nem csak lassan futó) végrehajtás nem
+  észlelhető/oldható fel azonnal a UI-ból.

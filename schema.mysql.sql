@@ -777,12 +777,38 @@ CREATE TABLE IF NOT EXISTS ai_action_proposals (
     reviewed_at       DATETIME NULL,
     reviewed_by       INT NULL,
     rejection_reason  VARCHAR(500),
+    -- Fázis 8B — lásd schema.sql azonos szakasza / Database::migrateV32ActionExecution().
+    execution_started_at      DATETIME NULL,
+    executed_at               DATETIME NULL,
+    execution_failed_at       DATETIME NULL,
+    execution_result_json     TEXT,
+    execution_error           VARCHAR(500),
+    execution_idempotency_key VARCHAR(128),
     INDEX idx_ai_action_proposals_status (status),
     INDEX idx_ai_action_proposals_created_at (created_at),
     INDEX idx_ai_action_proposals_expires_at (expires_at),
     INDEX idx_ai_action_proposals_agent (agent),
     INDEX idx_ai_action_proposals_type (proposal_type),
     UNIQUE KEY idx_ai_action_proposals_fingerprint (fingerprint)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Fázis 8B — lásd schema.sql azonos szakasza (miért KÜLÖN, minimális
+-- tábla, nem a meglévő purchases/purchase_items).
+CREATE TABLE IF NOT EXISTS purchase_order_drafts (
+    id                     INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    proposal_id            INT NOT NULL,
+    product_id             INT NOT NULL,
+    product_name           VARCHAR(191) NOT NULL,
+    supplier_id            INT NULL,
+    quantity               INT NOT NULL,
+    unit_cost_net          DECIMAL(12,2),
+    unit_cost_gross        DECIMAL(12,2),
+    estimated_total_net    DECIMAL(12,2),
+    estimated_total_gross  DECIMAL(12,2),
+    status                 VARCHAR(16) NOT NULL DEFAULT 'draft',
+    created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY idx_purchase_order_drafts_proposal_id (proposal_id),
+    INDEX idx_purchase_order_drafts_product_id (product_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO schema_version (version)

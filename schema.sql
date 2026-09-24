@@ -742,7 +742,17 @@ CREATE TABLE IF NOT EXISTS ai_action_proposals (
     expires_at        TEXT NOT NULL,
     reviewed_at       TEXT,
     reviewed_by       INTEGER,
-    rejection_reason  VARCHAR(500)
+    rejection_reason  VARCHAR(500),
+    -- Fázis 8B — Validated Action Execution (lásd
+    -- Database::migrateV32ActionExecution() docblokkja). A `status`
+    -- SZÁNDÉKOSAN a MEGLÉVŐ oszlop, három ÚJ értékkel bővítve
+    -- (executing|executed|execution_failed) — nincs külön execution_status.
+    execution_started_at      TEXT,
+    executed_at               TEXT,
+    execution_failed_at       TEXT,
+    execution_result_json     TEXT,
+    execution_error           TEXT,
+    execution_idempotency_key VARCHAR(128)
 );
 CREATE INDEX IF NOT EXISTS idx_ai_action_proposals_status ON ai_action_proposals(status);
 CREATE INDEX IF NOT EXISTS idx_ai_action_proposals_created_at ON ai_action_proposals(created_at);
@@ -750,5 +760,28 @@ CREATE INDEX IF NOT EXISTS idx_ai_action_proposals_expires_at ON ai_action_propo
 CREATE INDEX IF NOT EXISTS idx_ai_action_proposals_agent ON ai_action_proposals(agent);
 CREATE INDEX IF NOT EXISTS idx_ai_action_proposals_type ON ai_action_proposals(proposal_type);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_action_proposals_fingerprint ON ai_action_proposals(fingerprint);
+
+-- Fázis 8B — a MEGLÉVŐ purchases/purchase_items tábla EREDETI (Fázis 1
+-- előtti) jelentése "ténylegesen beérkezett, készletet növelő" beszerzés
+-- — egy piszkozat sort oda beszúrni megsértené ezt máshol is (lásd
+-- Database::migrateV32ActionExecution() docblokkja). Ez itt egy
+-- SZÁNDÉKOSAN minimális, KÜLÖN, egy-soros "beszerzési piszkozat" —
+-- NEM egy második beszerzés-alrendszer.
+CREATE TABLE IF NOT EXISTS purchase_order_drafts (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id            INTEGER NOT NULL,
+    product_id             INTEGER NOT NULL,
+    product_name           VARCHAR(191) NOT NULL,
+    supplier_id            INTEGER,
+    quantity               INTEGER NOT NULL,
+    unit_cost_net          REAL,
+    unit_cost_gross        REAL,
+    estimated_total_net    REAL,
+    estimated_total_gross  REAL,
+    status                 VARCHAR(16) NOT NULL DEFAULT 'draft',
+    created_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_order_drafts_proposal_id ON purchase_order_drafts(proposal_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_order_drafts_product_id ON purchase_order_drafts(product_id);
 
 INSERT INTO schema_version (version) SELECT 16 WHERE NOT EXISTS (SELECT 1 FROM schema_version);

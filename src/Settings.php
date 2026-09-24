@@ -335,6 +335,18 @@ class Settings
         // TTL") KÖZPONTOSÍTVA, csak ActionProposalService olvassa.
         'ai_action_proposals_enabled'   => false,
         'ai_action_proposal_ttl_hours'  => 48,
+
+        // Fázis 8B — Validated Action Execution. A ReorderDraftExecutor
+        // a végrehajtási mennyiséget MINDIG frissen, a MEGLÉVŐ
+        // PurchaseDecisionService::recommendedQuantity()-vel számolja
+        // (SOSE a javaslat létrehozásakori adatból, lásd a kör 9. pontja:
+        // "The LLM is never authoritative for quantity") — ez a beállítás
+        // egy TOVÁBBI, admin által állítható felső korlát (biztonsági
+        // "sapka") a kiszámított mennyiségre, arra az esetre, ha egy
+        // szélsőséges bemenet (pl. hibásan rögzített, irreálisan magas
+        // fogyás-adat) miatt a determinisztikus számítás túl nagy
+        // mennyiséget adna.
+        'ai_reorder_draft_max_quantity' => 500,
     ];
 
     public function __construct(string $path)

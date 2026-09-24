@@ -12,20 +12,40 @@ declare(strict_types=1);
  * EGY helyen — ezeket az ActionProposalService.php ÉS minden végpont
  * innen olvassa, sose duplikálja.
  *
- * KRITIKUS: a STATUSES listában SZÁNDÉKOSAN NINCS 'executed' állapot —
- * ez a fázis a javaslat JÓVÁHAGYÁSÁVAL/ELUTASÍTÁSÁVAL ér véget, SOSE hajt
- * végre semmilyen tényleges üzleti műveletet (készlet-, ár-, rendelés-,
- * kassza-, vevő- vagy számlaváltoztatást). "approved" ITT KIZÁRÓLAG azt
- * jelenti: "egy ember jóváhagyta ezt a javaslatot" — NEM azt, hogy "a
- * javasolt üzleti művelet megtörtént". Lásd a kör 3. pontja.
+ * "approved" ÖNMAGÁBAN KIZÁRÓLAG azt jelenti: "egy ember jóváhagyta ezt a
+ * javaslatot" — NEM azt, hogy a javasolt üzleti művelet megtörtént. Lásd
+ * a Fázis 8A kör 3. pontja.
+ *
+ * FÁZIS 8B — Validated Action Execution: a STATUSES lista HÁROM ÚJ,
+ * VÉGREHAJTÁS-KÖVETŐ állapottal bővült — `executing`/`executed`/
+ * `execution_failed` — SZÁNDÉKOSAN a MEGLÉVŐ `status` mezőn, NEM egy
+ * külön `execution_status` oszlopon (lásd Database::
+ * migrateV32ActionExecution() docblokkja): a Fázis 8B kör 4. pontja
+ * explicit tiltja, hogy "approved" jelentse "executed"-et — a
+ * jóváhagyás és a végrehajtás ÉS annak eredménye SZEMANTIKAILAG
+ * MEGKÜLÖNBÖZTETETT állapotok maradnak:
+ *   pending → approved → executing → executed
+ *   approved → executing → execution_failed (technikai hiba, retry engedett)
+ *   approved → executing → stale (az üzleti állapot időközben megváltozott
+ *     — UGYANAZ a jelentés, mint a jóváhagyás-előtti stale, lásd
+ *     ActionExecutor.php)
+ * A `executed` állapot NEM jelent semmilyen KÜLSŐ (beszállítói) műveletet
+ * — lásd ActionExecutor.php/ReorderDraftExecutor.php docblokkja: a
+ * végrehajtás KIZÁRÓLAG egy helyi, felülvizsgálható piszkozat-rekordot
+ * hoz létre.
  */
 final class ActionProposal
 {
     /** A kör 6. pontja — a Fázis 8A induló, szándékosan szűk javaslat-típuskészlete. */
     public const TYPES = ['inventory_review', 'reorder_draft', 'sales_review'];
 
-    /** A kör 3. pontja — szigorú whitelist, NINCS 'executed'. */
-    public const STATUSES = ['pending', 'approved', 'rejected', 'expired', 'stale'];
+    /**
+     * Szigorú whitelist. Fázis 8A: pending/approved/rejected/expired/
+     * stale. Fázis 8B: + executing/executed/execution_failed (lásd az
+     * osztály docblokkja) — a végrehajtható típusok tényleges
+     * whitelistjét lásd ActionExecutor::EXECUTABLE_TYPES.
+     */
+    public const STATUSES = ['pending', 'approved', 'rejected', 'expired', 'stale', 'executing', 'executed', 'execution_failed'];
 
     /**
      * Melyik szerver-oldali, bizalmi komponens hozhat létre javaslatot
@@ -67,6 +87,11 @@ final class ActionProposal
         public readonly ?string $reviewedAt,
         public readonly ?int $reviewedBy,
         public readonly ?string $rejectionReason,
+        public readonly ?string $executionStartedAt,
+        public readonly ?string $executedAt,
+        public readonly ?string $executionFailedAt,
+        public readonly array $executionResult,
+        public readonly ?string $executionError,
     ) {
     }
 
@@ -82,6 +107,11 @@ final class ActionProposal
         if (!empty($row['proposal_json'])) {
             $decoded = json_decode((string) $row['proposal_json'], true);
             $proposedAction = is_array($decoded) ? $decoded : [];
+        }
+        $executionResult = [];
+        if (!empty($row['execution_result_json'])) {
+            $decoded = json_decode((string) $row['execution_result_json'], true);
+            $executionResult = is_array($decoded) ? $decoded : [];
         }
 
         return new self(
@@ -104,6 +134,11 @@ final class ActionProposal
             $row['reviewed_at'] ?? null,
             isset($row['reviewed_by']) ? (int) $row['reviewed_by'] : null,
             $row['rejection_reason'] ?? null,
+            $row['execution_started_at'] ?? null,
+            $row['executed_at'] ?? null,
+            $row['execution_failed_at'] ?? null,
+            $executionResult,
+            $row['execution_error'] ?? null,
         );
     }
 
@@ -136,6 +171,11 @@ final class ActionProposal
             'reviewed_at' => $this->reviewedAt,
             'reviewed_by' => $this->reviewedBy,
             'rejection_reason' => $this->rejectionReason,
+            'execution_started_at' => $this->executionStartedAt,
+            'executed_at' => $this->executedAt,
+            'execution_failed_at' => $this->executionFailedAt,
+            'execution_result' => $this->executionResult,
+            'execution_error' => $this->executionError,
         ];
     }
 }

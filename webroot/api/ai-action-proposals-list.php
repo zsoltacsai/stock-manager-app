@@ -3,6 +3,7 @@
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 require_once __DIR__ . '/../../src/Ai/ActionProposalService.php';
+require_once __DIR__ . '/../../src/Ai/ActionExecutor.php';
 
 // Fázis 8A — lapozható/szűrhető admin-lista a jelenleg tárolt AI-
 // javaslatokhoz. Admin-only, UGYANAZZAL az indoklással, mint minden
@@ -31,7 +32,15 @@ $offset = ($page - 1) * $pageSize;
 $service = new ActionProposalService($db, $appSettings);
 $total = $service->countProposals($filters);
 $rows = $service->listProposals($filters, $pageSize, $offset);
-$proposals = array_map(static fn(array $row) => ActionProposal::fromRow($row)->toArray(), $rows);
+// Fázis 8B — a kör 19. pontja: a lista jelzi, mely javaslatok
+// VÉGREHAJTHATÓK (a "Végrehajtás" gomb megjelenítéséhez) — ez KIZÁRÓLAG
+// a statikus ActionExecutor::EXECUTABLE_TYPES whitelist-ből dől el, SOSE
+// a javaslat saját adatából.
+$proposals = array_map(static function (array $row): array {
+    $arr = ActionProposal::fromRow($row)->toArray();
+    $arr['is_executable_type'] = ActionExecutor::isExecutableType($row['proposal_type']);
+    return $arr;
+}, $rows);
 
 send_json([
     'ok' => true,

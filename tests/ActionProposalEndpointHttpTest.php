@@ -232,7 +232,10 @@ final class ActionProposalEndpointHttpTest extends TestCase
 
     public function testListRejectsUnknownStatusFilterSilentlyIgnoringIt(): void
     {
-        $res = self::request('GET', '/api/ai-action-proposals-list.php?status=executed', null, [], self::$adminJar);
+        // Fázis 8B — a kör 4. pontja bővítette a whitelistet (executing/
+        // executed/execution_failed), ezért ez a teszt egy TÉNYLEGESEN,
+        // örökre ismeretlen státusz-értéket használ, nem 'executed'-et.
+        $res = self::request('GET', '/api/ai-action-proposals-list.php?status=nem_letezo_statusz_vagy_sql_injekcio', null, [], self::$adminJar);
         $this->assertSame(200, $res['status'], $res['body']);
         $this->assertSame(2, $res['json']['total']);
     }

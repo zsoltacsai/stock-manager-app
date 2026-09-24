@@ -4,6 +4,103 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## [Unreleased] — AI Copilot: javaslatok, végrehajtás és streaming (Fázis 8A/8B/9)
+
+**Az 1.0 RC feature freeze alóli, egyenként jóváhagyott kivételek —
+NINCS verziószám-emelés ehhez a szakaszhoz**, a három kör (8A/8B/9)
+kódja már a `main`-en van, de formális kiadásként (release/tag) még
+nem lett elnevezve. Lásd README "AI Asszisztens" szakasza (Fázis 6-9
+alszakaszok) a teljes technikai indoklásért.
+
+### Added — Fázis 8A: AI Action Proposals (javaslat + emberi jóváhagyás)
+
+- A Napi Intelligencia MOST — a MEGLÉVŐ `AnomalyDetector`-találatokból,
+  saját anomália-logika nélkül — konkrét, jóváhagyásra váró
+  `ActionProposal` sorokat is generálhat (pl. `reorder_draft`), NEM csak
+  szöveges összefoglalót.
+- Új `action_proposals` tábla + `ai-proposal-list.php`/
+  `ai-proposal-detail.php`/`ai-proposal-approve.php`/
+  `ai-proposal-reject.php` végpontok, admin-only, CSRF-védett.
+- "Javaslatok" fül az AI Asszisztens oldalon — a jóváhagyás/elutasítás
+  ÖNMAGÁBAN SOSE hajt végre üzleti műveletet, kizárólag a javaslat
+  állapotát változtatja.
+
+### Added — Fázis 8B: validált AI-művelet-végrehajtás
+
+- Jóváhagyott `reorder_draft` javaslat mostantól ténylegesen
+  VÉGREHAJTHATÓ — új, minimális `purchase_order_drafts` tábla (NEM a
+  meglévő `purchases`, ami már beérkezett készletet ír le, lásd README
+  "Miért nem a meglévő `purchases` tábla?").
+- `ActionExecutor` + `ExecutableActionStrategy` interfész +
+  `ReorderDraftExecutor` — friss elavulás-ellenőrzés (`current_stock`
+  egyezés) VÉGREHAJTÁS ELŐTT, atomikus állapot-claim
+  (`executing`/`executed`/`execution_failed`), teljes audit.
+- Egy elakadt (folyamat-összeomlás miatt `executing`-ben ragadt)
+  végrehajtás egy időalapú ablak (alapértelmezett 30 perc) után
+  újra-lefoglalható — valódi, több párhuzamos OS-folyamatos teszttel
+  bizonyítva.
+
+### Added — Fázis 9: Copilot UX, élő (streamelt) válaszok, kontextus-/költség-korlátok
+
+- **Élő streamelés mind a négy agent-hez** egyetlen új SSE-végponton
+  (`ai-agent-stream.php`) keresztül — Ollama (NDJSON), Anthropic (SSE),
+  OpenAI (SSE) mindegyike a hivatalos dokumentáció alapján, egyetlen,
+  szigorúan whitelistelt, provider-független eseményalakra (`AiStreamEvent`)
+  fordítva. Automatikus, átlátszó visszaesés nem-streamelt módra, ha egy
+  provider/beállítás nem támogatja.
+- **Kontextus-korlátok és automatikus tömörítés** (`ConversationManager`)
+  — determinisztikus, forduló-alapú FIFO-tömörítés hosszú
+  beszélgetéseknél/nagy eszköz-eredményeknél, MINDIG érvényes JSON-t
+  megőrizve.
+- **Determinisztikus költség-/sebesség-korlátok** — eszköz-hívás-darabszám
+  (`AgentRunner`-szinten) és opcionális dollár-alapú korlát (a Copilot
+  ügynök-fan-out szintjén), plusz a MEGLÉVŐ audit-naplóra épülő
+  kérés-közötti minimális várakozás (`AiRateLimiter`).
+- **Őszinte (SOSE kitalált) árazás-becslés** (`AiPricing`) — jelenleg
+  KIZÁRÓLAG a helyi (Ollama, $0) bejegyzés szerepel; Anthropic/OpenAI
+  esetén a UI "nem ismert ehhez a modellhez" szöveget mutat, sose hamis
+  számot.
+- **Admin-konfigurálható modell-útválasztás** a Copilot összetett,
+  több-ügynökös kérdéseihez (`*_model_complex` beállítások) — a böngésző
+  sose választhat modellt.
+- **`ClientProxy` streamelő relé** (`forwardStreaming()`) — a Kliens/
+  Szerver architektúra streamelt válaszokat is valódi, darabonkénti
+  progresszióval relézi (nem pufferelve), időzítés-alapú, valódi
+  két-folyamatos teszttel bizonyítva; megszakítás-biztos mindkét hopon.
+- AI Asszisztens oldal: élő agent-/eszköz-progressz, folyamatosan bővülő
+  válaszszöveg, "Mégse" gomb, token-használat/becsült-költség sáv (a
+  MEGLÉVŐ AI-előzményekbe/Dashboardba is felszínre hozva — séma-módosítás
+  nélkül). Beállítások → AI asszisztens: teljes vezérlés a fentiekhez.
+
+### Tests
+
+- 3 dedikált Provider-streamelési tesztfájl (Ollama NDJSON/Anthropic
+  SSE/OpenAI SSE), `AiCopilotStreamingTest`,
+  `AiCopilotStreamingCrossProviderRegressionTest` (mindhárom provideren
+  keresztül, VALÓDI streamelt eseménysorozattal), `AiContextManagementTest`,
+  `AiCostAndPricingTest`, `AiModelRoutingTest`, `AiRateLimiterTest`,
+  `AiAgentStreamEndpointHttpTest` (valódi HTTP), `ClientProxyStreamingHttpTest`
+  (valódi, két-folyamatos, IDŐZÍTÉS-alapú bizonyíték a nem-pufferelt
+  relére), plusz `AiAgentRunnerTest` streamelési kiegészítései
+  (esemény-életciklus, korlát-érvényesítés, ismeretlen eszköz sose fut le).
+- Fázis 8A/8B: `ActionExecutorTest`, `ActionExecutionConcurrencyTest`
+  (valódi 12 párhuzamos folyamat), `ActionProposalExecuteEndpointHttpTest`,
+  `ActionExecuteClientServerHttpTest`.
+- Teljes regresszió: 1441/1441 teszt zöld (6271 assertion) a kör végén.
+
+### Known limitations
+
+- Anthropic/OpenAI VALÓDI API-kulccsal streamelve még NINCS élesben
+  ellenőrizve (csak kontrollált stub-szerverekkel) — a helyi (Ollama)
+  streamelés viszont valódi, futó példánnyal, élő böngésző-teszttel
+  bizonyítottan működik.
+- A Copilot jelenleg NEM tudatos a javaslatokról (nem listázza/magyarázza
+  őket) — dokumentált, jövőbeli bővítési lehetőség.
+- Nincs UI a `purchase_order_drafts` piszkozatok önálló böngészéséhez —
+  csak a kiváltó javaslat részletnézetében jelenik meg.
+- Nincs beszállítói/külső procurement-integráció — a piszkozat kézzel
+  vihető át valódi beszerzéssé a meglévő felületen.
+
 ## [1.5.0] — 2026-09-22 (Kasszakezelés + Több-terminálos Kliens/Szerver architektúra)
 
 **Két nagy terület: (1) kasszanyitás/kasszazárás/pénzmozgás egy adott

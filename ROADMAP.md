@@ -6,6 +6,71 @@ vagy mert a projekt jelenlegi mérete/célközönsége mellett a
 komplexitás/haszon arány rossz. Egy jövőbeli 1.1-es (vagy későbbi) körben
 érdemes újra megnézni őket, ha a körülmények változnak.
 
+## AI Copilot: javaslatok, végrehajtás, streaming — MEGOLDVA (Fázis 8A/8B/9, RC-kivétel)
+
+Az 1.0 RC feature freeze alól HÁROM, egyenként jóváhagyott kivétellel
+bevezetve — lásd `CHANGELOG.md` "[Unreleased] — AI Copilot" szakasza és a
+README "AI Asszisztens" fejezete (Fázis 6-9 alszakaszok) a teljes
+listáért/indoklásért. Röviden: AI-generált beszerzési javaslatok emberi
+jóváhagyással (8A), a jóváhagyott javaslat tényleges, validált
+végrehajtása beszerzési piszkozattá (8B), és élő (streamelt) Copilot-
+válaszok kontextus-/költség-korlátokkal, becsült-költség láthatósággal és
+admin-konfigurálható modell-útválasztással (9). Tudatosan e körökön kívül
+hagyott, jövőbeli bővítési pontok lentebb, "AI Copilot — jövőbeli bővítési
+lehetőségek" alatt.
+
+## AI Copilot — jövőbeli bővítési lehetőségek
+
+A Fázis 8A/8B/9 AI-munka (lásd fent) SZÁNDÉKOSAN e körökön kívül hagyott
+pontjai — mindegyik dokumentált, tudatos döntés, nem hiányosság:
+
+- **Anthropic/OpenAI valódi árazási adat az `AiPricing` táblába** — a
+  jelenlegi tábla KIZÁRÓLAG a helyi (Ollama, $0) bejegyzést tartalmazza;
+  Anthropic/OpenAI költség-becslés addig "nem ismert ehhez a modellhez"
+  marad, amíg valaki egy KÜLÖN, erre szánt körben be nem tesz valós,
+  ellenőrzött, forrással dokumentált ár-adatot.
+  **Trigger**: ha egy admin ténylegesen valós Anthropic/OpenAI kulcsot és
+  árazást szeretne látni a Dashboardon/előzményekben.
+- **Copilot-tudatosság az AI Action Proposals-ről** — a Copilot jelenleg
+  nem tudja listázni/magyarázni a függőben lévő javaslatokat; ez egy ÚJ,
+  kizárólag olvasásra képes negyedik eszközt igényelne a `ToolRegistry`-
+  jében (SOSE jóváhagyási/elutasítási képességgel).
+  **Trigger**: ha a napi használat során visszatérő igény, hogy a
+  Copilot-tal (ne csak a "Javaslatok" fülön) is át lehessen tekinteni a
+  nyitott javaslatokat.
+- **Egyedi termékre szóló "Javaslat készítése" UI-gomb** az Inventory/
+  Sales/Anomaly agent-oldalakon — jelenleg a javaslat-generálásnak
+  EGYETLEN útvonala van (a Napi Intelligencia), `ActionProposal::AGENTS`
+  ezért szándékosan csak `daily_intelligence`-et tartalmaz.
+  **Trigger**: ha felmerül az igény egy KONKRÉT, ad-hoc termékre azonnali
+  javaslatot kérni, nem megvárva a következő napi futást.
+- **`purchase_order_drafts` piszkozatok önálló böngészése/listázása** —
+  jelenleg a piszkozat eredménye kizárólag a kiváltó `ActionProposal`
+  "Javaslatok" fülön/részletnézetében jelenik meg, nincs saját admin-nézet.
+  **Trigger**: ha a piszkozatok száma/gyakorisága indokolttá teszi egy
+  önálló, szűrhető listát.
+- **Beszállítói/külső procurement-integráció** a `purchase_order_drafts`-
+  hoz — a piszkozat SOSE kerül elküldésre beszállítónak/e-mailben/külső
+  API-n keresztül, egy admin kézzel viszi át valódi beszerzéssé a
+  meglévő, változatlan Beszerzés-felületen.
+  **Trigger**: ha egy konkrét beszállítóval rendelkezésre áll egy
+  ténylegesen integrálható rendelés-API.
+- **Anthropic/OpenAI streamelés élő, valódi API-kulccsal való
+  ellenőrzése** — a Fázis 9 implementáció idején egyik providerhez sem
+  állt rendelkezésre biztonságosan konfigurált, valódi kulcs, ezért ez a
+  két Provider KIZÁRÓLAG kontrollált stub-szerverek ellen lett bizonyítva
+  (a helyi Ollama-streamelés ezzel szemben valódi, élő böngésző-teszttel
+  igazolt).
+  **Trigger**: amint egy valódi Anthropic/OpenAI API-kulcs biztonságosan
+  elérhetővé válik a fejlesztői/teszt-környezetben.
+- **`ClientProxy` streamelő relé bővítése további végpontokra** — a
+  `forwardStreaming()` jelenleg KIZÁRÓLAG az `ai-agent-stream.php`
+  fájlnévre érvényes fehérlista alapján dönt; egy jövőbeli, MÁSIK
+  streamelő végpont hozzáadásánál a fehérlistát (`ClientProxy::
+  STREAMING_SCRIPTS`) is bővíteni kell.
+  **Trigger**: ha egy jövőbeli funkció egy MÁSIK SSE-végpontot igényelne
+  (pl. egy élő háttérfolyamat-naplókövető nézet).
+
 ## Rendszerállapot / üzemeltetés — MEGOLDVA (1.4.0)
 
 A "FountainTrade 1.4.0 — Operations & Reliability" kör központi

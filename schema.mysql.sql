@@ -344,6 +344,9 @@ CREATE TABLE IF NOT EXISTS returns (
     gift_card_refund       DECIMAL(12,2) NOT NULL DEFAULT 0, -- lásd schema.sql
     idempotency_key        VARCHAR(64) NULL,
     idempotency_fingerprint VARCHAR(64) NULL,
+    value_gross            DECIMAL(12,2) NULL, -- lásd schema.sql (A-03)
+    value_net              DECIMAL(12,2) NULL,
+    value_vat              DECIMAL(12,2) NULL,
     created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_returns_idempotency_key (idempotency_key),
     KEY idx_returns_sale_id (sale_id),
@@ -361,6 +364,9 @@ CREATE TABLE IF NOT EXISTS return_items (
     name            VARCHAR(255) NOT NULL,
     qty             INT NOT NULL,
     unit_price      DECIMAL(12,2) NOT NULL,
+    value_gross     DECIMAL(12,2) NULL, -- lásd schema.sql (A-03)
+    value_net       DECIMAL(12,2) NULL,
+    value_vat       DECIMAL(12,2) NULL,
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_return_items_return_id (return_id),
     KEY idx_return_items_product_id (product_id),

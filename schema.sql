@@ -327,6 +327,9 @@ CREATE TABLE IF NOT EXISTS returns (
     gift_card_refund       REAL NOT NULL DEFAULT 0, -- az ajándékutalványra visszaírt összeg (a total_refund a fizetési módon visszaadott rész) — lásd Database::reverseSaleBenefits()
     idempotency_key        TEXT,                  -- N-3: ugyanaz a visszáru-kérés csak egyszer hajtható végre — lásd api/return-create.php
     idempotency_fingerprint TEXT,
+    value_gross            REAL,                  -- A-03: a visszáru pénzügyi értéke az eredeti eladás allokációjából (VatAllocation::returnAllocation()); NULL = V36 előtti visszáru
+    value_net              REAL,
+    value_vat              REAL,
     created_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_returns_sale_id ON returns(sale_id);
@@ -342,6 +345,9 @@ CREATE TABLE IF NOT EXISTS return_items (
     name            TEXT NOT NULL,
     qty             INTEGER NOT NULL,
     unit_price      REAL NOT NULL,
+    value_gross     REAL,                          -- A-03: a visszavett darabok allokált értéke — lásd returns.value_gross
+    value_net       REAL,
+    value_vat       REAL,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_return_items_return_id ON return_items(return_id);

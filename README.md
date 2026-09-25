@@ -1115,7 +1115,11 @@ helyen van definiálva és dokumentálva: `src/VatAllocation.php`
 - kerekítés csak sor-szinten: nettó = bruttó / (1 + kulcs), két
   tizedesre; ÁFA = bruttó − nettó (AAM/TAM/0%: nettó = bruttó);
 - a számla ugyanezeket a sorértékeket kapja — a számla-XML nem számol
-  külön ÁFÁ-t.
+  külön ÁFÁ-t;
+- a visszáru az eladás allokált sorértékeit osztja fel darabonként (a
+  maradék fillér az elsőként visszavett darabé) — a visszáruk összege egy
+  teljesen visszavett eladásnál fillérre az eladás értéke, nettója és
+  ÁFÁ-ja.
 
 **Látható változás a számlán (N-5)**: ha egy sor allokált értéke nem
 osztható maradék nélkül a mennyiséggel (pl. 3 db, bruttó 10.00 Ft), a
@@ -1972,7 +1976,14 @@ mennyiség-mezőt tár fel, felső korláttal az adott sorból még vissza nem
 küldött mennyiségre (így ugyanazon eladás egy második részleges
 visszárúja sem tud túl sokat visszaküldeni). A megerősítés
 visszaállítja a készletet a visszaküldött tételekre, és naplózza a
-visszárut. Egy dupla kattintás vagy egy elveszett válasz utáni
+visszárut. A visszatérítendő összeg az eladás értékének a visszavett
+darabokra jutó része, ugyanabból az allokációból, amiből a számla és a
+riport készül (A-03): egy 3 × 10 Ft / 20 Ft kuponos eladás darabonkénti
+visszavétele 3.34 + 3.33 + 3.33 = 10.00 Ft (a maradék fillért az elsőként
+visszavett darab viszi), bármilyen sorrendben vagy részletekben. Egy
+ajándékutalvánnyal (is) fizetett eladásnál a fizetési módon a befizetett
+rész arányos része jár vissza, az utalványra jutó rész a teljes
+visszavételkor íródik vissza az utalványra. Egy dupla kattintás vagy egy elveszett válasz utáni
 újraküldés (ugyanaz a visszáru-kísérlet, ugyanaz az idempotencia-kulcs)
 sem rögzít második visszárut (N-3) — a második kérés az elsőként
 rögzített visszáru adatait kapja vissza.

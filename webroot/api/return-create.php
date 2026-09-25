@@ -140,26 +140,14 @@ if (empty($itemsToReturn)) {
     send_json(['error' => 'Nincs érvényes visszaveendő tétel.'], 400);
 }
 
-// A visszatérítendő összeg NEM lehet egyszerűen tétel-egységár × mennyiség:
-// az eredeti kupon/hűségszint/pontkedvezmény a teljes rendelésre vonatkozott,
-// nem soronként, így a sale_items.unit_price a KEDVEZMÉNY ELŐTTI árat
-// tartalmazza. Enélkül a visszatérítés túl sokat adna vissza minden olyan
-// eladásnál, ahol bármilyen rendelés-szintű kedvezmény érvényesült.
-// Arányosítjuk: a teljes eladás eredeti (kedvezmény nélküli) tételösszegéhez
-// képest mekkora hányadot tett ki a ténylegesen fizetett végösszeg, és ezt az
-// arányt alkalmazzuk a visszaveendő tételek nyers összegére is. Ezt a
-// prorated összeget kell tárolni is, nem csak a válaszban visszaadni.
-$originalSubtotal = 0.0;
-foreach ($sale['items'] as $si) {
-    $originalSubtotal += (float) $si['qty'] * (float) $si['unit_price'];
-}
-$discountRatio = $originalSubtotal > 0 ? min(1, (float) $sale['total'] / $originalSubtotal) : 1.0;
-
-$rawRefund = array_sum(array_map(static fn ($i) => $i['qty'] * $i['unit_price'], $itemsToReturn));
-$totalRefund = round($rawRefund * $discountRatio, 2);
-
+// A-03: a visszatérítendő összeget és a visszáru pénzügyi értékét NEM itt
+// számoljuk (korábban: saját arányosítás, round(nyers × fizetett/részösszeg,
+// 2) — részletekben visszavett eladásnál az összeg fillérekkel eltért az
+// eladásétól). A Database::processReturn() a tranzakción belül, az eredeti
+// eladás közös allokációjából (VatAllocation::returnAllocation()) számolja,
+// a friss "már visszavett" mennyiség után következő darabokra.
 try {
-    $returnId = $db->processReturn($saleId, $itemsToReturn, $reason, $staffId, $totalRefund, $sale, $cashRegisterId, $idempotencyKey, $idempotencyFingerprint);
+    $returnId = $db->processReturn($saleId, $itemsToReturn, $reason, $staffId, 0.0, $sale, $cashRegisterId, $idempotencyKey, $idempotencyFingerprint);
 } catch (PDOException $e) {
     // Egy közel egyidejű, ugyanazzal a kulccsal érkező kérés vesztese a
     // UNIQUE-ütközésnél (vagy egy SQLite-zárütközésnél) jár itt — ha a
@@ -192,9 +180,10 @@ try {
     send_generic_error_response($e, 'return-create.php visszáru rögzítése sikertelen');
 }
 
+$recordedReturn = $db->getReturnById($returnId);
 send_json([
     'return_id'       => $returnId,
-    'total_refund'    => round($totalRefund, 2),
+    'total_refund'    => round((float) ($recordedReturn['total_refund'] ?? 0), 2),
     'needs_manual_credit_note' => !empty($sale['szamlazz_invoice_number']),
     'original_invoice_number'  => $sale['szamlazz_invoice_number'] ?? null,
 ]);

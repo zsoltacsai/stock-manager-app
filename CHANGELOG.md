@@ -309,6 +309,35 @@ ellenőrzése, ha rendelkezésre áll. Lásd README "Fázis 11" alszakasz.
   Számlázz.hu stubbal end-to-end; élő Számlázz.hu / NAV elfogadás nincs
   igazolva.
 
+### Fixed — A-03: a visszáru összege ugyanazt az allokációt követi, mint az eladás
+
+- **Gyökérok**: a `return-create.php` a visszatérítést saját arányos
+  kerekítéssel számolta (`round(nyers × befizetett / részösszeg, 2)`),
+  nem abból a közös allokációból (`VatAllocation`), amelyből az eladás,
+  a riport, a napi zárás és a számla készül. A 3 × 10 Ft / 20 Ft kuponos
+  eladás (sorai 3.34 / 3.33 / 3.33) három részleges visszárúja 3 × 3.33 =
+  9.99 lett, a napi zárásban 0.01 Ft forgalom maradt.
+- **Javítás**: a visszáru értéke (bruttó/nettó/ÁFA) és a fizetési módon
+  visszajáró összeg az EREDETI eladás közös allokációjának egységenkénti
+  felosztásából jön (`VatAllocation::returnAllocation()`), a tranzakción
+  belül frissen olvasott, már visszavett mennyiség utáni darabokra. Így a
+  részleges visszáruk összege — sorrendtől és részletezéstől függetlenül —
+  fillérre az eladás értéke, nettója és ÁFÁ-ja, kulcsonként is; teljes
+  visszavétel után a riporthatás 0. Új ÁFA-szabály nincs.
+- A visszáru értéke rögzül (séma v36: `returns.value_*`,
+  `return_items.value_*`); a napi zárás, az értékesítési riport és a
+  bevétel-trend ezt használja. A javítás előtt rögzített visszáruk a
+  korábbi módon számolódnak.
+- A fizetési visszatérítés külön fogalom maradt: a fizetési módon a
+  befizetett rész arányos része jár vissza; az ajándékutalványra jutó rész
+  változatlanul a teljes visszavételkor íródik vissza (B-06). A riport az
+  értéket vonja le, a fizetési mód szerinti bontás a ténylegesen
+  visszaadott pénzt mutatja.
+- Az eladás-sorok lekérdezése id szerint rendezett, így a közös allokáció
+  maradék fillérje minden hívónál ugyanarra a sorra esik.
+- A számla (N-5) nem változik; visszárunál továbbra sincs automatikus
+  jóváíró számla.
+
 ### Tests
 
 - Fázis 10: `AiRetryPolicyTest` (9 teszt), `AiAuditLoggerTest` (5 teszt),

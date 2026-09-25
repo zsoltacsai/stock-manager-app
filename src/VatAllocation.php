@@ -53,6 +53,24 @@ declare(strict_types=1);
  *    "kerekítési korrekció" sor és nincs végösszeg-felülírás. A bontás
  *    determinisztikus (a +1 filléres egységek mindig az elsők).
  *
+ * 7. Visszáru (returnAllocation(), A-03): a visszavett tételek pénzügyi
+ *    értéke NEM egy újabb arányosítás, hanem az eredeti eladás 2–3. pont
+ *    szerinti sor-allokációjának (bruttó és nettó, egész fillérben)
+ *    egységenkénti felosztása: egy q darabos sor G fillérjéből az első
+ *    (G mod q) visszavett darab floor(G/q)+1, a többi floor(G/q) fillér —
+ *    ugyanígy a nettó. Egy visszáru a korábban már visszavett n darab UTÁN
+ *    következő k darabot kapja: cum(n+k) − cum(n). Így:
+ *      - egy sor összes visszavett darabjának értéke pontosan G (és N),
+ *        bármilyen részletekben és bármilyen sorrendben vették vissza;
+ *      - a visszáru ÁFÁ-ja = visszavett bruttó − visszavett nettó, soronként
+ *        a sor saját kulcsán (nincs újabb kerekítés a részleteken);
+ *      - teljes visszavételkor a visszáruk összege fillérre az eladás
+ *        értéke, nettója és ÁFÁ-ja, kulcsonként is.
+ *    A FIZETÉSI visszatérítés (a fizetési módon visszaadott pénz) KÜLÖN
+ *    fogalom: ugyanezzel a felosztással a befizetett összegből (sales.total)
+ *    számolódik; az ajándékutalványra jutó rész visszaírása változatlanul a
+ *    teljes visszavételkor történik (B-06, reverseSaleBenefits()).
+ *
  * A számla-XML-ek (SzamlazzClient, NavInvoiceXmlBuilder) az így allokált
  * tételeket (`allocated` = true) változtatás nélkül írják ki — ÁFÁ-t nem
  * számolnak újra (renderLine()). Allokáció nélküli tétel (a javítás előtt
@@ -200,6 +218,94 @@ final class VatAllocation
             }
             return $item;
         }, $items);
+    }
+
+    /**
+     * A 7. pont: egy visszáru pénzügyi értéke az eredeti eladás allokációjából.
+     *
+     * @param float $saleValue az eladás értéke (Database::saleGrossValue())
+     * @param float $salePaid  a fizetési módon befizetett rész (sales.total)
+     * @param array<int, array{id:mixed, qty:mixed, unit_price:mixed, vat_rate:mixed}> $saleLines
+     *        az eladás ÖSSZES sora (sale_items) — a sorrend id szerint rögzül
+     * @param array<int, int> $alreadyReturned sale_item_id => a KORÁBBI visszárukban visszavett darab
+     * @param list<array{sale_item_id:mixed, qty:mixed}> $returnRows ennek a visszárunak a sorai
+     * @return array{rows: list<array{gross:float, net:float, vat:float, paid:float, vat_rate:string}>, gross:float, net:float, vat:float, paid:float}
+     * @throws InvalidArgumentException ismeretlen eladási tétel vagy a még visszavehetőnél több darab esetén
+     */
+    public static function returnAllocation(float $saleValue, float $salePaid, array $saleLines, array $alreadyReturned, array $returnRows): array
+    {
+        $saleLines = array_values($saleLines);
+        usort($saleLines, static fn (array $a, array $b): int => (int) $a['id'] <=> (int) $b['id']);
+        [$valueLines, $valueCents] = self::allocateCents($saleValue, $saleLines);
+        [, $paidCents] = self::allocateCents($salePaid, $saleLines);
+        // Pozitív tételérték nélküli eladásnál (allocateCents() tartalék-sora)
+        // nincs mit visszaosztani — minden visszavett darab értéke 0.
+        $hasValue = count($valueLines) === count($saleLines);
+
+        $bySaleItem = [];
+        foreach ($saleLines as $i => $line) {
+            $rate = (string) ($line['vat_rate'] ?? '');
+            $gross = $hasValue ? $valueCents[$i] : 0;
+            $bySaleItem[(int) $line['id']] = [
+                'qty' => (int) $line['qty'],
+                'vat_rate' => $rate,
+                'gross' => $gross,
+                'net' => self::lineFromGrossCents($gross, $rate)['net'],
+                'paid' => $hasValue ? $paidCents[$i] : 0,
+            ];
+        }
+
+        $taken = [];
+        $rows = [];
+        $sum = ['gross' => 0, 'net' => 0, 'vat' => 0, 'paid' => 0];
+        foreach ($returnRows as $row) {
+            $id = (int) ($row['sale_item_id'] ?? 0);
+            $k = (int) ($row['qty'] ?? 0);
+            if (!isset($bySaleItem[$id])) {
+                throw new InvalidArgumentException("Ismeretlen eladási tétel: #$id");
+            }
+            $line = $bySaleItem[$id];
+            $n = ($alreadyReturned[$id] ?? 0) + ($taken[$id] ?? 0);
+            if ($k <= 0 || $n + $k > $line['qty']) {
+                throw new InvalidArgumentException("Az eladási tételből (#$id) legfeljebb " . max(0, $line['qty'] - $n) . ' db vihető még vissza.');
+            }
+            $taken[$id] = ($taken[$id] ?? 0) + $k;
+            $cents = [];
+            foreach (['gross', 'net', 'paid'] as $f) {
+                $cents[$f] = self::unitShare($line[$f], $line['qty'], $n + $k) - self::unitShare($line[$f], $line['qty'], $n);
+            }
+            $cents['vat'] = $cents['gross'] - $cents['net'];
+            $rows[] = [
+                'gross' => $cents['gross'] / 100.0,
+                'net' => $cents['net'] / 100.0,
+                'vat' => $cents['vat'] / 100.0,
+                'paid' => $cents['paid'] / 100.0,
+                'vat_rate' => $line['vat_rate'],
+            ];
+            foreach ($sum as $f => $v) {
+                $sum[$f] = $v + $cents[$f];
+            }
+        }
+        return [
+            'rows' => $rows,
+            'gross' => $sum['gross'] / 100.0,
+            'net' => $sum['net'] / 100.0,
+            'vat' => $sum['vat'] / 100.0,
+            'paid' => $sum['paid'] / 100.0,
+        ];
+    }
+
+    /**
+     * Egy q darabos sor $cents fillérjéből az első $units darabra jutó rész:
+     * az első ($cents mod q) darab 1 fillérrel többet kap (7. pont).
+     */
+    private static function unitShare(int $cents, int $qty, int $units): int
+    {
+        if ($qty <= 0 || $units <= 0) {
+            return 0;
+        }
+        $base = intdiv($cents, $qty);
+        return $units * $base + min($units, $cents - $base * $qty);
     }
 
     /**

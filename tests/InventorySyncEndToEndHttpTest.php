@@ -249,7 +249,8 @@ PHP);
         $this->assertSame('1270', (string) $xml->tetelek->tetel->bruttoErtek);
         $this->assertSame('Ajándékutalvány', (string) $xml->fejlec->fizmod);
 
-        $day = self::request('GET', '/api/daily-summary.php?date=' . date('Y-m-d'), null, [], self::$jar);
+        // Az alkalmazás (Europe/Budapest) napja — a teszt-folyamat UTC-je éjfél körül más napot adna.
+        $day = self::request('GET', '/api/daily-summary.php?date=' . (new DateTimeImmutable('now', new DateTimeZone('Europe/Budapest')))->format('Y-m-d'), null, [], self::$jar);
         $this->assertSame(200, $day['status'], $day['body']);
         $this->assertGreaterThanOrEqual(1270.0, $day['json']['summary']['total_gross'] ?? $day['json']['total_gross']);
 

@@ -294,7 +294,9 @@ final class RemediationB12ToPdHttpTest extends TestCase
 
     public function testB14DashboardTodayIsTheServerApplicationDay(): void
     {
-        $today = ReportPeriod::today();
+        // A szerver (api/_bootstrap.php: Europe/Budapest) napja — a teszt-
+        // folyamat UTC-ben fut, éjfél körül a kettő eltér.
+        $today = (new DateTimeImmutable('now', new DateTimeZone('Europe/Budapest')))->format('Y-m-d');
         $yesterday = date('Y-m-d', strtotime($today . ' -1 day'));
         foreach ([$yesterday, $today] as $day) {
             self::$db->pdo()->prepare("INSERT INTO ai_daily_reports (report_date, status, provider, model, findings_json, findings_count, has_significant_findings, report_text, started_at, completed_at, created_at)

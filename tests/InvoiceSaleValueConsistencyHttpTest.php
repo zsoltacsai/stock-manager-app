@@ -160,7 +160,9 @@ PHP);
 
     private function today(): string
     {
-        return date('Y-m-d');
+        // Az alkalmazás (api/_bootstrap.php) napja — a teszt-folyamat
+        // időzónája (UTC) éjfél körül más napot adna.
+        return (new DateTimeImmutable('now', new DateTimeZone('Europe/Budapest')))->format('Y-m-d');
     }
 
     /** @return array{0: array, 1: array} [napi zárás, értékesítési riport] */
@@ -398,5 +400,99 @@ PHP);
         foreach ($close['by_vat_rate'] as $rate => $row) {
             $this->assertSame(self::cents($row['gross']), self::cents($row['net']) + self::cents($row['vat']), "kulcs $rate");
         }
+    }
+    // ------------------------------------------------------------------
+    // A-03: részleges visszáruk a valódi return-create.php-n át — a
+    // visszáruk összege fillérre az eladás értéke, sorrendtől függetlenül
+    // ------------------------------------------------------------------
+
+    /** @return array{net:int, vat:int, gross:int, by_rate:array} a napi zárás különbsége a kiinduló állapothoz képest */
+    private function dayDelta(array $closeStart): array
+    {
+        [$close] = $this->reports();
+        return self::reportDelta($closeStart, $close);
+    }
+
+    private function returnLines(int $saleId, array $qtyByLineIndex): array
+    {
+        $stored = self::$db->getSaleWithItems($saleId);
+        $items = [];
+        foreach ($qtyByLineIndex as $i => $qty) {
+            $items[] = ['sale_item_id' => (int) $stored['items'][$i]['id'], 'qty' => $qty];
+        }
+        $res = $this->post('/api/return-create.php', ['sale_id' => $saleId, 'items' => $items, 'idempotency_key' => bin2hex(random_bytes(8))]);
+        $this->assertSame(200, $res['status'], $res['body']);
+        return $res['json'];
+    }
+
+    /** @return array<string, array{0: list<int>}> */
+    public static function returnOrders(): array
+    {
+        return ['0→1→2' => [[0, 1, 2]], '0→2→1' => [[0, 2, 1]], '1→0→2' => [[1, 0, 2]], '1→2→0' => [[1, 2, 0]], '2→0→1' => [[2, 0, 1]], '2→1→0' => [[2, 1, 0]]];
+    }
+
+    /** @dataProvider returnOrders */
+    public function testA03ThreePartialReturnsInAnyOrderBringTheSaleBackToZero(array $order): void
+    {
+        [$closeStart] = $this->reports();
+        $sale = $this->invoicedSale(['items' => [self::manual('A03 a', 10.0, 1, '27'), self::manual('A03 b', 10.0, 1, '27'), self::manual('A03 c', 10.0, 1, '27')], 'coupon_code' => $this->coupon('fixed', 20)], 'A-03 eladás ' . implode('→', $order));
+        $this->assertSame(['net' => 787, 'vat' => 213, 'gross' => 1000], ['net' => $sale['sum']['net'], 'vat' => $sale['sum']['vat'], 'gross' => $sale['sum']['gross']]);
+        $callsAfterSale = count($this->stubCalls());
+        $mirrorBefore = self::$db->findInvoiceBySaleAndProvider($sale['sale_id'], 'szamlazz');
+
+        // 2) riport az eladás után
+        $this->assertSame(['net' => 787, 'vat' => 213, 'gross' => 1000], array_intersect_key($this->dayDelta($closeStart), ['net' => 1, 'vat' => 1, 'gross' => 1]));
+
+        // A számla sorai az eladás allokációja (3.34 / 3.33 / 3.33).
+        $lineGross = array_map(fn ($l) => $l['gross'], $sale['lines']);
+        $this->assertSame([334, 333, 333], $lineGross);
+
+        $returned = 0;
+        $refunded = [];
+        foreach ($order as $step => $line) {
+            // 3/5/7) visszáru
+            $ret = $this->returnLines($sale['sale_id'], [$line => 1]);
+            $refunded[] = self::cents($ret['total_refund']);
+            $this->assertSame($lineGross[$line], self::cents($ret['total_refund']), "a(z) {$line}. sor visszatérítése = a számlán/eladásban allokált értéke");
+            $returned += $lineGross[$line];
+            // 4/6/8) riport a visszáru után: az eladás − eddigi visszáruk
+            $delta = $this->dayDelta($closeStart);
+            $this->assertSame(1000 - $returned, $delta['gross'], ($step + 1) . '. visszáru utáni napi zárás (bruttó)');
+            $this->assertSame($delta['gross'], $delta['net'] + $delta['vat'], ($step + 1) . '. visszáru után: nettó + ÁFA = bruttó');
+        }
+        $this->assertSame(1000, array_sum($refunded), 'Σ visszáru = 10.00 (korábban 9.99)');
+        $this->assertSame(['net' => 0, 'vat' => 0, 'gross' => 0, 'by_rate' => []], $this->dayDelta($closeStart), 'eredeti − összes visszáru = 0 (nettó, ÁFA, bruttó, kulcsonként)');
+
+        [, $report] = $this->reports();
+        [$close] = $this->reports();
+        $this->assertSame([$close['total_gross'], $close['total_net'], $close['total_vat']], [$report['total_gross'], $report['total_net'], $report['total_vat']], 'napi zárás = értékesítési riport');
+
+        // N-5: a visszáru nem érinti a számlát (nincs új hívás, a tükör változatlan).
+        $this->assertCount($callsAfterSale, $this->stubCalls());
+        $this->assertSame($mirrorBefore, self::$db->findInvoiceBySaleAndProvider($sale['sale_id'], 'szamlazz'));
+    }
+
+    public function testA03MixedVatAndGiftCardPartialReturnsFollowTheSaleAllocation(): void
+    {
+        [$closeStart] = $this->reports();
+        $sale = $this->invoicedSale(['items' => [
+            self::manual('M27', 999.0, 1, '27'), self::manual('M18', 555.0, 2, '18'), self::manual('M5', 444.0, 1, '5'),
+            self::manual('M0', 333.0, 3, '0'), self::manual('MAAM', 390.0, 1, 'AAM'), self::manual('MTAM', 279.0, 2, 'TAM'),
+        ], 'coupon_code' => $this->coupon('fixed', 777), 'gift_card_code' => $this->giftCard(1000.0)], 'A-03 vegyes ÁFA + utalvány');
+        $this->assertSame(372300, $sale['sum']['gross']);
+
+        foreach ([[5 => 2, 3 => 1], [0 => 1, 1 => 1], [3 => 2, 4 => 1], [1 => 1, 2 => 1]] as $step) {
+            $this->returnLines($sale['sale_id'], $step);
+            $delta = $this->dayDelta($closeStart);
+            $this->assertSame($delta['gross'], $delta['net'] + $delta['vat']);
+            foreach ($delta['by_rate'] as $rate => $row) {
+                $this->assertSame($row['gross'], $row['net'] + $row['vat'], "kulcs $rate");
+            }
+        }
+        $this->assertSame(['net' => 0, 'vat' => 0, 'gross' => 0, 'by_rate' => []], $this->dayDelta($closeStart), 'vegyes ÁFA + utalvány: a teljes visszavétel után 0');
+
+        $rows = self::$db->pdo()->query('SELECT SUM(total_refund), SUM(gift_card_refund) FROM returns WHERE sale_id = ' . $sale['sale_id'])->fetch(PDO::FETCH_NUM);
+        $stored = self::$db->getSaleWithItems($sale['sale_id']);
+        $this->assertSame([self::cents($stored['total']), self::cents($stored['gift_card_redeemed'])], [self::cents($rows[0]), self::cents($rows[1])], 'pénz: Σ visszajáró = befizetett, az utalvány a teljes visszavételkor');
     }
 }

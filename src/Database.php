@@ -9,7 +9,7 @@ require_once __DIR__ . '/VatAllocation.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 35;
+    private const SCHEMA_VERSION = 36;
 
     private PDO $pdo;
     private string $driver;
@@ -229,6 +229,9 @@ class Database
             }
             if ($version < 35) {
                 $this->migrateV35TransferAndReturnIdempotency();
+            }
+            if ($version < 36) {
+                $this->migrateV36ReturnValueAllocation();
             }
         }
 
@@ -2064,6 +2067,24 @@ class Database
                     ? "ALTER TABLE $table ADD UNIQUE KEY uq_{$table}_idempotency_key (idempotency_key)"
                     : "CREATE UNIQUE INDEX IF NOT EXISTS idx_{$table}_idempotency_key ON $table(idempotency_key)");
             } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+        }
+    }
+
+    /**
+     * V36 (A-03) — a visszáru rögzített pénzügyi értéke (bruttó/nettó/ÁFA)
+     * a visszáru-soron és tételenként, az eredeti eladás allokációjából
+     * (VatAllocation::returnAllocation()). NULL = a javítás előtt rögzített
+     * visszáru: a riportok ilyenkor a korábbi módon számolnak vele.
+     */
+    private function migrateV36ReturnValueAllocation(): void
+    {
+        $money = $this->driver === 'mysql' ? 'DECIMAL(12,2) NULL' : 'REAL';
+        foreach (['returns', 'return_items'] as $table) {
+            $this->migrateColumns($table, [
+                'value_gross' => $money,
+                'value_net' => $money,
+                'value_vat' => $money,
+            ]);
         }
     }
 
@@ -4402,7 +4423,9 @@ class Database
             return null;
         }
 
-        $stmt = $this->pdo->prepare('SELECT * FROM sale_items WHERE sale_id = ?');
+        // Id szerinti sorrend: a közös allokáció (VatAllocation) maradék-
+        // fillérje a sorok sorrendjétől függ — minden hívó ugyanazt lássa.
+        $stmt = $this->pdo->prepare('SELECT * FROM sale_items WHERE sale_id = ? ORDER BY id');
         $stmt->execute([$saleId]);
         $sale['items'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -4543,6 +4566,37 @@ class Database
         return VatAllocation::breakdown($value, $lines);
     }
 
+    /**
+     * A-03 — egy visszáru értéke és ÁFA-bontása a riportok számára. A V36
+     * óta rögzített visszárunál a tételek tárolt értéke (az eredeti eladás
+     * allokációjából, VatAllocation::returnAllocation()) — itt nincs újabb
+     * számítás. A javítás előtt rögzített visszárunál a korábbi szabály
+     * (returnGrossValue() szétosztva a visszavett sorokra).
+     *
+     * @return array{lines: list<array{vat_rate:string, gross:float, net:float, vat:float}>, gross:float, net:float, vat:float}
+     */
+    private static function returnValueBreakdown(array $return, array $returnItems): array
+    {
+        if (($return['value_gross'] ?? null) === null) {
+            return self::vatBreakdown(self::returnGrossValue($return), $returnItems);
+        }
+        $result = ['lines' => [], 'gross' => 0.0, 'net' => 0.0, 'vat' => 0.0];
+        $sum = ['gross' => 0, 'net' => 0, 'vat' => 0];
+        foreach ($returnItems as $item) {
+            $line = ['vat_rate' => (string) ($item['vat_rate'] ?? '')];
+            foreach ($sum as $k => $v) {
+                $cents = (int) round(((float) ($item['value_' . $k] ?? 0)) * 100);
+                $line[$k] = $cents / 100.0;
+                $sum[$k] = $v + $cents;
+            }
+            $result['lines'][] = $line;
+        }
+        foreach ($sum as $k => $v) {
+            $result[$k] = $v / 100.0;
+        }
+        return $result;
+    }
+
     private static function addToVatRateBreakdown(array &$byVatRate, array $breakdown, int $sign): void
     {
         foreach ($breakdown['lines'] as $line) {
@@ -4591,7 +4645,7 @@ class Database
         if ($sales) {
             $saleIds = array_column($sales, 'id');
             $placeholders = implode(',', array_fill(0, count($saleIds), '?'));
-            $itemsStmt = $this->pdo->prepare("SELECT * FROM sale_items WHERE sale_id IN ($placeholders)");
+            $itemsStmt = $this->pdo->prepare("SELECT * FROM sale_items WHERE sale_id IN ($placeholders) ORDER BY id");
             $itemsStmt->execute($saleIds);
             foreach ($itemsStmt->fetchAll(PDO::FETCH_ASSOC) as $item) {
                 $itemsBySale[$item['sale_id']][] = $item;
@@ -4663,16 +4717,17 @@ class Database
             }
 
             foreach ($returns as $ret) {
-                $refund = self::returnGrossValue($ret);
+                // A-03: a visszáru értéke és ÁFA-bontása az eredeti eladás
+                // allokációjából rögzített érték (returnValueBreakdown()); a
+                // fizetési mód szerinti bontás a ténylegesen visszaadott pénz.
+                $breakdown = self::returnValueBreakdown($ret, $returnItemsByReturn[$ret['id']] ?? []);
+                $refund = $breakdown['gross'];
                 $totalGross -= $refund;
                 $totalReturnsGross += $refund;
 
                 $method = $ret['payment_method'] ?: 'Készpénz';
                 self::addToPaymentBreakdown($byPayment, $method, (float) $ret['total_refund'], (float) $ret['gift_card_refund'], -1, false);
 
-                // A visszáru értéke ugyanazzal a szabállyal oszlik el a
-                // visszavett sorokra (B-13) — lásd vatBreakdown().
-                $breakdown = self::vatBreakdown($refund, $returnItemsByReturn[$ret['id']] ?? []);
                 $totalNet -= $breakdown['net'];
                 $totalVat -= $breakdown['vat'];
                 self::addToVatRateBreakdown($byVatRate, $breakdown, -1);
@@ -6146,13 +6201,53 @@ class Database
             $saleLocationId = $locStmt->fetchColumn();
             $saleLocationId = $saleLocationId !== false && $saleLocationId !== null ? (int) $saleLocationId : null;
 
-            foreach ($items as $item) {
+            // A-03: a visszáru pénzügyi értéke (bruttó/nettó/ÁFA) és a
+            // fizetési módon visszajáró összeg az EREDETI eladás közös
+            // allokációjából, a tranzakción belül frissen olvasott, már
+            // visszavett mennyiség UTÁNI darabokra (VatAllocation::
+            // returnAllocation(), 7. pont) — nem egy újabb arányosítás. Így
+            // több részleges visszáru összege, sorrendtől függetlenül,
+            // fillérre az eladás értéke. A hívó által átadott $totalRefund
+            // csak akkor marad érvényben, ha az eladás tételei nem
+            // azonosíthatók (sale_item_id nélküli, régi hívó).
+            $allocation = null;
+            $saleRow = $this->getSaleWithItems($saleId);
+            if ($saleRow && $saleRow['items']) {
+                $knownItemIds = array_map('intval', array_column($saleRow['items'], 'id'));
+                $allKnown = true;
+                foreach ($items as $item) {
+                    if (!in_array((int) ($item['sale_item_id'] ?? 0), $knownItemIds, true)) {
+                        $allKnown = false;
+                        break;
+                    }
+                }
+                if ($allKnown) {
+                    try {
+                        $allocation = VatAllocation::returnAllocation(
+                            self::saleGrossValue($saleRow),
+                            (float) $saleRow['total'],
+                            $saleRow['items'],
+                            $alreadyReturned,
+                            array_map(static fn (array $i): array => ['sale_item_id' => $i['sale_item_id'], 'qty' => $i['qty']], array_values($items))
+                        );
+                    } catch (InvalidArgumentException $e) {
+                        throw new RuntimeException($e->getMessage(), 0, $e);
+                    }
+                    $this->pdo->prepare('UPDATE returns SET total_refund = ?, value_gross = ?, value_net = ?, value_vat = ? WHERE id = ?')
+                        ->execute([$allocation['paid'], $allocation['gross'], $allocation['net'], $allocation['vat'], $returnId]);
+                }
+            }
+
+            foreach (array_values($items) as $rowIndex => $item) {
+                $value = $allocation['rows'][$rowIndex] ?? null;
                 $this->pdo->prepare('
-                    INSERT INTO return_items (return_id, sale_item_id, product_id, name, qty, unit_price, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO return_items (return_id, sale_item_id, product_id, name, qty, unit_price, value_gross, value_net, value_vat, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ')->execute([
                     $returnId, $item['sale_item_id'] ?? null, $item['product_id'] ?? null,
-                    $item['name'], $item['qty'], $item['unit_price'], date('Y-m-d H:i:s'),
+                    $item['name'], $item['qty'], $item['unit_price'],
+                    $value['gross'] ?? null, $value['net'] ?? null, $value['vat'] ?? null,
+                    date('Y-m-d H:i:s'),
                 ]);
 
                 if (!empty($item['product_id'])) {
@@ -6249,6 +6344,14 @@ class Database
                 }
             }
         }
+    }
+
+    public function getReturnById(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM returns WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
     }
 
     public function findReturnByIdempotencyKey(string $key): ?array
@@ -6908,7 +7011,7 @@ class Database
         // getDailySummary() is teszi — enélkül a trend minden olyan napon
         // túlbecsülné a forgalmat, amikor visszáru történt.
         $returnsStmt = $this->pdo->prepare("
-            SELECT $dateExpr AS day, SUM(total_refund + gift_card_refund) AS total
+            SELECT $dateExpr AS day, SUM(COALESCE(value_gross, total_refund + gift_card_refund)) AS total
             FROM returns
             WHERE $dateExpr >= ?
             GROUP BY $dateExpr
@@ -8100,7 +8203,7 @@ class Database
         if ($sales) {
             $saleIds = array_column($sales, 'id');
             $placeholders = implode(',', array_fill(0, count($saleIds), '?'));
-            $itemsStmt = $this->pdo->prepare("SELECT * FROM sale_items WHERE sale_id IN ($placeholders)");
+            $itemsStmt = $this->pdo->prepare("SELECT * FROM sale_items WHERE sale_id IN ($placeholders) ORDER BY id");
             $itemsStmt->execute($saleIds);
             foreach ($itemsStmt->fetchAll(PDO::FETCH_ASSOC) as $item) {
                 $itemsBySale[$item['sale_id']][] = $item;
@@ -8167,7 +8270,8 @@ class Database
 
             foreach ($returns as $ret) {
                 $day = substr($ret['created_at'], 0, 10);
-                $refund = self::returnGrossValue($ret);
+                $breakdown = self::returnValueBreakdown($ret, $returnItemsByReturn[$ret['id']] ?? []);
+                $refund = $breakdown['gross'];
                 $totalGross -= $refund;
                 $totalReturnsGross += $refund;
                 $byDay[$day] ??= ['date' => $day, 'gross' => 0.0, 'net' => 0.0, 'count' => 0];
@@ -8176,7 +8280,6 @@ class Database
                 $method = $ret['payment_method'] ?: 'Készpénz';
                 self::addToPaymentBreakdown($byPayment, $method, (float) $ret['total_refund'], (float) $ret['gift_card_refund'], -1, false);
 
-                $breakdown = self::vatBreakdown($refund, $returnItemsByReturn[$ret['id']] ?? []);
                 $retNet = $breakdown['net'];
                 $totalNet -= $retNet;
                 $totalVat -= $breakdown['vat'];

@@ -38,16 +38,20 @@ try {
     $id = $db->recordCashMovement($cashSessionId, Auth::currentStaffId(), $type, $amount, $reason, $idempotencyKey ?: null);
 } catch (InvalidArgumentException $e) {
     send_json(['error' => $e->getMessage()], 400);
-} catch (RuntimeException $e) {
-    send_json(['error' => $e->getMessage()], 409);
 } catch (PDOException $e) {
-    if ($idempotencyKey !== '' && str_contains($e->getMessage(), 'idempotency_key')) {
+    // B-12: a PDOException a RuntimeException leszármazottja — ennek az
+    // ágnak a RuntimeException ELŐTT kell állnia, különben (korábban) sose
+    // futott le: egy dupla beküldés UNIQUE-ütközése nyers SQL-lel 409 lett.
+    // Egy közel egyidejű dupla kérésnél a győztes eredménye jön vissza.
+    if ($idempotencyKey !== '') {
         $winner = $db->findCashMovementByIdempotencyKey($idempotencyKey);
         if ($winner) {
             send_json(['id' => (int) $winner['id'], 'movement' => $winner]);
         }
     }
-    send_generic_error_response($e, 'cash-movement.php pénzmozgás rögzítése sikertelen');
+    send_database_error_response($e, 'cash-movement.php pénzmozgás rögzítése sikertelen');
+} catch (RuntimeException $e) {
+    send_json(['error' => $e->getMessage()], 409);
 } catch (Throwable $e) {
     send_generic_error_response($e, 'cash-movement.php pénzmozgás rögzítése sikertelen');
 }

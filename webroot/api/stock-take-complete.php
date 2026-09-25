@@ -26,6 +26,10 @@ if ($applyCorrections && $db->listStaff(true) && !$db->isStaffAdmin(Auth::curren
 
 try {
     $updatedProducts = $db->completeStockTake($id, $applyCorrections);
+} catch (PDOException $e) {
+    // B-12: DB-hiba (lock, constraint, SQL) — NEM üzleti ütközés. A
+    // PDOException a RuntimeException leszármazottja, ezért előtte kell állnia.
+    send_database_error_response($e, 'stock-take-complete.php leltár lezárása sikertelen');
 } catch (RuntimeException $e) {
     // A Database::completeStockTake() saját, kézzel írt, biztonságosan
     // felhasználó elé tárható üzenete (pl. "A leltár nem található." /

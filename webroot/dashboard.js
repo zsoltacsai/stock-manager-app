@@ -280,8 +280,10 @@ async function loadAiDailySummary() {
     const box = document.getElementById('dash-ai-daily-status');
     if (!card || !box) return;
     try {
-        const today = new Date().toISOString().slice(0, 10);
-        const data = await fetchJson('/api/ai-daily-report.php?date=' + today);
+        // B-14: a "ma"-t a szerver dönti el (az alkalmazás időzónájában, lásd
+        // ReportPeriod::today()) — a new Date().toISOString() UTC-dátuma éjfél
+        // után 1-2 órán át még a tegnapi napot adta.
+        const data = await fetchJson('/api/ai-daily-report.php?date=today');
         const report = data.report;
         box.dataset.visible = '1';
         updateAiDailyCardVisibility();

@@ -1819,6 +1819,18 @@ tartozó darabokat (túladás). Leadáskor a helyi készlet csökken és a
 foglalás megszűnik (a kiküldött érték nem változik, nincs dupla
 levonás); elutasításkor a foglalás felszabadul.
 
+**Lemondás a WooCommerce-ben (P-D)**: ha egy rendelés a webshopban
+`cancelled` / `refunded` / `failed` állapotba kerül, a webhook ezt is
+feldolgozza. Egy még piszkozat rendelés automatikusan "Elutasítva" lesz és
+a foglalás felszabadul (pontosan egyszer — egy ismételt webhook nem
+változtat semmit, és ugyanaz a rendelés nem foglal újra). Egy már leadott
+rendelésnél a helyi eladás és készlet NEM áll vissza automatikusan (az áru
+elmehetett) — a rendelés részletein figyelmeztetés jelenik meg, a
+visszajött árut visszáruként kell rögzíteni; a webshop készlete a helyi
+értékre korrigálódik. Egy közel egyidejű leadás és lemondás közül pontosan
+az egyik érvényesül. A webhookot a WooCommerce-ben a "Rendelés frissítve"
+eseményre kell beállítani (ugyanaz, mint eddig).
+
 A WooCommerce webhookja (Woo → Beállítások → Speciális → Webhookok, "Rendelés
 frissítve" esemény) mostantól **nem csökkenti azonnal a helyi készletet** —
 ehelyett a fizetett (`processing`/`completed` állapotú) rendelés

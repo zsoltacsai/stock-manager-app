@@ -35,6 +35,10 @@ if ($fromLocationId) {
 
 try {
     $db->transferStock($productId, $fromLocationId, $toLocationId, $qty, $staffId);
+} catch (PDOException $e) {
+    // B-12: DB-hiba (lock, constraint, SQL) — NEM üzleti ütközés. A
+    // PDOException a RuntimeException leszármazottja, ezért előtte kell állnia.
+    send_database_error_response($e, 'stock-transfer.php készletmozgatás sikertelen');
 } catch (RuntimeException $e) {
     // A Database::transferStock() saját, kézzel írt, biztonságosan
     // felhasználó elé tárható üzenete (pl. "A forrás telephelyen

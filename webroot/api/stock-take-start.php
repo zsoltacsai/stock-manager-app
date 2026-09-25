@@ -13,7 +13,14 @@ $notes = trim((string) ($input['notes'] ?? ''));
 
 try {
     $id = $db->startStockTake($staffId, $notes);
-} catch (Throwable $e) {
+} catch (PDOException $e) {
+    // B-12: DB-hiba — korábban a Throwable-ág ezt is 409-es "üzleti"
+    // hibaként, nyers SQL-lel adta vissza.
+    send_database_error_response($e, 'stock-take-start.php leltár indítása sikertelen');
+} catch (RuntimeException $e) {
+    // Valódi üzleti ütközés (pl. már van nyitott leltár).
     send_json(['error' => $e->getMessage()], 409);
+} catch (Throwable $e) {
+    send_generic_error_response($e, 'stock-take-start.php leltár indítása sikertelen');
 }
 send_json(['id' => $id]);

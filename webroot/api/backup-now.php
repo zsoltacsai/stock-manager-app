@@ -36,6 +36,15 @@ try {
     $db->logSystemEvent('backup', 'backup_completed', 'info', 'success', $summary, null, $retentionDays);
 
     send_json(['success' => true, 'result' => $result, 'summary' => $summary]);
+} catch (PDOException $e) {
+    // B-12: az adatbázis-hiba nyers SQL-szövege se a válaszba, se a
+    // Beállítások oldalon látható összegzőbe ne kerüljön.
+    $settings->save([
+        'last_backup_at'      => date('c'),
+        'last_backup_summary' => 'Hiba: adatbázis-hiba a mentés közben (részletek a szerver naplójában).',
+    ]);
+    $db->logSystemEvent('backup', 'backup_failed', 'error', 'failure', 'A kézi biztonsági mentés sikertelen volt.', get_class($e) . ': ' . $e->getMessage(), $retentionDays);
+    send_database_error_response($e, 'backup-now.php kézi mentés sikertelen');
 } catch (Throwable $e) {
     $settings->save([
         'last_backup_at'      => date('c'),

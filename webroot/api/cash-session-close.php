@@ -30,6 +30,10 @@ foreach (($appSettings['payment_methods'] ?? []) as $method) {
 
 try {
     $result = $db->closeCashSession($id, $countedAmount, $cashPaymentMethods);
+} catch (PDOException $e) {
+    // B-12: DB-hiba (lock, constraint, SQL) — NEM üzleti ütközés. A
+    // PDOException a RuntimeException leszármazottja, ezért előtte kell állnia.
+    send_database_error_response($e, 'cash-session-close.php kasszazárás sikertelen');
 } catch (RuntimeException $e) {
     // Ha a műszak MÁR le van zárva ÉS a most beküldött megszámolt összeg
     // egyezik a korábban ténylegesen elmentett closing_amount-tal, ez egy

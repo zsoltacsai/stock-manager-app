@@ -30,19 +30,31 @@ if ($idempotencyKey !== '') {
 try {
     $staffId = Auth::currentStaffId();
     $id = $db->openCashSession($cashRegisterId, $staffId, $openingAmount, $idempotencyKey ?: null, $idempotencyFingerprint);
-} catch (RuntimeException $e) {
-    send_json(['error' => $e->getMessage()], 409);
 } catch (PDOException $e) {
     // Két majdnem egyidejű nyitási kérés (ugyanazzal a kulccsal) közül a
     // vesztes itt kapja el a UNIQUE-ütközést — ugyanaz a minta, mint
-    // sale.php-ban, lásd ott a docblockot.
-    if ($idempotencyKey !== '' && str_contains($e->getMessage(), 'idempotency_key')) {
+    // sale.php-ban, lásd ott a docblockot. B-12: ennek az ágnak a
+    // RuntimeException ELŐTT kell állnia (PDOException ⊂ RuntimeException),
+    // korábban sose futott le.
+    if ($idempotencyKey !== '') {
         $winner = $db->findCashSessionByIdempotencyKey($idempotencyKey);
         if ($winner) {
             cash_open_reject_or_replay($winner, $idempotencyFingerprint);
         }
     }
-    send_generic_error_response($e, 'cash-session-open.php kasszanyitás sikertelen');
+    send_database_error_response($e, 'cash-session-open.php kasszanyitás sikertelen');
+} catch (RuntimeException $e) {
+    // A dupla kérés második példánya jellemzően NEM a UNIQUE-ütközésen
+    // bukik el, hanem az "egy nyitott műszak / pénztárgép" atomikus őrén (a
+    // győztes épp megnyitotta) — ha a győztes UGYANEZZEL a kulccsal nyitott,
+    // ez nem üzleti ütközés, hanem visszajátszás.
+    if ($idempotencyKey !== '') {
+        $winner = $db->findCashSessionByIdempotencyKey($idempotencyKey);
+        if ($winner) {
+            cash_open_reject_or_replay($winner, $idempotencyFingerprint);
+        }
+    }
+    send_json(['error' => $e->getMessage()], 409);
 } catch (Throwable $e) {
     send_generic_error_response($e, 'cash-session-open.php kasszanyitás sikertelen');
 }

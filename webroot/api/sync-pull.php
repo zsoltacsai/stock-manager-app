@@ -58,6 +58,12 @@ try {
         'imported' => $imported, 'skipped' => $skipped, 'total_from_wc' => count($products),
         'truncated' => $result['truncated'],
     ]);
+} catch (PDOException $e) {
+    // B-12: a WooCommerce-hibákat kezelő RuntimeException-ág elé — egy
+    // behúzás közbeni DB-hiba nem "WooCommerce-hiba", és a nyers SQL nem
+    // kerülhet a válaszba.
+    $db->rollBack();
+    send_database_error_response($e, 'sync-pull.php WooCommerce behúzás sikertelen (adatbázis)');
 } catch (RuntimeException $e) {
     // A WooCommerceClient saját, biztonságosan felhasználó (admin) elé
     // tárható hibaüzenete (pl. "WooCommerce request failed (timeout)")

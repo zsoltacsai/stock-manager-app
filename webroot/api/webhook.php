@@ -23,6 +23,26 @@ if (!$signature || !hash_equals($expected, $signature)) {
 }
 
 $order = json_decode($rawBody, true);
+
+// P-D: egy KORÁBBAN piszkozatként importált rendelés WooCommerce-beli
+// lemondása/visszatérítése/sikertelensége — a foglalás (B-08: a draft maga
+// a foglalás) felszabadul, egy már leadott (megerősített) rendelésnél a
+// helyi eladás/készlet NEM áll vissza vakon. Idempotens: duplikált/
+// ismételt webhook no-op. Lásd Database::applyWebOrderTermination().
+if (is_array($order) && in_array((string) ($order['status'] ?? ''), Database::WEB_ORDER_TERMINAL_WC_STATUSES, true)) {
+    $terminatedId = (int) ($order['id'] ?? 0);
+    if (!$terminatedId) {
+        send_json(['ignored' => true, 'reason' => 'missing order id']);
+    }
+    $termination = $db->applyWebOrderTermination($terminatedId, (string) $order['status']);
+    if ($termination['outcome'] === 'released') {
+        $db->logSync('webhook', null, "Rendelés #$terminatedId a WooCommerce-ben {$order['status']} — a piszkozat elutasítva, a foglalás felszabadult.");
+    } elseif ($termination['outcome'] === 'confirmed_kept') {
+        $db->logSync('webhook', null, "Rendelés #$terminatedId a WooCommerce-ben {$order['status']}, de már le volt adva (eladás #{$termination['sale_id']}) — a helyi eladás megmaradt, szükség esetén visszáruval rendezd.");
+    }
+    send_json(['ok' => true, 'status' => $order['status'], 'outcome' => $termination['outcome'], 'order_id' => $terminatedId]);
+}
+
 if (!is_array($order) || empty($order['line_items'])) {
     send_json(['ignored' => true]);
 }

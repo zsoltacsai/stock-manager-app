@@ -17,6 +17,10 @@ if (!$id) {
 
 try {
     $db->enableClient($id);
+} catch (PDOException $e) {
+    // B-12: DB-hiba (lock, constraint, SQL) — NEM üzleti ütközés. A
+    // PDOException a RuntimeException leszármazottja, ezért előtte kell állnia.
+    send_database_error_response($e, 'client-enable.php kliens engedélyezése sikertelen');
 } catch (RuntimeException $e) {
     send_json(['error' => $e->getMessage()], 409);
 } catch (Throwable $e) {

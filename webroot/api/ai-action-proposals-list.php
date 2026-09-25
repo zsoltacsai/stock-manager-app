@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
+require_once __DIR__ . '/../../src/Pagination.php';
 require_once __DIR__ . '/../../src/Ai/ActionProposalService.php';
 require_once __DIR__ . '/../../src/Ai/ActionExecutor.php';
 
@@ -25,9 +26,9 @@ if (isset($_GET['agent']) && in_array($_GET['agent'], $allowedAgents, true)) {
     $filters['agent'] = $_GET['agent'];
 }
 
-$pageSize = isset($_GET['page_size']) ? max(1, min(100, (int) $_GET['page_size'])) : 20;
-$page = isset($_GET['page']) ? max(1, (int) $_GET['page']) : 1;
-$offset = ($page - 1) * $pageSize;
+// B-15: korlátos, túlcsordulás-mentes lapozás (lásd Pagination) — egy
+// extrém page (pl. PHP_INT_MAX) korábban float offsetet és HTTP 500-at adott.
+['page' => $page, 'page_size' => $pageSize, 'offset' => $offset] = Pagination::fromQuery($_GET, 20, 100);
 
 $service = new ActionProposalService($db, $appSettings);
 $total = $service->countProposals($filters);

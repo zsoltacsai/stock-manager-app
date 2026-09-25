@@ -161,6 +161,12 @@ class NavInvoiceProvider implements InvoiceProviderInterface
                 'currency' => (string) ($totals['currency'] ?? $original['currency'] ?? 'HUF'),
                 'payload' => $payload,
             ]);
+        } catch (PDOException $e) {
+            // B-12: createInvoiceOperation() a UNIQUE-ütközést maga fordítja
+            // RuntimeException-re ("már létezik"); minden MÁS DB-hiba NEM
+            // "már folyamatban" — tovább kell dobni (a PDOException a
+            // RuntimeException leszármazottja, ezért előtte áll).
+            throw $e;
         } catch (RuntimeException $e) {
             // Ugyanaz a megkülönböztetés, mint SzamlazzInvoiceProvider::performOperation()-nél
             // — egy konkurrens kérés (dupla kattintás/másik admin) már

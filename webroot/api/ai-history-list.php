@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
+require_once __DIR__ . '/../../src/Pagination.php';
 
 // Fázis 7 — AI futás-előzmények (a kör 2/3. pontja): a MEGLÉVŐ
 // system_events (category='ai') adatra épülő, lapozható/szűrhető
@@ -35,9 +36,9 @@ if (!empty($_GET['date_to']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $_G
 // ordering: newest first" — mindkettőt a Database réteg kényszeríti ki
 // (Database::AI_HISTORY_MAX_PAGE_SIZE, ORDER BY created_at DESC, id DESC),
 // itt csak a bemenetet normalizáljuk biztonságosan.
-$pageSize = isset($_GET['page_size']) ? max(1, min(100, (int) $_GET['page_size'])) : 20;
-$page = isset($_GET['page']) ? max(1, (int) $_GET['page']) : 1;
-$offset = ($page - 1) * $pageSize;
+// B-15: korlátos, túlcsordulás-mentes lapozás (lásd Pagination) — egy
+// extrém page (pl. PHP_INT_MAX) korábban float offsetet és HTTP 500-at adott.
+['page' => $page, 'page_size' => $pageSize, 'offset' => $offset] = Pagination::fromQuery($_GET, 20, 100);
 
 $total = $db->countAiRunHistory($filters);
 $rows = $db->getAiRunHistory($filters, $pageSize, $offset);

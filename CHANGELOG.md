@@ -212,6 +212,35 @@ ellenőrzése, ha rendelkezésre áll. Lásd README "Fázis 11" alszakasz.
   WooCommerce-push queue-ba kerül, és a pull nem írja vissza, amíg ki
   nem ment.
 
+### Fixed — correctness audit (B-12…B-15, P-D)
+
+- **B-12** — a PDOException a RuntimeException leszármazottja: minden
+  végpont `catch (RuntimeException)` lánca elé `catch (PDOException)`
+  került (kassza, leltár, visszáru, készletmozgatás, kliens-kezelés,
+  WooCommerce-behúzás, mentés), a számlázó providerekben a nem-UNIQUE
+  DB-hiba továbbdobódik. DB-hiba → általános 500, átmeneti zár → 503
+  "próbáld újra"; nyers SQL nem kerül a válaszba (a részlet a szerver
+  naplójába). A `cash-movement.php`/`cash-session-open.php` idempotens
+  visszajátszása mostantól ténylegesen lefut: egy közel egyidejű dupla
+  beküldés második kérése a győztes eredményét kapja. A valódi üzleti
+  409-ek változatlanok.
+- **B-13** — egyetlen ÁFA-szabály (`Database::vatBreakdown()`) a napi
+  zárásban és az értékesítési riportban (→ Dashboard, AI): az érték
+  fillérre pontos szétosztása a sorokra, soronként kerekített nettó, ÁFA =
+  bruttó − nettó. A 3×10 Ft / 20 Ft kupon eset mindkét riportban bruttó
+  10.00 / nettó 7.87 / ÁFA 2.13.
+- **B-14** — a Dashboard AI-kártyája a szerver "mai" napját kéri
+  (`ai-daily-report.php?date=today`, `ReportPeriod::today()`), ugyanazt,
+  amit a napi jelentés workere használ — nem a böngésző UTC-dátumát.
+- **B-15** — az `ai-history-list` / `ai-action-proposals-list` lapozása
+  közös, korlátos helperen megy (`Pagination`, max. 100 000. oldal):
+  extrém `page` érték nem okoz túlcsordulást/HTTP 500-at.
+- **P-D** — a WooCommerce-ben lemondott/visszatérített/sikertelen rendelés
+  webhookja a piszkozat foglalását felszabadítja (elutasított állapot,
+  idempotens); egy már leadott rendelésnél a helyi eladás/készlet nem áll
+  vissza vakon, csak a webshop-készlet korrigálódik és figyelmeztetés
+  jelenik meg.
+
 ### Tests
 
 - Fázis 10: `AiRetryPolicyTest` (9 teszt), `AiAuditLoggerTest` (5 teszt),

@@ -52,6 +52,34 @@ function send_generic_error_response(Throwable $e, string $context, int $status 
     send_json(['error' => 'Váratlan szerverhiba történt. Próbáld újra, vagy értesítsd az üzemeltetőt.'], $status);
 }
 
+/**
+ * B-12 — adatbázis-hiba (PDOException) stabil, általános kliens-válasza.
+ * FONTOS: a PDOException a RuntimeException leszármazottja — egy
+ * `catch (RuntimeException)` ág, ami az üzleti 409-eket kezeli, enélkül
+ * egy DB-hibát (lock timeout, constraint, SQL-hiba) is üzleti ütközésnek
+ * látna, és a nyers SQL-szöveget adná vissza. Ezért minden ilyen lánc
+ * ELÉ egy `catch (PDOException)` kerül, ami ezt hívja. A technikai részlet
+ * csak a szerver naplójába kerül. Átmeneti zárolási hibára (SQLite
+ * "database is locked"/BUSY, MySQL lock wait timeout/deadlock) 503 + "próbáld
+ * újra", minden másra az általános 500-as üzenet.
+ */
+function send_database_error_response(PDOException $e, string $context): void
+{
+    $message = strtolower($e->getMessage());
+    $driverCode = (int) ($e->errorInfo[1] ?? 0);
+    $isTransientLock = str_contains($message, 'database is locked')
+        || str_contains($message, 'database table is locked')
+        || str_contains($message, 'sqlite_busy')
+        || in_array($driverCode, [5, 6, 1205, 1213], true)   // SQLITE_BUSY/LOCKED, MySQL lock wait/deadlock
+        || str_contains($message, 'lock wait timeout')
+        || str_contains($message, 'deadlock');
+    if ($isTransientLock) {
+        error_log('[fountaintrade] ' . $context . ': ' . get_class($e) . ': ' . $e->getMessage());
+        send_json(['error' => 'Az adatbázis átmenetileg foglalt. Próbáld újra néhány másodperc múlva.', 'retryable' => true], 503);
+    }
+    send_generic_error_response($e, $context);
+}
+
 set_exception_handler(function (Throwable $e): void {
     error_log('[fountaintrade] Uncaught ' . get_class($e) . ': ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
     send_generic_server_error();

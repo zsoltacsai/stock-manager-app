@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
+require_once __DIR__ . '/../../src/ReportPeriod.php';
 require_once __DIR__ . '/../../src/Ai/AiProviderFactory.php';
 require_once __DIR__ . '/../../src/Ai/AiDailyIntelligence.php';
 
@@ -38,7 +39,7 @@ if ((int) date('G') < $configuredHour) {
     send_json(['skipped' => true, 'reason' => 'not_due', 'configured_hour' => $configuredHour]);
 }
 
-$reportDate = date('Y-m-d');
+$reportDate = ReportPeriod::today(); // B-14: ugyanaz a "ma", mint a Dashboard AI-kártyájáé
 $existing = $db->getAiDailyReport($reportDate);
 if ($existing !== null && $existing['status'] === 'completed') {
     send_json(['skipped' => true, 'reason' => 'already_completed', 'report_date' => $reportDate]);

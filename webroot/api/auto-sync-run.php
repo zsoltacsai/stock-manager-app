@@ -61,6 +61,17 @@ try {
     $db->logSystemEvent('woocommerce', 'sync_completed', 'info', 'success', $summary, null, $eventRetentionDays);
 
     send_json(['ran' => true, 'imported' => $imported, 'skipped' => $skipped]);
+} catch (PDOException $e) {
+    // B-12: a WooCommerce-hibákat kezelő RuntimeException-ág elé — egy
+    // behúzás közbeni DB-hiba nem "WooCommerce-hiba", és a nyers SQL nem
+    // kerülhet a válaszba.
+    $db->rollBack();
+    $settings->save([
+        'last_auto_sync_at'      => date('c'),
+        'last_auto_sync_summary' => 'Hiba: adatbázis-hiba a szinkron közben (részletek a szerver naplójában).',
+    ]);
+    $db->logSystemEvent('woocommerce', 'sync_failed', 'error', 'failure', 'Adatbázis-hiba a WooCommerce szinkron közben.', get_class($e) . ': ' . $e->getMessage(), $eventRetentionDays);
+    send_database_error_response($e, 'auto-sync-run.php WooCommerce szinkron sikertelen (adatbázis)');
 } catch (RuntimeException $e) {
     // A WooCommerceClient saját, biztonságosan felhasználó (admin, a
     // Rendszerállapot oldalon a mentett last_auto_sync_summary-n

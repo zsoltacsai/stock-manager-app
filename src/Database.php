@@ -4409,6 +4409,87 @@ class Database
     }
 
     /**
+     * B-13 — AZ EGYETLEN ÁFA-számítási/kerekítési szabály minden olyan
+     * riporthoz, ami eladásokat/visszárukat összesít (napi zárás,
+     * értékesítési riport → Dashboard, AI SalesTools):
+     *   1. az eladás (visszáru) ÉRTÉKÉT (saleGrossValue()/returnGrossValue())
+     *      a sorokra a kedvezmény előtti sor-bruttó (unit_price × qty)
+     *      arányában osztjuk szét, FILLÉRRE pontosan: a legnagyobb maradék
+     *      módszerével a sorok bruttója pontosan az értéket adja ki;
+     *   2. soronként: nettó = round(sor bruttó / (1 + kulcs), 2); nem
+     *      numerikus kulcsnál (AAM/TAM) nettó = bruttó;
+     *   3. ÁFA = sor bruttó − sor nettó.
+     * Így minden szinten (sor, ÁFA-kulcs, eladás, nap, időszak) nettó + ÁFA
+     * = bruttó, és ugyanaz az eladás minden riportban ugyanazokkal a
+     * számokkal jelenik meg. Korábban a napi zárás soronként kerekített
+     * bruttóval (összegük eltérhetett az értéktől), a riport pedig
+     * "érték − nettó" ÁFÁ-val számolt — ugyanarra az eladásra eltérő ÁFA.
+     *
+     * @param array<int, array{unit_price:mixed, qty:mixed, vat_rate:mixed}> $lines
+     * @return array{lines: list<array{vat_rate:string, gross:float, net:float, vat:float}>, gross:float, net:float, vat:float}
+     */
+    public static function vatBreakdown(float $value, array $lines): array
+    {
+        $valueCents = (int) round($value * 100);
+        $raw = [];
+        foreach (array_values($lines) as $i => $line) {
+            $raw[$i] = max(0.0, (float) $line['unit_price'] * (int) $line['qty']);
+        }
+        $rawTotal = array_sum($raw);
+        if ($raw === [] || $rawTotal <= 0) {
+            // Tétel (vagy pozitív tételérték) nélkül nincs mihez rendelni a
+            // kulcsot — ismeretlen kulcsú, ÁFA nélküli értékként jelenik meg.
+            $lines = [['vat_rate' => '', 'unit_price' => 1, 'qty' => 1]];
+            $raw = [1.0];
+            $rawTotal = 1.0;
+        }
+        $lines = array_values($lines);
+
+        $cents = [];
+        $remainders = [];
+        foreach ($raw as $i => $r) {
+            $exact = $r / $rawTotal * $valueCents;
+            $cents[$i] = (int) floor($exact);
+            $remainders[$i] = $exact - $cents[$i];
+        }
+        $left = $valueCents - array_sum($cents);
+        arsort($remainders, SORT_NUMERIC); // stabil: egyenlő maradéknál az előbbi sor
+        foreach (array_keys($remainders) as $i) {
+            if ($left <= 0) {
+                break;
+            }
+            $cents[$i]++;
+            $left--;
+        }
+
+        $result = ['lines' => [], 'gross' => 0.0, 'net' => 0.0, 'vat' => 0.0];
+        foreach ($lines as $i => $line) {
+            $rate = (string) ($line['vat_rate'] ?? '');
+            $gross = $cents[$i] / 100;
+            $net = is_numeric($rate) ? round($gross / (1 + ((float) $rate) / 100), 2) : $gross;
+            $vat = round($gross - $net, 2);
+            $result['lines'][] = ['vat_rate' => $rate, 'gross' => $gross, 'net' => $net, 'vat' => $vat];
+            $result['gross'] += $gross;
+            $result['net'] += $net;
+            $result['vat'] += $vat;
+        }
+        foreach (['gross', 'net', 'vat'] as $k) {
+            $result[$k] = round($result[$k], 2);
+        }
+        return $result;
+    }
+
+    private static function addToVatRateBreakdown(array &$byVatRate, array $breakdown, int $sign): void
+    {
+        foreach ($breakdown['lines'] as $line) {
+            $rate = $line['vat_rate'];
+            $byVatRate[$rate]['net'] = ($byVatRate[$rate]['net'] ?? 0) + $sign * $line['net'];
+            $byVatRate[$rate]['vat'] = ($byVatRate[$rate]['vat'] ?? 0) + $sign * $line['vat'];
+            $byVatRate[$rate]['gross'] = ($byVatRate[$rate]['gross'] ?? 0) + $sign * $line['gross'];
+        }
+    }
+
+    /**
      * Fizetési mód szerinti bontás egy eladásra/visszárura (előjeles
      * $sign-nal) — a fizetési módon mozgott pénz a saját módjánál, az
      * utalványos rész a GIFT_CARD_PAYMENT_LABEL soron. A sorok összege így
@@ -4468,34 +4549,13 @@ class Database
             $method = $sale['payment_method'] ?: 'Készpénz';
             self::addToPaymentBreakdown($byPayment, $method, (float) $sale['total'], (float) $sale['gift_card_redeemed'], 1, true);
 
-            // A sale_items.unit_price a kedvezmény ELŐTTI (tétel-szintű) árat
-            // tartalmazza — ha az eladáson bármilyen rendelés-szintű
-            // kedvezmény érvényesült (kupon, hűségpont-beváltás, hűségszint),
-            // a sales.total ennél alacsonyabb. E nélkül az arányosítás nélkül
-            // a Nettó+ÁFA sor összege meghaladná a tényleges Bruttó forgalmat
-            // minden olyan napon, amikor bármelyik eladásnál kedvezmény volt —
-            // pontosan ugyanaz a probléma és ugyanaz a megoldás, mint a
-            // részleges visszáru arányosításánál (lásd api/return-create.php).
-            $saleSubtotal = 0.0;
-            foreach ($sale['items'] as $item) {
-                $saleSubtotal += (float) $item['unit_price'] * (int) $item['qty'];
-            }
-            $discountRatio = $saleSubtotal > 0 ? min(1, $saleValue / $saleSubtotal) : 1.0;
-
-            foreach ($sale['items'] as $item) {
-                $vatRate = (string) $item['vat_rate'];
-                $vatPct = is_numeric($vatRate) ? ((float) $vatRate) / 100 : 0.0;
-                $lineGross = round((float) $item['unit_price'] * (int) $item['qty'] * $discountRatio, 2);
-                $lineNet = is_numeric($vatRate) ? round($lineGross / (1 + $vatPct), 2) : $lineGross;
-                $lineVat = round($lineGross - $lineNet, 2);
-
-                $totalNet += $lineNet;
-                $totalVat += $lineVat;
-
-                $byVatRate[$vatRate]['net'] = ($byVatRate[$vatRate]['net'] ?? 0) + $lineNet;
-                $byVatRate[$vatRate]['vat'] = ($byVatRate[$vatRate]['vat'] ?? 0) + $lineVat;
-                $byVatRate[$vatRate]['gross'] = ($byVatRate[$vatRate]['gross'] ?? 0) + $lineGross;
-            }
+            // A sale_items.unit_price a kedvezmény ELŐTTI árat tartalmazza —
+            // az eladás értéke a közös szabály szerint oszlik el a sorokra
+            // (vatBreakdown(), B-13), ugyanúgy, mint az értékesítési riportban.
+            $breakdown = self::vatBreakdown($saleValue, $sale['items']);
+            $totalNet += $breakdown['net'];
+            $totalVat += $breakdown['vat'];
+            self::addToVatRateBreakdown($byVatRate, $breakdown, 1);
         }
         unset($sale);
 
@@ -4546,31 +4606,12 @@ class Database
                 $method = $ret['payment_method'] ?: 'Készpénz';
                 self::addToPaymentBreakdown($byPayment, $method, (float) $ret['total_refund'], (float) $ret['gift_card_refund'], -1, false);
 
-                $retItems = $returnItemsByReturn[$ret['id']] ?? [];
-                $rawRefund = 0.0;
-                foreach ($retItems as $ri) {
-                    $rawRefund += (float) $ri['unit_price'] * (int) $ri['qty'];
-                }
-                // Ugyanaz az arányosítás, amit a visszáru LÉTREHOZÁSAKOR is
-                // alkalmaztunk (lásd api/return-create.php) — itt visszafejtjük
-                // a már eltárolt total_refund-ból, mert magát az arányt nem
-                // tároljuk el külön a returns táblán.
-                $retRatio = $rawRefund > 0 ? ($refund / $rawRefund) : 1.0;
-
-                foreach ($retItems as $ri) {
-                    $vatRate = (string) ($ri['vat_rate'] ?? '');
-                    $vatPct = is_numeric($vatRate) ? ((float) $vatRate) / 100 : 0.0;
-                    $lineGross = round((float) $ri['unit_price'] * (int) $ri['qty'] * $retRatio, 2);
-                    $lineNet = is_numeric($vatRate) ? round($lineGross / (1 + $vatPct), 2) : $lineGross;
-                    $lineVat = round($lineGross - $lineNet, 2);
-
-                    $totalNet -= $lineNet;
-                    $totalVat -= $lineVat;
-
-                    $byVatRate[$vatRate]['net'] = ($byVatRate[$vatRate]['net'] ?? 0) - $lineNet;
-                    $byVatRate[$vatRate]['vat'] = ($byVatRate[$vatRate]['vat'] ?? 0) - $lineVat;
-                    $byVatRate[$vatRate]['gross'] = ($byVatRate[$vatRate]['gross'] ?? 0) - $lineGross;
-                }
+                // A visszáru értéke ugyanazzal a szabállyal oszlik el a
+                // visszavett sorokra (B-13) — lásd vatBreakdown().
+                $breakdown = self::vatBreakdown($refund, $returnItemsByReturn[$ret['id']] ?? []);
+                $totalNet -= $breakdown['net'];
+                $totalVat -= $breakdown['vat'];
+                self::addToVatRateBreakdown($byVatRate, $breakdown, -1);
             }
         }
 
@@ -5025,6 +5066,64 @@ class Database
             if ($this->isUniqueConstraintViolation($e)) {
                 return null;
             }
+            throw $e;
+        }
+    }
+
+    /**
+     * P-D — azok a WooCommerce-rendelésstátuszok, amelyek után a rendelés
+     * már nem teljesül: lemondva, visszatérítve, sikertelen fizetés.
+     */
+    public const WEB_ORDER_TERMINAL_WC_STATUSES = ['cancelled', 'refunded', 'failed'];
+
+    /**
+     * P-D — egy WooCommerce-ben lemondott/visszatérített/sikertelen rendelés
+     * helyi következménye. Nincs új helyi státusz:
+     *   - 'draft' (= a B-08 szerinti foglalás) → 'rejected', UGYANAZZAL az
+     *     atomikus claimmel, mint a kézi elutasítás
+     *     (claimAndRejectDraftWebshopOrder()) — a foglalás pontosan egyszer
+     *     szabadul fel, egy párhuzamos leadással pontosan az egyik nyer;
+     *   - 'confirmed' → a helyi eladás és készlet VÁLTOZATLAN (az áru
+     *     elmehetett; ez visszáru-teendő), csak a wc_status rögzül, és egy
+     *     push a helyi (irányadó) készletre korrigálja a WooCommerce-t, ha az
+     *     a lemondáskor maga visszatöltötte a készletét;
+     *   - 'rejected' → idempotens no-op (duplikált/ismételt webhook).
+     * A push az érdemi ágakban UGYANABBAN a tranzakcióban ütemeződik.
+     *
+     * @return array{outcome: string, order_id: ?int, sale_id: ?int}
+     *         outcome: 'unknown' | 'released' | 'already_released' | 'confirmed_kept'
+     */
+    public function applyWebOrderTermination(int $wcOrderId, string $wcStatus): array
+    {
+        $this->beginTransaction();
+        try {
+            $stmt = $this->pdo->prepare('SELECT id FROM webshop_orders WHERE wc_order_id = ?');
+            $stmt->execute([$wcOrderId]);
+            $id = $stmt->fetchColumn();
+            if ($id === false) {
+                $this->commit();
+                return ['outcome' => 'unknown', 'order_id' => null, 'sale_id' => null];
+            }
+            $id = (int) $id;
+            $this->pdo->prepare('UPDATE webshop_orders SET wc_status = ? WHERE id = ?')->execute([$wcStatus, $id]);
+
+            if ($this->claimAndRejectDraftWebshopOrder($id)) {
+                $order = $this->getWebshopOrder($id);
+                $this->enqueueWcPushForWebOrderItems($order['items'] ?? [], 'web_cancel', $id);
+                $this->commit();
+                return ['outcome' => 'released', 'order_id' => $id, 'sale_id' => null];
+            }
+
+            $order = $this->getWebshopOrder($id);
+            if (($order['status'] ?? '') === 'confirmed') {
+                $this->enqueueWcPushForWebOrderItems($order['items'] ?? [], 'web_cancel', $id);
+                $this->commit();
+                return ['outcome' => 'confirmed_kept', 'order_id' => $id, 'sale_id' => isset($order['sale_id']) ? (int) $order['sale_id'] : null];
+            }
+            $this->commit();
+            return ['outcome' => 'already_released', 'order_id' => $id, 'sale_id' => null];
+        } catch (Throwable $e) {
+            $this->rollBack();
             throw $e;
         }
     }
@@ -7874,24 +7973,11 @@ class Database
             $method = $sale['payment_method'] ?: 'Készpénz';
             self::addToPaymentBreakdown($byPayment, $method, (float) $sale['total'], (float) $sale['gift_card_redeemed'], 1, true);
 
-            $items = $itemsBySale[$sale['id']] ?? [];
-            $saleSubtotal = 0.0;
-            foreach ($items as $item) {
-                $saleSubtotal += (float) $item['unit_price'] * (int) $item['qty'];
-            }
-            $discountRatio = $saleSubtotal > 0 ? min(1, $saleValue / $saleSubtotal) : 1.0;
-
-            $saleNet = 0.0;
-            foreach ($items as $item) {
-                $vatRate = (string) $item['vat_rate'];
-                $vatPct = is_numeric($vatRate) ? ((float) $vatRate) / 100 : 0.0;
-                $lineGross = round((float) $item['unit_price'] * (int) $item['qty'] * $discountRatio, 2);
-                $lineNet = is_numeric($vatRate) ? round($lineGross / (1 + $vatPct), 2) : $lineGross;
-                $saleNet += $lineNet;
-            }
-            $totalNet += $saleNet;
-            $totalVat += ($saleValue - $saleNet);
-            $byDay[$day]['net'] += $saleNet;
+            // Közös ÁFA-szabály (B-13) — ugyanaz, mint a napi zárásban.
+            $breakdown = self::vatBreakdown($saleValue, $itemsBySale[$sale['id']] ?? []);
+            $totalNet += $breakdown['net'];
+            $totalVat += $breakdown['vat'];
+            $byDay[$day]['net'] += $breakdown['net'];
             $totalGross += $saleValue;
         }
 
@@ -7940,23 +8026,10 @@ class Database
                 $method = $ret['payment_method'] ?: 'Készpénz';
                 self::addToPaymentBreakdown($byPayment, $method, (float) $ret['total_refund'], (float) $ret['gift_card_refund'], -1, false);
 
-                $retItems = $returnItemsByReturn[$ret['id']] ?? [];
-                $rawRefund = 0.0;
-                foreach ($retItems as $ri) {
-                    $rawRefund += (float) $ri['unit_price'] * (int) $ri['qty'];
-                }
-                $retRatio = $rawRefund > 0 ? ($refund / $rawRefund) : 1.0;
-
-                $retNet = 0.0;
-                foreach ($retItems as $ri) {
-                    $vatRate = (string) ($ri['vat_rate'] ?? '');
-                    $vatPct = is_numeric($vatRate) ? ((float) $vatRate) / 100 : 0.0;
-                    $lineGross = round((float) $ri['unit_price'] * (int) $ri['qty'] * $retRatio, 2);
-                    $lineNet = is_numeric($vatRate) ? round($lineGross / (1 + $vatPct), 2) : $lineGross;
-                    $retNet += $lineNet;
-                }
+                $breakdown = self::vatBreakdown($refund, $returnItemsByReturn[$ret['id']] ?? []);
+                $retNet = $breakdown['net'];
                 $totalNet -= $retNet;
-                $totalVat -= ($refund - $retNet);
+                $totalVat -= $breakdown['vat'];
                 $byDay[$day]['net'] -= $retNet;
             }
         }

@@ -120,6 +120,11 @@ async function openDetail(id) {
             Rendelés #${escapeHtml(order.order_number || order.wc_order_id)} (WooCommerce #${order.wc_order_id})
             · ${order.created_at} · ${statusBadge(order.status)}
         </p>
+        ${['cancelled', 'refunded', 'failed'].includes(order.wc_status) ? `
+        <p class="feedback error" style="margin-top:0;">
+            A WooCommerce-ben ez a rendelés ${escapeHtml(order.wc_status)} állapotú.
+            ${order.status === 'confirmed' ? 'A helyi eladás megmaradt — ha az áru visszajön, rögzítsd visszáruként.' : 'A foglalás felszabadult.'}
+        </p>` : ''}
         <div class="field-row">
             <div>
                 <label>Vevő</label>

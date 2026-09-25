@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
+require_once __DIR__ . '/../../src/ReportPeriod.php';
 
 // Fázis 7 — a kör 22. pontja: read-only nézet egy (alapból a
 // legutóbb TÉNYLEGESEN elkészült) napi AI-jelentéshez. Admin-only,
@@ -25,6 +26,12 @@ if (!empty($_GET['list'])) {
 }
 
 $requestedDate = (string) ($_GET['date'] ?? '');
+// B-14: a "today" kulcsszó a SZERVER mai napja (ReportPeriod::today()) —
+// ugyanaz, amit a napi jelentés workere "ma"-nak tekint; a Dashboard ezt
+// küldi, a böngésző (akár UTC-s) dátuma helyett.
+if ($requestedDate === 'today') {
+    $requestedDate = ReportPeriod::today();
+}
 if ($requestedDate !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $requestedDate)) {
     send_json(['error' => 'Érvénytelen dátum (ÉÉÉÉ-HH-NN várt).'], 400);
 }

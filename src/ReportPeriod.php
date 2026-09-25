@@ -16,6 +16,21 @@ final class ReportPeriod
     public const PRESETS = ['today', 'yesterday', 'last_7_days', 'last_30_days', 'this_week', 'last_week', 'this_month', 'last_month', 'custom'];
 
     /**
+     * B-14 — az alkalmazás "mai" napja (ÉÉÉÉ-HH-NN) a kanonikus
+     * alkalmazás-időzónában: a PHP alapértelmezett időzónája, amit a
+     * webroot/api/_bootstrap.php állít be (a projektben ez az egyetlen
+     * időzóna-forrás, nem konfigurálható). Ezt használja az AI napi
+     * jelentés workere (ai-daily-intelligence-run.php) ÉS a Dashboard
+     * AI-kártyája (ai-daily-report.php?date=today) — a böngésző saját
+     * (vagy UTC) dátuma sosem dönt, így a két oldal nem térhet el egy
+     * nap-határon.
+     */
+    public static function today(?int $now = null): string
+    {
+        return date('Y-m-d', $now ?? time());
+    }
+
+    /**
      * @return array{from: string, to: string, period: string}
      * @throws InvalidArgumentException érvénytelen `period` vagy hiányzó/
      *         hibás egyedi dátumtartomány esetén — a hívónak (API-végpont)

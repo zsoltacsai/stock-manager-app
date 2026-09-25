@@ -616,4 +616,90 @@ final class InvoiceEndpointsHttpTest extends TestCase
         $this->assertSame('completed', $res['json']['sale']['status'] ?? null);
         $this->assertSame('SZ-2026-HTTP-FOUND', $res['json']['sale']['szamlazz_invoice_number'] ?? null);
     }
+    // -----------------------------------------------------------------
+    // N-4: Számlázz.hu módosítás/sztornó — folyamatban lévő / bizonytalan
+    // művelet a végpontokon át (külső hívás NÉLKÜL: sem a megerősítés-kérő
+    // 409, sem a megtalált számlaszám rögzítése nem hívja a Számlázz.hu-t).
+    // -----------------------------------------------------------------
+
+    private function insertOperation(int $originalId, string $status, int $ageSeconds): int
+    {
+        $id = $this->insertRawInvoice([
+            'invoice_type' => 'modification',
+            'original_invoice_id' => $originalId,
+            'operation_key' => 'modify:' . $originalId . ':n4-' . bin2hex(random_bytes(4)),
+            'status' => $status,
+            'invoice_number' => null,
+        ]);
+        $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => self::$root . '/data/stock.sqlite']], self::$root);
+        // Az alkalmazás időzónájában (api/_bootstrap.php) — a szerver ebben számol.
+        $at = (new DateTimeImmutable('@' . (time() - $ageSeconds)))->setTimezone(new DateTimeZone('Europe/Budapest'))->format('Y-m-d H:i:s');
+        $db->pdo()->prepare('UPDATE invoices SET locked_at = ?, updated_at = ?, issued_at = NULL WHERE id = ?')->execute([$status === 'processing' ? $at : null, $at, $id]);
+        return $id;
+    }
+
+    private function invoiceStatus(int $id): array
+    {
+        $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => self::$root . '/data/stock.sqlite']], self::$root);
+        $row = $db->getInvoiceById($id);
+        return [$row['status'], $row['invoice_number']];
+    }
+
+    public function testN4RunningOperationBlocksNewModifyAndStornoInDetail(): void
+    {
+        $originalId = $this->insertRawInvoice();
+        $opId = $this->insertOperation($originalId, 'processing', 5);
+
+        $res = self::request('GET', '/api/invoice-detail.php?id=' . $originalId, null, [], self::$loggedInJar);
+        $this->assertSame(200, $res['status']);
+        $this->assertFalse($res['json']['can_modify'], 'Folyamatban lévő művelet mellett nem indítható újabb.');
+        $this->assertFalse($res['json']['can_storno']);
+        $this->assertSame(['processing', null], $this->invoiceStatus($opId), 'Egy friss foglalás nem válik bizonytalanná.');
+    }
+
+    public function testN4StaleProcessingAndStuckQueuedOperationsBecomeUncertainOnListAndDetail(): void
+    {
+        $originalA = $this->insertRawInvoice();
+        $processing = $this->insertOperation($originalA, 'processing', 95);
+        $detail = self::request('GET', '/api/invoice-detail.php?id=' . $processing, null, [], self::$loggedInJar);
+        $this->assertSame('uncertain_manual', $detail['json']['invoice']['status'] ?? null, $detail['body']);
+
+        $originalB = $this->insertRawInvoice();
+        $queued = $this->insertOperation($originalB, 'queued', 95);
+        $list = self::request('GET', '/api/invoices-list.php', null, [], self::$loggedInJar);
+        $row = current(array_filter($list['json']['invoices'], fn ($i) => (int) $i['id'] === $queued));
+        $this->assertSame('uncertain_manual', $row['status'] ?? null, 'Egy beragadt várakozó sor nem marad "hamarosan beküldésre kerül" állapotban.');
+
+        $originalDetail = self::request('GET', '/api/invoice-detail.php?id=' . $originalB, null, [], self::$loggedInJar);
+        $this->assertFalse($originalDetail['json']['can_modify'], 'Bizonytalan művelet mellett nem indítható újabb.');
+    }
+
+    public function testN4RetryOfUncertainOperationRequiresTheKnownExternalState(): void
+    {
+        $originalId = $this->insertRawInvoice();
+        $opId = $this->insertOperation($originalId, 'uncertain_manual', 200);
+
+        $res = self::request('POST', '/api/szamlazz-operation-retry.php', ['id' => $opId], ['X-CSRF-Token' => $this->freshCsrf()], self::$loggedInJar);
+        $this->assertSame(409, $res['status'], $res['body']);
+        $this->assertTrue($res['json']['requires_confirmation'] ?? false);
+        $this->assertSame(['uncertain_manual', null], $this->invoiceStatus($opId), 'Megerősítés nélkül semmi sem változik.');
+
+        $notTrue = self::request('POST', '/api/szamlazz-operation-retry.php', ['id' => $opId, 'confirm_not_issued' => 'yes'], ['X-CSRF-Token' => $this->freshCsrf()], self::$loggedInJar);
+        $this->assertSame(409, $notTrue['status'], 'Csak a kifejezett true megerősítés fogadható el.');
+    }
+
+    public function testN4FoundInvoiceNumberResolvesTheUncertainOperationWithoutAnExternalCall(): void
+    {
+        $originalId = $this->insertRawInvoice();
+        $opId = $this->insertOperation($originalId, 'uncertain_manual', 200);
+
+        $res = self::request('POST', '/api/szamlazz-operation-retry.php', ['id' => $opId, 'found_invoice_number' => 'SZ-N4-FOUND-1'], ['X-CSRF-Token' => $this->freshCsrf()], self::$loggedInJar);
+        $this->assertSame(200, $res['status'], $res['body']);
+        $this->assertTrue($res['json']['resolved']);
+        $this->assertSame(['done', 'SZ-N4-FOUND-1'], $this->invoiceStatus($opId));
+
+        $again = self::request('POST', '/api/szamlazz-operation-retry.php', ['id' => $opId, 'found_invoice_number' => 'SZ-N4-FOUND-2'], ['X-CSRF-Token' => $this->freshCsrf()], self::$loggedInJar);
+        $this->assertSame(409, $again['status'], 'Egy már feloldott művelet nem írható felül / nem indítható újra.');
+        $this->assertSame(['done', 'SZ-N4-FOUND-1'], $this->invoiceStatus($opId));
+    }
 }

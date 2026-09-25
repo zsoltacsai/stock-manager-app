@@ -29,14 +29,33 @@ $order = json_decode($rawBody, true);
 // a foglalás) felszabadul, egy már leadott (megerősített) rendelésnél a
 // helyi eladás/készlet NEM áll vissza vakon. Idempotens: duplikált/
 // ismételt webhook no-op. Lásd Database::applyWebOrderTermination().
+//
+// Törlés: a WooCommerce "order.deleted" webhookja (téma-fejléc) csak a
+// rendelés azonosítóját küldi, státusz és tételek nélkül — ezt, és a
+// kukába helyezést ('trash' státusz) ugyanígy lezárásként kezeljük
+// ('deleted'). Egy még nem ismert rendelésnél sírkő-sor rögzül, így egy
+// később érkező, elavult 'processing' webhook sem foglalhat újra.
+$webhookTopic = strtolower((string) ($_SERVER['HTTP_X_WC_WEBHOOK_TOPIC'] ?? ''));
+if (is_array($order) && !empty($order['id']) && (
+    $webhookTopic === 'order.deleted'
+    || (!array_key_exists('status', $order) && empty($order['line_items']))
+)) {
+    $order['status'] = 'deleted';
+}
 if (is_array($order) && in_array((string) ($order['status'] ?? ''), Database::WEB_ORDER_TERMINAL_WC_STATUSES, true)) {
     $terminatedId = (int) ($order['id'] ?? 0);
     if (!$terminatedId) {
         send_json(['ignored' => true, 'reason' => 'missing order id']);
     }
-    $termination = $db->applyWebOrderTermination($terminatedId, (string) $order['status']);
+    $terminatedBilling = is_array($order['billing'] ?? null) ? $order['billing'] : [];
+    $terminatedName = trim(($terminatedBilling['company'] ?? '') !== ''
+        ? (string) $terminatedBilling['company']
+        : trim(($terminatedBilling['first_name'] ?? '') . ' ' . ($terminatedBilling['last_name'] ?? '')));
+    $termination = $db->applyWebOrderTermination($terminatedId, (string) $order['status'], $terminatedName);
     if ($termination['outcome'] === 'released') {
         $db->logSync('webhook', null, "Rendelés #$terminatedId a WooCommerce-ben {$order['status']} — a piszkozat elutasítva, a foglalás felszabadult.");
+    } elseif ($termination['outcome'] === 'unknown') {
+        $db->logSync('webhook', null, "Rendelés #$terminatedId a WooCommerce-ben {$order['status']}, helyben még ismeretlen — sírkő rögzítve, egy később érkező régi webhook nem foglalhat rá.");
     } elseif ($termination['outcome'] === 'confirmed_kept') {
         $db->logSync('webhook', null, "Rendelés #$terminatedId a WooCommerce-ben {$order['status']}, de már le volt adva (eladás #{$termination['sale_id']}) — a helyi eladás megmaradt, szükség esetén visszáruval rendezd.");
     }

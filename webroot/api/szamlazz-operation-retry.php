@@ -26,6 +26,28 @@ if (!$invoice || $invoice['provider'] !== 'szamlazz' || !in_array($invoice['invo
     send_json(['error' => 'A Számlázz.hu-s módosítás/sztornó bejegyzés nem található.'], 404);
 }
 
+// N-4: egy BIZONYTALAN kimenetelű műveletnél (a Számlázz.hu válasza
+// elveszett, vagy a folyamat a hívás körül meghalt) a számla LÉTREJÖHETETT —
+// vakon újrapróbálni egy második valódi számlát állíthatna ki. Az admin csak
+// a Számlázz.hu felületén ellenőrzött tényleges állapot ismeretében léphet
+// tovább: vagy rögzíti a megtalált számlaszámot (nincs új külső hívás), vagy
+// kifejezetten megerősíti, hogy NEM készült számla (csak ekkor indul újra).
+// Egy megerősítetten elutasított ('failed') művelet továbbra is egyszerűen
+// újrapróbálható.
+if ($invoice['status'] === 'uncertain_manual') {
+    $foundInvoiceNumber = trim((string) ($input['found_invoice_number'] ?? ''));
+    if ($foundInvoiceNumber !== '') {
+        if (!$db->resolveUncertainInvoiceOperation($id, $foundInvoiceNumber)) {
+            send_json(['error' => 'A művelet időközben már nem bizonytalan állapotú.'], 409);
+        }
+        $db->logAudit(Auth::currentStaffId(), 'invoice_operation_resolve_found', 'invoice', $id, 'Bizonytalan művelet feloldva a megtalált számlaszámmal: ' . $foundInvoiceNumber, (int) ($appSettings['audit_log_retention_days'] ?? 30));
+        send_json(['ok' => true, 'resolved' => true, 'invoice' => $db->getInvoiceById($id)]);
+    }
+    if (($input['confirm_not_issued'] ?? false) !== true) {
+        send_json(['error' => 'A művelet kimenetele bizonytalan — előbb ellenőrizd a Számlázz.hu felületén: add meg a megtalált számlaszámot, vagy erősítsd meg, hogy NEM készült számla.', 'requires_confirmation' => true], 409);
+    }
+}
+
 $reset = $db->resetInvoiceForManualRetry($id);
 if (!$reset) {
     send_json(['error' => 'Csak sikertelen (failed/dead_letter/uncertain/uncertain_manual) állapotú bejegyzés próbálható újra manuálisan — ez a bejegyzés jelenleg "' . $invoice['status'] . '" állapotban van.'], 409);

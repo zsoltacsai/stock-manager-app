@@ -144,8 +144,26 @@ async function selectProductForTransfer(id, name) {
     transferCurrentStock.textContent = rows || 'Nincs még telephelyi bontás ehhez a termékhez.';
 }
 
+// N-2: egy mozgatás-kísérlet stabil idempotencia-kulcsa — sikerig (vagy a
+// mozgatás adatainak megváltozásáig) ugyanaz marad, így egy dupla kattintás
+// vagy egy elveszett válasz utáni újraküldés a szerveren SOSE hajt végre
+// második mozgatást (lásd api/stock-transfer.php). A gomb letiltása csak
+// kényelmi réteg, a tényleges védelem a szerveroldali kulcs.
+let transferIdempotencyKey = null;
+let transferKeyFor = null;
+function currentTransferIdempotencyKey(qty) {
+    const fp = [selectedProduct && selectedProduct.id, transferFrom.value || '', transferTo.value, qty].join('|');
+    if (!transferIdempotencyKey || transferKeyFor !== fp) {
+        transferIdempotencyKey = (window.crypto && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        transferKeyFor = fp;
+    }
+    return transferIdempotencyKey;
+}
+
 transferSubmitBtn.addEventListener('click', async () => {
-    if (!selectedProduct) return;
+    if (!selectedProduct || transferSubmitBtn.disabled) return;
     const qty = parseInt(transferQty.value, 10);
     if (!qty || qty <= 0) {
         transferFeedback.textContent = 'Adj meg egy érvényes mennyiséget.';
@@ -154,6 +172,8 @@ transferSubmitBtn.addEventListener('click', async () => {
     }
     transferFeedback.textContent = 'Mozgatás...';
     transferFeedback.className = 'modal-feedback';
+    const idempotencyKey = currentTransferIdempotencyKey(qty);
+    transferSubmitBtn.disabled = true;
     try {
         const res = await fetch('/api/stock-transfer.php', {
             method: 'POST',
@@ -164,10 +184,12 @@ transferSubmitBtn.addEventListener('click', async () => {
                 to_location_id: parseInt(transferTo.value, 10),
                 qty,
                 staff_id: getCurrentStaffId(),
+                idempotency_key: idempotencyKey,
             }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+        transferIdempotencyKey = null; // a következő mozgatás új művelet
         transferFeedback.textContent = 'Sikeres mozgatás.';
         transferFeedback.className = 'modal-feedback';
         selectProductForTransfer(selectedProduct.id, selectedProduct.name);
@@ -175,6 +197,8 @@ transferSubmitBtn.addEventListener('click', async () => {
     } catch (err) {
         transferFeedback.textContent = 'Hiba: ' + err.message;
         transferFeedback.className = 'modal-feedback error';
+    } finally {
+        transferSubmitBtn.disabled = false;
     }
 });
 

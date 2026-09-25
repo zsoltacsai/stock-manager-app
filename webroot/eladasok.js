@@ -117,6 +117,13 @@ async function openDetail(id) {
             ${pastReturnsHtml}
         `;
 
+        // N-3: egy visszáru-kísérlet stabil idempotencia-kulcsa — ugyanazokra
+        // a tételekre/mennyiségekre ugyanaz marad (elveszett válasz utáni
+        // újraküldés, dupla kattintás), így a szerver SOSE rögzíti kétszer
+        // ugyanazt a visszárut (lásd api/return-create.php).
+        let returnIdempotencyKey = null;
+        let returnKeyFor = null;
+
         document.getElementById('return-start-btn').addEventListener('click', () => {
             document.getElementById('return-start-wrap').classList.add('hidden');
             document.getElementById('return-form-wrap').classList.remove('hidden');
@@ -161,12 +168,20 @@ async function openDetail(id) {
                     if (storedRegisterId) cashRegisterId = parseInt(storedRegisterId, 10) || null;
                 } catch (e) { /* ignore */ }
 
+                const itemsKey = JSON.stringify(items);
+                if (!returnIdempotencyKey || returnKeyFor !== itemsKey) {
+                    returnIdempotencyKey = (window.crypto && crypto.randomUUID)
+                        ? crypto.randomUUID()
+                        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                    returnKeyFor = itemsKey;
+                }
                 const res = await fetch('/api/return-create.php', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         sale_id: sale.id,
                         items,
+                        idempotency_key: returnIdempotencyKey,
                         reason: document.getElementById('return-reason').value.trim(),
                         staff_id: staffId,
                         cash_register_id: cashRegisterId,

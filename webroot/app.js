@@ -1419,9 +1419,15 @@ function startUndoCountdown(saleId) {
     }, 1000);
 }
 
+// N-3: az "azonnali visszavonás" eladásonként egyetlen visszáru-művelet —
+// a kulcs eladásonként stabil, így egy újrapróbálás sem rögzíthet második
+// visszárut (lásd api/return-create.php).
+const undoIdempotencyKeys = {};
+
 undoSaleBtn.addEventListener('click', async () => {
     const saleId = Number(undoSaleBtn.dataset.saleId);
     if (!saleId) return;
+    undoIdempotencyKeys[saleId] ??= newIdempotencyKey();
     const confirmed = confirm('Biztosan visszavonod ezt az eladást? A készlet visszaáll, a tétel(ek) visszáruként rögzülnek.');
     if (!confirmed) return;
 
@@ -1448,7 +1454,7 @@ undoSaleBtn.addEventListener('click', async () => {
         const res = await fetch('/api/return-create.php', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sale_id: saleId, items, reason: 'Azonnali visszavonás a Kasszáról', staff_id: staffId, cash_register_id: currentCashRegisterId() }),
+            body: JSON.stringify({ sale_id: saleId, items, reason: 'Azonnali visszavonás a Kasszáról', staff_id: staffId, cash_register_id: currentCashRegisterId(), idempotency_key: undoIdempotencyKeys[saleId] }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');

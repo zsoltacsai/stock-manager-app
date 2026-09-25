@@ -3,6 +3,11 @@
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 
+// N-4: az elévült Számlázz.hu-s módosító/sztornó foglalások a részletek
+// megnyitásakor bizonytalanná válnak (sose maradnak "hamarosan beküldésre
+// kerül" állapotban).
+$db->markStaleSzamlazzOperationsUncertain();
+
 $id = (int) ($_GET['id'] ?? 0);
 $invoice = $id ? $db->getInvoiceById($id) : null;
 
@@ -37,7 +42,8 @@ $canOperate = $isAdmin
     && $root !== null
     && (string) $root['invoice_type'] === 'normal'
     && (string) $root['status'] === 'done'
-    && !$db->invoiceHasBlockingStorno($rootId);
+    && !$db->invoiceHasBlockingStorno($rootId)
+    && !((string) $root['provider'] === 'szamlazz' && $db->invoiceHasUnresolvedSzamlazzOperation($rootId));
 
 send_json([
     'invoice' => $invoice,

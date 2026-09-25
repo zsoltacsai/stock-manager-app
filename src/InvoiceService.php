@@ -250,6 +250,16 @@ class InvoiceService
         if ($db->invoiceHasBlockingStorno($originalInvoiceId)) {
             return $fail('Ehhez a számlához már tartozik lezárt vagy folyamatban lévő sztornó — a számla életciklusa emiatt lezárt, további módosítás/sztornó nem indítható.');
         }
+        // N-4: egy folyamatban lévő vagy bizonytalan kimenetelű Számlázz.hu-s
+        // művelet mellett NEM indulhat újabb (egy új operation_uuid-val egy
+        // crash utáni "újrapróbálás" második valódi módosító számlát
+        // állíthatna ki). Előbb az elévült foglalások bizonytalanná válnak.
+        if ((string) $original['provider'] === 'szamlazz') {
+            $db->markStaleSzamlazzOperationsUncertain();
+            if ($db->invoiceHasUnresolvedSzamlazzOperation($originalInvoiceId)) {
+                return $fail('Ehhez a számlához egy korábbi módosítás/sztornó folyamatban van, vagy a kimenetele bizonytalan — előbb azt kell lezárni (Kimenő számlák → a művelet részletei), újabb művelet addig nem indítható.');
+            }
+        }
 
         try {
             $provider = $this->resolveProviderFor((string) $original['provider']);

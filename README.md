@@ -667,6 +667,19 @@ sose esnek vissza implicit CREATE-re timeout után).
   metódus, mint a NAV-nál) 'queued'-ra állítja a MEGLÉVŐ sort, majd
   `InvoiceService::retrySzamlazzOperation()` ténylegesen újra elindítja
   (`SzamlazzInvoiceProvider::executeAndRecordOperation()`).
+- **Összeomlás a hívás körül (N-4)**: a külső hívás ELŐTT a sor
+  atomikusan `processing`-be kerül (`claimInvoiceOperationForExecution()`
+  — csak az ezt megnyerő kérés hívhatja a Számlázz.hu-t). Ha a folyamat a
+  hívás körül meghal, az elévült foglalás (90 s), illetve egy beragadt
+  `queued` sor a Kimenő számlák lista/részletek megnyitásakor
+  bizonytalanná (`uncertain_manual`) válik. Amíg egy számlához
+  folyamatban lévő vagy bizonytalan művelet tartozik, új módosítás/sztornó
+  nem indítható (új `operation_uuid`-val sem). Bizonytalan műveletnél a
+  részletnézet két utat kínál, a szerver is csak ezeket fogadja el:
+  **"Megtaláltam — számlaszám rögzítése"** (a Számlázz.hu-n talált szám
+  rögzül, külső hívás nélkül), vagy **"Nem készült számla —
+  újrapróbálás"** (kifejezett megerősítés, `confirm_not_issued: true`,
+  csak ekkor indul új hívás). Megerősítés nélküli kérés 409.
 
 ### Idempotencia / operation_key
 
@@ -1831,6 +1844,18 @@ visszajött árut visszáruként kell rögzíteni; a webshop készlete a helyi
 az egyik érvényesül. A webhookot a WooCommerce-ben a "Rendelés frissítve"
 eseményre kell beállítani (ugyanaz, mint eddig).
 
+**Törlés / kukába helyezés**: a kukába tett (`trash`) rendelés a
+"Rendelés frissítve" webhookkal, a véglegesen törölt a **"Rendelés
+törölve"** (`order.deleted`) webhookkal érkezik — ezt a második webhookot
+is érdemes felvenni (ugyanazzal a titkos kulccsal és URL-lel). Mindkettő
+a lemondással azonos: piszkozatnál a foglalás pontosan egyszer
+felszabadul, ismételt törlés nem változtat semmit, leadott rendelésnél a
+helyi eladás megmarad (figyelmeztetéssel), elutasított rendelésnél nincs
+teendő. A kiküldött webshop-készlet mindig a helyi készletből számolódik.
+Ha a lemondás/törlés a rendelés importja ELŐTT érkezik (sorrendcsere),
+egy "Elutasítva" állapotú sírkő-sor rögzül a rendelés azonosítójával, így
+egy később befutó, régi `processing` webhook sem hoz létre foglalást.
+
 A WooCommerce webhookja (Woo → Beállítások → Speciális → Webhookok, "Rendelés
 frissítve" esemény) mostantól **nem csökkenti azonnal a helyi készletet** —
 ehelyett a fizetett (`processing`/`completed` állapotú) rendelés
@@ -1918,7 +1943,10 @@ mennyiség-mezőt tár fel, felső korláttal az adott sorból még vissza nem
 küldött mennyiségre (így ugyanazon eladás egy második részleges
 visszárúja sem tud túl sokat visszaküldeni). A megerősítés
 visszaállítja a készletet a visszaküldött tételekre, és naplózza a
-visszárut.
+visszárut. Egy dupla kattintás vagy egy elveszett válasz utáni
+újraküldés (ugyanaz a visszáru-kísérlet, ugyanaz az idempotencia-kulcs)
+sem rögzít második visszárut (N-3) — a második kérés az elsőként
+rögzített visszáru adatait kapja vissza.
 
 **Ismert korlát**: a `sales` tábla csak a vevő nevét tárolja, nem az
 eredeti Számlázz.hu számlán szereplő teljes számlázási címet/adószámot
@@ -2199,6 +2227,10 @@ változatlanul használ — a telephelyenkénti bontás egy kiegészítő réteg
   összesített mennyiség mellett (nem helyette).
 - A telephelyek közti mozgatás nem érinti az összesített mennyiséget,
   csak a megoszlást.
+- **Dupla kattintás / újraküldés (N-2)**: egy mozgatás-kísérlet stabil
+  idempotencia-kulcsot kap (a kérés alatt a gomb letiltva, hálózati hiba
+  utáni újraküldéskor ugyanaz a kulcs) — a szerver egy kulcsra pontosan
+  egy mozgatást hajt végre, a többi kérés ugyanazt az eredményt kapja.
 - **Visszáru** (B-05): az eladás rögzíti, melyik telephelyről történt
   (`sales.location_id`), és a visszáru UGYANODA állítja vissza a
   telephelyi készletet. Telephely nélküli eladásnál (nincs telephely

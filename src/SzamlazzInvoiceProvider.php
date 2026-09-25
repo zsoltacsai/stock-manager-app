@@ -113,6 +113,17 @@ class SzamlazzInvoiceProvider implements InvoiceProviderInterface
      */
     public function executeAndRecordOperation(Database $db, int $invoiceId, string $invoiceType, array $payload): array
     {
+        // N-4: a külső hívás ELŐTT tartósan rögzül, hogy a művelet
+        // folyamatban van (queued → processing, atomikus). Ha a folyamat a
+        // hívás KÖZBEN/UTÁN meghal, az elévült 'processing' sor bizonytalanná
+        // válik (Database::markStaleSzamlazzOperationsUncertain()) — nem
+        // marad örökre "hamarosan beküldésre kerül" állapotban, és nem is
+        // indítható rá vakon új külső hívás. Csak a claimet megnyerő kérés
+        // hívhatja a Számlázz.hu-t.
+        if (!$db->claimInvoiceOperationForExecution($invoiceId)) {
+            return ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => 'Ez a számla-művelet már folyamatban van, vagy nem indítható (nem várakozó állapotú).', 'already_in_progress' => true, 'pending' => false];
+        }
+
         try {
             $result = $invoiceType === 'storno'
                 ? $this->client()->stornoInvoice((string) $payload['original_invoice_number'], (string) $invoiceId)

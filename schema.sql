@@ -325,11 +325,14 @@ CREATE TABLE IF NOT EXISTS returns (
     credit_invoice_number  TEXT,
     cash_session_id        INTEGER REFERENCES cash_sessions(id), -- melyik (a visszatérítés PILLANATÁBAN nyitott) kasszaműszakhoz tartozik — NEM az eredeti eladáséhoz, lásd Database::computeExpectedCash()
     gift_card_refund       REAL NOT NULL DEFAULT 0, -- az ajándékutalványra visszaírt összeg (a total_refund a fizetési módon visszaadott rész) — lásd Database::reverseSaleBenefits()
+    idempotency_key        TEXT,                  -- N-3: ugyanaz a visszáru-kérés csak egyszer hajtható végre — lásd api/return-create.php
+    idempotency_fingerprint TEXT,
     created_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_returns_sale_id ON returns(sale_id);
 CREATE INDEX IF NOT EXISTS idx_returns_created_at ON returns(created_at);
 CREATE INDEX IF NOT EXISTS idx_returns_cash_session_id ON returns(cash_session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_returns_idempotency_key ON returns(idempotency_key);
 
 CREATE TABLE IF NOT EXISTS return_items (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -397,9 +400,12 @@ CREATE TABLE IF NOT EXISTS stock_transfers (
     to_location_id    INTEGER NOT NULL REFERENCES locations(id),
     qty               INTEGER NOT NULL,
     staff_id          INTEGER REFERENCES staff(id),
+    idempotency_key   TEXT,                     -- N-2: ugyanaz a mozgatás-kérés csak egyszer hajtható végre — lásd api/stock-transfer.php
+    idempotency_fingerprint TEXT,
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_stock_transfers_product_id ON stock_transfers(product_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_transfers_idempotency_key ON stock_transfers(idempotency_key);
 
 -- Kassza / műszakkezelés (kasszanyitás/kasszazárás). Egy telephelyen több
 -- pénztárgép is lehet; egy pénztárgépnek legfeljebb EGY nyitott műszakja

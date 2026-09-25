@@ -342,7 +342,10 @@ CREATE TABLE IF NOT EXISTS returns (
     credit_invoice_number  VARCHAR(64) NULL,
     cash_session_id        INT UNSIGNED NULL, -- melyik (a visszatérítés PILLANATÁBAN nyitott) kasszaműszakhoz tartozik; FK a fájl végén, lásd sales.cash_session_id
     gift_card_refund       DECIMAL(12,2) NOT NULL DEFAULT 0, -- lásd schema.sql
+    idempotency_key        VARCHAR(64) NULL,
+    idempotency_fingerprint VARCHAR(64) NULL,
     created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_returns_idempotency_key (idempotency_key),
     KEY idx_returns_sale_id (sale_id),
     KEY idx_returns_created_at (created_at),
     KEY idx_returns_cash_session_id (cash_session_id),
@@ -417,7 +420,10 @@ CREATE TABLE IF NOT EXISTS stock_transfers (
     to_location_id    INT UNSIGNED NOT NULL,
     qty               INT NOT NULL,
     staff_id          INT UNSIGNED NULL,
+    idempotency_key   VARCHAR(64) NULL,
+    idempotency_fingerprint VARCHAR(64) NULL,
     created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_stock_transfers_idempotency_key (idempotency_key),
     KEY idx_stock_transfers_product_id (product_id),
     CONSTRAINT fk_stock_transfers_product FOREIGN KEY (product_id) REFERENCES products(id),
     CONSTRAINT fk_stock_transfers_from FOREIGN KEY (from_location_id) REFERENCES locations(id),

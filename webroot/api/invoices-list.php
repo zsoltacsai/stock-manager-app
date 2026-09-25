@@ -15,5 +15,6 @@ $filters = [
 // lista megnyitásakor bizonytalanná válnak ('uncertain_manual'), hogy az
 // admin lássa és feloldhassa őket — sose válnak magától újrapróbálhatóvá.
 $db->markStaleInvoiceClaimsUncertain();
+$db->markStaleSzamlazzOperationsUncertain(); // N-4: ugyanez a módosító/sztornó műveletekre
 
 send_json(['invoices' => $db->listInvoices($filters)]);

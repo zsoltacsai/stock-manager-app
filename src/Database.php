@@ -8,7 +8,7 @@ require_once __DIR__ . '/ClientHmac.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 34;
+    private const SCHEMA_VERSION = 35;
 
     private PDO $pdo;
     private string $driver;
@@ -225,6 +225,9 @@ class Database
             }
             if ($version < 34) {
                 $this->migrateV34SaleLocationAndGiftCardRefund();
+            }
+            if ($version < 35) {
+                $this->migrateV35TransferAndReturnIdempotency();
             }
         }
 
@@ -2039,6 +2042,30 @@ class Database
      * a fizetési módon visszaadott rész (kasszaegyenleg), a kettő összege a
      * visszáru értékesítési értéke (lásd getDailySummary()).
      */
+    /**
+     * N-2 / N-3 — a készletmozgatás és a visszáru idempotencia-kulcsa,
+     * UGYANAZ a minta, mint sales.idempotency_key/idempotency_fingerprint
+     * (lásd migrateV18SaleIdempotencyFingerprint()): a UNIQUE index a
+     * tényleges atomikus védelem, a kulcsot a mozgatás/visszáru SAJÁT
+     * sora hordozza, UGYANABBAN a tranzakcióban, mint a készletmódosítás —
+     * visszagörgetés után így nem marad hamis idempotencia-állapot.
+     */
+    private function migrateV35TransferAndReturnIdempotency(): void
+    {
+        $isMysql = $this->driver === 'mysql';
+        foreach (['stock_transfers', 'returns'] as $table) {
+            $this->migrateColumns($table, [
+                'idempotency_key' => $isMysql ? 'VARCHAR(64) NULL' : 'TEXT',
+                'idempotency_fingerprint' => $isMysql ? 'VARCHAR(64) NULL' : 'TEXT',
+            ]);
+            try {
+                $this->pdo->exec($isMysql
+                    ? "ALTER TABLE $table ADD UNIQUE KEY uq_{$table}_idempotency_key (idempotency_key)"
+                    : "CREATE UNIQUE INDEX IF NOT EXISTS idx_{$table}_idempotency_key ON $table(idempotency_key)");
+            } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+        }
+    }
+
     private function migrateV34SaleLocationAndGiftCardRefund(): void
     {
         $isMysql = $this->driver === 'mysql';
@@ -4246,6 +4273,97 @@ class Database
      * szándéka egy TELJESEN friss próbálkozás, nem a kimerült backoff
      * folytatása.
      */
+    /**
+     * N-4 — a Számlázz.hu-s (SZINKRON) módosító/sztornó művelet állapotgépe,
+     * UGYANAZ a szemantika, mint a normál számláé (B-07,
+     * tryClaimInvoiceIssuance()/markStaleInvoiceClaimsUncertain()), az
+     * `invoices` sor meglévő státuszaival — nincs párhuzamos állapotgép:
+     *   - queued          → még nem indult (createInvoiceOperation() vagy
+     *                        egy admin-megerősített újrapróbálás után);
+     *   - processing      → lefoglalva: a külső hívás ELKEZDŐDHETETT
+     *                        (ez a claim tartósan rögzül a hívás ELŐTT);
+     *   - done            → kiállítva, számlaszám rögzítve;
+     *   - failed          → a Számlázz.hu megválaszolta és elutasította —
+     *                        biztonságosan újrapróbálható;
+     *   - uncertain_manual → a kimenetel ismeretlen (elveszett válasz, vagy
+     *                        elévült foglalás: a folyamat a hívás körül
+     *                        meghalt). NEM próbálható újra automatikusan és
+     *                        vakon: az admin a Számlázz.hu-n ellenőrzi, és
+     *                        vagy a megtalált számlaszámot rögzíti
+     *                        (resolveUncertainInvoiceOperation()), vagy
+     *                        kifejezetten megerősíti, hogy nem készült számla.
+     * A külső hívás CSAK a queued → processing átmenetet atomikusan megnyerő
+     * kérésben indulhat.
+     */
+    public function claimInvoiceOperationForExecution(int $id): bool
+    {
+        $now = date('Y-m-d H:i:s');
+        $stmt = $this->pdo->prepare("
+            UPDATE invoices SET status = 'processing', locked_at = ?, updated_at = ?
+            WHERE id = ? AND status = 'queued' AND provider = 'szamlazz' AND invoice_type IN ('modification', 'storno')
+        ");
+        $stmt->execute([$now, $now, $id]);
+        return $stmt->rowCount() > 0;
+    }
+
+    /**
+     * N-4 — az elévült (a folyamat a Számlázz.hu-hívás körül meghalt)
+     * módosító/sztornó műveleteket bizonytalanná teszi. A régi, sosem
+     * lefoglalt, beragadt 'queued' sorokat is (egy e javítás előtti
+     * crash, vagy a létrehozás és a foglalás közötti leállás) — óvatosan:
+     * ezeknél sem tudható biztosan, hogy nem indult-e külső hívás.
+     *
+     * @return int ennyi művelet vált bizonytalanná
+     */
+    public function markStaleSzamlazzOperationsUncertain(int $staleAfterSeconds = self::INVOICE_CLAIM_STALE_SECONDS): int
+    {
+        $staleBefore = date('Y-m-d H:i:s', time() - $staleAfterSeconds);
+        $stmt = $this->pdo->prepare("
+            UPDATE invoices
+            SET status = 'uncertain_manual', locked_at = NULL, updated_at = ?,
+                last_error = 'A Számlázz.hu-művelet megszakadt a hívás körül (a folyamat leállt, mielőtt az eredményt rögzíthette volna) — a számla létrejöhetett. Ellenőrizd a Számlázz.hu felületén, mielőtt továbblépnél.'
+            WHERE provider = 'szamlazz' AND invoice_type IN ('modification', 'storno')
+              AND ((status = 'processing' AND (locked_at IS NULL OR locked_at < ?))
+                OR (status = 'queued' AND updated_at < ?))
+        ");
+        $stmt->execute([date('Y-m-d H:i:s'), $staleBefore, $staleBefore]);
+        return $stmt->rowCount();
+    }
+
+    /**
+     * N-4 — van-e az eredeti számlához folyamatban lévő vagy bizonytalan
+     * kimenetelű Számlázz.hu-s módosító/sztornó művelet. Amíg van, újabb
+     * művelet (új operation_uuid-val) NEM indítható — különben egy crash
+     * utáni "újrapróbálás" egy második valódi módosító számlát állíthatna ki.
+     */
+    public function invoiceHasUnresolvedSzamlazzOperation(int $originalInvoiceId): bool
+    {
+        $stmt = $this->pdo->prepare("
+            SELECT 1 FROM invoices
+            WHERE original_invoice_id = ? AND provider = 'szamlazz' AND invoice_type IN ('modification', 'storno')
+              AND status IN ('queued', 'processing', 'uncertain', 'uncertain_manual')
+            LIMIT 1
+        ");
+        $stmt->execute([$originalInvoiceId]);
+        return $stmt->fetchColumn() !== false;
+    }
+
+    /**
+     * N-4 — admin-feloldás: a Számlázz.hu felületén MEGTALÁLT számlaszám
+     * rögzítése egy bizonytalan módosító/sztornó műveletre, ÚJ külső hívás
+     * NÉLKÜL. Csak 'uncertain_manual' állapotból (atomikus, feltételes).
+     */
+    public function resolveUncertainInvoiceOperation(int $id, string $foundInvoiceNumber): bool
+    {
+        $now = date('Y-m-d H:i:s');
+        $stmt = $this->pdo->prepare("
+            UPDATE invoices SET status = 'done', invoice_number = ?, issued_at = ?, last_error = NULL, locked_at = NULL, updated_at = ?
+            WHERE id = ? AND status = 'uncertain_manual' AND provider = 'szamlazz' AND invoice_type IN ('modification', 'storno')
+        ");
+        $stmt->execute([$foundInvoiceNumber, $now, $now, $id]);
+        return $stmt->rowCount() > 0;
+    }
+
     public function resetInvoiceForManualRetry(int $id): bool
     {
         $stmt = $this->pdo->prepare("
@@ -5074,7 +5192,7 @@ class Database
      * P-D — azok a WooCommerce-rendelésstátuszok, amelyek után a rendelés
      * már nem teljesül: lemondva, visszatérítve, sikertelen fizetés.
      */
-    public const WEB_ORDER_TERMINAL_WC_STATUSES = ['cancelled', 'refunded', 'failed'];
+    public const WEB_ORDER_TERMINAL_WC_STATUSES = ['cancelled', 'refunded', 'failed', 'trash', 'deleted'];
 
     /**
      * P-D — egy WooCommerce-ben lemondott/visszatérített/sikertelen rendelés
@@ -5087,24 +5205,43 @@ class Database
      *     elmehetett; ez visszáru-teendő), csak a wc_status rögzül, és egy
      *     push a helyi (irányadó) készletre korrigálja a WooCommerce-t, ha az
      *     a lemondáskor maga visszatöltötte a készletét;
-     *   - 'rejected' → idempotens no-op (duplikált/ismételt webhook).
-     * A push az érdemi ágakban UGYANABBAN a tranzakcióban ütemeződik.
+     *   - 'rejected' → idempotens no-op (duplikált/ismételt webhook);
+     *   - még NEM ismert rendelés (a lemondás/törlés a 'processing' ELŐTT
+     *     érkezett) → egy 'rejected' SÍRKŐ-sor jön létre ugyanazzal a
+     *     wc_order_id-vel (a meglévő UNIQUE azonosító), így egy később
+     *     érkező, elavult 'processing' webhook már nem hozhat létre
+     *     foglalást (insertWebshopOrderDraft() UNIQUE-ütközés → "already
+     *     imported"). Nincs új helyi státusz.
+     * Ugyanez vonatkozik a törlésre/kukába helyezésre ('deleted'/'trash').
+     * A push az érdemi ágakban UGYANABBAN a tranzakcióban ütemeződik. A
+     * tranzakció ÍRÁSSAL kezdődik (a sírkő-kísérlettel): SQLite-on így egy
+     * párhuzamos webhookkal nincs "olvasás után írásra váltás" ütközés.
      *
-     * @return array{outcome: string, order_id: ?int, sale_id: ?int}
+     * @return array{outcome: string, order_id: ?int, sale_id: ?int, tombstone?: bool}
      *         outcome: 'unknown' | 'released' | 'already_released' | 'confirmed_kept'
      */
-    public function applyWebOrderTermination(int $wcOrderId, string $wcStatus): array
+    public function applyWebOrderTermination(int $wcOrderId, string $wcStatus, string $customerName = ''): array
     {
         $this->beginTransaction();
         try {
+            try {
+                $now = date('Y-m-d H:i:s');
+                $this->pdo->prepare("
+                    INSERT INTO webshop_orders (wc_order_id, order_number, status, wc_status, customer_name, customer_email, billing_json, payment_method, currency, total, items_json, customer_note, created_at, confirmed_at)
+                    VALUES (?, ?, 'rejected', ?, ?, '', '{}', '', 'HUF', 0, '[]', '', ?, ?)
+                ")->execute([$wcOrderId, (string) $wcOrderId, $wcStatus, $customerName, $now, $now]);
+                $tombstoneId = (int) $this->pdo->lastInsertId();
+                $this->commit();
+                return ['outcome' => 'unknown', 'order_id' => $tombstoneId, 'sale_id' => null, 'tombstone' => true];
+            } catch (PDOException $e) {
+                if (!$this->isUniqueConstraintViolation($e)) {
+                    throw $e;
+                }
+                // Már ismert rendelés — lent a meglévő állapot szerint.
+            }
             $stmt = $this->pdo->prepare('SELECT id FROM webshop_orders WHERE wc_order_id = ?');
             $stmt->execute([$wcOrderId]);
-            $id = $stmt->fetchColumn();
-            if ($id === false) {
-                $this->commit();
-                return ['outcome' => 'unknown', 'order_id' => null, 'sale_id' => null];
-            }
-            $id = (int) $id;
+            $id = (int) $stmt->fetchColumn();
             $this->pdo->prepare('UPDATE webshop_orders SET wc_status = ? WHERE id = ?')->execute([$wcStatus, $id]);
 
             if ($this->claimAndRejectDraftWebshopOrder($id)) {
@@ -5970,10 +6107,49 @@ class Database
      * cash_session_id = NULL-lal (ugyanaz, mint amikor a hívó egyáltalán
      * nem adott meg pénztárgépet).
      */
-    public function processReturn(int $saleId, array $items, string $reason, ?int $staffId, float $totalRefund, array $sale = [], ?int $cashRegisterId = null): int
+    public function processReturn(int $saleId, array $items, string $reason, ?int $staffId, float $totalRefund, array $sale = [], ?int $cashRegisterId = null, ?string $idempotencyKey = null, ?string $idempotencyFingerprint = null): int
     {
+        // N-3: az idempotencia-kulcs a visszáru SAJÁT során, ugyanabban a
+        // tranzakcióban, mint minden mellékhatása (készlet, telephely,
+        // kupon/hűségpont/utalvány, WooCommerce-queue) — egy ugyanazzal a
+        // kulccsal érkező második kérés a returns-sor beszúrásánál UNIQUE-
+        // ütközésbe fut, és a teljes tranzakciója visszagördül. A mennyiségi
+        // védelem (lent) ettől FÜGGETLEN réteg, változatlanul megmarad.
+        $idemKey = ($idempotencyKey !== null && $idempotencyKey !== '') ? $idempotencyKey : null;
+        $idemFp = ($idemKey !== null && $idempotencyFingerprint !== null && $idempotencyFingerprint !== '') ? $idempotencyFingerprint : null;
         $this->beginTransaction();
         try {
+            // N-3: a visszáru SAJÁT sora (az idempotencia-kulccsal) az ELSŐ
+            // írás a tranzakcióban — egy ugyanazzal a kulccsal érkező második
+            // kérés itt, minden mellékhatás ELŐTT UNIQUE-ütközésbe fut. Az
+            // írással kezdődő tranzakció SQLite-on a párhuzamos kérést a
+            // busy_timeout szerint VÁRAKOZTATJA (egy olvasással kezdődő
+            // tranzakció írásra váltáskor várakozás nélkül SQLITE_BUSY-t kapna),
+            // és az alábbi mennyiségi ellenőrzés így már a friss, a párhuzamos
+            // visszáru(ka)t is tartalmazó állapotot látja. Elutasításkor a
+            // visszagörgetés a kulcsot is eltávolítja.
+            if ($cashRegisterId !== null) {
+                // INSERT ... SELECT — lásd a metódus docblokkja: a
+                // cash_session_id értékét egy korrelált al-lekérdezés adja,
+                // UGYANANNAK a statementnek a végrehajtási pillanatában.
+                $stmt = $this->pdo->prepare('
+                    INSERT INTO returns (sale_id, staff_id, total_refund, reason, cash_session_id, idempotency_key, idempotency_fingerprint, created_at)
+                    SELECT ?, ?, ?, ?, (
+                        SELECT id FROM cash_sessions WHERE cash_register_id = ? AND status = \'open\' LIMIT 1
+                    ), ?, ?, ?
+                ');
+                $stmt->execute([$saleId, $staffId, $totalRefund, $reason, $cashRegisterId, $idemKey, $idemFp, date('Y-m-d H:i:s')]);
+            } else {
+                // Nincs pénztárgép megadva ehhez a visszáruhoz — a régi,
+                // egyszerű VALUES forma, explicit NULL cash_session_id-vel.
+                $stmt = $this->pdo->prepare('
+                    INSERT INTO returns (sale_id, staff_id, total_refund, reason, cash_session_id, idempotency_key, idempotency_fingerprint, created_at)
+                    VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
+                ');
+                $stmt->execute([$saleId, $staffId, $totalRefund, $reason, $idemKey, $idemFp, date('Y-m-d H:i:s')]);
+            }
+            $returnId = (int) $this->pdo->lastInsertId();
+
             // Frissen, a TRANZAKCIÓN BELÜL ellenőrizzük, mennyi lett eddig
             // ténylegesen visszavéve — a hívó (api/return-create.php) saját,
             // tranzakción KÍVÜLI olvasása elavulttá válhat két majdnem
@@ -6010,28 +6186,6 @@ class Database
                     throw new RuntimeException("\"{$item['name']}\" tételből időközben már csak $maxReturnable db vihető vissza.");
                 }
             }
-
-            if ($cashRegisterId !== null) {
-                // INSERT ... SELECT — lásd a metódus docblokkja: a
-                // cash_session_id értékét egy korrelált al-lekérdezés adja,
-                // UGYANANNAK a statementnek a végrehajtási pillanatában.
-                $stmt = $this->pdo->prepare('
-                    INSERT INTO returns (sale_id, staff_id, total_refund, reason, cash_session_id, created_at)
-                    SELECT ?, ?, ?, ?, (
-                        SELECT id FROM cash_sessions WHERE cash_register_id = ? AND status = \'open\' LIMIT 1
-                    ), ?
-                ');
-                $stmt->execute([$saleId, $staffId, $totalRefund, $reason, $cashRegisterId, date('Y-m-d H:i:s')]);
-            } else {
-                // Nincs pénztárgép megadva ehhez a visszáruhoz — a régi,
-                // egyszerű VALUES forma, explicit NULL cash_session_id-vel.
-                $stmt = $this->pdo->prepare('
-                    INSERT INTO returns (sale_id, staff_id, total_refund, reason, cash_session_id, created_at)
-                    VALUES (?, ?, ?, ?, NULL, ?)
-                ');
-                $stmt->execute([$saleId, $staffId, $totalRefund, $reason, date('Y-m-d H:i:s')]);
-            }
-            $returnId = (int) $this->pdo->lastInsertId();
 
             // B-05: az eladás telephelyi készlet-csökkentésének (sale.php
             // decrementLocationStock()) pontos inverze — ugyanarra a
@@ -6149,6 +6303,17 @@ class Database
                 }
             }
         }
+    }
+
+    public function findReturnByIdempotencyKey(string $key): ?array
+    {
+        if ($key === '') {
+            return null;
+        }
+        $stmt = $this->pdo->prepare('SELECT * FROM returns WHERE idempotency_key = ?');
+        $stmt->execute([$key]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
     }
 
     public function setReturnCreditInvoice(int $returnId, string $invoiceNumber): void
@@ -6528,19 +6693,30 @@ class Database
         if ($amount <= 0) {
             throw new InvalidArgumentException('A pénzmozgás összege csak pozitív lehet.');
         }
-        $session = $this->getCashSession($cashSessionId);
-        if (!$session || $session['status'] !== 'open') {
-            throw new RuntimeException('Ez a műszak nincs nyitva, pénzmozgás nem rögzíthető hozzá.');
-        }
-        $stmt = $this->pdo->prepare('
+        // N-1: a "nyitott-e a műszak" feltétel és a beszúrás EGYETLEN
+        // atomikus utasítás (INSERT ... SELECT ... FROM cash_sessions WHERE
+        // status = 'open') — korábban egy külön ellenőrzés után futott a
+        // VALUES-os INSERT, és egy KÖZBEN lezárt műszakhoz is beíródhatott a
+        // pénzmozgás (kimaradva a zárás elvárt összegéből). Ugyanaz az elv,
+        // mint az eladás műszak-hozzárendelésénél (insertSale()): a feltétel
+        // az írás pillanatában értékelődik ki. Szándékosan FROM-os alak (nem
+        // FROM nélküli SELECT ... WHERE), ami SQLite-on és MySQL-en is
+        // ugyanazt jelenti.
+        $stmt = $this->pdo->prepare("
             INSERT INTO cash_movements (cash_session_id, staff_id, type, amount, reason, idempotency_key, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ');
+            SELECT id, ?, ?, ?, ?, ?, ?
+            FROM cash_sessions
+            WHERE id = ? AND status = 'open'
+        ");
         $stmt->execute([
-            $cashSessionId, $staffId, $type, $amount, $reason,
+            $staffId, $type, $amount, $reason,
             ($idempotencyKey !== null && $idempotencyKey !== '') ? $idempotencyKey : null,
             date('Y-m-d H:i:s'),
+            $cashSessionId,
         ]);
+        if ($stmt->rowCount() === 0) {
+            throw new RuntimeException('Ez a műszak nincs nyitva, pénzmozgás nem rögzíthető hozzá.');
+        }
         return (int) $this->pdo->lastInsertId();
     }
 
@@ -7726,10 +7902,32 @@ class Database
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    public function transferStock(int $productId, ?int $fromLocationId, int $toLocationId, int $qty, ?int $staffId): void
+    /**
+     * @return int a létrejött stock_transfers sor azonosítója
+     */
+    public function transferStock(int $productId, ?int $fromLocationId, int $toLocationId, int $qty, ?int $staffId, ?string $idempotencyKey = null, ?string $idempotencyFingerprint = null): int
     {
         $this->beginTransaction();
         try {
+            // N-2: a mozgatás SAJÁT naplósora az ELSŐ írás a tranzakcióban,
+            // az idempotencia-kulccsal együtt. Egy ugyanazzal a kulccsal
+            // érkező második kérés itt, MÉG MINDEN készletmódosítás ELŐTT
+            // UNIQUE-ütközésbe fut (a hívó a győztes eredményét játssza
+            // vissza), visszagörgetéskor pedig a kulcs is eltűnik — nem
+            // maradhat olyan kulcs, ami mögött nincs végrehajtott mozgatás.
+            // (Írással kezdődő tranzakció: SQLite-on nincs "olvasás után
+            // írásra váltás" miatti azonnali ütközés.)
+            $this->pdo->prepare('
+                INSERT INTO stock_transfers (product_id, from_location_id, to_location_id, qty, staff_id, idempotency_key, idempotency_fingerprint, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ')->execute([
+                $productId, $fromLocationId, $toLocationId, $qty, $staffId,
+                ($idempotencyKey !== null && $idempotencyKey !== '') ? $idempotencyKey : null,
+                ($idempotencyFingerprint !== null && $idempotencyFingerprint !== '') ? $idempotencyFingerprint : null,
+                date('Y-m-d H:i:s'),
+            ]);
+            $transferId = (int) $this->pdo->lastInsertId();
+
             if ($fromLocationId) {
                 // Szigorú, elutasítható csökkentés a forrás oldalon — enélkül
                 // két majdnem egyidejű mozgatás ugyanazt a (már csak egyszer
@@ -7753,16 +7951,10 @@ class Database
             }
             $this->adjustLocationStock($productId, $toLocationId, $qty);
 
-            $this->pdo->prepare('
-                INSERT INTO stock_transfers (product_id, from_location_id, to_location_id, qty, staff_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ')->execute([$productId, $fromLocationId, $toLocationId, $qty, $staffId, date('Y-m-d H:i:s')]);
-
             if (!$fromLocationId) {
                 // Az "Új készlet" az összesített készletet is növeli — a
                 // WooCommerce is lássa (a telephelyek közötti mozgatás nem
                 // változtat az összesítetten, ott nincs mit kiküldeni).
-                $transferId = (int) $this->pdo->lastInsertId();
                 $product = $this->findProductById($productId);
                 if ($product && !empty($product['wc_product_id']) && !empty($product['sync_to_woocommerce'])) {
                     $this->enqueueWcPush($productId, (int) $product['wc_product_id'], 'transfer', $transferId);
@@ -7770,10 +7962,22 @@ class Database
             }
 
             $this->commit();
+            return $transferId;
         } catch (Throwable $e) {
             $this->rollBack();
             throw $e;
         }
+    }
+
+    public function findStockTransferByIdempotencyKey(string $key): ?array
+    {
+        if ($key === '') {
+            return null;
+        }
+        $stmt = $this->pdo->prepare('SELECT * FROM stock_transfers WHERE idempotency_key = ?');
+        $stmt->execute([$key]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
     }
 
     /**

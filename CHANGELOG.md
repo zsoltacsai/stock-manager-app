@@ -241,6 +241,49 @@ ellenőrzése, ha rendelkezésre áll. Lásd README "Fázis 11" alszakasz.
   vissza vakon, csak a webshop-készlet korrigálódik és figyelmeztetés
   jelenik meg.
 
+### Fixed — post-remediation audit (N-1…N-4, WooCommerce törlés/kuka)
+
+- **N-1** — pénzmozgás egy közben lezárt kasszaműszakba: a "nyitott-e a
+  műszak" feltétel és a beszúrás egyetlen atomikus utasítás
+  (`INSERT … SELECT … FROM cash_sessions WHERE id = ? AND status = 'open'`,
+  SQLite-on és MySQL-en azonos jelentéssel, extra zár nélkül). Lezárt
+  műszakba nem íródhat mozgás; az üzleti 409 és az idempotens
+  visszajátszás változatlan.
+- **N-2** — készletmozgatás dupla kattintása: a Telephelyek oldal egy
+  mozgatás-kísérlethez stabil idempotencia-kulcsot küld (újraküldéskor
+  ugyanazt; a gomb a kérés alatt letiltva). A szerver a kulcsot a
+  `stock_transfers` sorában, a készletmódosítással EGY tranzakcióban
+  rögzíti (a kulcsos sor az első írás) — egy ugyanazzal a kulccsal érkező
+  kérés a győztes eredményét kapja (`replayed: true`), eltérő tartalomra
+  409; visszagörgetés után nem marad kulcs. A WooCommerce-push csak a
+  ténylegesen végrehajtott "Új készlet" mozgatás után ütemeződik.
+- **N-3** — részleges visszáru dupla beküldése: ugyanez a minta a
+  `returns` táblán (`return-create.php`, Eladások visszáru-űrlap és a
+  kassza "eladás visszavonása" gombja). Minden mellékhatás (készlet,
+  telephely, kupon/hűségpont/utalvány, WooCommerce-queue) pontosan egyszer;
+  a mennyiségi védelem (F-03) külön rétegként megmaradt. A visszáru
+  tranzakciója mostantól írással kezdődik, így egy párhuzamos visszáru
+  SQLite-on várakozik (nem kap azonnali "foglalt" hibát), és a friss
+  állapot alapján dönt.
+- **N-4** — Számlázz.hu módosító/sztornó számla összeomlás után: a
+  külső hívás előtt a művelet atomikusan `processing`-be kerül; egy
+  elévült foglalás vagy beragadt várakozó sor bizonytalanná
+  (`uncertain_manual`) válik, nem marad "hamarosan beküldésre kerül"
+  állapotban. Bizonytalan vagy folyamatban lévő művelet mellett új
+  módosítás/sztornó (új `operation_uuid`-val sem) nem indítható; az admin
+  a Számlázz.hu-n ellenőrzött állapot alapján vagy a megtalált
+  számlaszámot rögzíti (külső hívás nélkül), vagy kifejezetten megerősíti,
+  hogy nem készült számla — csak ekkor indul újra. Új állapot nincs.
+- **WooCommerce törlés / kuka** — az `order.deleted` webhook (csak
+  azonosító) és a `trash` státusz a lemondással azonos módon kezelve: egy
+  piszkozat foglalása pontosan egyszer felszabadul, ismételt törlés no-op,
+  leadott rendelés nem áll vissza vakon, elutasított no-op. Egy helyben
+  még ismeretlen rendelés lemondása/törlése "elutasított" sírkő-sort hoz
+  létre (a meglévő állapottal), így egy később érkező, elavult
+  `processing` webhook már nem foglalhat.
+- Séma v35: `stock_transfers` és `returns` kapott `idempotency_key`
+  (UNIQUE) és `idempotency_fingerprint` oszlopot (automatikus migráció).
+
 ### Tests
 
 - Fázis 10: `AiRetryPolicyTest` (9 teszt), `AiAuditLoggerTest` (5 teszt),
@@ -271,6 +314,11 @@ ellenőrzése, ha rendelkezésre áll. Lásd README "Fázis 11" alszakasz.
   csak a kiváltó javaslat részletnézetében jelenik meg.
 - Nincs beszállítói/külső procurement-integráció — a piszkozat kézzel
   vihető át valódi beszerzéssé a meglévő felületen.
+- N-1…N-4 / törlés: a többfolyamatos bizonyítás SQLite-on (WAL) készült;
+  MySQL, WooCommerce és Számlázz.hu élő környezetben nincs validálva. MySQL
+  REPEATABLE READ mellett egy, a párhuzamos műszakzárás UPDATE-je előtt
+  commitolt mozgást a zárás pillanatképe kihagyhat — ez a zárás oldali
+  P-A kérdés, ebben a körben szándékosan nem módosítva.
 
 ## [1.5.0] — 2026-09-22 (Kasszakezelés + Több-terminálos Kliens/Szerver architektúra)
 

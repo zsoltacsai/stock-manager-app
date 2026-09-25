@@ -94,7 +94,19 @@ function providerBadge(provider) {
 // — a lista-badge marad az egyszerű 3-csoportos címke, de a
 // részletnézetben (ahol a kasszás/admin ténylegesen dönthet valamit)
 // érdemes megkülönböztetni pl. a "kimerült retry"-t egy sima "hibától".
-function statusDetailText(status) {
+function statusDetailText(status, provider) {
+    // N-4: a Számlázz.hu-s módosítás/sztornó SZINKRON — nincs háttér-worker,
+    // ami egy várakozó sort "hamarosan beküld". Egy beragadt (elévült)
+    // sor a lista/részletek megnyitásakor bizonytalanná válik; a szöveg
+    // itt sem ígérhet automatikus beküldést.
+    if (provider === 'szamlazz') {
+        const szamlazzTexts = {
+            queued: 'A művelet indítás előtt áll. Ha ez az állapot nem változik, a rendszer bizonytalanként jelöli meg, és kézi ellenőrzést kér — automatikusan nem küldi be.',
+            processing: 'A Számlázz.hu-hívás folyamatban van. Ha a feldolgozás megszakad, a művelet bizonytalanként jelölődik meg.',
+            uncertain_manual: 'Bizonytalan kimenetel — a számla létrejöhetett a Számlázz.hu-n. A rendszer NEM próbálkozik automatikusan: ellenőrizd a Számlázz.hu felületén, és rögzítsd a megtalált számlaszámot, vagy erősítsd meg, hogy nem készült számla.',
+        };
+        if (szamlazzTexts[status]) return szamlazzTexts[status];
+    }
     const texts = {
         dead_letter: 'Ismételt próbálkozás kimerült — admin kézi újrapróbálkozása szükséges.',
         uncertain: 'Bizonytalan kimenetel — a rendszer egyezteti a NAV-val, hogy a korábbi kérés megérkezett-e.',
@@ -200,8 +212,10 @@ async function openDetail(id) {
             ` : ''}
             ${isSzamlazzOperationRetryable ? `
                 <div style="margin-top:8px; padding:10px; border:1px solid var(--border); border-radius:8px;">
-                    <p class="muted" style="margin:0 0 8px;">A kérés kimenetele bizonytalan (a Számlázz.hu válasza elveszett) — kézi újrapróbálkozás:</p>
-                    <button class="btn btn-primary" id="szamlazz-op-retry-btn" style="width:100%;">Kézi újrapróbálkozás</button>
+                    <p class="muted" style="margin:0 0 8px;">A művelet kimenetele bizonytalan (a Számlázz.hu válasza elveszett, vagy a feldolgozás megszakadt) — a ${inv.invoice_type === 'storno' ? 'sztornó' : 'módosító'} számla LÉTREJÖHETETT. Ellenőrizd a Számlázz.hu felületén, majd:</p>
+                    <input type="text" id="szamlazz-op-found-number" placeholder="Számlaszám, ha TALÁLTÁL egyet" style="margin-bottom:8px;">
+                    <button class="btn btn-primary" id="szamlazz-op-found-btn" style="width:100%; margin-bottom:6px;">Megtaláltam — számlaszám rögzítése</button>
+                    <button class="btn btn-secondary" id="szamlazz-op-retry-btn" style="width:100%;">Nem készült számla — újrapróbálás</button>
                     <p id="szamlazz-op-retry-feedback" class="modal-feedback"></p>
                 </div>
             ` : ''}
@@ -221,7 +235,7 @@ async function openDetail(id) {
 
         detailContent.innerHTML = `
             <p class="muted">Számla ${escapeHtml(inv.invoice_number || '— (még nincs kiállítva)')} · ${providerBadge(inv.provider)} ${operationTypeBadge(inv.invoice_type)} ${statusBadge(inv.status)}</p>
-            <p class="muted" style="font-size:12px;">${escapeHtml(statusDetailText(inv.status))}</p>
+            <p class="muted" style="font-size:12px;">${escapeHtml(statusDetailText(inv.status, inv.provider))}</p>
             <p style="margin-top:10px;">Nettó: ${fmt(inv.net_total)} · ÁFA: ${fmt(inv.vat_total)} · <strong>Bruttó: ${fmt(inv.gross_total)}</strong>${inv.issued_at ? ` · Kiállítva: ${escapeHtml(inv.issued_at)}` : ''}</p>
             ${navBlock}
             ${szamlazzBlock}
@@ -295,9 +309,41 @@ async function openDetail(id) {
             });
         }
 
+        // N-4: bizonytalan kimenetelnél csak kimondott, ellenőrzött külső
+        // állapottal lehet továbblépni — a szerver is ezt követeli meg.
+        const opFoundBtn = document.getElementById('szamlazz-op-found-btn');
+        if (opFoundBtn) {
+            opFoundBtn.addEventListener('click', async () => {
+                const number = document.getElementById('szamlazz-op-found-number').value.trim();
+                const feedback = document.getElementById('szamlazz-op-retry-feedback');
+                if (!number) {
+                    feedback.textContent = 'Add meg a Számlázz.hu-n talált számlaszámot.';
+                    feedback.className = 'modal-feedback error';
+                    return;
+                }
+                opFoundBtn.disabled = true;
+                try {
+                    const res = await fetch('/api/szamlazz-operation-retry.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ id: inv.id, found_invoice_number: number }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+                    openDetail(inv.id);
+                    loadInvoices();
+                } catch (err) {
+                    feedback.textContent = 'Hiba: ' + err.message;
+                    feedback.className = 'modal-feedback error';
+                    opFoundBtn.disabled = false;
+                }
+            });
+        }
+
         const opRetryBtn = document.getElementById('szamlazz-op-retry-btn');
         if (opRetryBtn) {
             opRetryBtn.addEventListener('click', async () => {
+                if (!confirm('Biztosan ellenőrizted a Számlázz.hu felületén, hogy NEM készült számla ehhez a művelethez? Ha mégis készült, az újrapróbálás egy második valódi számlát állít ki.')) return;
                 opRetryBtn.disabled = true;
                 const feedback = document.getElementById('szamlazz-op-retry-feedback');
                 feedback.textContent = 'Újrapróbálkozás...';
@@ -306,7 +352,7 @@ async function openDetail(id) {
                     const retryRes = await fetch('/api/szamlazz-operation-retry.php', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ id: inv.id }),
+                        body: JSON.stringify({ id: inv.id, confirm_not_issued: true }),
                     });
                     const retryData = await retryRes.json();
                     if (!retryRes.ok) throw new Error(retryData.error || 'ismeretlen hiba');

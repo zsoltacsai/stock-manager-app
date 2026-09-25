@@ -379,6 +379,7 @@ CREATE TABLE IF NOT EXISTS stock_take_items (
     product_id      INT UNSIGNED NOT NULL,
     expected_qty    INT NOT NULL,
     counted_qty     INT NULL,
+    system_qty_at_count INT NULL,
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_stock_take_items_take_id (stock_take_id),
     KEY idx_stock_take_items_product_id (product_id),

@@ -1794,6 +1794,45 @@ final class HttpSecurityTest extends TestCase
         );
     }
 
+    /**
+     * B-01 (correctness audit): a számlálás rögzíti a számláláskori
+     * rendszerkészletet, a végpont visszaadja (a leltar.js ebből mutatja az
+     * eltérést), és a lezárás ehhez képest korrigál — HTTP-n át, végig.
+     */
+    public function testStockTakeCountReturnsCountTimeSystemQuantityAndCompletionUsesIt(): void
+    {
+        $jar = self::cookieJar('login-success');
+        $status = self::request('GET', '/api/auth-status.php', null, [], $jar);
+        $csrf = $status['json']['csrf_token'];
+
+        $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => self::$root . '/data/stock.sqlite']], self::$root);
+        $productId = $db->saveProduct(['name' => 'B01 HTTP ' . bin2hex(random_bytes(3)), 'unit' => 'db', 'vat_rate' => '27', 'net_price' => 1000, 'price' => 1270, 'barcode' => null]);
+        $db->incrementStock($productId, 10);
+
+        $start = self::request('POST', '/api/stock-take-start.php', [], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $start['status'], $start['body']);
+        $takeId = (int) $start['json']['id'];
+
+        $db->decrementStock($productId, 2); // eladás az indítás és a számlálás között
+
+        $count = self::request('POST', '/api/stock-take-update-count.php', [
+            'stock_take_id' => $takeId, 'product_id' => $productId, 'counted_qty' => 8,
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $count['status'], $count['body']);
+        $this->assertSame(['ok' => true, 'system_qty_at_count' => 8], $count['json']);
+
+        $detail = self::request('GET', '/api/stock-take-detail.php?id=' . $takeId, null, [], $jar);
+        $item = current(array_filter($detail['json']['stock_take']['items'], fn($i) => (int) $i['product_id'] === $productId));
+        $this->assertSame(10, (int) $item['expected_qty']);
+        $this->assertSame(8, (int) $item['system_qty_at_count']);
+
+        $complete = self::request('POST', '/api/stock-take-complete.php', [
+            'id' => $takeId, 'apply_corrections' => true,
+        ], ['X-CSRF-Token' => $csrf], $jar);
+        $this->assertSame(200, $complete['status'], $complete['body']);
+        $this->assertSame(8, (int) $db->findProductById($productId)['stock_qty']);
+    }
+
     // -----------------------------------------------------------------
     // 1.4.0 "Operations & Reliability" — system-health.php/system-events.php
     // HTTP-szintű coverage: auth, válasz-alak, admin-only technikai

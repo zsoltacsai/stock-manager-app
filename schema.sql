@@ -357,6 +357,7 @@ CREATE TABLE IF NOT EXISTS stock_take_items (
     product_id      INTEGER NOT NULL REFERENCES products(id),
     expected_qty    INTEGER NOT NULL,
     counted_qty     INTEGER,
+    system_qty_at_count INTEGER,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_stock_take_items_take_id ON stock_take_items(stock_take_id);

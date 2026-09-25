@@ -19,5 +19,5 @@ if ($countedQty !== null && $countedQty < 0) {
     send_json(['error' => 'A megszámolt mennyiség nem lehet negatív.'], 400);
 }
 
-$db->updateStockTakeCount($stockTakeId, $productId, $countedQty);
-send_json(['ok' => true]);
+$systemQtyAtCount = $db->updateStockTakeCount($stockTakeId, $productId, $countedQty);
+send_json(['ok' => true, 'system_qty_at_count' => $systemQtyAtCount]);

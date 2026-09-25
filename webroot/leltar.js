@@ -86,13 +86,18 @@ function renderItems() {
     const filtered = currentTake.items.filter(i => !q || i.name.toLowerCase().includes(q));
 
     itemsBody.innerHTML = filtered.length ? filtered.map(item => {
-        const diff = item.counted_qty !== null ? item.counted_qty - item.expected_qty : null;
+        // A korrekció alapja a megszámoláskori rendszerkészlet (lásd
+        // Database::completeStockTake()) — régi számlálásnál az induláskori.
+        const systemQty = item.counted_qty !== null && item.system_qty_at_count !== null && item.system_qty_at_count !== undefined
+            ? item.system_qty_at_count
+            : item.expected_qty;
+        const diff = item.counted_qty !== null ? item.counted_qty - systemQty : null;
         const diffText = diff === null ? '—' : (diff > 0 ? `+${diff}` : diff);
         const diffColor = diff === null ? '' : (diff === 0 ? 'color:var(--muted);' : (diff > 0 ? 'color:var(--accent);' : 'color:var(--danger);'));
         return `
             <tr>
                 <td>${escapeHtml(item.name)}</td>
-                <td>${item.expected_qty}</td>
+                <td>${systemQty}</td>
                 <td>
                     ${isCompleted
                         ? (item.counted_qty ?? '—')
@@ -107,13 +112,17 @@ function renderItems() {
         input.addEventListener('change', async () => {
             const productId = Number(input.dataset.productId);
             const value = input.value.trim() === '' ? null : parseInt(input.value, 10);
-            await fetch('/api/stock-take-update-count.php', {
+            const res = await fetch('/api/stock-take-update-count.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ stock_take_id: currentTake.id, product_id: productId, counted_qty: value }),
             });
+            const data = await res.json().catch(() => ({}));
             const item = currentTake.items.find(i => i.product_id === productId);
-            if (item) item.counted_qty = value;
+            if (item) {
+                item.counted_qty = value;
+                item.system_qty_at_count = data.system_qty_at_count ?? null;
+            }
             renderItems();
         });
     });

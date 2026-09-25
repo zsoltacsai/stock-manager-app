@@ -8,7 +8,7 @@ require_once __DIR__ . '/ClientHmac.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 32;
+    private const SCHEMA_VERSION = 33;
 
     private PDO $pdo;
     private string $driver;
@@ -219,6 +219,9 @@ class Database
             }
             if ($version < 32) {
                 $this->migrateV32ActionExecution();
+            }
+            if ($version < 33) {
+                $this->migrateV33StockTakeCountBaseline();
             }
         }
 
@@ -1855,6 +1858,12 @@ class Database
         $isMysql = $this->driver === 'mysql';
         $pk = $isMysql ? 'INT UNSIGNED AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
         $ts = $isMysql ? 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' : "TEXT NOT NULL DEFAULT (datetime('now'))";
+        // MySQL/MariaDB: a kanonikus schema.mysql.sql-lel azonos DATETIME
+        // típusok — egy TEXT oszlopra (expires_at) épített index MySQL-en
+        // 1170-es hibával elutasításra kerül, ami a migrációt véglegesen
+        // megakasztaná (lásd a lenti javító ALTER-t is).
+        $dt = $isMysql ? 'DATETIME NOT NULL' : 'TEXT NOT NULL';
+        $dtNull = $isMysql ? 'DATETIME NULL' : 'TEXT';
 
         try {
             $this->pdo->exec("CREATE TABLE IF NOT EXISTS ai_action_proposals (
@@ -1873,12 +1882,21 @@ class Database
                 fingerprint       VARCHAR(128) NOT NULL,
                 created_at        $ts,
                 updated_at        $ts,
-                expires_at        TEXT NOT NULL,
-                reviewed_at       TEXT,
+                expires_at        $dt,
+                reviewed_at       $dtNull,
                 reviewed_by       INTEGER,
                 rejection_reason  VARCHAR(500)
             )" . ($isMysql ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : ''));
         } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+
+        if ($isMysql) {
+            // Javító lépés egy korábbi (hibás) V31-futás után: ott a tábla
+            // már TEXT expires_at/reviewed_at oszlopokkal jött létre (a
+            // fenti CREATE TABLE IF NOT EXISTS ezt nem módosítja), az index
+            // pedig elbukott, és a séma-verzió 30-on ragadt. Idempotens —
+            // egy már DATETIME oszlopon nem változtat semmit.
+            $this->pdo->exec('ALTER TABLE ai_action_proposals MODIFY COLUMN expires_at DATETIME NOT NULL, MODIFY COLUMN reviewed_at DATETIME NULL');
+        }
 
         $indexes = [
             'idx_ai_action_proposals_status' => 'status',
@@ -1941,10 +1959,14 @@ class Database
         $pk = $isMysql ? 'INT UNSIGNED AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
         $ts = $isMysql ? 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' : "TEXT NOT NULL DEFAULT (datetime('now'))";
 
+        // MySQL-en a kanonikus schema.mysql.sql típusai (DATETIME/DECIMAL) —
+        // hogy egy frissített és egy friss telepítés sémája azonos legyen.
+        $dtNull = $isMysql ? 'DATETIME NULL' : 'TEXT';
+        $money = $isMysql ? 'DECIMAL(12,2)' : 'REAL';
         $newColumns = [
-            'execution_started_at' => 'TEXT',
-            'executed_at' => 'TEXT',
-            'execution_failed_at' => 'TEXT',
+            'execution_started_at' => $dtNull,
+            'executed_at' => $dtNull,
+            'execution_failed_at' => $dtNull,
             'execution_result_json' => 'TEXT',
             'execution_error' => $isMysql ? 'VARCHAR(500)' : 'TEXT',
             'execution_idempotency_key' => 'VARCHAR(128)',
@@ -1963,10 +1985,10 @@ class Database
                 product_name           VARCHAR(191) NOT NULL,
                 supplier_id            INTEGER,
                 quantity               INTEGER NOT NULL,
-                unit_cost_net          REAL,
-                unit_cost_gross        REAL,
-                estimated_total_net    REAL,
-                estimated_total_gross  REAL,
+                unit_cost_net          $money,
+                unit_cost_gross        $money,
+                estimated_total_net    $money,
+                estimated_total_gross  $money,
                 status                 VARCHAR(16) NOT NULL DEFAULT 'draft',
                 created_at             $ts
             )" . ($isMysql ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : ''));
@@ -1986,6 +2008,20 @@ class Database
                     : 'CREATE INDEX IF NOT EXISTS idx_purchase_order_drafts_product_id ON purchase_order_drafts(product_id)'
             );
         } catch (PDOException $e) { if (!$this->isBenignSchemaError($e)) { throw $e; } }
+    }
+
+    /**
+     * A leltári korrekció alapja a termék rendszerkészlete ABBAN A
+     * PILLANATBAN, amikor megszámolták (nem a leltár indításakor rögzített
+     * expected_qty) — lásd updateStockTakeCount()/completeStockTake().
+     * NULL = még nem számolt tétel, vagy egy e migráció előtt rögzített
+     * számlálás (ott a lezárás az expected_qty-ra esik vissza).
+     */
+    private function migrateV33StockTakeCountBaseline(): void
+    {
+        $this->migrateColumns('stock_take_items', [
+            'system_qty_at_count' => $this->driver === 'mysql' ? 'INT NULL' : 'INTEGER',
+        ]);
     }
 
     // ---------------------------------------------------------------
@@ -5713,7 +5749,10 @@ class Database
         }
 
         if (!empty($sale['coupon_id'])) {
-            $this->pdo->prepare('UPDATE coupons SET times_used = MAX(0, times_used - 1) WHERE id = ?')
+            // Skalár MAX(a, b) csak SQLite-ban létezik — MySQL-ben GREATEST()
+            // (lásd applyLoyaltyPoints()). A 0 alatti érték így sosem jöhet létre.
+            $clampFn = $this->driver === 'mysql' ? 'GREATEST' : 'MAX';
+            $this->pdo->prepare("UPDATE coupons SET times_used = $clampFn(0, times_used - 1) WHERE id = ?")
                 ->execute([(int) $sale['coupon_id']]);
         }
 
@@ -5833,10 +5872,35 @@ class Database
         return $take;
     }
 
-    public function updateStockTakeCount(int $stockTakeId, int $productId, ?int $countedQty): void
+    /**
+     * A megszámolt mennyiséggel EGYÜTT, ugyanabban az UPDATE-ben rögzíti a
+     * termék aktuális rendszerkészletét (system_qty_at_count) — ez a
+     * lezáráskori korrekció alapja. Így a leltár indítása és a tétel
+     * megszámolása között lezajlott eladás/visszáru/beszerzés NEM számít
+     * kétszer (egyszer a stock_qty-ban, egyszer a korrekcióban), a
+     * megszámolás UTÁNIAK pedig érintetlenül megmaradnak.
+     *
+     * @return ?int a rögzített system_qty_at_count (null, ha a számlálást törölték)
+     */
+    public function updateStockTakeCount(int $stockTakeId, int $productId, ?int $countedQty): ?int
     {
-        $this->pdo->prepare('UPDATE stock_take_items SET counted_qty = ? WHERE stock_take_id = ? AND product_id = ?')
-            ->execute([$countedQty, $stockTakeId, $productId]);
+        if ($countedQty === null) {
+            $this->pdo->prepare('UPDATE stock_take_items SET counted_qty = NULL, system_qty_at_count = NULL WHERE stock_take_id = ? AND product_id = ?')
+                ->execute([$stockTakeId, $productId]);
+            return null;
+        }
+
+        $this->pdo->prepare('
+            UPDATE stock_take_items
+            SET counted_qty = ?,
+                system_qty_at_count = (SELECT stock_qty FROM products WHERE products.id = stock_take_items.product_id)
+            WHERE stock_take_id = ? AND product_id = ?
+        ')->execute([$countedQty, $stockTakeId, $productId]);
+
+        $stmt = $this->pdo->prepare('SELECT system_qty_at_count FROM stock_take_items WHERE stock_take_id = ? AND product_id = ?');
+        $stmt->execute([$stockTakeId, $productId]);
+        $value = $stmt->fetchColumn();
+        return $value === false || $value === null ? null : (int) $value;
     }
 
     /**
@@ -5878,11 +5942,21 @@ class Database
                 // alkalmazzuk a JELENLEGI stock_qty-re relatív korrekcióként,
                 // pontosan úgy, ahogy egy hagyományos leltári
                 // eltérés-könyvelés is működik.
-                $stmt = $this->pdo->prepare('SELECT product_id, expected_qty, counted_qty FROM stock_take_items WHERE stock_take_id = ? AND counted_qty IS NOT NULL');
+                //
+                // Az eltérés alapja a MEGSZÁMOLÁS pillanatában érvényes
+                // rendszerkészlet (system_qty_at_count, lásd
+                // updateStockTakeCount()) — NEM a leltár indításakori
+                // expected_qty: a kettő közötti mozgások már benne vannak a
+                // stock_qty-ban, és a megszámolt érték is már tükrözi őket,
+                // tehát az expected_qty-hoz mérve kétszer számítanának.
+                // Egy e javítás előtt rögzített számlálásnál (NULL) marad a
+                // korábbi expected_qty-alap.
+                $stmt = $this->pdo->prepare('SELECT product_id, expected_qty, counted_qty, system_qty_at_count FROM stock_take_items WHERE stock_take_id = ? AND counted_qty IS NOT NULL');
                 $stmt->execute([$id]);
                 $deltasByProductId = [];
                 foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                    $delta = (int) $row['counted_qty'] - (int) $row['expected_qty'];
+                    $baseline = $row['system_qty_at_count'] !== null ? (int) $row['system_qty_at_count'] : (int) $row['expected_qty'];
+                    $delta = (int) $row['counted_qty'] - $baseline;
                     if ($delta !== 0) {
                         $deltasByProductId[(int) $row['product_id']] = $delta;
                     }
@@ -7325,12 +7399,28 @@ class Database
      */
     private function adjustLocationStock(int $productId, int $locationId, int $delta): void
     {
-        $stmt = $this->pdo->prepare('
-            INSERT INTO location_stock (product_id, location_id, stock_qty)
-            VALUES (:pid, :lid, MAX(0, :delta1))
-            ON CONFLICT(product_id, location_id) DO UPDATE SET stock_qty = MAX(0, stock_qty + :delta2)
-        ');
-        $stmt->execute([':pid' => $productId, ':lid' => $locationId, ':delta1' => $delta, ':delta2' => $delta]);
+        // Mindkét ág EGYETLEN, atomikus UPSERT a (product_id, location_id)
+        // egyedi kulcsra — nincs olvasás-módosítás-írás verseny. A 0-ra
+        // vágás (MAX/GREATEST) szemantikája a két motoron azonos.
+        $stmt = $this->pdo->prepare($this->driver === 'mysql'
+            ? '
+                INSERT INTO location_stock (product_id, location_id, stock_qty)
+                VALUES (:pid, :lid, GREATEST(0, :delta1))
+                ON DUPLICATE KEY UPDATE stock_qty = GREATEST(0, stock_qty + :delta2)
+            '
+            : '
+                INSERT INTO location_stock (product_id, location_id, stock_qty)
+                VALUES (:pid, :lid, MAX(0, :delta1))
+                ON CONFLICT(product_id, location_id) DO UPDATE SET stock_qty = MAX(0, stock_qty + :delta2)
+            ');
+        // Explicit egész típus: MySQL natív prepare-nél egy execute()-tömb
+        // stringként menne át, és a GREATEST() vegyes szám/string argumentumok
+        // összehasonlítása verziófüggő — így a vágás mindig numerikus.
+        $stmt->bindValue(':pid', $productId, PDO::PARAM_INT);
+        $stmt->bindValue(':lid', $locationId, PDO::PARAM_INT);
+        $stmt->bindValue(':delta1', $delta, PDO::PARAM_INT);
+        $stmt->bindValue(':delta2', $delta, PDO::PARAM_INT);
+        $stmt->execute();
     }
 
     /**
@@ -7922,12 +8012,12 @@ class Database
             $productFilter = $productId ? ' AND sti.product_id = ?' : '';
             $sql = "
                 SELECT st.completed_at AS date, sti.product_id, p.name AS product_name,
-                       (sti.counted_qty - sti.expected_qty) AS qty_change, sti.stock_take_id AS ref_id
+                       (sti.counted_qty - COALESCE(sti.system_qty_at_count, sti.expected_qty)) AS qty_change, sti.stock_take_id AS ref_id
                 FROM stock_take_items sti
                 JOIN stock_takes st ON st.id = sti.stock_take_id
                 LEFT JOIN products p ON p.id = sti.product_id
                 WHERE st.completed_at IS NOT NULL AND sti.counted_qty IS NOT NULL
-                  AND sti.counted_qty != sti.expected_qty
+                  AND sti.counted_qty != COALESCE(sti.system_qty_at_count, sti.expected_qty)
                   AND st.completed_at >= ? AND st.completed_at < ?" . $productFilter . "
                 ORDER BY st.completed_at DESC LIMIT " . self::MAX_MOVEMENT_ROWS_PER_SOURCE . "
             ";

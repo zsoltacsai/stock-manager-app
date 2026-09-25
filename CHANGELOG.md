@@ -156,6 +156,29 @@ ellenőrzése, ha rendelkezésre áll. Lásd README "Fázis 11" alszakasz.
 - Nyitva maradt, ebben a körben szándékosan nem javított pontok: F-10,
   F-11, P-01, P-02, P-03 (lásd README "Biztonsági invariánsok").
 
+### Fixed — correctness audit (B-01…B-04)
+
+- **B-01** — a leltári korrekció alapja a termék rendszerkészlete a
+  MEGSZÁMOLÁS pillanatában (új `stock_take_items.system_qty_at_count`,
+  séma v33), nem az indításkori `expected_qty`: az indítás és a számlálás
+  közötti eladás/visszáru/beszerzés már nem számít kétszer (pl. 10 →
+  indítás → eladás 2 → számolás 8 → lezárás = 8, korábban 6). A Leltár
+  oldal és a készletmozgás-napló is ezt az alapot mutatja; a v33 előtt
+  rögzített számlálások az `expected_qty`-ra esnek vissza.
+- **B-02** — MySQL/MariaDB: a V31/V32 migráció a kanonikus
+  `schema.mysql.sql` típusait használja (`DATETIME`/`DECIMAL`); a TEXT
+  `expires_at` oszlopra épített index (MySQL 1170) már nem akasztja meg a
+  frissítést, egy korábbi félbemaradt futás oszlopait javító `ALTER` hozza
+  rendbe. SQLite-on változatlan.
+- **B-03** — MySQL/MariaDB: a telephelyi készlet-könyvelés (kasszai eladás,
+  készletmozgatás) natív `ON DUPLICATE KEY UPDATE … GREATEST(0, …)`
+  UPSERT-et használ `ON CONFLICT … MAX()` helyett.
+- **B-04** — MySQL/MariaDB: kuponos eladás teljes visszárujánál a
+  `times_used` visszaírása `GREATEST(0, …)`-val működik (0 alá sosem megy).
+- MySQL-szerver ebben a körben nem állt rendelkezésre: a MySQL-ágakat
+  SQL-felvevő tesztek és a kanonikus sémával való statikus összevetés
+  ellenőrzi, élő MySQL-futtatás nem történt.
+
 ### Tests
 
 - Fázis 10: `AiRetryPolicyTest` (9 teszt), `AiAuditLoggerTest` (5 teszt),

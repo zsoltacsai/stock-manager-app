@@ -352,7 +352,10 @@ PHP);
             'ai_daily_intelligence_hour' => 23,
         ]);
 
-        $currentHour = (int) date('G');
+        // Az ütemező a _bootstrap.php által beállított Europe/Budapest időben
+        // dönt — a teszt-folyamat alapértelmezett időzónája (pl. UTC) 23:00 és
+        // 24:00 között hamisan "nem 23 óra"-t mutatna.
+        $currentHour = (int) (new DateTimeImmutable('now', new DateTimeZone('Europe/Budapest')))->format('G');
         if ($currentHour >= 23) {
             $this->markTestSkipped('A teszt-futtatás órája már 23 vagy későbbi — ez a forgatókönyv itt nem reprodukálható.');
         }

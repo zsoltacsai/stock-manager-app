@@ -11,4 +11,9 @@ $filters = [
     'query'    => $_GET['query'] ?? '',
 ];
 
+// B-07: az elévült (a Számlázz.hu-hívás körül megszakadt) foglalások a
+// lista megnyitásakor bizonytalanná válnak ('uncertain_manual'), hogy az
+// admin lássa és feloldhassa őket — sose válnak magától újrapróbálhatóvá.
+$db->markStaleInvoiceClaimsUncertain();
+
 send_json(['invoices' => $db->listInvoices($filters)]);

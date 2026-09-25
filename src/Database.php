@@ -8,7 +8,7 @@ require_once __DIR__ . '/ClientHmac.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 33;
+    private const SCHEMA_VERSION = 34;
 
     private PDO $pdo;
     private string $driver;
@@ -222,6 +222,9 @@ class Database
             }
             if ($version < 33) {
                 $this->migrateV33StockTakeCountBaseline();
+            }
+            if ($version < 34) {
+                $this->migrateV34SaleLocationAndGiftCardRefund();
             }
         }
 
@@ -2024,6 +2027,29 @@ class Database
         ]);
     }
 
+    /**
+     * sales.location_id: melyik telephely készletéből történt az eladás —
+     * a visszáru (processReturn()) ugyanide állítja vissza a telephelyi
+     * készletet. NULL = nem telephelyhez kötött eladás (nincs telephely
+     * felvéve, webes rendelés, vagy e migráció előtti eladás) — ilyenkor a
+     * visszáru, az eladáshoz hasonlóan, csak az összesített készletet érinti.
+     *
+     * returns.gift_card_refund: a teljes visszárunál ajándékutalványra
+     * visszaírt összeg (reverseSaleBenefits()) — a total_refund továbbra is
+     * a fizetési módon visszaadott rész (kasszaegyenleg), a kettő összege a
+     * visszáru értékesítési értéke (lásd getDailySummary()).
+     */
+    private function migrateV34SaleLocationAndGiftCardRefund(): void
+    {
+        $isMysql = $this->driver === 'mysql';
+        $this->migrateColumns('sales', [
+            'location_id' => $isMysql ? 'INT UNSIGNED NULL' : 'INTEGER',
+        ]);
+        $this->migrateColumns('returns', [
+            'gift_card_refund' => $isMysql ? 'DECIMAL(12,2) NOT NULL DEFAULT 0' : 'REAL NOT NULL DEFAULT 0',
+        ]);
+    }
+
     // ---------------------------------------------------------------
     // Kliens/szerver architektúra (Fázis 2) — regisztrált kliens gépek
     // ---------------------------------------------------------------
@@ -2891,7 +2917,16 @@ class Database
         ];
     }
 
-    public function importUpsertProduct(array $p): array
+    /**
+     * B-11: egy WooCommerce-hez kötött, szinkronizált termék import általi
+     * név-/ár-/készletváltozása a WooCommerce felé is eljut — ugyanúgy, mint
+     * a kézi termékszerkesztés (product-save.php: név/ár push) és minden
+     * más készletmozgás (queue). A push a meglévő wc_push_queue-n megy,
+     * 'import' triggerrel: a worker ilyen sornál a (push pillanatában friss)
+     * nevet és árat is kiküldi, nem csak a készletet. $importBatchId a
+     * queue operation_key-ének része (egy importfuttatás = egy push/termék).
+     */
+    public function importUpsertProduct(array $p, ?int $importBatchId = null): array
     {
         $existing = !empty($p['barcode']) ? $this->findProductByBarcode($p['barcode']) : null;
 
@@ -2933,7 +2968,31 @@ class Database
             ':id'   => $id,
         ]);
 
-        return ['action' => $existing ? 'updated' : 'inserted', 'id' => $id];
+        $wcPushQueued = false;
+        if ($existing && !empty($existing['wc_product_id']) && !empty($existing['sync_to_woocommerce'])) {
+            $changed = (int) $existing['stock_qty'] !== (int) $p['stock_qty']
+                || (string) $existing['name'] !== (string) $p['name']
+                || abs((float) $existing['price'] - (float) $p['price']) > 0.0001;
+            if ($changed) {
+                $wcPushQueued = $this->enqueueWcPush($id, (int) $existing['wc_product_id'], 'import', $importBatchId ?? random_int(1, 2147483647)) !== null;
+            }
+        }
+
+        return ['action' => $existing ? 'updated' : 'inserted', 'id' => $id, 'wc_push_queued' => $wcPushQueued];
+    }
+
+    /**
+     * B-11: van-e még ki nem ért (nem 'done') import-push a termékre — amíg
+     * van, a helyi név/ár az irányadó, a WooCommerce-pull nem írhatja
+     * vissza (lásd upsertProductFromWc()). Egy végleg sikertelen push is
+     * véd, amíg az admin újra nem próbálja: a helyi módosítás így sosem
+     * vész el csendben.
+     */
+    public function hasPendingWcFieldPush(int $productId): bool
+    {
+        $stmt = $this->pdo->prepare("SELECT 1 FROM wc_push_queue WHERE product_id = ? AND trigger_type = 'import' AND status != 'done' LIMIT 1");
+        $stmt->execute([$productId]);
+        return $stmt->fetchColumn() !== false;
     }
 
     public function incrementStock(int $productId, int $qty): void
@@ -2994,6 +3053,16 @@ class Database
         }
 
         $now = date('c');
+
+        // B-11: egy még ki nem küldött import-módosítás (név/ár) helyben az
+        // irányadó — a pull nem írja vissza a régi WooCommerce-értékkel
+        // (különben a push a visszaírt régit küldené ki, és az import
+        // csendben elveszne). A push után a két oldal ismét egyezik.
+        if ($existing && $this->hasPendingWcFieldPush((int) $existing['id'])) {
+            $p['name'] = $existing['name'];
+            $p['price'] = $existing['price'];
+            $this->logSync('pull', (int) $existing['id'], "'{$existing['name']}': függő import-push miatt a név/ár a helyi értéken marad.");
+        }
 
         if ($existing) {
             // SZÁNDÉKOSAN nem írjuk felül a stock_qty-t egy már ismert,
@@ -3134,7 +3203,8 @@ class Database
         ?int $staffId = null,
         ?string $idempotencyKey = null,
         ?string $idempotencyFingerprint = null,
-        ?int $cashRegisterId = null
+        ?int $cashRegisterId = null,
+        ?int $locationId = null
     ): int {
         // A token a nyugta bejelentkezés nélküli (QR-kódos) megtekintéséhez
         // kell — kitalálhatatlan, ellentétben magával a sorszámozott
@@ -3150,16 +3220,17 @@ class Database
             // pillanatában (nem egy korábbi, külön SELECT eredményeként
             // átadva) — ez zárja ki a fenti docblokkban leírt versenyt.
             $stmt = $this->pdo->prepare('
-                INSERT INTO sales (total, payment_method, buyer_name, customer_id, loyalty_points_earned, loyalty_points_redeemed, coupon_id, coupon_discount, gift_card_redeemed, staff_id, status, receipt_token, idempotency_key, idempotency_fingerprint, cash_session_id, created_at)
+                INSERT INTO sales (total, payment_method, buyer_name, customer_id, loyalty_points_earned, loyalty_points_redeemed, coupon_id, coupon_discount, gift_card_redeemed, staff_id, status, receipt_token, idempotency_key, idempotency_fingerprint, cash_session_id, location_id, created_at)
                 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (
                     SELECT id FROM cash_sessions WHERE cash_register_id = ? AND status = \'open\' LIMIT 1
-                ), ?
+                ), ?, ?
             ');
             $stmt->execute([
                 $total, $paymentMethod, $buyerName, $customerId, $loyaltyPointsEarned, $loyaltyPointsRedeemed,
                 $couponId, $couponDiscount, $giftCardRedeemed, $staffId, 'completed', $receiptToken,
                 $idempotencyKeyValue, $idempotencyFingerprintValue,
                 $cashRegisterId,
+                $locationId,
                 $now,
             ]);
         } else {
@@ -3169,13 +3240,14 @@ class Database
             // visszafelé kompatibilis azoknál a boltoknál, amik nem
             // használják a kasszakezelést).
             $stmt = $this->pdo->prepare('
-                INSERT INTO sales (total, payment_method, buyer_name, customer_id, loyalty_points_earned, loyalty_points_redeemed, coupon_id, coupon_discount, gift_card_redeemed, staff_id, status, receipt_token, idempotency_key, idempotency_fingerprint, cash_session_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                INSERT INTO sales (total, payment_method, buyer_name, customer_id, loyalty_points_earned, loyalty_points_redeemed, coupon_id, coupon_discount, gift_card_redeemed, staff_id, status, receipt_token, idempotency_key, idempotency_fingerprint, cash_session_id, location_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
             ');
             $stmt->execute([
                 $total, $paymentMethod, $buyerName, $customerId, $loyaltyPointsEarned, $loyaltyPointsRedeemed,
                 $couponId, $couponDiscount, $giftCardRedeemed, $staffId, 'completed', $receiptToken,
                 $idempotencyKeyValue, $idempotencyFingerprintValue,
+                $locationId,
                 $now,
             ]);
         }
@@ -3219,14 +3291,22 @@ class Database
      * rendelés számlázása duplán elküldve) közül csak EGYIK hívhassa
      * ténylegesen a Számlázz.hu-t.
      *
-     * Az "elévült" ág (invoice_claim_at régebbi, mint $staleAfterSeconds)
-     * önjavító helyreállítás: ha egy korábbi kérés a Számlázz.hu-hívás
-     * KÖZBEN megszakadt (PHP-folyamat leállt, időtúllépés a válaszban),
-     * a foglalás enélkül örökre "beragadva" maradna, és a számlázás
-     * SOSE lenne újra próbálható erre az eladásra. $staleAfterSeconds a
-     * SzamlazzClient HTTP időkorlátjánál (30s) bőven nagyobb legyen, hogy
-     * egy ténylegesen még folyamatban lévő, csak lassú hívást ne
-     * előzhessen meg egy türelmetlen újrapróbálkozás.
+     * Állapotgép (B-07) — a sales sor mezőiből:
+     *   - még nem indult:        szamlazz_invoice_number NULL, invoice_claim_at NULL,
+     *                            status 'completed' vagy 'invoice_failed';
+     *   - folyamatban:           invoice_claim_at kitöltve (friss) — a
+     *                            "Kimenő számlák" tükör-sor 'processing';
+     *   - kész, rögzítve:        szamlazz_invoice_number kitöltve;
+     *   - biztonságosan újra-
+     *     próbálható hiba:       status 'invoice_failed' (a Számlázz.hu
+     *                            megválaszolta és elutasította), claim NULL;
+     *   - bizonytalan:           status 'invoice_uncertain' — elveszett
+     *                            HTTP-válasz, VAGY elévült foglalás (a
+     *                            folyamat a hívás körül meghalt). Csak admin
+     *                            oldhatja fel (resolveUncertainSzamlazzInvoice()).
+     * Egy elévült foglalás (invoice_claim_at régebbi, mint $staleAfterSeconds)
+     * SOSE foglalható újra automatikusan — markStaleInvoiceClaimsUncertain()
+     * bizonytalanná teszi, mert a számla a Számlázz.hu-n létrejöhetett.
      *
      * FONTOS, DOKUMENTÁLT KORLÁT (P1-5 ÓTA RÉSZLEGESEN KEZELVE): ez a
      * foglalás csak azt garantálja, hogy a HELYI adatbázisban csak egy
@@ -3246,19 +3326,90 @@ class Database
      * második számlát" immár garantált, a korábbi "elévült foglalás utáni
      * automatikus újrapróbálkozás" kockázat helyett.
      */
-    public function tryClaimInvoiceIssuance(int $saleId, int $staleAfterSeconds = 90): bool
+    public function tryClaimInvoiceIssuance(int $saleId, int $staleAfterSeconds = self::INVOICE_CLAIM_STALE_SECONDS): bool
     {
-        $staleBefore = date('Y-m-d H:i:s', time() - $staleAfterSeconds);
+        // B-07: KIZÁRÓLAG egy "még nem indult" (invoice_claim_at IS NULL)
+        // állapotból lehet foglalni. A korábbi "elévült foglalás újra
+        // lefoglalható" ág megszűnt: egy elévült foglalás azt jelenti, hogy
+        // a foglaló folyamat a Számlázz.hu-hívás KÖZBEN vagy UTÁN, de az
+        // eredmény rögzítése ELŐTT halt meg — a számla LÉTREJÖHETETT. Ez
+        // nem újrapróbálható, hanem bizonytalan kimenetel (lásd lent).
         $stmt = $this->pdo->prepare("
             UPDATE sales
             SET invoice_claim_at = :now
             WHERE id = :id
               AND szamlazz_invoice_number IS NULL
               AND status != 'invoice_uncertain'
-              AND (invoice_claim_at IS NULL OR invoice_claim_at < :staleBefore)
+              AND invoice_claim_at IS NULL
         ");
-        $stmt->execute([':now' => date('Y-m-d H:i:s'), ':id' => $saleId, ':staleBefore' => $staleBefore]);
-        return $stmt->rowCount() > 0;
+        $stmt->execute([':now' => date('Y-m-d H:i:s'), ':id' => $saleId]);
+        if ($stmt->rowCount() > 0) {
+            return true;
+        }
+        $this->markStaleInvoiceClaimsUncertain($staleAfterSeconds, $saleId);
+        return false;
+    }
+
+    /**
+     * B-07 — egy foglalás (invoice_claim_at) ennyi másodperc után biztosan
+     * nem egy még élő kérésé: a SzamlazzClient HTTP-időkorlátja (30 s)
+     * háromszorosa. Innentől a kimenetel ISMERETLEN.
+     */
+    public const INVOICE_CLAIM_STALE_SECONDS = 90;
+
+    /**
+     * B-07 — az elévült (a folyamat a külső hívás körül meghalt) Számlázz.hu-
+     * foglalásokat 'invoice_uncertain' állapotba teszi, és a "Kimenő
+     * számlák" tükör-sort 'uncertain_manual'-ra állítja — ugyanaz a
+     * terminális, KIZÁRÓLAG admin által feloldható állapot, mint egy
+     * elveszett HTTP-válasz után (markSaleInvoiceUncertain()). A
+     * következő biztonságos lépés így mindig egyértelmű: az admin a
+     * Számlázz.hu felületén ellenőrzi, létrejött-e a számla, és
+     * resolveUncertainSzamlazzInvoice()-szal rögzíti a talált számlaszámot,
+     * vagy megerősíti, hogy nem készült (csak ekkor lesz újra kiállítható).
+     * Soronként atomikus, feltételes UPDATE — egy közben mégis befejeződő
+     * (számlaszámot író) kérést nem ír felül.
+     *
+     * @return int ennyi eladás került bizonytalan állapotba
+     */
+    public function markStaleInvoiceClaimsUncertain(int $staleAfterSeconds = self::INVOICE_CLAIM_STALE_SECONDS, ?int $saleId = null): int
+    {
+        $staleBefore = date('Y-m-d H:i:s', time() - $staleAfterSeconds);
+        $sql = "SELECT id FROM sales WHERE szamlazz_invoice_number IS NULL AND status != 'invoice_uncertain'
+                AND invoice_claim_at IS NOT NULL AND invoice_claim_at < ?";
+        $params = [$staleBefore];
+        if ($saleId !== null) {
+            $sql .= ' AND id = ?';
+            $params[] = $saleId;
+        }
+        $candidates = $this->pdo->prepare($sql);
+        $candidates->execute($params);
+
+        $converted = 0;
+        foreach ($candidates->fetchAll(PDO::FETCH_COLUMN) as $id) {
+            $update = $this->pdo->prepare("
+                UPDATE sales SET status = 'invoice_uncertain', invoice_claim_at = NULL
+                WHERE id = ? AND szamlazz_invoice_number IS NULL AND status != 'invoice_uncertain'
+                  AND invoice_claim_at IS NOT NULL AND invoice_claim_at < ?
+            ");
+            $update->execute([(int) $id, $staleBefore]);
+            if ($update->rowCount() === 0) {
+                continue;
+            }
+            $converted++;
+            $error = 'A számlázási kísérlet megszakadt a Számlázz.hu-hívás körül (a folyamat leállt, mielőtt az eredményt rögzíthette volna) — a számla létrejöhetett. Ellenőrizd a Számlázz.hu felületén, mielőtt újra kiállítanád.';
+            $mirror = $this->pdo->prepare("
+                UPDATE invoices SET status = 'uncertain_manual', last_error = ?, updated_at = ?
+                WHERE sale_id = ? AND provider = 'szamlazz' AND invoice_type = 'normal' AND status != 'done'
+            ");
+            $mirror->execute([$error, date('Y-m-d H:i:s'), (int) $id]);
+            if ($mirror->rowCount() === 0) {
+                // Nincs még tükör-sor (pl. egy e javítás előtt indult
+                // kísérlet) — az admin nézetben enélkül nem látszana.
+                $this->upsertInvoiceMirror((int) $id, 'szamlazz', false, null, null, $error, 0.0, 0.0, 0.0, 'HUF', 'uncertain_manual');
+            }
+        }
+        return $converted;
     }
 
     /**
@@ -4230,6 +4381,51 @@ class Database
     // ---------------------------------------------------------------
 
     /**
+     * B-06 — az ajándékutalvány FIZETÉSI ESZKÖZ, nem kedvezmény. A
+     * sales.total a fizetési módon (payment_method) ténylegesen befizetett
+     * összeg (erre épül a kasszaegyenleg — computeExpectedCash() — és a
+     * visszatérítés aránya, lásd api/return-create.php), a
+     * gift_card_redeemed pedig az utalvánnyal fedezett rész. Az eladás
+     * gazdasági (értékesítési) értéke a KETTŐ ÖSSZEGE: ezt használja
+     * minden forgalmi riport (napi zárás, értékesítési riport, trend, órás
+     * bontás, Dashboard, AI-metrikák), így a fizetési mód nem torzítja a
+     * forgalmat és az ÁFA-alapot. Az utalvány KIBOCSÁTÁSA a rendszerben
+     * nem eladás (nem keletkezik sales-sor) — az értékesítés és az ÁFA a
+     * beváltáskor jelenik meg. Hogy ez az adott utalványtípusra jogilag
+     * helyes-e (egycélú/többcélú utalvány), könyvelői döntés; lásd
+     * README "Ajándékutalvány és forgalom".
+     */
+    public const GIFT_CARD_PAYMENT_LABEL = 'Ajándékutalvány';
+
+    public static function saleGrossValue(array $sale): float
+    {
+        return round((float) $sale['total'] + (float) ($sale['gift_card_redeemed'] ?? 0), 2);
+    }
+
+    /** A visszáru értékesítési értéke: fizetési módon visszaadott + utalványra visszaírt rész. */
+    public static function returnGrossValue(array $return): float
+    {
+        return round((float) $return['total_refund'] + (float) ($return['gift_card_refund'] ?? 0), 2);
+    }
+
+    /**
+     * Fizetési mód szerinti bontás egy eladásra/visszárura (előjeles
+     * $sign-nal) — a fizetési módon mozgott pénz a saját módjánál, az
+     * utalványos rész a GIFT_CARD_PAYMENT_LABEL soron. A sorok összege így
+     * mindig a (vissza)eladás teljes értéke.
+     */
+    private static function addToPaymentBreakdown(array &$byPayment, string $method, float $paid, float $giftCard, int $sign, bool $countIt): void
+    {
+        $byPayment[$method]['count'] = ($byPayment[$method]['count'] ?? 0) + ($countIt ? 1 : 0);
+        $byPayment[$method]['total'] = ($byPayment[$method]['total'] ?? 0) + $sign * $paid;
+        if ($giftCard > 0) {
+            $label = self::GIFT_CARD_PAYMENT_LABEL;
+            $byPayment[$label]['count'] = ($byPayment[$label]['count'] ?? 0) + ($countIt ? 1 : 0);
+            $byPayment[$label]['total'] = ($byPayment[$label]['total'] ?? 0) + $sign * $giftCard;
+        }
+    }
+
+    /**
      * Összegzi egy adott nap (ÉÉÉÉ-HH-NN, a created_at dátumrésze alapján)
      * összes eladását: végösszegek, fizetési mód szerinti bontás, ÁFA-kulcs
      * szerinti bontás — minden, amire a "Napi zárás" oldalnak és egy
@@ -4266,11 +4462,11 @@ class Database
         foreach ($sales as &$sale) {
             $sale['items'] = $itemsBySale[$sale['id']] ?? [];
 
-            $totalGross += $sale['total'];
+            $saleValue = self::saleGrossValue($sale);
+            $totalGross += $saleValue;
 
             $method = $sale['payment_method'] ?: 'Készpénz';
-            $byPayment[$method]['count'] = ($byPayment[$method]['count'] ?? 0) + 1;
-            $byPayment[$method]['total'] = ($byPayment[$method]['total'] ?? 0) + $sale['total'];
+            self::addToPaymentBreakdown($byPayment, $method, (float) $sale['total'], (float) $sale['gift_card_redeemed'], 1, true);
 
             // A sale_items.unit_price a kedvezmény ELŐTTI (tétel-szintű) árat
             // tartalmazza — ha az eladáson bármilyen rendelés-szintű
@@ -4284,7 +4480,7 @@ class Database
             foreach ($sale['items'] as $item) {
                 $saleSubtotal += (float) $item['unit_price'] * (int) $item['qty'];
             }
-            $discountRatio = $saleSubtotal > 0 ? min(1, (float) $sale['total'] / $saleSubtotal) : 1.0;
+            $discountRatio = $saleSubtotal > 0 ? min(1, $saleValue / $saleSubtotal) : 1.0;
 
             foreach ($sale['items'] as $item) {
                 $vatRate = (string) $item['vat_rate'];
@@ -4343,13 +4539,12 @@ class Database
             }
 
             foreach ($returns as $ret) {
-                $refund = (float) $ret['total_refund'];
+                $refund = self::returnGrossValue($ret);
                 $totalGross -= $refund;
                 $totalReturnsGross += $refund;
 
                 $method = $ret['payment_method'] ?: 'Készpénz';
-                $byPayment[$method]['count'] = $byPayment[$method]['count'] ?? 0;
-                $byPayment[$method]['total'] = ($byPayment[$method]['total'] ?? 0) - $refund;
+                self::addToPaymentBreakdown($byPayment, $method, (float) $ret['total_refund'], (float) $ret['gift_card_refund'], -1, false);
 
                 $retItems = $returnItemsByReturn[$ret['id']] ?? [];
                 $rawRefund = 0.0;
@@ -4831,6 +5026,56 @@ class Database
                 return null;
             }
             throw $e;
+        }
+    }
+
+    /**
+     * B-08 — a még 'draft' (be nem erősített, el nem utasított) webes
+     * rendelések által az adott termékből lefoglalt mennyiség. A
+     * WooCommerce a rendelés leadásakor AZONNAL csökkenti a saját
+     * készletét, a helyi stock_qty viszont csak a megerősítéskor
+     * (webshop-order-confirm.php) — addig ezek a darabok a webshop
+     * szemszögéből már elkeltek. A WooCommerce felé küldött készlet
+     * (WcPushQueueWorker) ezért stock_qty − ez az érték: egy közbeni
+     * POS-eladás utáni push így nem "adja vissza" a webshopnak a már
+     * webes rendeléshez tartozó darabokat (oversell). Megerősítéskor a
+     * helyi készlet csökken ÉS a draft kiesik ebből az összegből — a
+     * kiküldött érték változatlan, nincs dupla levonás; elutasításkor a
+     * foglalás felszabadul. Nincs új állapot: a draft státusz maga a
+     * foglalás.
+     */
+    public function getPendingWebOrderQty(int $productId): int
+    {
+        $stmt = $this->pdo->query("SELECT items_json FROM webshop_orders WHERE status = 'draft'");
+        $pending = 0;
+        foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $itemsJson) {
+            foreach (json_decode((string) $itemsJson, true) ?: [] as $item) {
+                if ((int) ($item['product_id'] ?? 0) === $productId && (int) ($item['qty'] ?? 0) > 0) {
+                    $pending += (int) $item['qty'];
+                }
+            }
+        }
+        return $pending;
+    }
+
+    /**
+     * Egy webes rendelés (draft) párosított, WooCommerce-hez kötött
+     * tételeinek készlet-pushát ütemezi — a hívó tranzakciójában
+     * (enqueueWcPush() idempotens az operation_key-en).
+     */
+    public function enqueueWcPushForWebOrderItems(array $items, string $triggerType, int $triggerId): void
+    {
+        $seen = [];
+        foreach ($items as $item) {
+            $productId = (int) ($item['product_id'] ?? 0);
+            if ($productId <= 0 || isset($seen[$productId])) {
+                continue;
+            }
+            $seen[$productId] = true;
+            $product = $this->findProductById($productId);
+            if ($product && !empty($product['wc_product_id']) && !empty($product['sync_to_woocommerce'])) {
+                $this->enqueueWcPush($productId, (int) $product['wc_product_id'], $triggerType, $triggerId);
+            }
         }
     }
 
@@ -5689,6 +5934,19 @@ class Database
             }
             $returnId = (int) $this->pdo->lastInsertId();
 
+            // B-05: az eladás telephelyi készlet-csökkentésének (sale.php
+            // decrementLocationStock()) pontos inverze — ugyanarra a
+            // telephelyre, ahonnan az eladás történt. Az eladás saját,
+            // perzisztált location_id-ja az egyetlen forrás (nem a hívó
+            // $sale tömbje, és nem a pénztárgép telephelye): NULL esetén
+            // (telephely nélküli, webes vagy a V34 előtti eladás) az eladás
+            // sem csökkentett telephelyi készletet — a visszáru ilyenkor
+            // sem talál ki telephelyet, csak az összesítettet állítja.
+            $locStmt = $this->pdo->prepare('SELECT location_id FROM sales WHERE id = ?');
+            $locStmt->execute([$saleId]);
+            $saleLocationId = $locStmt->fetchColumn();
+            $saleLocationId = $saleLocationId !== false && $saleLocationId !== null ? (int) $saleLocationId : null;
+
             foreach ($items as $item) {
                 $this->pdo->prepare('
                     INSERT INTO return_items (return_id, sale_item_id, product_id, name, qty, unit_price, created_at)
@@ -5700,11 +5958,23 @@ class Database
 
                 if (!empty($item['product_id'])) {
                     $this->incrementStock((int) $item['product_id'], (int) $item['qty']);
+                    if ($saleLocationId !== null) {
+                        $this->adjustLocationStock((int) $item['product_id'], $saleLocationId, (int) $item['qty']);
+                    }
+                    // A visszavett készlet a webshopba is jusson el — ugyanaz
+                    // a tranzakción belüli beütemezés, mint eladásnál/
+                    // beszerzésnél (enqueueWcPush() idempotens).
+                    $wcStmt = $this->pdo->prepare('SELECT wc_product_id, sync_to_woocommerce FROM products WHERE id = ?');
+                    $wcStmt->execute([(int) $item['product_id']]);
+                    $wc = $wcStmt->fetch(PDO::FETCH_ASSOC);
+                    if ($wc && !empty($wc['wc_product_id']) && !empty($wc['sync_to_woocommerce'])) {
+                        $this->enqueueWcPush((int) $item['product_id'], (int) $wc['wc_product_id'], 'return', $returnId);
+                    }
                 }
             }
 
             if ($sale && $this->isSaleNowFullyReturned($saleId, $sale)) {
-                $this->reverseSaleBenefits($saleId, $sale);
+                $this->reverseSaleBenefits($saleId, $sale, $returnId);
             }
 
             $this->commit();
@@ -5730,7 +6000,7 @@ class Database
      * A teljesen visszavett eladáshoz tartozó kedvezmények/jóváírások
      * visszapörgetése — hívja: processReturn(), csak teljes visszárunál.
      */
-    private function reverseSaleBenefits(int $saleId, array $sale): void
+    private function reverseSaleBenefits(int $saleId, array $sale, ?int $returnId = null): void
     {
         if (!empty($sale['customer_id'])) {
             $customerId = (int) $sale['customer_id'];
@@ -5770,6 +6040,14 @@ class Database
                     ->execute([$amount, (int) $giftCardId]);
                 $this->pdo->prepare('INSERT INTO gift_card_transactions (gift_card_id, sale_id, amount_delta, note, created_at) VALUES (?, ?, ?, ?, ?)')
                     ->execute([(int) $giftCardId, $saleId, $amount, "Visszatérítve teljes visszáru miatt (eladás #$saleId)", date('Y-m-d H:i:s')]);
+                // B-06: a visszáru értékesítési értéke = total_refund (fizetési
+                // módon visszaadott) + ez az utalványra visszaírt rész — a
+                // riportok ebből vonják le a teljes (utalvánnyal fizetett)
+                // eladási értéket, lásd getDailySummary().
+                if ($returnId !== null) {
+                    $this->pdo->prepare('UPDATE returns SET gift_card_refund = ? WHERE id = ?')
+                        ->execute([$amount, $returnId]);
+                }
             }
         }
     }
@@ -6394,7 +6672,7 @@ class Database
         $since = date('Y-m-d', strtotime("-" . ($days - 1) . " days"));
 
         $stmt = $this->pdo->prepare("
-            SELECT $dateExpr AS day, SUM(total) AS total, COUNT(*) AS cnt
+            SELECT $dateExpr AS day, SUM(total + gift_card_redeemed) AS total, COUNT(*) AS cnt
             FROM sales
             WHERE $dateExpr >= ?
             GROUP BY $dateExpr
@@ -6409,7 +6687,7 @@ class Database
         // getDailySummary() is teszi — enélkül a trend minden olyan napon
         // túlbecsülné a forgalmat, amikor visszáru történt.
         $returnsStmt = $this->pdo->prepare("
-            SELECT $dateExpr AS day, SUM(total_refund) AS total
+            SELECT $dateExpr AS day, SUM(total_refund + gift_card_refund) AS total
             FROM returns
             WHERE $dateExpr >= ?
             GROUP BY $dateExpr
@@ -7381,6 +7659,17 @@ class Database
                 VALUES (?, ?, ?, ?, ?, ?)
             ')->execute([$productId, $fromLocationId, $toLocationId, $qty, $staffId, date('Y-m-d H:i:s')]);
 
+            if (!$fromLocationId) {
+                // Az "Új készlet" az összesített készletet is növeli — a
+                // WooCommerce is lássa (a telephelyek közötti mozgatás nem
+                // változtat az összesítetten, ott nincs mit kiküldeni).
+                $transferId = (int) $this->pdo->lastInsertId();
+                $product = $this->findProductById($productId);
+                if ($product && !empty($product['wc_product_id']) && !empty($product['sync_to_woocommerce'])) {
+                    $this->enqueueWcPush($productId, (int) $product['wc_product_id'], 'transfer', $transferId);
+                }
+            }
+
             $this->commit();
         } catch (Throwable $e) {
             $this->rollBack();
@@ -7488,7 +7777,7 @@ class Database
     public function getCustomerStats(int $customerId): array
     {
         $stmt = $this->pdo->prepare('
-            SELECT COUNT(*) AS purchase_count, AVG(total) AS avg_purchase,
+            SELECT COUNT(*) AS purchase_count, AVG(total + gift_card_redeemed) AS avg_purchase,
                    MIN(created_at) AS first_purchase_at, MAX(created_at) AS last_purchase_at
             FROM sales
             WHERE customer_id = ?
@@ -7578,19 +7867,19 @@ class Database
         foreach ($sales as $sale) {
             $day = substr($sale['created_at'], 0, 10);
             $byDay[$day] ??= ['date' => $day, 'gross' => 0.0, 'net' => 0.0, 'count' => 0];
-            $byDay[$day]['gross'] += (float) $sale['total'];
+            $saleValue = self::saleGrossValue($sale);
+            $byDay[$day]['gross'] += $saleValue;
             $byDay[$day]['count']++;
 
             $method = $sale['payment_method'] ?: 'Készpénz';
-            $byPayment[$method]['count'] = ($byPayment[$method]['count'] ?? 0) + 1;
-            $byPayment[$method]['total'] = ($byPayment[$method]['total'] ?? 0) + (float) $sale['total'];
+            self::addToPaymentBreakdown($byPayment, $method, (float) $sale['total'], (float) $sale['gift_card_redeemed'], 1, true);
 
             $items = $itemsBySale[$sale['id']] ?? [];
             $saleSubtotal = 0.0;
             foreach ($items as $item) {
                 $saleSubtotal += (float) $item['unit_price'] * (int) $item['qty'];
             }
-            $discountRatio = $saleSubtotal > 0 ? min(1, (float) $sale['total'] / $saleSubtotal) : 1.0;
+            $discountRatio = $saleSubtotal > 0 ? min(1, $saleValue / $saleSubtotal) : 1.0;
 
             $saleNet = 0.0;
             foreach ($items as $item) {
@@ -7601,9 +7890,9 @@ class Database
                 $saleNet += $lineNet;
             }
             $totalNet += $saleNet;
-            $totalVat += ((float) $sale['total'] - $saleNet);
+            $totalVat += ($saleValue - $saleNet);
             $byDay[$day]['net'] += $saleNet;
-            $totalGross += (float) $sale['total'];
+            $totalGross += $saleValue;
         }
 
         // Visszáruk — saját napjuk szerint, ugyanaz a levonás-elv, mint
@@ -7642,15 +7931,14 @@ class Database
 
             foreach ($returns as $ret) {
                 $day = substr($ret['created_at'], 0, 10);
-                $refund = (float) $ret['total_refund'];
+                $refund = self::returnGrossValue($ret);
                 $totalGross -= $refund;
                 $totalReturnsGross += $refund;
                 $byDay[$day] ??= ['date' => $day, 'gross' => 0.0, 'net' => 0.0, 'count' => 0];
                 $byDay[$day]['gross'] -= $refund;
 
                 $method = $ret['payment_method'] ?: 'Készpénz';
-                $byPayment[$method]['count'] = $byPayment[$method]['count'] ?? 0;
-                $byPayment[$method]['total'] = ($byPayment[$method]['total'] ?? 0) - $refund;
+                self::addToPaymentBreakdown($byPayment, $method, (float) $ret['total_refund'], (float) $ret['gift_card_refund'], -1, false);
 
                 $retItems = $returnItemsByReturn[$ret['id']] ?? [];
                 $rawRefund = 0.0;
@@ -8634,7 +8922,7 @@ class Database
         $hourExpr = $this->driver === 'mysql' ? 'HOUR(created_at)' : "CAST(substr(created_at, 12, 2) AS INTEGER)";
 
         $stmt = $this->pdo->prepare("
-            SELECT $hourExpr AS hour, COUNT(*) AS cnt, SUM(total) AS total
+            SELECT $hourExpr AS hour, COUNT(*) AS cnt, SUM(total + gift_card_redeemed) AS total
             FROM sales
             WHERE $dateExpr BETWEEN ? AND ?
             GROUP BY $hourExpr

@@ -58,8 +58,21 @@ class WcPushQueueWorker
             try {
                 // A push PILLANATÁBAN érvényes, friss készletet olvassuk —
                 // NEM a beütemezéskori pillanatképet — lásd
-                // migrateV24WcPushQueue() docblockja.
-                $this->client->updateStock((int) $row['wc_product_id'], (int) $product['stock_qty']);
+                // migrateV24WcPushQueue() docblockja. B-08: a még
+                // megerősítetlen webes rendelések darabjait a WooCommerce
+                // már levonta — ezeket nem adjuk vissza neki (lásd
+                // Database::getPendingWebOrderQty()).
+                $pushQty = (int) $product['stock_qty'] - $this->db->getPendingWebOrderQty((int) $row['product_id']);
+                if ($row['trigger_type'] === 'import') {
+                    // B-11: az import név/ár-változása is — ugyanazok a
+                    // mezők, mint a kézi szerkesztés push-ánál (product-save.php),
+                    // a push pillanatában friss helyi értékkel (retry-biztos).
+                    $this->client->pushProduct((int) $row['wc_product_id'], [
+                        'name'  => $product['name'],
+                        'price' => $product['price'],
+                    ]);
+                }
+                $this->client->updateStock((int) $row['wc_product_id'], $pushQty);
                 $this->db->touchWcSyncedAt((int) $row['product_id']);
                 $this->db->logSync('push', (int) $row['product_id'], "Stock pushed via queue (#{$row['id']}, {$row['trigger_type']}:{$row['trigger_id']})");
                 $this->db->markWcPushDone((int) $row['id']);

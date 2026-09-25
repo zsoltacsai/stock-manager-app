@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS sales (
     idempotency_fingerprint  TEXT,                  -- a kérés üzletileg releváns mezőinek sha256-hash-e — ugyanaz a kulcs, de eltérő ujjlenyomat esetén 409 Conflict, lásd sale.php build_sale_fingerprint()
     invoice_claim_at         TEXT,                  -- atomikus "számla kiállítása folyamatban" foglalás időbélyege — lásd Database::tryClaimInvoiceIssuance()
     cash_session_id          INTEGER REFERENCES cash_sessions(id), -- melyik nyitott kasszaműszakhoz tartozik — lásd Database::openCashSession()
+    location_id              INTEGER REFERENCES locations(id), -- melyik telephely készletéből történt az eladás (NULL: nem telephelyhez kötött) — lásd Database::processReturn()
     created_at               TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -323,6 +324,7 @@ CREATE TABLE IF NOT EXISTS returns (
     reason                 TEXT,
     credit_invoice_number  TEXT,
     cash_session_id        INTEGER REFERENCES cash_sessions(id), -- melyik (a visszatérítés PILLANATÁBAN nyitott) kasszaműszakhoz tartozik — NEM az eredeti eladáséhoz, lásd Database::computeExpectedCash()
+    gift_card_refund       REAL NOT NULL DEFAULT 0, -- az ajándékutalványra visszaírt összeg (a total_refund a fizetési módon visszaadott rész) — lásd Database::reverseSaleBenefits()
     created_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_returns_sale_id ON returns(sale_id);

@@ -1681,12 +1681,38 @@ lista soránál.
 **Kedvezmény sorrend fizetéskor**: kupon → hűségpontok →
 ajándékutalvány. Mindegyik szerver-oldalon újra ellenőrzésre kerül az
 eladás pillanatában — nem a kassza felületén már megjelenítettre
-hagyatkozva —, mivel itt cserél ténylegesen gazdát pénz. Ugyanaz az
-ismert korlát, mint a hűségpontoknál: ha ezek bármelyike kombinálódik
-egy ugyanabban az eladásban kért névre szóló számlával, a Számlázz.hu
-számla a teljes, kedvezmény előtti összegre kerül kiállításra (egy
-kedvezmény vegyes áfakulcsok közötti arányosítása nem tűnt megérni a
-bonyolultságot egy a gyakorlatban valószínűleg ritka kombinációhoz).
+hagyatkozva —, mivel itt cserél ténylegesen gazdát pénz. Egy névre szóló
+számla tételei a kedvezmények (kupon, hűségpont, hűségszint) UTÁNI
+értékre arányosodnak — az ajándékutalvány viszont NEM kedvezmény, lásd
+lent.
+
+### Ajándékutalvány és forgalom
+
+Az utalvány **fizetési eszköz**, nem kedvezmény (B-06 javítás). Egy
+eladás adatai:
+
+- `sales.total` — a kiválasztott fizetési módon ténylegesen befizetett
+  összeg (erre épül a kasszaegyenleg és a visszatérítés aránya);
+- `sales.gift_card_redeemed` — az utalvánnyal fedezett rész;
+- **az eladás értéke = a kettő összege** (`Database::saleGrossValue()`).
+
+A napi zárás, az értékesítési riport, a bevétel-trend, az órás bontás,
+a Dashboard és az AI-eszközök mind az eladás értékével számolnak (az ÁFA
+is erre jut), a fizetési mód szerinti bontásban pedig külön
+"Ajándékutalvány" sor jelenik meg. Egy teljes egészében utalvánnyal
+fizetett eladás tehát nem 0 Ft forgalom, és a számlája sem 0 Ft-os
+tételsorokat kap (korábban a számla a befizetett összeggel arányosított,
+ezért lett 0) — a számla az eladás értékén készül, fizetési módként az
+utalvánnyal (NAV: `VOUCHER`). A teljes visszárunál az utalványra
+visszaírt összeg a visszáru-soron (`returns.gift_card_refund`) is
+rögzül, így a riportok a visszárut is teljes értékkel vonják le.
+
+**Nyitott jogi kérdés**: az utalvány *kibocsátása* a rendszerben nem
+eladás (nem keletkezik sales-sor, nincs ÁFA), a forgalom és az ÁFA a
+*beváltáskor* jelenik meg. Ez a többcélú utalványok kezelésének felel
+meg; ha a bolt utalványai egycélúnak minősülnek (ÁFA a kibocsátáskor),
+azt a rendszer jelenleg nem kezeli — ennek eldöntése könyvelői/adójogi
+kérdés, a kód nem foglal állást benne.
 
 ## Ártörténet
 
@@ -1782,6 +1808,16 @@ méretben történő újramintázás a WooCommerce oldalon számottevően továb
 tarthat, mint egy sima mezőfrissítés.
 
 ## Beérkező eladások (webshop-rendelések jóváhagyással)
+
+**Foglalás (B-08)**: a WooCommerce a rendeléskor azonnal levonja a saját
+készletét, a helyi készlet viszont csak a leadáskor csökken. Amíg egy
+rendelés piszkozat, a darabjai foglaltak: a WooCommerce felé kiküldött
+készlet = helyi készlet − a piszkozat-rendelések mennyisége
+(`Database::getPendingWebOrderQty()`). Így egy közbeni kasszai eladás
+utáni push nem "adja vissza" a webshopnak a már webes rendeléshez
+tartozó darabokat (túladás). Leadáskor a helyi készlet csökken és a
+foglalás megszűnik (a kiküldött érték nem változik, nincs dupla
+levonás); elutasításkor a foglalás felszabadul.
 
 A WooCommerce webhookja (Woo → Beállítások → Speciális → Webhookok, "Rendelés
 frissítve" esemény) mostantól **nem csökkenti azonnal a helyi készletet** —
@@ -2151,6 +2187,17 @@ változatlanul használ — a telephelyenkénti bontás egy kiegészítő réteg
   összesített mennyiség mellett (nem helyette).
 - A telephelyek közti mozgatás nem érinti az összesített mennyiséget,
   csak a megoszlást.
+- **Visszáru** (B-05): az eladás rögzíti, melyik telephelyről történt
+  (`sales.location_id`), és a visszáru UGYANODA állítja vissza a
+  telephelyi készletet. Telephely nélküli eladásnál (nincs telephely
+  felvéve, webes rendelés, vagy a javítás előtti eladás) a visszáru sem
+  talál ki telephelyet — csak az összesített készlet változik.
+- **Telephely nélküli mozgások**: a beszerzés, a leltár és az import
+  modelljében nincs telephely (nincs `purchases.location_id`, a Leltár
+  oldal kifejezetten csak az összesítettet kezeli, az import-profilokban
+  nincs telephely-oszlop) — ezek csak az összesített készletet
+  változtatják, a különbség "telephelyhez nem rendelt" készletként marad,
+  a rendszer nem osztja szét mesterségesen.
 
 ## Ügyféllista (bővített vásárlói profil)
 
@@ -2300,6 +2347,35 @@ Alkalmazva minden ár-írási útvonalon:
   mélység: ha a WC véletlenül negatív árat adna vissza, a HELYI (régi,
   érvényes) ár marad meg, nem íródik felül egy nyilvánvalóan hibás
   értékkel.
+
+### Import — számformátumok (B-10)
+
+A számmezők (ár, készlet, ÁFA%) értelmezése determinisztikus
+(`ProductRowNormalizer::parseNumberStrict()`): egész számok, egyértelmű
+tizedesek (`1234,56`, `1234.5`, `0,125`), vegyes elválasztó (`1.234,56`,
+`1,234.56` — a hátsó a tizedesjel), többszörös ezres-csoportosítás
+(`12.345.678`, `1,234,567`, `1 234 567`), exponens (`1.5E+3`) és
+pénznem-jel (`1 200 Ft`) elfogadott. **Elutasított** (a sor a meglévő
+soronkénti szabály szerint kimarad, okkal): táblázat-hibaértékek
+(`#N/A`, `#VALUE!` …), szöveg, hibás csoportosítás, és a kétértelmű
+`1.234` / `1,234` — ez a forrás locale-jától függően 1234 vagy 1,234 is
+lehet, ezért csak akkor értelmezhető, ha a profil rögzíti a tizedesjelet
+(`'decimal_separator' => ','` vagy `'.'`; a jelenlegi profilok ezt nem
+teszik). Az XLSX/XLS NUMERIKUS cellák gépi értéke egyértelmű kanonikus
+alakban kerül a köztes CSV-be, így ott a `12.345` 12,345 marad. Üres
+cella továbbra is 0; a készlet csak egész lehet (törtmennyiség
+elutasítva, nem kerekítve).
+
+### Import és WooCommerce (B-11)
+
+Egy WooCommerce-hez kötött, szinkronizált termék import általi
+készlet-/név-/ár-változása a WooCommerce-push queue-ba kerül ('import'
+trigger) — a worker a push pillanatában friss nevet, árat és készletet
+küld ki. Amíg ez a push nem ért célba, az automatikus pull nem írja
+vissza a nevet/árat a régi WooCommerce-értékkel. A forrás-szabályok a
+meglévő kódból: készlet — a helyi az irányadó (a pull sosem írja
+felül); név/ár — az utolsó módosítás nyer (a WooCommerce-ben végzett
+módosítást a pull áthozza, a helyi szerkesztés/import kimegy).
 
 ### Import — soronkénti hibakezelés + JutaSoft regressziós fixture
 

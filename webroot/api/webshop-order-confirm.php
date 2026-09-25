@@ -88,6 +88,11 @@ try {
             $db->decrementStock($item['product_id'], $item['qty']);
         }
     }
+    // B-08: a draft megszűnt (claimDraftWebshopOrder()), a helyi készlet
+    // csökkent — a push (stock_qty − függő webes rendelések) értéke így
+    // változatlan, nincs dupla levonás; a beütemezés csak garantálja, hogy
+    // a WooCommerce a megerősített állapotot is lássa.
+    $db->enqueueWcPushForWebOrderItems($lineItems, 'sale', $saleId);
     $db->setWebshopOrderSale($id, $saleId, $paymentMethod);
     $db->commit();
 } catch (Throwable $e) {

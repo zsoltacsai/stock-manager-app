@@ -59,6 +59,10 @@ $rejected = [];
 // soronkénti hibakezelés" szakasza az indoklásért (a jelenlegi import-
 // szerződés soha nem volt "minden-vagy-semmi" a rossz ADATTARTALOM miatt,
 // csak VALÓDI kivétel — pl. DB-hiba — esetén marad az).
+// B-11: egy importfuttatás azonosítója a WooCommerce-push queue-hoz (lásd
+// Database::importUpsertProduct()) — a linkelt termékek változása egyszer,
+// idempotensen kerül beütemezésre, UGYANEBBEN a tranzakcióban.
+$importBatchId = random_int(1, 2147483647);
 $db->beginTransaction();
 try {
     foreach ($parsed['rows'] as $i => $row) {
@@ -75,7 +79,7 @@ try {
             continue;
         }
 
-        $result = $db->importUpsertProduct($normalized);
+        $result = $db->importUpsertProduct($normalized, $importBatchId);
         if ($result['action'] === 'inserted') {
             $inserted++;
         } else {

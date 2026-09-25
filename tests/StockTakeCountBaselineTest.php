@@ -362,7 +362,7 @@ final class StockTakeCountBaselineTest extends TestCase
         $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $path]], dirname(__DIR__));
         $cols = array_column($db->pdo()->query('PRAGMA table_info(stock_take_items)')->fetchAll(PDO::FETCH_ASSOC), 'type', 'name');
         $this->assertSame('INTEGER', $cols['system_qty_at_count'] ?? null);
-        $this->assertSame(33, (int) $db->pdo()->query('SELECT version FROM schema_version')->fetchColumn());
+        $this->assertSame((new ReflectionClassConstant(Database::class, 'SCHEMA_VERSION'))->getValue(), (int) $db->pdo()->query('SELECT version FROM schema_version')->fetchColumn());
 
         $row = $this->itemRow($db, $takeId, $productId);
         $this->assertSame(8, (int) $row['counted_qty'], 'A meglévő számlálás megmarad.');

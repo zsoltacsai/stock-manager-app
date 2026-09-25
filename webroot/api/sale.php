@@ -270,7 +270,10 @@ try {
             Auth::currentStaffId(),
             $idempotencyKey,
             $idempotencyFingerprint,
-            $cashRegisterId
+            $cashRegisterId,
+            // Ugyanaz a telephely, amelyről lentebb a telephelyi készlet
+            // csökken — a visszáru ide állítja vissza (processReturn()).
+            $locationId
         );
         foreach ($lineItems as $item) {
             $db->insertSaleItem($saleId, $item);
@@ -363,7 +366,18 @@ if ($buyer !== null) {
     // kupon/hűségpont/hűségszint/ajándékutalvány miatt a vevő ténylegesen
     // kevesebbet fizetett (lásd sales.total). Ugyanaz az arányosítási minta,
     // mint getDailySummary()-ban és api/return-create.php-ban.
-    $invoiceDiscountRatio = $subtotal > 0 ? min(1, $total / $subtotal) : 1.0;
+    //
+    // B-06: az arányosítás alapja az eladás ÉRTÉKE (befizetett összeg +
+    // ajándékutalvánnyal fedezett rész), nem csak a befizetett összeg — az
+    // utalvány fizetési eszköz, nem kedvezmény. Korábban egy teljesen
+    // utalvánnyal fizetett eladás számlája 0 Ft-os tételsorokat kapott
+    // (ratio = 0 / subtotal), miközben a napi zárás és a riportok már az
+    // eladás értékével számolnak (Database::saleGrossValue()). Így a számla,
+    // a napi zárás és az ÁFA-bontás ugyanazt az értéket mutatja. Az
+    // utalványok ÁFA-jogi besorolása (egycélú/többcélú) könyvelői kérdés —
+    // lásd README "Ajándékutalvány és forgalom".
+    $saleValue = round($total + $giftCardRedeemed, 2);
+    $invoiceDiscountRatio = $subtotal > 0 ? min(1, $saleValue / $subtotal) : 1.0;
 
     $invoiceItems = array_map(fn($i) => [
         'name'             => $i['name'],
@@ -378,8 +392,13 @@ if ($buyer !== null) {
         $lineGross = $ii['unit_price_gross'] * $ii['qty'];
         $invoiceNetTotal += is_numeric($ii['vat_rate']) ? round($lineGross / (1 + $vatPct), 2) : $lineGross;
     }
-    $invoiceGrossTotal = round($total, 2);
+    $invoiceGrossTotal = $saleValue;
     $invoiceVatTotal = round($invoiceGrossTotal - $invoiceNetTotal, 2);
+    // A teljes egészében utalvánnyal kiegyenlített eladásnál a kasszán
+    // kiválasztott fizetési mód (pl. Készpénz) nem igaz — a számlára az
+    // utalvány kerül fizetési módként (NAV: VOUCHER, lásd
+    // NavInvoiceXmlBuilder::mapPaymentMethod()).
+    $invoicePaymentMethod = ($total <= 0 && $giftCardRedeemed > 0) ? Database::GIFT_CARD_PAYMENT_LABEL : $paymentMethod;
 
     $languageOverride = $input['invoice_language'] ?? null;
 
@@ -400,7 +419,7 @@ if ($buyer !== null) {
             'buyer'          => $buyer,
             'items'          => $invoiceItems,
             'language'       => $languageOverride,
-            'payment_method' => $paymentMethod,
+            'payment_method' => $invoicePaymentMethod,
             'totals'         => [
                 'net' => $invoiceNetTotal, 'vat' => $invoiceVatTotal, 'gross' => $invoiceGrossTotal,
                 'currency' => $config['szamlazz']['currency'] ?? 'HUF',
@@ -543,7 +562,11 @@ function build_idempotent_replay_response(Database $db, array $sale, string $inv
             ? ['success' => true, 'invoice_number' => $sale['szamlazz_invoice_number'], 'pdf_path' => $sale['szamlazz_pdf_path'] ?? null, 'error' => null]
             : (($sale['status'] ?? '') === 'invoice_failed'
                 ? ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => 'A számla kiállítása korábban sikertelen volt — nézd meg az eladást a listában, és próbáld újra onnan.']
-                : null);
+                : (($sale['status'] ?? '') === 'invoice_uncertain'
+                    // B-07: bizonytalan kimenetel — a visszajátszás sem
+                    // indít új kísérletet, csak jelzi az admin-teendőt.
+                    ? ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => 'A számlázási kísérlet kimenetele bizonytalan — admin ellenőrzése szükséges a Kimenő számlák oldalon.', 'uncertain' => true]
+                    : null));
     }
 
     return [

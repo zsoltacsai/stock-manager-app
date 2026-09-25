@@ -19,8 +19,20 @@ if ($order['status'] !== 'draft') {
 }
 
 // Atomikus feltételes frissítés — lásd Database::claimDraftWebshopOrder.
-if (!$db->claimAndRejectDraftWebshopOrder($id)) {
-    send_json(['error' => 'Ezt a rendelést időközben már feldolgozták.'], 409);
+// B-08: az elutasítás felszabadítja a draft foglalását — a push ettől
+// kezdve a teljes helyi készletet adja vissza a webshopnak. Az állapotváltás
+// és a push beütemezése egy tranzakcióban.
+$db->beginTransaction();
+try {
+    if (!$db->claimAndRejectDraftWebshopOrder($id)) {
+        $db->rollBack();
+        send_json(['error' => 'Ezt a rendelést időközben már feldolgozták.'], 409);
+    }
+    $db->enqueueWcPushForWebOrderItems($order['items'], 'web_reject', $id);
+    $db->commit();
+} catch (Throwable $e) {
+    $db->rollBack();
+    send_generic_error_response($e, 'webshop-order-reject.php elutasítás sikertelen');
 }
 $db->logSync('webhook', null, "Beérkező rendelés #{$order['wc_order_id']} elutasítva");
 

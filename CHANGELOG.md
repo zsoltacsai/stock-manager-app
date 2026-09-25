@@ -179,6 +179,39 @@ ellenőrzése, ha rendelkezésre áll. Lásd README "Fázis 11" alszakasz.
   SQL-felvevő tesztek és a kanonikus sémával való statikus összevetés
   ellenőrzi, élő MySQL-futtatás nem történt.
 
+### Fixed — correctness audit (B-05…B-11)
+
+- **B-05** — az eladás rögzíti a telephelyét (`sales.location_id`, séma
+  v34), a visszáru ugyanoda állítja vissza a telephelyi készletet; a
+  visszáru és az "Új készlet" mozgatás WooCommerce-pusht is ütemez.
+  Telephely nélküli (és a javítás előtti) eladásnál nincs találgatás.
+  Beszerzés/leltár/import modellje nem hordoz telephelyet — változatlanul
+  csak az összesítettet érintik.
+- **B-06** — az ajándékutalvány fizetési eszköz: az eladás értéke =
+  befizetett összeg + utalványos rész; napi zárás, riportok, trend, órás
+  bontás, Dashboard és AI-eszközök ezzel számolnak, külön
+  "Ajándékutalvány" fizetési sorral. A számla nem 0 Ft-os többé
+  utalványos eladásnál. A visszáru az utalványra visszaírt részt is
+  rögzíti (`returns.gift_card_refund`). Az utalványok ÁFA-jogi besorolása
+  nyitott, könyvelői kérdés (README).
+- **B-07** — egy elévült Számlázz.hu-foglalás (a folyamat a hívás körül
+  meghalt) nem foglalható újra automatikusan: bizonytalanná válik
+  ('invoice_uncertain' / 'uncertain_manual'), csak admin oldhatja fel. A
+  külső hívás előtt tartós "folyamatban" tükör-sor készül.
+- **B-08** — a WooCommerce felé küldött készlet levonja a piszkozat
+  webes rendelések mennyiségét (foglalás); a webhook, a leadás és az
+  elutasítás is ütemez pusht.
+- **B-09** — NAV XML: AAM/TAM tétel `vatExemption` (case+reason) elemmel,
+  nem 0%-os adóköteles kulccsal; ismeretlen ÁFA-kód végleges hiba, NAV-
+  hívás nélkül. Élő NAV-környezetben nem ellenőrizve.
+- **B-10** — az import számparsere determinisztikus: `#N/A`, szöveg,
+  hibás csoportosítás és a kétértelmű `1.234`/`1,234` soronkénti
+  elutasítás (nem csendes 0 / csonkítás); exponens és ezres-
+  csoportosítás helyesen; törtkészlet elutasítva.
+- **B-11** — a linkelt termék import általi készlet-/név-/ár-változása a
+  WooCommerce-push queue-ba kerül, és a pull nem írja vissza, amíg ki
+  nem ment.
+
 ### Tests
 
 - Fázis 10: `AiRetryPolicyTest` (9 teszt), `AiAuditLoggerTest` (5 teszt),

@@ -162,6 +162,7 @@ CREATE TABLE IF NOT EXISTS sales (
     idempotency_fingerprint  VARCHAR(64) NULL,
     invoice_claim_at         DATETIME NULL,
     cash_session_id          INT UNSIGNED NULL, -- melyik nyitott kasszaműszakhoz tartozik; FK a cash_sessions táblára a fájl végén (az később van definiálva)
+    location_id              INT UNSIGNED NULL, -- melyik telephely készletéből történt az eladás, lásd schema.sql
     created_at               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     -- The daily zárás report filters by date on every load — this index is
     -- the difference between a table scan and an index range seek once
@@ -340,6 +341,7 @@ CREATE TABLE IF NOT EXISTS returns (
     reason                 VARCHAR(255) NULL,
     credit_invoice_number  VARCHAR(64) NULL,
     cash_session_id        INT UNSIGNED NULL, -- melyik (a visszatérítés PILLANATÁBAN nyitott) kasszaműszakhoz tartozik; FK a fájl végén, lásd sales.cash_session_id
+    gift_card_refund       DECIMAL(12,2) NOT NULL DEFAULT 0, -- lásd schema.sql
     created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_returns_sale_id (sale_id),
     KEY idx_returns_created_at (created_at),

@@ -100,19 +100,34 @@ if (!$items) {
 
 $total = array_sum(array_map(fn($i) => $i['qty'] * $i['unit_price'], $items));
 
-$draftId = $db->insertWebshopOrderDraft([
-    'wc_order_id'    => $wcOrderId,
-    'order_number'   => (string) ($order['number'] ?? $wcOrderId),
-    'wc_status'      => $status,
-    'customer_name'  => $buyerName,
-    'customer_email' => $billing['email'] ?? '',
-    'billing'        => $buyer,
-    'payment_method' => (string) ($order['payment_method_title'] ?? $order['payment_method'] ?? ''),
-    'currency'       => (string) ($order['currency'] ?? 'HUF'),
-    'total'          => round($total, 2),
-    'items'          => $items,
-    'customer_note'  => (string) ($order['customer_note'] ?? ''),
-]);
+// B-08: a draft (a helyi foglalás) és a WooCommerce-push beütemezése EGY
+// tranzakcióban — a WooCommerce a rendeléskor már levonta a darabokat, a
+// push (stock_qty − függő webes rendelések) egy közben lefutott, a draftot
+// még nem ismerő korábbi pusht korrigál. Duplikált webhooknál (UNIQUE
+// wc_order_id) se draft, se push nem keletkezik.
+$db->beginTransaction();
+try {
+    $draftId = $db->insertWebshopOrderDraft([
+        'wc_order_id'    => $wcOrderId,
+        'order_number'   => (string) ($order['number'] ?? $wcOrderId),
+        'wc_status'      => $status,
+        'customer_name'  => $buyerName,
+        'customer_email' => $billing['email'] ?? '',
+        'billing'        => $buyer,
+        'payment_method' => (string) ($order['payment_method_title'] ?? $order['payment_method'] ?? ''),
+        'currency'       => (string) ($order['currency'] ?? 'HUF'),
+        'total'          => round($total, 2),
+        'items'          => $items,
+        'customer_note'  => (string) ($order['customer_note'] ?? ''),
+    ]);
+    if ($draftId !== null) {
+        $db->enqueueWcPushForWebOrderItems($items, 'web_order', $draftId);
+    }
+    $db->commit();
+} catch (Throwable $e) {
+    $db->rollBack();
+    throw $e; // 5xx — a WooCommerce újraküldi a webhookot
+}
 
 if ($draftId === null) {
     send_json(['ok' => true, 'ignored' => true, 'reason' => 'already imported', 'order_id' => $wcOrderId]);

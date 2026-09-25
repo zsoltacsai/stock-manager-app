@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/SpreadsheetNumber.php';
+
 class XlsReader
 {
     public static function readRows(string $path): array
@@ -388,7 +390,8 @@ class Biff8Parser
         if ($n === floor($n) && abs($n) < 1e15) {
             return (string) (int) $n;
         }
-        return rtrim(rtrim(sprintf('%.10F', $n), '0'), '.');
+        // B-10: egyértelmű kanonikus alak (lásd SpreadsheetNumber).
+        return SpreadsheetNumber::canonical(rtrim(rtrim(sprintf('%.10F', $n), '0'), '.'));
     }
 }
 

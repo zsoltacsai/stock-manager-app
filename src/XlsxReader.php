@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/SpreadsheetNumber.php';
+
 class XlsxReader
 {
     // Egy .xlsx belső XML-részének max. kicsomagolt mérete — egy néhány KB-os,
@@ -133,6 +135,9 @@ class XlsxReader
                     if ($type === 's') {
                         $idx = (int) $raw;
                         $value = $sharedStrings[$idx] ?? '';
+                    } elseif ($type === '' || $type === 'n') {
+                        // Numerikus cella — gépi formátum, lásd SpreadsheetNumber (B-10).
+                        $value = SpreadsheetNumber::canonical($raw);
                     } else {
                         $value = $raw;
                     }

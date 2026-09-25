@@ -95,7 +95,8 @@ function renderPreview(data) {
         <div class="stat-box ${s.blank_barcode > 0 ? 'warn' : ''}"><div class="value">${s.blank_barcode}</div><div class="label">Vonalkód nélkül</div></div>
         <div class="stat-box ${s.duplicate_barcodes > 0 ? 'warn' : ''}"><div class="value">${s.duplicate_barcodes}</div><div class="label">Duplikált vonalkód a fájlban</div></div>
         <div class="stat-box ${s.missing_name > 0 ? 'danger' : ''}"><div class="value">${s.missing_name}</div><div class="label">Hiányzó megnevezés</div></div>
-        ${s.skipped_no_identifier ? `<div class="stat-box warn"><div class="value">${s.skipped_no_identifier}</div><div class="label">Azonosító nélküli (pl. összesítő sor)</div></div>` : ''}
+        ${s.invalid_price ? `<div class="stat-box danger"><div class="value">${s.invalid_price}</div><div class="label">Hibás szám/ár — nem kerül importálásra</div></div>` : ''}
+        ${s.skipped_no_identifier ?`<div class="stat-box warn"><div class="value">${s.skipped_no_identifier}</div><div class="label">Azonosító nélküli (pl. összesítő sor)</div></div>` : ''}
     `;
 
     let warnings = '';

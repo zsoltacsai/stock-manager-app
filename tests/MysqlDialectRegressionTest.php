@@ -62,6 +62,7 @@ final class MysqlDialectRegressionTest extends TestCase
     {
         $body = substr($createTableSql, strpos($createTableSql, '(') + 1);
         $body = substr($body, 0, strrpos($body, ')'));
+        $body = (string) preg_replace('/--[^\n]*/', '', $body); // sor végi kommentek (a vessző UTÁN is állhatnak)
         $columns = [];
         foreach (preg_split('/,\s*\n/', $body) as $line) {
             $line = trim(preg_replace('/--.*$/m', '', $line));
@@ -178,6 +179,40 @@ final class MysqlDialectRegressionTest extends TestCase
         $this->assertSame('INT NULL', self::canonicalMysqlColumns('stock_take_items')['system_qty_at_count']);
     }
 
+    public function testV34MysqlMigrationMatchesCanonicalSchema(): void
+    {
+        $db = $this->mysqlDatabase($pdo);
+        $this->invokePrivate($db, 'migrateV34SaleLocationAndGiftCardRefund');
+
+        $this->assertSame([
+            'ALTER TABLE sales ADD COLUMN location_id INT UNSIGNED NULL',
+            'ALTER TABLE returns ADD COLUMN gift_card_refund DECIMAL(12,2) NOT NULL DEFAULT 0',
+        ], array_map([self::class, 'normalize'], $pdo->log));
+        $this->assertSame(self::typeSignature('INT UNSIGNED NULL'), self::typeSignature(self::canonicalMysqlColumns('sales')['location_id']));
+        $this->assertSame(self::typeSignature('DECIMAL(12,2) NOT NULL DEFAULT 0'), self::typeSignature(self::canonicalMysqlColumns('returns')['gift_card_refund']));
+    }
+
+    public function testB05ToB11MysqlPathsEmitNoSqliteOnlySyntax(): void
+    {
+        $db = $this->mysqlDatabase($pdo);
+        $db->markStaleInvoiceClaimsUncertain();
+        $db->tryClaimInvoiceIssuance(1);
+        $db->getPendingWebOrderQty(1);
+        $db->hasPendingWcFieldPush(1);
+        $db->getSalesReportSummary('2026-09-01', '2026-09-30');
+        $db->getDailySummary('2026-09-25');
+        $db->getDailyRevenueTrend(7);
+        $db->getSalesByHourReport('2026-09-01', '2026-09-30');
+        $db->getCustomerStats(1);
+        $db->insertSale(100.0, 'Készpénz', null, null, 0, 0, null, 0.0, 0.0, null, null, null, 3, 4);
+
+        $this->assertNotEmpty($pdo->log);
+        $this->assertNoSqliteOnlySyntax($pdo->log);
+        $normalized = implode("\n", array_map([self::class, 'normalize'], $pdo->log));
+        $this->assertStringContainsString('SUM(total + gift_card_redeemed)', $normalized);
+        $this->assertStringContainsString('cash_session_id, location_id, created_at', $normalized);
+    }
+
     // ------------------------------------------------------------------
     // B-02 — SQLite: friss telepítés, frissítés, újrafuttatás
     // ------------------------------------------------------------------
@@ -198,7 +233,7 @@ final class MysqlDialectRegressionTest extends TestCase
 
         $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $path]], dirname(__DIR__));
         $pdo = $db->pdo();
-        $this->assertSame(33, (int) $pdo->query('SELECT version FROM schema_version')->fetchColumn());
+        $this->assertSame((new ReflectionClassConstant(Database::class, 'SCHEMA_VERSION'))->getValue(), (int) $pdo->query('SELECT version FROM schema_version')->fetchColumn());
 
         $types = array_column($pdo->query('PRAGMA table_info(ai_action_proposals)')->fetchAll(PDO::FETCH_ASSOC), 'type', 'name');
         $this->assertSame('TEXT', $types['expires_at'], 'SQLite-on a típus változatlan.');

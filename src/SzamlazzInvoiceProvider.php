@@ -136,7 +136,7 @@ class SzamlazzInvoiceProvider implements InvoiceProviderInterface
         return $result;
     }
 
-    private function client(): SzamlazzClient
+    protected function client(): SzamlazzClient
     {
         return new SzamlazzClient($this->config);
     }
@@ -174,6 +174,17 @@ class SzamlazzInvoiceProvider implements InvoiceProviderInterface
         // Database::tryClaimInvoiceIssuance() docblockja. Ugyanaz a minta,
         // mint korábban közvetlenül a hívó végpontokban volt.
         if (!$db->tryClaimInvoiceIssuance($saleId)) {
+            // B-07: a sikertelen claim egy elévült (a folyamat a hívás körül
+            // meghalt) foglalást bizonytalanná tehetett — ezt a hívó a
+            // ténylegesen folyamatban lévő kéréstől eltérően jelezze.
+            $afterClaim = $db->getSaleWithItems($saleId);
+            if ($afterClaim !== null && ($afterClaim['status'] ?? '') === 'invoice_uncertain') {
+                return [
+                    'success' => false, 'invoice_number' => null, 'pdf_path' => null,
+                    'error' => 'A korábbi számlázási kísérlet megszakadt, a kimenetele bizonytalan — admin kézi ellenőrzése/feloldása szükséges, mielőtt új kísérlet indulhatna.',
+                    'uncertain' => true,
+                ];
+            }
             // 'already_in_progress' — opcionális, plusz jelző a szokásos
             // success/invoice_number/pdf_path/error mellett, KIFEJEZETTEN
             // azért, hogy egy hívó (lásd webshop-order-invoice.php) meg
@@ -184,7 +195,29 @@ class SzamlazzInvoiceProvider implements InvoiceProviderInterface
             return ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => 'A számla kiállítása már folyamatban van.', 'already_in_progress' => true];
         }
 
-        $szamlazz = new SzamlazzClient($this->config);
+        // B-07: a külső hívás ELŐTT tartósan rögzítjük, hogy a kísérlet
+        // folyamatban van ('processing' tükör-sor, payloaddal) — ha a
+        // folyamat a hívás közben/után meghal, az admin nézet ezt látja,
+        // és az elévült foglalás bizonytalanná válik
+        // (Database::markStaleInvoiceClaimsUncertain()), nem vakon
+        // újrapróbálhatóvá.
+        $totals = $context['totals'] ?? [];
+        try {
+            $db->upsertInvoiceMirror(
+                $saleId, 'szamlazz', false, null, null, null,
+                (float) ($totals['net'] ?? 0.0), (float) ($totals['vat'] ?? 0.0),
+                (float) ($totals['gross'] ?? 0.0), (string) ($totals['currency'] ?? 'HUF'),
+                'processing',
+                ['buyer' => $context['buyer'], 'items' => $context['items'], 'payment_method' => $context['payment_method'] ?? null]
+            );
+        } catch (Throwable $e) {
+            // A külső hívás MÉG NEM indult el — a foglalás biztonságosan
+            // felszabadítható, a kísérlet definitíven sikertelen.
+            $db->attachInvoiceToSale($saleId, null, null, 'invoice_failed');
+            return ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => 'A számlázási kísérlet nem indult el (helyi adatbázis-hiba) — újrapróbálható.'];
+        }
+
+        $szamlazz = $this->client();
         try {
             $result = $szamlazz->createInvoice(
                 $context['buyer'],

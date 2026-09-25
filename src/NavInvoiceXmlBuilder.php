@@ -119,8 +119,8 @@ class NavInvoiceXmlBuilder
         foreach ($items as $item) {
             $lineNumber++;
             $qty = (float) $item['qty'];
-            $vatRate = (string) $item['vat_rate'];
-            $vatPct = is_numeric($vatRate) ? ((float) $vatRate) / 100 : 0.0;
+            $vat = self::vatCategory((string) $item['vat_rate']);
+            $vatPct = $vat['type'] === 'percentage' ? $vat['rate'] : 0.0;
             $grossUnit = (float) $item['unit_price_gross'];
             $netUnit = round($grossUnit / (1 + $vatPct), 2);
             $netTotal = round($netUnit * $qty, 2);
@@ -152,7 +152,7 @@ class NavInvoiceXmlBuilder
             $xw->writeElement('lineNetAmountHUF', self::formatDecimal($netTotal));
             $xw->endElement();
             $xw->startElement('lineVatRate');
-            $xw->writeElement('vatPercentage', self::formatDecimal($vatPct, 4));
+            self::writeVatRateChoice($xw, $vat);
             $xw->endElement();
             $xw->startElement('lineVatData');
             $xw->writeElement('lineVatAmount', self::formatDecimal($vatTotal));
@@ -166,9 +166,12 @@ class NavInvoiceXmlBuilder
 
             $xw->endElement(); // line
 
-            $key = self::formatDecimal($vatPct, 4);
+            // Az összesítő csoportosítása a TELJES ÁFA-kategória szerint —
+            // egy 0%-os adóköteles és egy AAM/TAM adómentes tétel két külön
+            // summaryByVatRate blokk.
+            $key = $vat['type'] === 'percentage' ? 'pct:' . self::formatDecimal($vatPct, 4) : 'exemption:' . $vat['case'];
             if (!isset($netTotalsByVat[$key])) {
-                $netTotalsByVat[$key] = ['net' => 0.0, 'vat' => 0.0, 'gross' => 0.0];
+                $netTotalsByVat[$key] = ['vat_category' => $vat, 'net' => 0.0, 'vat' => 0.0, 'gross' => 0.0];
             }
             $netTotalsByVat[$key]['net'] += $netTotal;
             $netTotalsByVat[$key]['vat'] += $vatTotal;
@@ -180,10 +183,10 @@ class NavInvoiceXmlBuilder
 
         $xw->startElement('invoiceSummary');
         $xw->startElement('summaryNormal');
-        foreach ($netTotalsByVat as $vatPctKey => $sums) {
+        foreach ($netTotalsByVat as $sums) {
             $xw->startElement('summaryByVatRate');
             $xw->startElement('vatRate');
-            $xw->writeElement('vatPercentage', $vatPctKey);
+            self::writeVatRateChoice($xw, $sums['vat_category']);
             $xw->endElement();
             $xw->startElement('vatRateNetData');
             $xw->writeElement('vatRateNetAmount', self::formatDecimal($sums['net']));
@@ -401,6 +404,55 @@ class NavInvoiceXmlBuilder
     private static function coreTaxNumber(string $raw): string
     {
         return substr(preg_replace('/[^0-9]/', '', $raw), 0, 8);
+    }
+
+    /**
+     * B-09 — a Stock Manager ÁFA-kódjainak (products/sale_items.vat_rate:
+     * '27', '18', '5', '0', 'AAM', 'TAM' — lásd a termék-, beszerzés- és
+     * kassza-űrlapok, illetve a Beállítások választóit) EXPLICIT leképezése
+     * a NAV Online Számla v3 VatRateType választására (xs:choice):
+     *   - numerikus kulcs → <vatPercentage> (0 és 1 közötti arány, 4
+     *     tizedes) — változatlanul, a 0% is (adóköteles 0%-os kulcsként,
+     *     ahogy eddig);
+     *   - AAM / TAM → <vatExemption><case>…</case><reason>…</reason>
+     *     </vatExemption> (DetailedReasonType), NEM 0%-os adóköteles kulcs;
+     *   - minden más (ismeretlen/üres/érvénytelen kód) → kivétel: a hívó
+     *     (NavInvoiceProvider) ezt végleges, nem újrapróbálható hibaként
+     *     rögzíti, és SOSE küld csendben 0%-os számlát a NAV-nak.
+     * A reason szöveg a mentesség rövid magyar megnevezése. Élő NAV
+     * (teszt)környezetben ez a leképezés nem lett ellenőrizve.
+     */
+    private const VAT_EXEMPTION_REASONS = [
+        'AAM' => 'Alanyi adómentes',
+        'TAM' => 'Tárgyi adómentes',
+    ];
+
+    /**
+     * @return array{type:'percentage', rate:float}|array{type:'exemption', case:string, reason:string}
+     */
+    public static function vatCategory(string $vatRate): array
+    {
+        $code = strtoupper(trim($vatRate));
+        if (isset(self::VAT_EXEMPTION_REASONS[$code])) {
+            return ['type' => 'exemption', 'case' => $code, 'reason' => self::VAT_EXEMPTION_REASONS[$code]];
+        }
+        $trimmed = trim($vatRate);
+        if ($trimmed !== '' && is_numeric($trimmed) && (float) $trimmed >= 0 && (float) $trimmed <= 100) {
+            return ['type' => 'percentage', 'rate' => ((float) $trimmed) / 100];
+        }
+        throw new InvalidArgumentException("Ismeretlen vagy érvénytelen ÁFA-kód a NAV-számla tételén: '$vatRate' (támogatott: numerikus kulcs, AAM, TAM).");
+    }
+
+    private static function writeVatRateChoice(XMLWriter $xw, array $vat): void
+    {
+        if ($vat['type'] === 'exemption') {
+            $xw->startElement('vatExemption');
+            $xw->writeElement('case', $vat['case']);
+            $xw->writeElement('reason', $vat['reason']);
+            $xw->endElement();
+            return;
+        }
+        $xw->writeElement('vatPercentage', self::formatDecimal($vat['rate'], 4));
     }
 
     private static function formatDecimal(float $value, int $decimals = 2): string

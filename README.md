@@ -1100,6 +1100,35 @@ bármely dátumra:
   megváltoztatta a számokat) — ez egy könyvelési pillanatkép, nem
   valami, ami blokkolná a további eladásokat azon a dátumon.
 
+### ÁFA-bontás és számlaérték — egyetlen szabály
+
+Egy eladás bruttó/nettó/ÁFA értéke MINDENHOL ugyanaz: napi zárás,
+értékesítési riport, Dashboard, AI-metrikák, a kiállított számla
+(Számlázz.hu és NAV) és a Kimenő számlák tükör-összegei. A szabály egy
+helyen van definiálva és dokumentálva: `src/VatAllocation.php`
+(`Database::vatBreakdown()` erre delegál). Röviden:
+
+- az eladás értéke (kedvezmények után, az ajándékutalvánnyal fedezett
+  résszel együtt) fillérre pontosan oszlik szét a sorokra, a kedvezmény
+  előtti sorérték arányában; a maradék fillér determinisztikusan a
+  legnagyobb törtrészű (egyenlőségnél a korábbi) sorra kerül;
+- kerekítés csak sor-szinten: nettó = bruttó / (1 + kulcs), két
+  tizedesre; ÁFA = bruttó − nettó (AAM/TAM/0%: nettó = bruttó);
+- a számla ugyanezeket a sorértékeket kapja — a számla-XML nem számol
+  külön ÁFÁ-t.
+
+**Látható változás a számlán (N-5)**: ha egy sor allokált értéke nem
+osztható maradék nélkül a mennyiséggel (pl. 3 db, bruttó 10.00 Ft), a
+számlán a tétel legfeljebb három, azonos nevű sorra bomlik, amelyek
+egységára 1 fillérrel tér el (2 db × 3.33 + 1 db × 3.34 Ft) — így minden
+soron egységár × mennyiség = sorérték, és a számla összege fillérre
+egyezik az eladáséval. Korábban a számla egységárat kerekített: a
+3 × 10 Ft / 20 Ft kuponos eladás számlája 9.99 Ft (nettó 7.86) lett a
+riport 10.00 / 7.87 / 2.13 értéke helyett. A javítás előtt kiállított
+számlák tárolt tételei (és azok sztornója) változatlan módon
+renderelődnek. A Számlázz.hu XML helyessége helyi stubbal validált; a
+szolgáltatói elfogadás élő környezetben nincs igazolva.
+
 ## Nyugtanyomtató támogatás
 
 Két független mód a nyugta nyomtatására, a `receipt.html`-ről elérhetők

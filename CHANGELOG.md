@@ -284,6 +284,31 @@ ellenőrzése, ha rendelkezésre áll. Lásd README "Fázis 11" alszakasz.
 - Séma v35: `stock_transfers` és `returns` kapott `idempotency_key`
   (UNIQUE) és `idempotency_fingerprint` oszlopot (automatikus migráció).
 
+### Fixed — N-5: a számla összege egyezik az eladás értékével
+
+- **Gyökérok**: a riport a közös allokációs szabályt (`vatBreakdown()`,
+  B-13) használta, a számla viszont egységárat kerekített
+  (`round(ár × kedvezmény-arány, 2)`), majd a számla-XML egységnyi nettót
+  kerekítve szorzott. A 3 × 10 Ft / 20 Ft kuponos eladás: riport bruttó
+  10.00 / nettó 7.87 / ÁFA 2.13, számla 9.99 / 7.86. Kedvezmény nélkül is
+  eltérhetett a nettó (3 × 10 Ft: riport 23.62, számla 23.61).
+- **Javítás**: új `VatAllocation` — az EGYETLEN allokációs és kerekítési
+  szabály (a `Database::vatBreakdown()` erre delegál, a riportok
+  változatlanok). A számlatételek (`sale.php`, webshop-rendelés
+  leadása/számlázása) ugyanebből az allokációból készülnek; a
+  Számlázz.hu és a NAV XML-builder a tételértékeket változtatás nélkül
+  írja ki, ÁFÁ-t nem számol. Ha a sor nem osztható maradék nélkül a
+  mennyiséggel, a tétel legfeljebb három, 1 fillérnyi egységár-eltérésű
+  alsorra bomlik (egységár × mennyiség = sorérték). A tükör-összegek
+  (`invoices` net/vat/gross) is az allokációból. Az új számlák sztornója
+  az allokált sorértékeket fordítja vissza; a javítás előtti tárolt
+  tételek a korábbi módon renderelődnek. A B-09 ÁFA-mentességi leképezés,
+  az eladás-érték definíciója (B-06) és a módosító számla tételsora nem
+  változott.
+- Validáció: a generált Számlázz.hu és NAV XML parse-olva, helyi
+  Számlázz.hu stubbal end-to-end; élő Számlázz.hu / NAV elfogadás nincs
+  igazolva.
+
 ### Tests
 
 - Fázis 10: `AiRetryPolicyTest` (9 teszt), `AiAuditLoggerTest` (5 teszt),

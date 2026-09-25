@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/VatAllocation.php';
+
 /**
  * A NAV Online Számla v3 invoiceData.xsd szerinti "InvoiceData" XML
  * felépítése a Stock Manager saját eladás-adataiból (ugyanaz a
@@ -121,11 +123,14 @@ class NavInvoiceXmlBuilder
             $qty = (float) $item['qty'];
             $vat = self::vatCategory((string) $item['vat_rate']);
             $vatPct = $vat['type'] === 'percentage' ? $vat['rate'] : 0.0;
-            $grossUnit = (float) $item['unit_price_gross'];
-            $netUnit = round($grossUnit / (1 + $vatPct), 2);
-            $netTotal = round($netUnit * $qty, 2);
-            $grossTotal = round($grossUnit * $qty, 2);
-            $vatTotal = round($grossTotal - $netTotal, 2);
+            // N-5: a tételértékek a közös allokációból (VatAllocation) — a
+            // NAV-számla ugyanazt a sor-szintű szabályt követi, mint a riport
+            // és a Számlázz.hu-számla. Az ÁFA-kategória (B-09) változatlan.
+            $line = VatAllocation::renderLine($item);
+            $netUnit = $line['unit_net'];
+            $netTotal = $line['net'];
+            $grossTotal = $line['gross'];
+            $vatTotal = $line['vat'];
 
             $xw->startElement('line');
             $xw->writeElement('lineNumber', (string) $lineNumber);

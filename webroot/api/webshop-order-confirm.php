@@ -116,21 +116,13 @@ if ($issueInvoice) {
     if (!$hasRequiredFields) {
         $invoiceResult = ['success' => false, 'invoice_number' => null, 'pdf_path' => null, 'error' => 'A rendelés számlázási címe hiányos (név/irányítószám/település/cím szükséges), a számla nem állítható ki automatikusan.'];
     } else {
-        $invoiceItems = array_map(fn($i) => [
-            'name'             => $i['name'],
-            'qty'              => $i['qty'],
-            'unit_price_gross' => $i['unit_price'],
-            'vat_rate'         => $i['vat_rate'],
-        ], $lineItems);
-
-        $netTotal = 0.0;
-        foreach ($invoiceItems as $ii) {
-            $vatPct = is_numeric($ii['vat_rate']) ? ((float) $ii['vat_rate']) / 100 : 0.0;
-            $lineGross = (float) $ii['unit_price_gross'] * (float) $ii['qty'];
-            $netTotal += is_numeric($ii['vat_rate']) ? round($lineGross / (1 + $vatPct), 2) : $lineGross;
-        }
-        $grossTotal = round((float) $order['total'], 2);
-        $vatTotal = round($grossTotal - $netTotal, 2);
+        // N-5: ugyanaz a közös allokáció, mint sale.php-ban és a riportban
+        // (VatAllocation) — az eladás értéke a rendelés végösszege.
+        $invoiceItems = VatAllocation::invoiceItems(round((float) $order['total'], 2), $lineItems);
+        $invoiceTotals = VatAllocation::totals($invoiceItems);
+        $netTotal = $invoiceTotals['net'];
+        $vatTotal = $invoiceTotals['vat'];
+        $grossTotal = $invoiceTotals['gross'];
 
         // Korábban ez a végpont — a másik két számlázó hívóponttal
         // (sale.php, webshop-order-invoice.php) ellentétben — KÖZVETLENÜL

@@ -4,6 +4,7 @@ require_once __DIR__ . '/InvoiceProviderInterface.php';
 require_once __DIR__ . '/SzamlazzInvoiceProvider.php';
 require_once __DIR__ . '/NavInvoiceProvider.php';
 require_once __DIR__ . '/NavTokenCache.php';
+require_once __DIR__ . '/VatAllocation.php';
 
 /**
  * Egyetlen belépési pont a számlázáshoz — sale.php / webshop-order-invoice.php /
@@ -344,10 +345,11 @@ class InvoiceService
         $payload = json_decode((string) ($baseRow['payload_json'] ?? ''), true) ?: [];
         $baseItems = $payload['items'] ?? [];
 
-        $reversedItems = array_map(static function (array $item): array {
-            $item['qty'] = -abs((float) ($item['qty'] ?? 0));
-            return $item;
-        }, $baseItems);
+        // N-5: egy közös allokációval (VatAllocation) kiállított számla
+        // tételeinél a tárolt sorértékek is előjelet váltanak — a sztornó
+        // pontosan a kiállított összegeket fordítja vissza (régi, allokáció
+        // nélküli payloadnál csak a mennyiség, a korábbi módon).
+        $reversedItems = VatAllocation::negateItems($baseItems);
 
         return [
             'buyer' => $payload['buyer'] ?? [],

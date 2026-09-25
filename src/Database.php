@@ -5,6 +5,7 @@ require_once __DIR__ . '/InvoiceNumbering.php';
 require_once __DIR__ . '/PriceValidator.php';
 require_once __DIR__ . '/PurchaseDecisionService.php';
 require_once __DIR__ . '/ClientHmac.php';
+require_once __DIR__ . '/VatAllocation.php';
 
 class Database
 {
@@ -4527,74 +4528,19 @@ class Database
     }
 
     /**
-     * B-13 — AZ EGYETLEN ÁFA-számítási/kerekítési szabály minden olyan
-     * riporthoz, ami eladásokat/visszárukat összesít (napi zárás,
-     * értékesítési riport → Dashboard, AI SalesTools):
-     *   1. az eladás (visszáru) ÉRTÉKÉT (saleGrossValue()/returnGrossValue())
-     *      a sorokra a kedvezmény előtti sor-bruttó (unit_price × qty)
-     *      arányában osztjuk szét, FILLÉRRE pontosan: a legnagyobb maradék
-     *      módszerével a sorok bruttója pontosan az értéket adja ki;
-     *   2. soronként: nettó = round(sor bruttó / (1 + kulcs), 2); nem
-     *      numerikus kulcsnál (AAM/TAM) nettó = bruttó;
-     *   3. ÁFA = sor bruttó − sor nettó.
-     * Így minden szinten (sor, ÁFA-kulcs, eladás, nap, időszak) nettó + ÁFA
-     * = bruttó, és ugyanaz az eladás minden riportban ugyanazokkal a
-     * számokkal jelenik meg. Korábban a napi zárás soronként kerekített
-     * bruttóval (összegük eltérhetett az értéktől), a riport pedig
-     * "érték − nettó" ÁFÁ-val számolt — ugyanarra az eladásra eltérő ÁFA.
+     * B-13 / N-5 — az eladás (visszáru) értékének ÁFA-bontása. AZ EGYETLEN
+     * szabály a napi zárás, az értékesítési riport (→ Dashboard, AI) ÉS a
+     * kiállított számla számára — a teljes kerekítési/allokációs policy
+     * (sor-allokáció, sor-szintű kerekítés, maradék fillér, garanciák) a
+     * VatAllocation osztály docblockjában van leírva; itt nincs saját
+     * számítás.
      *
      * @param array<int, array{unit_price:mixed, qty:mixed, vat_rate:mixed}> $lines
      * @return array{lines: list<array{vat_rate:string, gross:float, net:float, vat:float}>, gross:float, net:float, vat:float}
      */
     public static function vatBreakdown(float $value, array $lines): array
     {
-        $valueCents = (int) round($value * 100);
-        $raw = [];
-        foreach (array_values($lines) as $i => $line) {
-            $raw[$i] = max(0.0, (float) $line['unit_price'] * (int) $line['qty']);
-        }
-        $rawTotal = array_sum($raw);
-        if ($raw === [] || $rawTotal <= 0) {
-            // Tétel (vagy pozitív tételérték) nélkül nincs mihez rendelni a
-            // kulcsot — ismeretlen kulcsú, ÁFA nélküli értékként jelenik meg.
-            $lines = [['vat_rate' => '', 'unit_price' => 1, 'qty' => 1]];
-            $raw = [1.0];
-            $rawTotal = 1.0;
-        }
-        $lines = array_values($lines);
-
-        $cents = [];
-        $remainders = [];
-        foreach ($raw as $i => $r) {
-            $exact = $r / $rawTotal * $valueCents;
-            $cents[$i] = (int) floor($exact);
-            $remainders[$i] = $exact - $cents[$i];
-        }
-        $left = $valueCents - array_sum($cents);
-        arsort($remainders, SORT_NUMERIC); // stabil: egyenlő maradéknál az előbbi sor
-        foreach (array_keys($remainders) as $i) {
-            if ($left <= 0) {
-                break;
-            }
-            $cents[$i]++;
-            $left--;
-        }
-
-        $result = ['lines' => [], 'gross' => 0.0, 'net' => 0.0, 'vat' => 0.0];
-        foreach ($lines as $i => $line) {
-            $rate = (string) ($line['vat_rate'] ?? '');
-            $gross = $cents[$i] / 100;
-            $net = is_numeric($rate) ? round($gross / (1 + ((float) $rate) / 100), 2) : $gross;
-            $vat = round($gross - $net, 2);
-            $result['lines'][] = ['vat_rate' => $rate, 'gross' => $gross, 'net' => $net, 'vat' => $vat];
-            $result['gross'] += $gross;
-            $result['net'] += $net;
-            $result['vat'] += $vat;
-        }
-        foreach (['gross', 'net', 'vat'] as $k) {
-            $result[$k] = round($result[$k], 2);
-        }
-        return $result;
+        return VatAllocation::breakdown($value, $lines);
     }
 
     private static function addToVatRateBreakdown(array &$byVatRate, array $breakdown, int $sign): void

@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/VatAllocation.php';
+
 class SzamlazzClient
 {
     private array $cfg;
@@ -216,26 +218,21 @@ class SzamlazzClient
 
         $xw->startElement('tetelek');
         foreach ($items as $item) {
-            $qty       = (float) $item['qty'];
-            $vatRate   = (string) $item['vat_rate'];
-            $vatPct    = is_numeric($vatRate) ? ((float) $vatRate) / 100 : 0.0;
-
-            $grossUnit = (float) $item['unit_price_gross'];
-            $netUnit   = is_numeric($vatRate) ? round($grossUnit / (1 + $vatPct), 2) : $grossUnit;
-
-            $netTotal   = round($netUnit * $qty, 2);
-            $grossTotal = round($grossUnit * $qty, 2);
-            $vatTotal   = round($grossTotal - $netTotal, 2);
+            // N-5: a tétel értékei a közös allokációból (VatAllocation) —
+            // itt nincs ÁFA-/nettó-számítás; lásd VatAllocation docblockja
+            // (allokált tétel: a riporttal azonos sorértékek; régi,
+            // allokáció nélküli payload: a korábbi egységár-alapú értékek).
+            $line = VatAllocation::renderLine($item);
 
             $xw->startElement('tetel');
             $xw->writeElement('megnevezes', $item['name']);
-            $xw->writeElement('mennyiseg', (string) $qty);
+            $xw->writeElement('mennyiseg', (string) $line['qty']);
             $xw->writeElement('mennyisegiEgyseg', $cfg['unit_label']);
-            $xw->writeElement('nettoEgysegar', (string) $netUnit);
-            $xw->writeElement('afakulcs', $vatRate);
-            $xw->writeElement('nettoErtek', (string) $netTotal);
-            $xw->writeElement('afaErtek', (string) $vatTotal);
-            $xw->writeElement('bruttoErtek', (string) $grossTotal);
+            $xw->writeElement('nettoEgysegar', (string) $line['unit_net']);
+            $xw->writeElement('afakulcs', (string) $item['vat_rate']);
+            $xw->writeElement('nettoErtek', (string) $line['net']);
+            $xw->writeElement('afaErtek', (string) $line['vat']);
+            $xw->writeElement('bruttoErtek', (string) $line['gross']);
             $xw->endElement();
         }
         $xw->endElement();

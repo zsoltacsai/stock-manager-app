@@ -361,11 +361,16 @@ $invoiceResult = null;
 
 if ($buyer !== null) {
     // A lineItems[]['unit_price'] a kedvezmény ELŐTTI (kosár-összeállításkori)
-    // egységárat tartalmazza — enélkül az arányosítás nélkül a számla
-    // felé mindig a teljes, kedvezmény nélküli összeg menne ki, akkor is, ha
-    // kupon/hűségpont/hűségszint/ajándékutalvány miatt a vevő ténylegesen
-    // kevesebbet fizetett (lásd sales.total). Ugyanaz az arányosítási minta,
-    // mint getDailySummary()-ban és api/return-create.php-ban.
+    // egységárat tartalmazza — a számla az eladás ÉRTÉKÉT osztja szét rajtuk
+    // (kupon/hűségpont/hűségszint arányosan terheli a sorokat).
+    //
+    // N-5: a szétosztás, a kerekítés és az ÁFA-bontás a KÖZÖS szabállyal
+    // történik (VatAllocation::invoiceItems() — ugyanaz a breakdown, amit a
+    // napi zárás és az értékesítési riport a tárolt sale_items-ből számol),
+    // így a számla nettó/ÁFA/bruttó értéke fillérre egyezik a riportéval.
+    // Korábban itt egységárat kerekítettünk (round(ár × arány, 2)), és a
+    // számla-XML abból szorzott: 3 × 10 Ft + 20 Ft kupon → számla 9.99 /
+    // nettó 7.86 a riport 10.00 / 7.87 / 2.13 értéke helyett.
     //
     // B-06: az arányosítás alapja az eladás ÉRTÉKE (befizetett összeg +
     // ajándékutalvánnyal fedezett rész), nem csak a befizetett összeg — az
@@ -377,23 +382,11 @@ if ($buyer !== null) {
     // utalványok ÁFA-jogi besorolása (egycélú/többcélú) könyvelői kérdés —
     // lásd README "Ajándékutalvány és forgalom".
     $saleValue = round($total + $giftCardRedeemed, 2);
-    $invoiceDiscountRatio = $subtotal > 0 ? min(1, $saleValue / $subtotal) : 1.0;
-
-    $invoiceItems = array_map(fn($i) => [
-        'name'             => $i['name'],
-        'qty'              => $i['qty'],
-        'unit_price_gross' => round($i['unit_price'] * $invoiceDiscountRatio, 2),
-        'vat_rate'         => $i['vat_rate'],
-    ], $lineItems);
-
-    $invoiceNetTotal = 0.0;
-    foreach ($invoiceItems as $ii) {
-        $vatPct = is_numeric($ii['vat_rate']) ? ((float) $ii['vat_rate']) / 100 : 0.0;
-        $lineGross = $ii['unit_price_gross'] * $ii['qty'];
-        $invoiceNetTotal += is_numeric($ii['vat_rate']) ? round($lineGross / (1 + $vatPct), 2) : $lineGross;
-    }
-    $invoiceGrossTotal = $saleValue;
-    $invoiceVatTotal = round($invoiceGrossTotal - $invoiceNetTotal, 2);
+    $invoiceItems = VatAllocation::invoiceItems($saleValue, $lineItems);
+    $invoiceTotals = VatAllocation::totals($invoiceItems);
+    $invoiceNetTotal = $invoiceTotals['net'];
+    $invoiceVatTotal = $invoiceTotals['vat'];
+    $invoiceGrossTotal = $invoiceTotals['gross'];
     // A teljes egészében utalvánnyal kiegyenlített eladásnál a kasszán
     // kiválasztott fizetési mód (pl. Készpénz) nem igaz — a számlára az
     // utalvány kerül fizetési módként (NAV: VOUCHER, lásd

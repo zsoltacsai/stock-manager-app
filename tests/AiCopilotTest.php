@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 use PHPUnit\Framework\TestCase;
 
+require_once __DIR__ . '/Support/AiFakeProviders.php';
+
 /**
  * Fázis 6 — az AiCopilot (routing/orchestration) determinisztikus,
  * FakeAiProvider-rel vezérelt tesztjei (lásd tests/AiAgentRunnerTest.php

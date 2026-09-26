@@ -173,7 +173,14 @@ function renderAiUsageStatus(ai) {
             parts.push('becsült költség: nem állapítható meg');
         }
     }
-    box.innerHTML = `<p class="muted" style="margin:0; font-size:0.9em;">Asszisztens (Copilot): ${parts.filter(Boolean).join(' · ')}</p>`;
+    // AI-02 — a provider/modell név (és minden más mező) nem megbízható
+    // adat: textContent-tel, SOSE HTML-ként beillesztve.
+    const line = document.createElement('p');
+    line.className = 'muted';
+    line.style.margin = '0';
+    line.style.fontSize = '0.9em';
+    line.textContent = `Asszisztens (Copilot): ${parts.filter(Boolean).join(' · ')}`;
+    box.replaceChildren(line);
     updateAiDailyCardVisibility();
 }
 

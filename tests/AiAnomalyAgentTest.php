@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 use PHPUnit\Framework\TestCase;
 
+require_once __DIR__ . '/Support/AiFakeProviders.php';
+
 /**
  * AnomalyAgent — determinisztikus, szkriptelt provider-válaszokkal (a
  * MEGLÉVŐ FakeAiProvider osztály, lásd AiAgentRunnerTest.php — SOSE

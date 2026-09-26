@@ -63,6 +63,12 @@
             }
             disabledNotice.style.display = 'none';
             form.style.display = '';
+            // AI-04 — nem-vezető munkamenet: a szerver provider-adatot nem ad.
+            if (data.admin_only) {
+                statusLine.textContent = 'Az AI-asszisztens vezetői jogosultsággal használható.';
+                askBtn.disabled = true;
+                return;
+            }
             const providerLabel = PROVIDER_LABELS[data.provider] || 'Ollama';
             statusLine.textContent = providerLabel + ': ' + (STATUS_LABELS[data.status] || data.status) + (data.model ? ' — ' + data.model : '');
             askBtn.disabled = data.status !== 'available';

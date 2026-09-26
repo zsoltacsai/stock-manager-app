@@ -108,6 +108,13 @@ final class ActionExecutor
             if ($status === 'executed') {
                 return ['ok' => true, 'status' => 'executed', 'result' => $this->decodeResult($fresh), 'already_executed' => true];
             }
+            // AI-03: a claim a lejárat miatt is elbukhat — egy jóváhagyott,
+            // de lejárt javaslat 'expired' lesz, és SOSE hajtódik végre.
+            if ($this->db->expireUnexecutedActionProposal($proposalId, $staleExecutingAfterMinutes)
+                || $status === 'expired') {
+                $this->audit($proposalId, $staffId, 'execution_rejected', 'info', 'failure', 'A javaslat lejárt, nem hajtható végre.');
+                return ['ok' => false, 'reason' => 'expired'];
+            }
             if ($status === 'executing') {
                 $this->audit($proposalId, $staffId, 'concurrent_execution', 'info', 'failure', 'Egy másik kérés már végrehajtás alatt tartja ezt a javaslatot.');
                 return ['ok' => false, 'reason' => 'already_executing'];

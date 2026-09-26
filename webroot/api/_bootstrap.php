@@ -441,9 +441,20 @@ function send_json($data, int $status = 200): void
  * egy helyen, hogy ne kelljen minden érzékeny végpontban külön-külön
  * megismételni.
  */
+/**
+ * Vezetői jogszint — ugyanaz a döntés, mint require_admin()-ban (dolgozó
+ * nélküli telepítésen mindenki vezető), csak nem küld választ. Olyan
+ * végpontokhoz, amelyek szerepkörtől függően MÁS választ adnak (pl.
+ * ai-health.php, AI-04).
+ */
+function is_effective_admin(Database $db): bool
+{
+    return !$db->listStaff(true) || $db->isStaffAdmin(Auth::currentStaffId());
+}
+
 function require_admin(Database $db): void
 {
-    if ($db->listStaff(true) && !$db->isStaffAdmin(Auth::currentStaffId())) {
+    if (!is_effective_admin($db)) {
         send_json(['error' => 'Ehhez vezetői jogszint szükséges.'], 403);
     }
 }

@@ -7,9 +7,10 @@ declare(strict_types=1);
  * Copilot-fan-out — lásd AiCopilot.php a KERESZT-ügynök-hívásos
  * költség-védelemért) determinisztikus, biztonságos korlátai.
  *
- * `maxToolCalls` — a kör 16. pontja "max tool calls" pontja: EGY agent
- * futása (a saját maxIterations körén belül) legfeljebb ennyi tényleges
- * eszköz-VÉGREHAJTÁST tehet — nem pénzköltség-alapú, tisztán
+ * `maxToolCalls` — a kör 16. pontja "max tool calls" pontja: EGY AI-futás
+ * (AI-01 óta a teljes kérés: minden forduló, egy válaszon belüli minden
+ * tool-hívás, a Copilot és al-ügynökei együtt — lásd AiRunContext)
+ * legfeljebb ennyi tényleges eszköz-VÉGREHAJTÁST tehet — nem pénzköltség-alapú, tisztán
  * darabszám-korlát, ezért NEM igényel árazási adatot (lásd AiPricing),
  * mindig kiértékelhető.
  *

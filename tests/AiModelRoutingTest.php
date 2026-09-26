@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 use PHPUnit\Framework\TestCase;
 
+require_once __DIR__ . '/Support/AiFakeProviders.php';
+
 /**
  * Fázis 9 — determinisztikus modell-útválasztás tesztjei (a kör 17/29.
  * pontja). A böngésző SOSE tud modellt választani — ez a teszt-osztály

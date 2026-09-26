@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 use PHPUnit\Framework\TestCase;
 
+require_once __DIR__ . '/Support/AiFakeProviders.php';
+
 /**
  * Fázis 9 — AiCopilot::answerStreaming() tesztjei. A FakeAiProvider
  * (lásd tests/AiAgentRunnerTest.php) NEM vállalja az

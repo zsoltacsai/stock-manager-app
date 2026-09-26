@@ -3750,6 +3750,11 @@ providerrel beszél.
   Ollama-specifikus, ott a loopback a VÁRT eset), mindkét felhő-API egy
   valódi, külső, nyilvános szolgáltatás, nincs legitim ok, hogy belső/
   loopback címre mutasson.
+- Az `ai_local_base_url` szándékosan bármely `http(s)://` cím lehet
+  (a helyi Ollama tipikusan loopback vagy LAN-cím): ezt csak vezető
+  állíthatja be a Beállításokban, a modell, a böngésző és a pénztáros
+  nem. Elfogadott, vezető által beállított viselkedés (AI-07) — a
+  vezető ugyanúgy megadhat bármilyen más kimenő címet is.
 - A kulcs kizárólag a Szerver/Önálló gépen létezik — lásd lent, Client/
   Szerver viselkedés.
 
@@ -4141,7 +4146,11 @@ nem érhető el / modell hiányzik / elérhető) 30 másodpercig cache-elt
 providerenként (`OllamaHealth`/`AnthropicHealth`/`OpenAiHealth`) — nem
 indít hálózati/API-hívást minden oldalbetöltéskor, és egyik provider
 elérhetetlensége SEM befolyásolja a kassza vagy a többi
-FountainTrade-funkció működését.
+FountainTrade-funkció működését. A részletes állapot (provider, modell,
+hibaüzenet) és a kényszerített ellenőrzés (`?force=1`) csak vezetőnek
+elérhető; pénztáros munkamenet csak `{"enabled":true,"admin_only":true}`
+választ kap, és a kérése nem indít provider-hívást (az AI-funkciók
+amúgy is vezetői jogszinthez kötöttek).
 
 ### Ollama-telepítés (Fázis 6, Rész B)
 
@@ -4596,6 +4605,11 @@ pillanatában) + a MÁR kiszámított `metric`/`current_value`/
   (`Database::sweepExpiredActionProposals()`, minden listázás/
   lekérdezés ELŐTT lefut, indexelt `(status, expires_at)` feltétellel,
   NEM teljes táblatárolás), vagy magánál a jóváhagyási kísérletnél.
+  A lejárat a VÉGREHAJTÁSIG érvényes: egy jóváhagyott (vagy sikertelen
+  végrehajtású), de lejárt javaslat nem hajtható végre — a végrehajtási
+  claim WHERE-feltétele maga ellenőrzi az `expires_at`-et (nincs
+  TOCTOU-ablak), a sor `expired` lesz. A claim előtt elindult végrehajtás
+  befejeződik.
 
 #### Elavulás-ellenőrzés (stale validation) jóváhagyás előtt
 
@@ -5023,8 +5037,12 @@ eredményezne).
 
 #### Költség-/sebesség-korlátok
 
-- **`maxToolCalls`** (tiszta darabszám) — `AgentRunner`-en belül,
-  futásonként érvényesítve, árazási adat nélkül is működik.
+- **`maxToolCalls`** (tiszta darabszám, `ai_max_tool_calls`, alapból 20) —
+  a TELJES AI-kérés tényleges tool-végrehajtási kerete (`AiRunContext`):
+  minden egyes tool-hívás előtt fogy, egy modellválaszon belül is, minden
+  fordulón, streamelve, és a Copilot al-ügynökei ugyanabból a keretből
+  fogyasztanak. Ha elfogyott, a tool nem fut le, a futás kontrollált
+  `tool_call_limit` hibával áll le; egy új kérés új keretet kap.
 - **`maxEstimatedCostPerRequest`** (dollár-alapú) — KIZÁRÓLAG a Copilot
   al-ügynök-szétosztási szintjén érvényesítve (minden al-ügynök-hívás előtt
   ellenőrizve/összegezve, lásd `AiCopilot::buildToolRegistry()`), NEM egy
@@ -5032,7 +5050,20 @@ eredményezne).
   tudatos egyszerűsítés.
 - **`AiRateLimiter`** — a MEGLÉVŐ `audit_log` táblára épül (`action =
   'ai_agent_run'` sorok), nincs új tábla; konfigurálható várakozási idő két
-  kérés között, dolgozónként (NULL-biztos `staff_id`-egyezéssel).
+  kérés között, dolgozónként (NULL-biztos `staff_id`-egyezéssel), a
+  streamelő végponton. Mind az öt AI-futtató végponton (streamelt és
+  nem-streamelt) érvényes, hogy egy dolgozó egy terminálról (a Szerver
+  gépe vagy egy kliens-gép) egyszerre csak EGY AI-kérést futtathat — a párhuzamos második kérés 429-et kap
+  (atomikus fájlzár a futás végéig, `acquireRunSlot()`). Más dolgozók és
+  más terminálok nem blokkolják egymást.
+- **Futás közbeni jogosultság** (`AiRunGuard`) — a futó AI-kérés minden
+  provider-hívás és tool-végrehajtás előtt újraellenőrzi a dolgozó
+  (aktív vezető), a kliens-gép (aktív, nincs visszavonva) és a
+  kliens-munkamenet érvényességét; visszavonáskor a futás
+  `authorization_revoked` hibával leáll. A streamet megszakító böngésző a
+  futást a következő eseménynél leállítja. A Szerver saját
+  PHP-munkamenetének kijelentkezését egy már futó kérés nem érzékeli (a
+  dolgozói deaktiválást és szerepkör-váltást igen).
 
 #### Árazási őszinteség (`AiPricing`)
 

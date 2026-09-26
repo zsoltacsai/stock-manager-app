@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 use PHPUnit\Framework\TestCase;
 
+require_once __DIR__ . '/Support/AiFakeProviders.php';
+
 /**
  * Fázis 8A — a kör 24/34. pontja: AiDailyIntelligence → ActionProposalService
  * integráció. FakeAiProvider-t használ (lásd tests/AiAgentRunnerTest.php),

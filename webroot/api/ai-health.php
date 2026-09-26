@@ -15,6 +15,19 @@ if (empty($appSettings['ai_enabled'])) {
     send_json(['enabled' => false, 'status' => 'disabled']);
 }
 
+// AI-04 — az AI-funkciók (minden AI-futtató végpont) vezetői jogszinthez
+// kötöttek, ezért a provider-állapot is csak vezetőnek szól: nem-vezető
+// csak azt tudja meg, hogy az AI be van kapcsolva, de nem neki szól —
+// provider/modell/hibaüzenet nélkül, és a kérése SOSE indít (cache-elt
+// vagy force) health-hívást a provider felé. A force=1 (Beállítások
+// "Kapcsolat tesztelése") nem-vezetőnek 403.
+if (!is_effective_admin($db)) {
+    if (!empty($_GET['force'])) {
+        send_json(['error' => 'Ehhez vezetői jogszint szükséges.'], 403);
+    }
+    send_json(['enabled' => true, 'admin_only' => true]);
+}
+
 // Fázis 2 — szigorú fehérlista itt is, ugyanaz, mint AiProviderFactory-ban
 // (lásd a kör 5. pontja): ismeretlen ai_provider érték sose próbál meg
 // egyik provider felé sem hálózati hívást indítani.

@@ -328,6 +328,51 @@ ellenőrzése, ha rendelkezésre áll. Lásd README "Fázis 11" alszakasz.
   `return_items.value_*`); a napi zárás, az értékesítési riport és a
   bevétel-trend ezt használja. A javítás előtt rögzített visszáruk a
   korábbi módon számolódnak.
+
+### Security — AI security audit javításai (AI-01…AI-09)
+
+- **Tool-hívási keret (AI-01)**: az `ai_max_tool_calls` (alapból 20) mostantól
+  a teljes AI-kérésre érvényes tényleges végrehajtási keret: minden
+  tool-hívás előtt fogy, egy modellválaszon belül is, több fordulón át,
+  streamelve, és a Copilot al-ügynökeinek hívásai ugyanabból a keretből
+  fogynak. Korábban csak az iterációk elején ellenőrződött, így egyetlen
+  válasz 300 tool-hívása mind lefutott. A keret elfogyásakor további tool
+  nem fut, a futás „eszköz-hívási korlát” hibával áll le. Új kérés új
+  keretet kap; második limit nincs.
+- **Lejárt, jóváhagyott javaslat (AI-03)**: a javaslat lejárata a
+  végrehajtásig érvényes, nem csak a jóváhagyásig. A végrehajtási claim
+  feltételében szerepel az `expires_at`, így egy jóváhagyott, de lejárt
+  (vagy lejárt, sikertelen) javaslat nem hajtható végre, és `expired`
+  állapotba kerül; a listázó sweep a jóváhagyott, még végre nem hajtott
+  javaslatokat is lejártnak jelöli. A claim előtt elindult végrehajtás
+  befejeződik; a már végrehajtott javaslat eredménye változatlan.
+- **AI-állapot (`ai-health.php`, AI-04)**: a provider-állapot csak vezetőnek
+  szól. Pénztáros csak azt kapja vissza, hogy az AI be van kapcsolva, de
+  vezetői jogosultsággal használható, provider, modell és hibaüzenet
+  nélkül; a kérése nem indít health-hívást a provider felé. A kényszerített
+  ellenőrzés (`force=1`, Beállítások „Kapcsolat tesztelése”) pénztárosnak
+  403. A vezetői működés változatlan.
+- **Párhuzamos AI-futások (AI-05)**: egy dolgozó egy terminálról egyszerre
+  egy AI-kérést futtathat (streamelt és nem-streamelt végpontokon
+  egyaránt); a második párhuzamos kérés 429-et kap. A meglévő
+  `ai_min_seconds_between_requests` (mint eddig, a streamelt végponton) az
+  indítások között is számít, nem csak a befejezett futások után. Különböző dolgozók,
+  illetve ugyanaz a dolgozó különböző kliens-gépeken továbbra is
+  egymástól függetlenül futtathat.
+- **Futás közbeni jogosultság (AI-09)**: egy futó AI-kérés minden
+  provider-hívás és minden tool-végrehajtás előtt újraellenőrzi, hogy a
+  dolgozó még aktív vezető, a kliens-gép nincs letiltva/visszavonva, és a
+  kliens-munkamenet még érvényes; ha nem, a futás leáll. Ha a böngésző
+  megszakítja a streamet, a futás a következő eseménynél leáll.
+- **Dashboard AI-kártya (AI-02)**: a provider- és modellnév szövegként
+  jelenik meg (korábban HTML-ként, ami tárolt XSS-t tett lehetővé).
+- **Copilot-prompt (AI-06)**: az al-ügynökök válaszai adatként, nem hiteles
+  utasításként szerepelnek a promptban.
+- **Ollama URL (AI-07)**: elfogadott, vezető által beállított viselkedés —
+  a helyi AI-cím bármely http(s) cím lehet (a helyi Ollama tipikusan
+  loopback/LAN); nem modell- és nem pénztáros-vezérelt.
+- Validáció: helyi, szkriptelt AI-provider stubokkal és valódi php -S
+  folyamatokkal; élő OpenAI / Anthropic / Ollama viselkedés nincs igazolva.
 - A fizetési visszatérítés külön fogalom maradt: a fizetési módon a
   befizetett rész arányos része jár vissza; az ajándékutalványra jutó rész
   változatlanul a teljes visszavételkor íródik vissza (B-06). A riport az

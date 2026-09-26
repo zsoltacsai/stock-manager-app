@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 use PHPUnit\Framework\TestCase;
 
+require_once __DIR__ . '/Support/AiFakeProviders.php';
+
 /**
  * Fázis 9 — AiUsage/AiPricing/AiCostLimits determinisztikus tesztjei
  * (a kör 28. pontja). SOSE feltételez konkrét dollár-árat, amit az

@@ -7655,13 +7655,39 @@ class Database
      * listProposals()/getProposal()), hogy egy már lejárt javaslat SOSE
      * jelenjen meg "pending"-ként a felületen, anélkül, hogy egy külön,
      * ütemezett worker-re lenne szükség csak ehhez.
+     *
+     * AI-03: a jóváhagyott, de még végre NEM hajtott ('approved',
+     * 'execution_failed') javaslat is lejár — a lejárat a végrehajtásig
+     * érvényes, nem csak a jóváhagyásig. Egy 'executing' sort a sweep
+     * nem érint (azt a claim/executor kezeli).
      */
     public function sweepExpiredActionProposals(): int
     {
         $now = date('Y-m-d H:i:s');
-        $stmt = $this->pdo->prepare("UPDATE ai_action_proposals SET status = 'expired', updated_at = ? WHERE status = 'pending' AND expires_at <= ?");
+        $stmt = $this->pdo->prepare("UPDATE ai_action_proposals SET status = 'expired', updated_at = ? WHERE status IN ('pending', 'approved', 'execution_failed') AND expires_at <= ?");
         $stmt->execute([$now, $now]);
         return $stmt->rowCount();
+    }
+
+    /**
+     * AI-03 — egy végrehajtásra kért, de már lejárt, NEM végrehajtott
+     * javaslat feltételes lezárása 'expired'-re (a sikertelen claim után,
+     * lásd ActionExecutor::execute()). Egy folyamatban lévő (nem elavult)
+     * 'executing' sort nem érint; egy elavult 'executing' sor egy
+     * összeomlott, visszagörgetett kísérlet maradványa (a mutáció és a
+     * finalize ugyanabban a tranzakcióban fut), ezért lezárható.
+     */
+    public function expireUnexecutedActionProposal(int $id, int $staleExecutingAfterMinutes = 30): bool
+    {
+        $now = date('Y-m-d H:i:s');
+        $staleCutoff = date('Y-m-d H:i:s', strtotime("-$staleExecutingAfterMinutes minutes"));
+        $stmt = $this->pdo->prepare("
+            UPDATE ai_action_proposals SET status = 'expired', updated_at = ?
+            WHERE id = ? AND expires_at <= ?
+              AND (status IN ('approved', 'execution_failed') OR (status = 'executing' AND execution_started_at < ?))
+        ");
+        $stmt->execute([$now, $id, $now, $staleCutoff]);
+        return $stmt->rowCount() === 1;
     }
 
     // ---------------------------------------------------------------
@@ -7688,6 +7714,11 @@ class Database
      * elvárását anélkül, hogy VAKON újrapróbálná (csak a staleAfterMinutes
      * ablakon TÚL, admin által ténylegesen látható/naplózott állapotban).
      *
+     * AI-03: a lejárat (`expires_at > now`) UGYANEBBEN a WHERE-feltételben
+     * szerepel, mindkét ágon — a lejárat és a foglalás között nincs
+     * TOCTOU-ablak: ha a claim sikerült, a javaslat a claim pillanatában
+     * még érvényes volt (a már elindult végrehajtás ezután befejeződik).
+     *
      * @param string[] $fromStatuses
      */
     public function claimActionProposalExecution(int $id, array $fromStatuses, int $staleExecutingAfterMinutes = 30): bool
@@ -7702,9 +7733,9 @@ class Database
         $stmt = $this->pdo->prepare("
             UPDATE ai_action_proposals
             SET status = 'executing', execution_started_at = ?, execution_idempotency_key = ?, updated_at = ?
-            WHERE id = ? AND (status IN ($placeholders) OR (status = 'executing' AND execution_started_at < ?))
+            WHERE id = ? AND expires_at > ? AND (status IN ($placeholders) OR (status = 'executing' AND execution_started_at < ?))
         ");
-        $stmt->execute(array_merge([$now, $idempotencyKey, $now, $id], $fromStatuses, [$staleCutoff]));
+        $stmt->execute(array_merge([$now, $idempotencyKey, $now, $id, $now], $fromStatuses, [$staleCutoff]));
         return $stmt->rowCount() === 1;
     }
 

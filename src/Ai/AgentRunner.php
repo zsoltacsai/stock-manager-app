@@ -13,6 +13,7 @@ require_once __DIR__ . '/AiCostLimits.php';
 require_once __DIR__ . '/AiStreamEvent.php';
 require_once __DIR__ . '/AiToolLabels.php';
 require_once __DIR__ . '/AiUsage.php';
+require_once __DIR__ . '/AiRunContext.php';
 
 /**
  * Generikus, provider-független agent-végrehajtó — SEM az Ollamáról, SEM
@@ -52,6 +53,10 @@ final class AgentRunner
         // visszaesésre kényszerít, UGYANAZON az SSE-transzporton
         // keresztül (lásd webroot/api/ai-agent-stream.php).
         private readonly bool $streamingEnabled = true,
+        // AI-01/AI-09 — a futás közös tool-kerete és jogosultsági
+        // checkpointja (lásd AiRunContext). Ha a hívó nem ad meg, a
+        // futás saját keretet kap a $costLimits->maxToolCalls értékéből.
+        private readonly ?AiRunContext $runContext = null,
     ) {
         if ($this->maxIterations < 1) {
             throw new InvalidArgumentException('A maxIterations legalább 1 kell legyen.');
@@ -72,20 +77,24 @@ final class AgentRunner
         }
     }
 
+    private function context(): AiRunContext
+    {
+        return $this->runContext ?? new AiRunContext(($this->costLimits ?? new AiCostLimits())->maxToolCalls);
+    }
+
+    private const TOOL_LIMIT_ERROR = 'Az AI-kérés elérte a megengedett eszköz-hívási korlátot — próbáld szűkebb/pontosabb kérdéssel.';
+    private const AUTH_REVOKED_ERROR = 'A jogosultságod a futás közben megszűnt — az AI-kérés leállt.';
+
     public function run(string $systemInstruction, string $userMessage): AgentRunResult
     {
         $conversation = new ConversationManager($systemInstruction, $userMessage, $this->contextLimits);
         $toolsUsed = [];
         $usage = null;
-        $toolCallCount = 0;
-        $costLimits = $this->costLimits ?? new AiCostLimits();
+        $context = $this->context();
 
         for ($iteration = 1; $iteration <= $this->maxIterations; $iteration++) {
-            if ($toolCallCount >= $costLimits->maxToolCalls) {
-                return AgentRunResult::fail(
-                    'Az AI-kérés elérte a megengedett eszköz-hívási korlátot — próbáld szűkebb/pontosabb kérdéssel.',
-                    $toolsUsed, $iteration, $usage, false, 'tool_call_limit', $conversation->wasCompacted()
-                );
+            if (!$context->isStillAuthorized()) {
+                return AgentRunResult::fail(self::AUTH_REVOKED_ERROR, $toolsUsed, $iteration, $usage, false, null, $conversation->wasCompacted(), 'authorization_revoked');
             }
 
             try {
@@ -105,10 +114,17 @@ final class AgentRunner
             $conversation->addAssistantMessage($response->content, $response->toolCalls);
 
             foreach ($response->toolCalls as $call) {
+                // AI-09/AI-01: minden egyes tool-végrehajtás előtt — egy
+                // válaszon belüli sok tool-hívás sem kerülheti meg a keretet.
+                if (!$context->isStillAuthorized()) {
+                    return AgentRunResult::fail(self::AUTH_REVOKED_ERROR, $toolsUsed, $iteration, $usage, false, null, $conversation->wasCompacted(), 'authorization_revoked');
+                }
+                if (!$context->tryConsumeToolCall()) {
+                    return AgentRunResult::fail(self::TOOL_LIMIT_ERROR, $toolsUsed, $iteration, $usage, false, 'tool_call_limit', $conversation->wasCompacted());
+                }
                 $this->recordToolUse($toolsUsed, $call);
                 $result = $this->registry->execute($call);
                 $conversation->addToolResult($result);
-                $toolCallCount++;
             }
             // A ciklus folytatódik — a modell a következő körben már látja
             // az eszköz-eredményeket, és vagy egy végleges választ ad, vagy
@@ -142,19 +158,15 @@ final class AgentRunner
         $conversation = new ConversationManager($systemInstruction, $userMessage, $this->contextLimits);
         $toolsUsed = [];
         $usage = null;
-        $toolCallCount = 0;
-        $costLimits = $this->costLimits ?? new AiCostLimits();
+        $context = $this->context();
         $streamedAtLeastOnce = false;
 
         $onEvent(AiStreamEvent::agentStarted($agentLabel !== '' ? $agentLabel : 'agent', AiToolLabels::forAgent($agentLabel)));
 
         for ($iteration = 1; $iteration <= $this->maxIterations; $iteration++) {
-            if ($toolCallCount >= $costLimits->maxToolCalls) {
-                $onEvent(AiStreamEvent::error('Elérted a megengedett eszköz-hívási korlátot.'));
-                return AgentRunResult::fail(
-                    'Az AI-kérés elérte a megengedett eszköz-hívási korlátot — próbáld szűkebb/pontosabb kérdéssel.',
-                    $toolsUsed, $iteration, $usage, $streamedAtLeastOnce, 'tool_call_limit', $conversation->wasCompacted()
-                );
+            if (!$context->isStillAuthorized()) {
+                $onEvent(AiStreamEvent::error(self::AUTH_REVOKED_ERROR));
+                return AgentRunResult::fail(self::AUTH_REVOKED_ERROR, $toolsUsed, $iteration, $usage, $streamedAtLeastOnce, null, $conversation->wasCompacted(), 'authorization_revoked');
             }
 
             try {
@@ -193,6 +205,14 @@ final class AgentRunner
             $conversation->addAssistantMessage($response->content, $response->toolCalls);
 
             foreach ($response->toolCalls as $call) {
+                if (!$context->isStillAuthorized()) {
+                    $onEvent(AiStreamEvent::error(self::AUTH_REVOKED_ERROR));
+                    return AgentRunResult::fail(self::AUTH_REVOKED_ERROR, $toolsUsed, $iteration, $usage, $streamedAtLeastOnce, null, $conversation->wasCompacted(), 'authorization_revoked');
+                }
+                if (!$context->tryConsumeToolCall()) {
+                    $onEvent(AiStreamEvent::error('Elérted a megengedett eszköz-hívási korlátot.'));
+                    return AgentRunResult::fail(self::TOOL_LIMIT_ERROR, $toolsUsed, $iteration, $usage, $streamedAtLeastOnce, 'tool_call_limit', $conversation->wasCompacted());
+                }
                 $this->recordToolUse($toolsUsed, $call);
                 $eventToolName = $this->registry->has($call->name) ? $call->name : self::UNKNOWN_TOOL_EVENT_NAME;
                 // A kör 4/5. pontja — a tool_call_started/completed
@@ -206,7 +226,6 @@ final class AgentRunner
                 $result = $this->registry->execute($call);
                 $onEvent(AiStreamEvent::toolCallCompleted($call->id, $eventToolName, $result->success));
                 $conversation->addToolResult($result);
-                $toolCallCount++;
             }
         }
 

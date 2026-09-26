@@ -5,6 +5,8 @@ require __DIR__ . '/_bootstrap.php';
 require_once __DIR__ . '/../../src/Ai/AiProviderFactory.php';
 require_once __DIR__ . '/../../src/Ai/AiAuditLogger.php';
 require_once __DIR__ . '/../../src/Ai/AiRateLimiter.php';
+require_once __DIR__ . '/../../src/Ai/AiRunContext.php';
+require_once __DIR__ . '/../../src/Ai/AiRunGuard.php';
 require_once __DIR__ . '/../../src/Ai/AiStreamEvent.php';
 require_once __DIR__ . '/../../src/Ai/AiPricing.php';
 require_once __DIR__ . '/../../src/Ai/Agents/InventoryAgent.php';
@@ -59,13 +61,19 @@ if (empty($appSettings['ai_enabled'])) {
 
 // A kör 19. pontja — "accidental abuse" védelem, lásd AiRateLimiter.php
 // docblokkja (a MEGLÉVŐ audit_log-ra épül, nincs új tábla/alrendszer).
-$rateCheck = AiRateLimiter::check($db, $appSettings, Auth::currentStaffId());
-if (!$rateCheck['ok']) {
-    send_json([
-        'error' => 'Túl gyorsan érkezett a következő AI-kérés — várj néhány másodpercet.',
-        'retry_after_seconds' => $rateCheck['retry_after_seconds'],
-    ], 429);
+// AI-05 — szereplőnként (dolgozó + terminál) egyetlen futó AI-kérés, plusz
+// a meglévő ai_min_seconds_between_requests (lásd AiRateLimiter). A slot a
+// kérés végéig él. AI-09 — a futás közben újraellenőrzött jogosultság és
+// a teljes kérésre érvényes tool-keret (lásd AiRunGuard, AiRunContext).
+$slotResult = AiRateLimiter::acquireRunSlot($db, $appSettings, Auth::currentStaffId(), Auth::proxiedRegisteredClientId());
+if (!$slotResult['ok']) {
+    send_json(array_filter([
+        'error' => $slotResult['error'],
+        'retry_after_seconds' => $slotResult['retry_after_seconds'] ?? null,
+    ], static fn ($v) => $v !== null), $slotResult['reason'] === 'unavailable' ? 503 : 429);
 }
+$aiRunSlot = $slotResult['slot'];
+$aiRunContext = AiRunContext::fromSettings($appSettings, AiRunGuard::forCurrentRequest($db));
 
 // Lásd ai-copilot.php ugyanezen soránál a részletes indoklás — dinamikus
 // korlát, hogy a PHP beépített szerverének max_execution_time-ja alá ne
@@ -79,6 +87,10 @@ set_time_limit($isCopilot
 header('Content-Type: text/event-stream; charset=utf-8');
 header('Cache-Control: no-cache');
 header('X-Accel-Buffering: no');
+// AI-09 — ha a böngésző megszakítja a kapcsolatot (Mégse / lap bezárása),
+// a PHP a következő esemény kiírásakor leállítja a futást (minden
+// tool-hívás előtt megy ki esemény), további provider-/tool-hívás nélkül.
+ignore_user_abort(false);
 while (ob_get_level() > 0) {
     @ob_end_flush();
 }
@@ -107,25 +119,25 @@ $startedAt = microtime(true);
 
 switch ($agentName) {
     case 'copilot':
-        $agent = new AiCopilot($provider, $db, $appSettings, $maxIterations);
+        $agent = new AiCopilot($provider, $db, $appSettings, $maxIterations, $aiRunContext);
         $runResult = $agent->answerStreaming($question, $sendEvent);
         $agentsUsed = $runResult instanceof CopilotRunResult ? $runResult->agentsUsed : [];
         $toolsUsed = $runResult->toolsUsed;
         break;
     case 'inventory':
-        $agent = new InventoryAgent($provider, $db, $appSettings, $maxIterations);
+        $agent = new InventoryAgent($provider, $db, $appSettings, $maxIterations, $aiRunContext);
         $runResult = $agent->answerStreaming($question, $sendEvent);
         $agentsUsed = [];
         $toolsUsed = $runResult->toolsUsed;
         break;
     case 'sales':
-        $agent = new SalesAgent($provider, $db, $appSettings, $maxIterations);
+        $agent = new SalesAgent($provider, $db, $appSettings, $maxIterations, $aiRunContext);
         $runResult = $agent->answerStreaming($question, $sendEvent);
         $agentsUsed = [];
         $toolsUsed = $runResult->toolsUsed;
         break;
     default:
-        $agent = new AnomalyAgent($provider, $db, $appSettings, $maxIterations);
+        $agent = new AnomalyAgent($provider, $db, $appSettings, $maxIterations, $aiRunContext);
         $runResult = $agent->answerStreaming($question, $sendEvent);
         $agentsUsed = [];
         $toolsUsed = $runResult->toolsUsed;

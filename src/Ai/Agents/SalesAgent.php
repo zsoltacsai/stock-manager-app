@@ -5,6 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../AiProviderInterface.php';
 require_once __DIR__ . '/../ToolRegistry.php';
 require_once __DIR__ . '/../AgentRunner.php';
+require_once __DIR__ . '/../AiRunContext.php';
 require_once __DIR__ . '/../AgentRunResult.php';
 require_once __DIR__ . '/../AiContextLimits.php';
 require_once __DIR__ . '/../AiCostLimits.php';
@@ -52,6 +53,8 @@ PROMPT;
         private readonly Database $db,
         private readonly array $appSettings,
         private readonly int $maxIterations = 5,
+        // AI-01/AI-09 — a hívó (végpont vagy a Copilot) közös futás-kerete.
+        private readonly ?AiRunContext $runContext = null,
     ) {
     }
 
@@ -82,7 +85,8 @@ PROMPT;
             $this->maxIterations,
             AiContextLimits::fromSettings($this->appSettings),
             AiCostLimits::fromSettings($this->appSettings),
-            (bool) ($this->appSettings['ai_streaming_enabled'] ?? true)
+            (bool) ($this->appSettings['ai_streaming_enabled'] ?? true),
+            $this->runContext
         );
     }
 

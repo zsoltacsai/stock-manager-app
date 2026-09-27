@@ -11,4 +11,17 @@ $includeDeleted = !empty($_GET['include_deleted']);
 // hogy bárhol jelezte volna a felület. Ugyanazt a nagyvonalú korlátot
 // használjuk, mint az export-products.php már eddig is (100000) — egyetlen,
 // join nélküli lekérdezésként ez SQLite-on nem jelent érdemi terhelést.
-send_json(['products' => $db->listProducts(100000, $includeDeleted)]);
+//
+// PERF-04: a válasz streamelve íródik ki (bájtra ugyanaz, mint a korábbi
+// send_json(['products' => listProducts(...)]) kimenete). Korábban a teljes
+// lista a PHP-memóriában épült fel: D3-on 100 000 termékkel 263 MB, a 128 MB-os
+// korláton ~35 000 termék felett HTTP 500. A kassza és a Termékek oldal már
+// nem ezt használja (product-search.php, products-page.php).
+http_response_code(200);
+echo '{"products":[';
+$first = true;
+$db->eachProduct(100000, $includeDeleted, static function (array $row) use (&$first): void {
+    echo ($first ? '' : ',') . json_encode($row, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $first = false;
+});
+echo ']}';

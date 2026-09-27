@@ -78,7 +78,7 @@ final class ForeignKeyParityMigrationTest extends TestCase
         $this->assertSame($this->fkMap($fresh->pdo()), $this->fkMap($upgraded->pdo()), 'FK-paritás a friss telepítéssel');
         $this->assertSame($dataBefore, $rows($upgraded->pdo()), 'az adatok megmaradtak');
         $this->assertSame([], $upgraded->pdo()->query('PRAGMA foreign_key_check')->fetchAll());
-        $this->assertSame(37, (int) $upgraded->pdo()->query('SELECT version FROM schema_version')->fetchColumn());
+        $this->assertSame(38, (int) $upgraded->pdo()->query('SELECT version FROM schema_version')->fetchColumn());
         // Idempotens: egy újabb futás nem talál eltérést.
         $this->assertSame(['repaired' => [], 'skipped' => []], $upgraded->repairForeignKeysToCanonicalSchema(dirname(__DIR__) . '/schema.sql'));
         // Az AUTOINCREMENT-sorozat sem esett vissza.

@@ -946,6 +946,15 @@ if (-not $SkipScheduledTasks) {
             Exit-WithFailureSummary "A(z) $Port port már foglalt, de nem egy FountainTrade-példány válaszol rajta." "Válassz másik portot a -Port paraméterrel, vagy zárd be a portot jelenleg használó alkalmazást."
         }
     }
+    # PERF-01: a diszpécser háttérfolyamatai a $Port+1..$Port+4 portokon
+    # (127.0.0.1) futnak. Egy ott már futó FountainTrade-háttérfolyamatot a
+    # diszpécser újrahasznosít; egy idegen alkalmazás viszont nem foglalhatja.
+    foreach ($workerPort in ($Port + 1)..($Port + 4)) {
+        $workerListener = Get-NetTCPConnection -LocalPort $workerPort -State Listen -ErrorAction SilentlyContinue
+        if ($workerListener -and -not (Test-PortInUseByOurServer -Port $workerPort)) {
+            Exit-WithFailureSummary "A(z) $workerPort port (a kiszolgáló háttérfolyamatainak $($Port + 1)–$($Port + 4) tartományából) már foglalt egy másik alkalmazás által." "Válassz másik portot a -Port paraméterrel (a $Port+1..$Port+4 portoknak is szabadnak kell lenniük), vagy zárd be a portot használó alkalmazást."
+        }
+    }
 
     $serverTaskName = 'FountainTrade - Szerver'
     # A kötési cím a node-szerepkörtől függ (lásd Get-FountainTradeBindHost,
@@ -967,8 +976,19 @@ if (-not $SkipScheduledTasks) {
     # New-HiddenLauncherVbs) ezt teljesen megszünteti — a php.exe
     # folyamat maga változatlanul, teljes értékűen fut a háttérben, csak
     # az ablaka nem jelenik meg.
+    #
+    # PERF-01 — PÁRHUZAMOS KISZOLGÁLÁS: a php.exe nem közvetlenül `-S`-sel,
+    # hanem a tools/http-dispatcher.php diszpécserrel indul. Ez 3 pénztári +
+    # 1 háttér (cron) `php -S` folyamatot indít 127.0.0.1-en a $Port+1..$Port+4
+    # portokon (ezek LAN-ról NEM érhetők el, a tűzfalszabály továbbra is csak a
+    # $Port-ra vonatkozik), és a ${bindHost}:$Port címen a kéréseket egy-egy
+    # SZABAD folyamatnak adja. Windows-on egyetlen `php -S` minden kérést sorban
+    # szolgált ki — egy AI-futás, egy lassú Számlázz.hu/NAV/WooCommerce-hívás
+    # vagy egy cron-futás alatt minden kassza várt. A kötési cím, a webroot és
+    # a php.ini ugyanaz, mint a korábbi `-S ${bindHost}:$Port -t` indításnál.
+    $dispatcherScript = Join-Path $toolsDir 'http-dispatcher.php'
     $serverVbsPath = Join-Path $toolsDir 'run-server-hidden.vbs'
-    New-HiddenLauncherVbs -VbsPath $serverVbsPath -ExePath $phpExe -Arguments "-S ${bindHost}:$Port -t `"$webrootPath`""
+    New-HiddenLauncherVbs -VbsPath $serverVbsPath -ExePath $phpExe -Arguments "`"$dispatcherScript`" --listen=${bindHost}:$Port --webroot=`"$webrootPath`" --workers=3 --background-workers=1"
     $serverAction = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //NoLogo `"$serverVbsPath`"" -WorkingDirectory $InstallPath
     # Élő teszteléssel elkülönítve igazolva (izolált Register-ScheduledTask
     # próbákkal, 2026-09-21): pontosan az "-AtLogOn" trigger-TÍPUS igényel
@@ -1010,7 +1030,7 @@ if (-not $SkipScheduledTasks) {
             Write-Err2 "A(z) '$serverTaskName' bejegyzés a regisztráció UTÁN, visszaolvasáskor NEM felel meg az elvártnak: $($verify.Reason)" "Ellenőrizd kézzel a Feladatütemezőben ('taskschd.msc'), vagy futtasd újra a telepítőt."
         }
     } catch {
-        Write-Err2 "A(z) '$serverTaskName' Feladatütemező-bejegyzés létrehozása/frissítése sikertelen: $($_.Exception.Message)" "Ellenőrizd, hogy rendszergazdai jogban fut-e a telepítő, és hogy a Feladatütemező szolgáltatás (Task Scheduler) elérhető-e. Kézi indítás: `"$phpExe`" -S ${bindHost}:$Port -t `"$webrootPath`""
+        Write-Err2 "A(z) '$serverTaskName' Feladatütemező-bejegyzés létrehozása/frissítése sikertelen: $($_.Exception.Message)" "Ellenőrizd, hogy rendszergazdai jogban fut-e a telepítő, és hogy a Feladatütemező szolgáltatás (Task Scheduler) elérhető-e. Kézi indítás: `"$phpExe`" `"$dispatcherScript`" --listen=${bindHost}:$Port --webroot=`"$webrootPath`""
     }
 
     if ($serverTaskCreated -and -not $listener) {
@@ -1326,7 +1346,7 @@ for ($i = 0; $i -lt 10; $i++) {
 }
 
 if (-not $serverReady) {
-    Exit-WithFailureSummary "A szerver nem válaszol 10 másodperc után sem (http://localhost:$Port/)." "Indítsd el kézzel: `"$phpExe`" -S ${bindHost}:$Port -t `"$webrootPath`", és ellenőrizd a hibaüzenetet."
+    Exit-WithFailureSummary "A szerver nem válaszol 10 másodperc után sem (http://localhost:$Port/)." "Indítsd el kézzel: `"$phpExe`" `"$(Join-Path $toolsDir 'http-dispatcher.php')`" --listen=${bindHost}:$Port --webroot=`"$webrootPath`", és ellenőrizd a hibaüzenetet."
 }
 Write-Ok "A szerver válaszol — http://localhost:$Port/"
 

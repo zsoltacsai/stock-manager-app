@@ -32,8 +32,9 @@ async function loadPaymentMethods() {
 
 async function loadGroups() {
     try {
-        const data = await fetchJson('/api/products.php');
-        const groups = Array.from(new Set((data.products || []).map(p => p.group_name).filter(Boolean))).sort();
+        // PERF-04: csak a csoportnevek (a teljes termékkatalógus helyett).
+        const data = await fetchJson('/api/product-groups.php');
+        const groups = Array.from(new Set((data.groups || []).filter(Boolean))).sort();
         groupSelect.innerHTML = '<option value="">Összes</option>' + groups.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('');
     } catch (e) { /* nem blokkoló */ }
 }

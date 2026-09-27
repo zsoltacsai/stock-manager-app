@@ -4,6 +4,54 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## [Unreleased] — Performance remediation (Phase 6 PERF-01…PERF-09)
+
+Bugfix/teljesítmény-javítás, új üzleti funkció nélkül (1.0 RC freeze). A
+Phase 6 mérésekkel igazolt szűk keresztmetszetek célzott javítása; a
+pénzügyi definíciók (DB-07), a mentés/visszaállítás biztonsága (DB-01,
+DB-08) és az auth-folyamat változatlan. Részletek: README „Teljesítmény,
+futtatási modell és kapacitás”.
+
+### Fixed
+
+- **PERF-03 — mentés/visszaállítás memóriája**: darabolt (streamelt)
+  AES-256-GCM titkosítás (`FTBKENC2`: 1 MiB-os rekordok, rekordonkénti
+  hitelesítés, index + „utolsó” jelző az AAD-ben — csere/csonkolás/bővítés
+  is visszafejtési hiba); a MySQL-dump ellenőrzése és visszaállítása
+  streamelt darabolással; a Dropbox/Google Drive feltöltés fájlból
+  streamel. A régi `FTBKENC1` és jelző nélküli mentések változatlanul
+  visszaállíthatók.
+- **PERF-01 — egyetlen `php -S` blokkolása**: a Windows-telepítő a
+  `tools/http-dispatcher.php` diszpécsert indítja (3 pénztári + 1 háttér
+  `php -S` 127.0.0.1-en, `$Port+1..$Port+4`); cron csak a háttérfolyamaton,
+  hosszú kérés sose foglalja az utolsó pénztári folyamatot, visszaállítás/
+  frissítés egyedül fut, import/leltárzárás alatt új író kérés vár. A
+  hosszú végpontok elengedik a PHP session-zárat.
+- **PERF-02 — riportok**: a korlátlan `IN (...)` listák és a teljes
+  eladáslista `fetchAll()`-ja helyett streamelt JOIN, `EXISTS`, korlátos
+  (500-as) IN-darabok; az eredmény bájtra azonos (D1/D2/D3 oracle-összevetés).
+- **PERF-05 — kassza gyorsgombok**: a 90 napos eladások a
+  `sales.created_at` indexéről indulnak (al-lekérdezéses aggregálás).
+- **PERF-07 — dátumszűrők**: `col >= nap AND col < nap+1` a
+  `substr()/DATE()` helyett (15 lekérdezés), azonos sorhalmaz.
+- **PERF-06 — import**: `idx_products_unit_name` (`unit, name`) index (V38
+  migráció) a dupla-mentés elleni név-keresésre (nem csak `name`: az
+  átvenné a név szerint rendezett keresések tervét). 50 000 soros import:
+  ~30 perc → ~8 s (D2) / ~12 s (D3).
+- **PERF-01 kiegészítés**: a riport-végpontok (`sales-report`,
+  `top-products-report`, `inventory-report`, `stock-movements-report`) és
+  a teljes katalógus (`products.php`) a „hosszú” osztályba tartoznak.
+- **PERF-04 / PERF-09 — katalógus**: a kassza és a Beszerzés
+  szerveroldali keresést használ (`/api/product-search.php`), a Termékek
+  oldal szerveroldalon lapoz (`/api/products-page.php`, 100 sor/oldal,
+  magyar ábécé szerinti rendezés), a `/api/products.php` streamel.
+
+### Nem változott (dokumentálva)
+
+- PERF-11 (PIN-belépés O(dolgozók)): a PIN-protokoll biztonságosan nem
+  enged közvetlen keresést; a diszpécser miatt már nem blokkol más kasszát.
+- PERF-12/13 (statikus fájlok tömörítése/cache, polling): INFO, lásd README.
+
 ## [Unreleased] — AI Copilot: javaslatok, végrehajtás, streaming és éles-üzemi validáció (Fázis 8A/8B/9/10/11)
 
 **Az 1.0 RC feature freeze alóli, egyenként jóváhagyott kivételek —

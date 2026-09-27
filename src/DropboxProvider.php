@@ -26,14 +26,27 @@ class DropboxProvider implements CloudBackupProvider
         return 'Dropbox';
     }
 
+    /** A feltöltési végpont — tesztben helyi szerverre irányítható. */
+    protected function uploadUrl(): string
+    {
+        return 'https://content.dropboxapi.com/2/files/upload';
+    }
+
     public function upload(string $localFilePath, string $remoteFileName): void
     {
         $path = $this->folder . '/' . $remoteFileName;
 
-        $ch = curl_init('https://content.dropboxapi.com/2/files/upload');
+        // PERF-03: a fájl streamelve megy fel (CURLOPT_INFILE), nem egy
+        // file_get_contents()-szel memóriába olvasott törzsként — a mentés
+        // méretével nem nő a PHP-memória.
+        $size = filesize($localFilePath);
+        $fh = fopen($localFilePath, 'rb');
+        if ($size === false || $fh === false) {
+            throw new RuntimeException('Dropbox feltöltési hiba: a mentési fájl nem olvasható.');
+        }
+        $ch = curl_init($this->uploadUrl());
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST           => true,
             CURLOPT_HTTPHEADER     => [
                 'Authorization: Bearer ' . $this->accessToken,
                 'Dropbox-API-Arg: ' . json_encode([
@@ -43,14 +56,19 @@ class DropboxProvider implements CloudBackupProvider
                     'mute'       => true,
                 ]),
                 'Content-Type: application/octet-stream',
+                'Expect:',
             ],
-            CURLOPT_POSTFIELDS => file_get_contents($localFilePath),
-            CURLOPT_TIMEOUT    => 60,
+            CURLOPT_UPLOAD        => true,
+            CURLOPT_CUSTOMREQUEST => 'POST',
+            CURLOPT_INFILE        => $fh,
+            CURLOPT_INFILESIZE    => $size,
+            CURLOPT_TIMEOUT       => 60,
         ]);
         $response = curl_exec($ch);
         $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err = curl_error($ch);
         curl_close($ch);
+        fclose($fh);
 
         if ($response === false) {
             throw new RuntimeException("Dropbox feltöltési hiba: $err");

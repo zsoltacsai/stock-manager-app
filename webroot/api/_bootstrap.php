@@ -418,6 +418,21 @@ if (!empty($appSettings['maintenance_mode_active']) && !$isCronScript) {
     }
 }
 
+// PERF-01 — a hosszú kérések (AI, külső szolgáltatás, mentés, export, import)
+// a hitelesítés/CSRF után elengedik a PHP session-fájl zárját. A session
+// innentől csak olvasható (Auth::currentStaffId() stb. változatlanul
+// működik); ezek a végpontok nem írnak session-t. Enélkül — több
+// párhuzamos kiszolgálófolyamat mellett — UGYANANNAK a böngészőnek egy
+// másik lapja (pl. a kassza) a session_start()-nál végig várna egy
+// perceken át tartó AI-futásra.
+require_once __DIR__ . '/../../src/HttpDispatcher.php';
+if (session_status() === PHP_SESSION_ACTIVE
+    && (preg_match(HttpDispatcher::LONG_SCRIPT_PATTERN, strtolower($currentScript))
+        || in_array(strtolower($currentScript), HttpDispatcher::WRITER_EXCLUSIVE_SCRIPTS, true))
+) {
+    session_write_close();
+}
+
 function json_input(): array
 {
     $raw = file_get_contents('php://input');

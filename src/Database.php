@@ -9,7 +9,17 @@ require_once __DIR__ . '/VatAllocation.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 37;
+    private const SCHEMA_VERSION = 38;
+
+    /**
+     * PERF-02 — egy azonosító-alapú IN-lista legnagyobb darabja. Korlátlan
+     * listák helyett ennyi elemenként kérdezünk (SQLite: legfeljebb 32 766,
+     * MySQL: 65 535 paraméter egy utasításban).
+     */
+    private const ID_CHUNK_SIZE = 500;
+
+    /** Az „összes eladott termék” összesítők (árrés, kategória) változatlan felső határa. */
+    private const REPORT_ALL_PRODUCTS_LIMIT = 100000;
 
     private PDO $pdo;
     private string $driver;
@@ -236,6 +246,9 @@ class Database
             if ($version < 37) {
                 $this->migrateV37ReturnedQtyAndDatetimeFormat();
                 $this->repairForeignKeysToCanonicalSchema($schemaPath);
+            }
+            if ($version < 38) {
+                $this->migrateV38ProductNameIndex();
             }
         }
 
@@ -1534,6 +1547,35 @@ class Database
      * tábla-bejárást igényelne, ami nagyobb adatmennyiségnél (lásd a kör
      * 18. pontja, "performance") már érezhető lassulást okozna.
      */
+    /**
+     * PERF-06 — index a termék mértékegységére és nevére. Az új termék mentése (saveProduct(),
+     * így az import is) a dupla-beküldés elleni védelemben (P1-3,
+     * findRecentlyCreatedIdenticalProduct()) név szerint keres; index nélkül
+     * ez minden új terméknél a teljes terméktábla bejárása volt (D3, 100 000
+     * termék: 52,5 ms/beszúrás, egy 50 000 soros import ~30 perc egyetlen
+     * író-tranzakcióban). A keresés feltételei és eredménye nem változnak.
+     */
+    private function migrateV38ProductNameIndex(): void
+    {
+        // (unit, name) és NEM (name): egy csak name-re épülő index átvenné a
+        // `WHERE <nem indexelt szűrő> ORDER BY name LIMIT n` lekérdezések
+        // (globális keresés, termékkeresés) tervét — az SQLite név szerint
+        // végigjárná az indexet soronkénti táblaolvasással, ami ritka
+        // találatnál a teljes tábla rendezésénél lassabb (mérve, D3: 54 ms
+        // helyett 395 ms). Az egyenlőséges keresés (unit = ? AND name = ?) a
+        // (unit, name) indexet ugyanúgy használja.
+        $sql = $this->driver === 'mysql'
+            ? 'CREATE INDEX idx_products_unit_name ON products(unit, name)'
+            : 'CREATE INDEX IF NOT EXISTS idx_products_unit_name ON products(unit, name)';
+        try {
+            $this->pdo->exec($sql);
+        } catch (PDOException $e) {
+            if (!$this->isBenignSchemaError($e)) {
+                throw $e;
+            }
+        }
+    }
+
     private function migrateV25ReportingIndexes(): void
     {
         foreach ([
@@ -3029,6 +3071,320 @@ class Database
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    /**
+     * PERF-04 — a kassza (és a Beszerzés) terméknév-/cikkszám-keresése
+     * szerveroldalon. Korábban a kliens a TELJES katalógust töltötte le
+     * (/api/products.php, D2: 7,8 MB; ~35 000 termék felett a 128 MB-os
+     * memóriakorláton HTTP 500), és helyben szűrt:
+     *   p.name.toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q)
+     * a név szerint rendezett listán, az első 20 találattal. Ugyanez a szabály
+     * itt: kis-/nagybetű-független (Unicode, mb_strtolower — mint a JS
+     * toLowerCase), ékezet-érzékeny részszöveg-egyezés a névben vagy a
+     * cikkszám (sku) mezőben, nem törölt termékek, név szerint, $limit
+     * találat. A válasz a teljes termékrekord (mint korábban a katalógusban).
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function searchProductsForPos(string $query, int $limit = 20): array
+    {
+        $needle = mb_strtolower(trim($query), 'UTF-8');
+        if ($needle === '') {
+            return [];
+        }
+        [$nameMatch, $nameParams] = $this->containsLowerCondition('name', $needle);
+        [$skuMatch, $skuParams] = $this->containsLowerCondition("COALESCE(sku, '')", $needle);
+        $stmt = $this->pdo->prepare("
+            SELECT * FROM products
+            WHERE is_deleted = 0 AND (($nameMatch) OR ($skuMatch))
+            ORDER BY name
+            LIMIT ?
+        ");
+        $position = 1;
+        foreach (array_merge($nameParams, $skuParams) as $value) {
+            $stmt->bindValue($position++, $value);
+        }
+        $stmt->bindValue($position, max(1, min(100, $limit)), PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /** PERF-04 — nem törölt termék pontos vonalkóddal (a Beszerzés korábbi, katalógus-alapú keresésének szabálya). */
+    public function findActiveProductByBarcode(string $barcode): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM products WHERE barcode = ? AND is_deleted = 0 ORDER BY name LIMIT 1');
+        $stmt->execute([$barcode]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    /** @return list<string> a nem törölt (vagy $includeDeleted esetén az összes) termék nem üres csoportnevei */
+    public function listProductGroupNames(bool $includeDeleted = false): array
+    {
+        $sql = "SELECT DISTINCT group_name FROM products WHERE group_name IS NOT NULL AND group_name != ''";
+        if (!$includeDeleted) {
+            $sql .= ' AND is_deleted = 0';
+        }
+        return array_map('strval', $this->pdo->query($sql)->fetchAll(PDO::FETCH_COLUMN));
+    }
+
+    /**
+     * PERF-04 — könnyű termékjegyzék (azonosító, név, vonalkód) a készletmozgás-
+     * riport termékszűrőjéhez, soronként egy visszahívásnak átadva (a hívó
+     * streamelve írja ki) — nem egy több tíz MB-os tömbként.
+     */
+    public function eachProductLookupRow(callable $consumer): void
+    {
+        $stmt = $this->pdo->query('SELECT id, name, barcode FROM products WHERE is_deleted = 0 ORDER BY name');
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $consumer($row);
+        }
+    }
+
+    /** A Termékek oldal rendezhető oszlopai (lásd termekek.js sortValue()). */
+    public const PRODUCT_PAGE_TEXT_SORTS = ['name', 'cikkszam', 'group_name', 'barcode'];
+    public const PRODUCT_PAGE_NUMERIC_SORTS = ['stock_qty', 'purchase_price_net', 'net_price', 'price'];
+
+    /**
+     * PERF-09 — a Termékek oldal szerveroldali lapozása. Korábban a kliens az
+     * egész katalógust letöltötte és MINDEN szűrt sort kirajzolt (10 000
+     * terméknél 181 707 DOM-elem, ~7,9 s). A szűrés szabályai a korábbi
+     * termekek.js renderTable()-éi:
+     *   - név / cikkszám / vonalkód: kis-/nagybetű-független részszöveg
+     *     (Unicode, mint a JS toLowerCase), a hiányzó érték üres szöveg;
+     *   - csoport: pontos egyezés; „csak 0 készlet”: stock_qty <= 0;
+     *   - „csak webshop”: show_webshop nem 0; törölt: csak ha kérik.
+     * Rendezés: a korábbi JS-rendezés (számoszlopnál szám szerint, szöveges
+     * oszlopnál a kisbetűs érték magyar ábécé szerinti összevetése, stabil
+     * rendezés a név szerinti alaplistán) — azonos értéknél név, majd
+     * azonosító szerint növekvő, a rendezési iránytól függetlenül.
+     * A szöveges rendezés SQLite-on egy PHP-ban számolt magyar rendezőkulccsal
+     * (huSortKey(); a PHP-ban nincs intl/ICU), MySQL-en az utf8mb4_hungarian_ci
+     * collation-nel történik.
+     *
+     * @param array{name?:string, cikkszam?:string, barcode?:string, group?:string, zero_stock?:bool, webshop_only?:bool, include_deleted?:bool} $filters
+     * @return array{products: list<array<string, mixed>>, ids: list<int>, filtered_count: int, total_count: int, groups: list<string>}
+     */
+    public function listProductsPage(array $filters, string $sortColumn, string $sortDir, int $offset, int $limit): array
+    {
+        $includeDeleted = !empty($filters['include_deleted']);
+        $where = [];
+        $params = [];
+        if (!$includeDeleted) {
+            $where[] = 'is_deleted = 0';
+        }
+        foreach (['name' => 'name', 'cikkszam' => "COALESCE(cikkszam, '')", 'barcode' => "COALESCE(barcode, '')"] as $key => $expr) {
+            $needle = mb_strtolower(trim((string) ($filters[$key] ?? '')), 'UTF-8');
+            if ($needle !== '') {
+                [$condition, $conditionParams] = $this->containsLowerCondition($expr, $needle);
+                $where[] = "($condition)";
+                array_push($params, ...$conditionParams);
+            }
+        }
+        if (($filters['group'] ?? '') !== '') {
+            $where[] = 'group_name = ?';
+            $params[] = (string) $filters['group'];
+        }
+        if (!empty($filters['zero_stock'])) {
+            $where[] = 'stock_qty <= 0';
+        }
+        if (!empty($filters['webshop_only'])) {
+            $where[] = 'show_webshop != 0';
+        }
+        $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+
+        $direction = strtolower($sortDir) === 'desc' ? 'DESC' : 'ASC';
+        if (in_array($sortColumn, self::PRODUCT_PAGE_NUMERIC_SORTS, true)) {
+            $orderKey = "COALESCE($sortColumn, 0)";
+        } else {
+            $sortColumn = in_array($sortColumn, self::PRODUCT_PAGE_TEXT_SORTS, true) ? $sortColumn : 'name';
+            $orderKey = $this->driver === 'mysql'
+                ? "LOWER(COALESCE($sortColumn, '')) COLLATE utf8mb4_hungarian_ci"
+                : "ft_hu_key(COALESCE($sortColumn, ''))";
+        }
+        $this->registerCatalogFunctions();
+
+        $idsStmt = $this->pdo->prepare("SELECT id FROM products $whereSql ORDER BY $orderKey $direction, name, id");
+        $idsStmt->execute($params);
+        $ids = array_map('intval', $idsStmt->fetchAll(PDO::FETCH_COLUMN));
+
+        $page = array_slice($ids, max(0, $offset), max(1, min(500, $limit)));
+        $rowsById = $this->findRowsByIds('products', $page);
+        $products = [];
+        foreach ($page as $id) {
+            if (isset($rowsById[$id])) {
+                $products[] = $rowsById[$id];
+            }
+        }
+
+        $total = (int) $this->pdo->query('SELECT COUNT(*) FROM products' . ($includeDeleted ? '' : ' WHERE is_deleted = 0'))->fetchColumn();
+        return [
+            'products' => $products,
+            'ids' => $ids,
+            'filtered_count' => count($ids),
+            'total_count' => $total,
+            'groups' => $this->listProductGroupNames($includeDeleted),
+        ];
+    }
+
+    /**
+     * Kis-/nagybetű-független (Unicode, mb_strtolower — mint a JS
+     * toLowerCase), ékezet-érzékeny részszöveg-feltétel $needle-re (már
+     * kisbetűs). SQLite-on a pontos ellenőrzés egy PHP-függvény (ft_lower)
+     * soronként — ezt egy natív, SZÜKSÉGES előszűrő előzi meg: a keresőszöveg
+     * leghosszabb ASCII-szakasza `LIKE`-kal (az SQLite LIKE ASCII-ban kis-/
+     * nagybetű-független). Ha a kisbetűsített mező tartalmazza a keresőszöveget,
+     * akkor a mező az ASCII-szakaszt is tartalmazza kis-/nagybetűtől
+     * függetlenül — kivéve, ha a megfelelő betű a K (U+212A) vagy az İ (U+0130)
+     * nagybetűből jön (csak ez a kettő kisbetűsödik ASCII-ra), ezért ezek
+     * jelenléte is átengedi a sort. Az előszűrő így egyetlen találatot sem
+     * zár ki; a D3-on (100 000 termék) a keresést ~715 ms-ról néhány
+     * tíz ms-ra csökkenti.
+     *
+     * @return array{0: string, 1: list<string>} [SQL-feltétel, paraméterek]
+     */
+    private function containsLowerCondition(string $expr, string $needle): array
+    {
+        if ($this->driver === 'mysql') {
+            return ["LOCATE(?, LOWER($expr) COLLATE utf8mb4_bin) > 0", [$needle]];
+        }
+        $this->registerCatalogFunctions();
+        $exact = "instr(ft_lower($expr), ?) > 0";
+        preg_match_all('/[\x00-\x7f]+/', $needle, $runs);
+        $longest = '';
+        foreach ($runs[0] as $run) {
+            if (strlen($run) > strlen($longest)) {
+                $longest = $run;
+            }
+        }
+        if ($longest === '') {
+            return [$exact, [$needle]];
+        }
+        $like = '%' . strtr($longest, ['\\' => '\\\\', '%' => '\\%', '_' => '\\_']) . '%';
+        return [
+            "($expr LIKE ? ESCAPE '\\' OR instr($expr, '\u{212A}') > 0 OR instr($expr, '\u{130}') > 0) AND $exact",
+            [$like, $needle],
+        ];
+    }
+
+    private ?int $catalogFunctionsPdoId = null;
+
+    private function registerCatalogFunctions(): void
+    {
+        if ($this->driver === 'mysql' || $this->catalogFunctionsPdoId === spl_object_id($this->pdo)) {
+            return;
+        }
+        $flags = defined('PDO::SQLITE_DETERMINISTIC') ? PDO::SQLITE_DETERMINISTIC : 0;
+        $this->pdo->sqliteCreateFunction('ft_lower', static fn ($s) => $s === null ? null : mb_strtolower((string) $s, 'UTF-8'), 1, $flags);
+        $this->pdo->sqliteCreateFunction('ft_hu_key', static fn ($s) => self::huSortKey(mb_strtolower((string) $s, 'UTF-8')), 1, $flags);
+        $this->catalogFunctionsPdoId = spl_object_id($this->pdo);
+    }
+
+    /**
+     * Magyar ábécé szerinti rendezőkulcs (bináris összehasonlításra) egy
+     * KISBETŰS szöveghez — a JS `localeCompare(..., 'hu')` (ICU, magyar
+     * szabályok) közelítése intl nélkül: a kettős/hármas betűk (cs, dz, dzs,
+     * gy, ly, ny, sz, ty, zs) önálló betűk, az ö/ő és ü/ű önálló betűk az o/ó
+     * és u/ú után, az á/é/í/ó/ú (és más ékezetes latin betűk) az alapbetűvel
+     * elsődlegesen azonosak, csak másodlagosan (ékezet) különböznek; a
+     * szóköz és írásjel a számjegyek, azok a betűk előtt állnak. A kettőzött
+     * kettős betűk (pl. „ssz”) ICU-féle rövidítését nem követi — lásd README.
+     */
+    public static function huSortKey(string $lower): string
+    {
+        // Gyors út (C-sebességű strtr, leghosszabb egyezés — ugyanaz a mohó
+        // tokenizálás, mint lent): ha a szöveg csak ismert karakterekből áll.
+        // Egy 100 000 termékes lap rendezésénél ez a kulcsszámítás a költség
+        // döntő része. Az eredmény bájtra azonos a lenti általános úttal
+        // (lásd ProductCatalogScalingTest).
+        static $fast = null;
+        if ($fast === null) {
+            $fast = self::huSortKeyMaps();
+        }
+        if (preg_match($fast['pattern'], $lower) === 1) {
+            return strtr($lower, $fast['primary']) . "\x00" . strtr($lower, $fast['secondary']);
+        }
+        return self::huSortKeySlow($lower);
+    }
+
+    /** @return array{pattern: string, primary: array<string,string>, secondary: array<string,string>} */
+    private static function huSortKeyMaps(): array
+    {
+        $letters = ['a', 'b', 'c', 'cs', 'd', 'dz', 'dzs', 'e', 'f', 'g', 'gy', 'h', 'i', 'j', 'k', 'l', 'ly', 'm', 'n', 'ny', 'o', 'ö', 'p', 'q', 'r', 's', 'sz', 't', 'ty', 'u', 'ü', 'v', 'w', 'x', 'y', 'z', 'zs'];
+        $primary = [];
+        $secondary = [];
+        foreach ($letters as $i => $letter) {
+            $primary[$letter] = "\x03" . chr(0x60 + $i);
+            $secondary[$letter] = '0';
+        }
+        foreach (self::HU_ACCENTS as $char => [$base, $accent]) {
+            $primary[$char] = $primary[$base];
+            $secondary[$char] = chr(0x30 + $accent);
+        }
+        for ($c = 0; $c < 128; $c++) {
+            $ch = chr($c);
+            if (isset($primary[$ch])) {
+                continue;
+            }
+            $primary[$ch] = (ctype_digit($ch) ? "\x02" : "\x01") . $ch;
+            $secondary[$ch] = '0';
+        }
+        $known = implode('', array_keys(self::HU_ACCENTS)) . 'öü';
+        return ['pattern' => '/^[\x00-\x7f' . $known . ']*$/u', 'primary' => $primary, 'secondary' => $secondary];
+    }
+
+    private const HU_ACCENTS = [
+        'á' => ['a', 1], 'é' => ['e', 1], 'í' => ['i', 1], 'ó' => ['o', 1], 'ú' => ['u', 1],
+        'ő' => ['ö', 1], 'ű' => ['ü', 1],
+        'à' => ['a', 2], 'â' => ['a', 3], 'ä' => ['a', 4], 'ã' => ['a', 5], 'å' => ['a', 6],
+        'è' => ['e', 2], 'ê' => ['e', 3], 'ë' => ['e', 4], 'ì' => ['i', 2], 'î' => ['i', 3], 'ï' => ['i', 4],
+        'ò' => ['o', 2], 'ô' => ['o', 3], 'õ' => ['o', 5], 'ù' => ['u', 2], 'û' => ['u', 3],
+        'ç' => ['c', 1], 'ñ' => ['n', 1], 'ý' => ['y', 1], 'ÿ' => ['y', 4], 'š' => ['s', 1], 'ž' => ['z', 1],
+        'č' => ['c', 2], 'ř' => ['r', 1], 'ł' => ['l', 1],
+    ];
+
+    /** A huSortKey() általános (karakterenkénti) útja — bármilyen bemenetre. */
+    public static function huSortKeySlow(string $lower): string
+    {
+        static $alphabet = null;
+        $accents = self::HU_ACCENTS;
+        if ($alphabet === null) {
+            $alphabet = [];
+            foreach (['a', 'b', 'c', 'cs', 'd', 'dz', 'dzs', 'e', 'f', 'g', 'gy', 'h', 'i', 'j', 'k', 'l', 'ly', 'm', 'n', 'ny', 'o', 'ö', 'p', 'q', 'r', 's', 'sz', 't', 'ty', 'u', 'ü', 'v', 'w', 'x', 'y', 'z', 'zs'] as $i => $letter) {
+                $alphabet[$letter] = chr(0x60 + $i);
+            }
+        }
+        $chars = mb_str_split($lower, 1, 'UTF-8');
+        $primary = '';
+        $secondary = '';
+        $count = count($chars);
+        for ($i = 0; $i < $count; $i++) {
+            $c = $chars[$i];
+            [$base, $accent] = $accents[$c] ?? [$c, 0];
+            if (isset($alphabet[$base])) {
+                // leghosszabb egyezés: dzs > dz/cs/gy/... > egy betű (csak ékezet nélküli betűkből)
+                foreach ([3, 2] as $len) {
+                    if ($accent === 0 && $i + $len <= $count) {
+                        $candidate = implode('', array_slice($chars, $i, $len));
+                        if (isset($alphabet[$candidate])) {
+                            $base = $candidate;
+                            $i += $len - 1;
+                            break;
+                        }
+                    }
+                }
+                $primary .= "\x03" . $alphabet[$base];
+            } elseif (ctype_digit($c)) {
+                $primary .= "\x02" . $c;
+            } elseif (strlen($c) === 1) {
+                $primary .= "\x01" . $c; // szóköz, írásjel (ASCII)
+            } else {
+                $primary .= "\x04" . $c; // egyéb (nem latin) karakter a betűk után, kódpont szerint
+            }
+            $secondary .= chr(0x30 + $accent);
+        }
+        return $primary . "\x00" . $secondary;
+    }
+
     public function listBarcodeIndex(): array
     {
         $stmt = $this->pdo->query("SELECT id, barcode FROM products WHERE barcode IS NOT NULL AND barcode != ''");
@@ -3043,6 +3399,25 @@ class Database
     {
         $stmt = $this->pdo->query("SELECT DISTINCT brand FROM products WHERE brand IS NOT NULL AND brand != '' ORDER BY brand");
         return array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'brand');
+    }
+
+    /**
+     * PERF-04 — listProducts() sorai egyenként egy visszahívásnak (azonos
+     * szűrés, sorrend és korlát) — a hívó streamelve írhatja ki a teljes
+     * katalógust, a PHP-memória nem nő a termékszámmal.
+     */
+    public function eachProduct(int $limit, bool $includeDeleted, callable $consumer): void
+    {
+        $sql = 'SELECT * FROM products';
+        if (!$includeDeleted) {
+            $sql .= ' WHERE is_deleted = 0';
+        }
+        $stmt = $this->pdo->prepare($sql . ' ORDER BY name LIMIT ?');
+        $stmt->bindValue(1, $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $consumer($row);
+        }
     }
 
     public function listProducts(int $limit = 200, bool $includeDeleted = false): array
@@ -4240,8 +4615,9 @@ class Database
         $params = [];
 
         if (!empty($filters['date'])) {
-            $where[] = ($this->driver === 'mysql' ? 'DATE(invoices.created_at)' : "substr(invoices.created_at, 1, 10)") . ' = ?';
-            $params[] = $filters['date'];
+            [$dateCondition, $dateParams] = $this->dayRangeCondition('invoices.created_at', (string) $filters['date']);
+            $where[] = $dateCondition;
+            array_push($params, ...$dateParams);
         }
         if (!empty($filters['id'])) {
             $where[] = '(invoices.id = ? OR invoices.sale_id = ?)';
@@ -4698,8 +5074,9 @@ class Database
         $params = [];
 
         if (!empty($filters['date'])) {
-            $where[] = ($this->driver === 'mysql' ? 'DATE(created_at)' : "substr(created_at, 1, 10)") . ' = ?';
-            $params[] = $filters['date'];
+            [$dateCondition, $dateParams] = $this->dayRangeCondition('created_at', (string) $filters['date']);
+            $where[] = $dateCondition;
+            array_push($params, ...$dateParams);
         }
         if (!empty($filters['id'])) {
             $where[] = 'id = ?';
@@ -4735,8 +5112,9 @@ class Database
         $params = [];
 
         if (!empty($filters['date'])) {
-            $where[] = ($this->driver === 'mysql' ? 'DATE(created_at)' : "substr(created_at, 1, 10)") . ' = ?';
-            $params[] = $filters['date'];
+            [$dateCondition, $dateParams] = $this->dayRangeCondition('created_at', (string) $filters['date']);
+            $where[] = $dateCondition;
+            array_push($params, ...$dateParams);
         }
         if (!empty($filters['id'])) {
             $where[] = 'id = ?';
@@ -4888,9 +5266,11 @@ class Database
      */
     public function getDailySummary(string $date): array
     {
-        $dateExpr = $this->driver === 'mysql' ? 'DATE(created_at)' : "substr(created_at, 1, 10)";
-        $stmt = $this->pdo->prepare("SELECT * FROM sales WHERE $dateExpr = ? ORDER BY created_at");
-        $stmt->execute([$date]);
+        // PERF-07: indexelhető napi tartomány; PERF-02: a tételek a napi
+        // eladásokhoz JOIN-nal (nem egy eladás-azonosítónként bővülő IN-listával).
+        [$dayCondition, $dayParams] = $this->dayRangeCondition('created_at', $date);
+        $stmt = $this->pdo->prepare("SELECT * FROM sales WHERE $dayCondition ORDER BY created_at");
+        $stmt->execute($dayParams);
         $sales = $stmt->fetchAll(PDO::FETCH_ASSOC);
         foreach ($sales as &$saleRow) {
             unset($saleRow['receipt_token']); // titkos token — a napi összesítőben sose kell, sose menjen ki
@@ -4899,10 +5279,9 @@ class Database
 
         $itemsBySale = [];
         if ($sales) {
-            $saleIds = array_column($sales, 'id');
-            $placeholders = implode(',', array_fill(0, count($saleIds), '?'));
-            $itemsStmt = $this->pdo->prepare("SELECT * FROM sale_items WHERE sale_id IN ($placeholders) ORDER BY id");
-            $itemsStmt->execute($saleIds);
+            [$saleDayCondition, $saleDayParams] = $this->dayRangeCondition('s.created_at', $date);
+            $itemsStmt = $this->pdo->prepare("SELECT si.* FROM sale_items si JOIN sales s ON s.id = si.sale_id WHERE $saleDayCondition ORDER BY si.id");
+            $itemsStmt->execute($saleDayParams);
             foreach ($itemsStmt->fetchAll(PDO::FETCH_ASSOC) as $item) {
                 $itemsBySale[$item['sale_id']][] = $item;
             }
@@ -4945,28 +5324,27 @@ class Database
         // (csak "sales" ellen futott eddig), és mivel a returns ÉS a sales
         // tábla is rendelkezik created_at oszloppal, a JOIN-elt lekérdezésben
         // a minősítetlen változat kétértelmű oszlopnév-hibát adna.
-        $returnDateExpr = $this->driver === 'mysql' ? 'DATE(r.created_at)' : "substr(r.created_at, 1, 10)";
+        [$returnDayCondition, $returnDayParams] = $this->dayRangeCondition('r.created_at', $date);
         $returnsStmt = $this->pdo->prepare("
             SELECT r.*, s.payment_method
             FROM returns r
             JOIN sales s ON s.id = r.sale_id
-            WHERE $returnDateExpr = ?
+            WHERE $returnDayCondition
             ORDER BY r.created_at
         ");
-        $returnsStmt->bindValue(1, $date);
-        $returnsStmt->execute();
+        $returnsStmt->execute($returnDayParams);
         $returns = $returnsStmt->fetchAll(PDO::FETCH_ASSOC);
 
         if ($returns) {
-            $returnIds = array_column($returns, 'id');
-            $riPlaceholders = implode(',', array_fill(0, count($returnIds), '?'));
             $riStmt = $this->pdo->prepare("
                 SELECT ri.*, si.vat_rate AS vat_rate
                 FROM return_items ri
+                JOIN returns r ON r.id = ri.return_id
                 LEFT JOIN sale_items si ON si.id = ri.sale_item_id
-                WHERE ri.return_id IN ($riPlaceholders)
+                WHERE $returnDayCondition
+                ORDER BY ri.id
             ");
-            $riStmt->execute($returnIds);
+            $riStmt->execute($returnDayParams);
             $returnItemsByReturn = [];
             foreach ($riStmt->fetchAll(PDO::FETCH_ASSOC) as $ri) {
                 $returnItemsByReturn[$ri['return_id']][] = $ri;
@@ -5353,33 +5731,62 @@ class Database
 
     public function bulkSetProductsDeleted(array $ids, bool $deleted): void
     {
-        if (!$ids) {
-            return;
-        }
-        $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        $stmt = $this->pdo->prepare("UPDATE products SET is_deleted = ?, updated_at = ? WHERE id IN ($placeholders)");
-        $stmt->execute(array_merge([$deleted ? 1 : 0, date('Y-m-d H:i:s')], array_values($ids)));
+        $this->bulkUpdateByIds('products', 'is_deleted = ?, updated_at = ?', [$deleted ? 1 : 0, date('Y-m-d H:i:s')], $ids);
     }
 
     public function bulkSetProductsGroup(array $ids, ?string $groupName): void
     {
-        if (!$ids) {
-            return;
-        }
-        $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        $stmt = $this->pdo->prepare("UPDATE products SET group_name = ?, updated_at = ? WHERE id IN ($placeholders)");
-        $stmt->execute(array_merge([$groupName !== '' ? $groupName : null, date('Y-m-d H:i:s')], array_values($ids)));
+        $this->bulkUpdateByIds('products', 'group_name = ?, updated_at = ?', [$groupName !== '' ? $groupName : null, date('Y-m-d H:i:s')], $ids);
     }
 
     public function findProductsByIds(array $ids): array
     {
-        $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        $stmt = $this->pdo->prepare("SELECT * FROM products WHERE id IN ($placeholders)");
-        $stmt->execute(array_values($ids));
+        return $this->findRowsByIds('products', $ids);
+    }
 
+    /**
+     * PERF-02 — tömeges UPDATE azonosító-listára korlátos méretű IN-darabokban,
+     * EGY tranzakcióban (a hívó tranzakciójában, ha van): ugyanaz a
+     * mindent-vagy-semmit hatás, mint a korábbi egyetlen UPDATE-é, de az
+     * SQL-paraméterkorláttól (SQLite 32 766, MySQL 65 535) függetlenül.
+     */
+    private function bulkUpdateByIds(string $table, string $assignments, array $assignmentParams, array $ids): void
+    {
+        $ids = array_values($ids);
+        if (!$ids) {
+            return;
+        }
+        $ownTransaction = !$this->pdo->inTransaction();
+        if ($ownTransaction) {
+            $this->pdo->beginTransaction();
+        }
+        try {
+            foreach (array_chunk($ids, self::ID_CHUNK_SIZE) as $chunk) {
+                $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+                $this->pdo->prepare("UPDATE $table SET $assignments WHERE id IN ($placeholders)")->execute(array_merge($assignmentParams, $chunk));
+            }
+            if ($ownTransaction) {
+                $this->pdo->commit();
+            }
+        } catch (Throwable $e) {
+            if ($ownTransaction && $this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    /** @return array<int, array<string, mixed>> azonosító => sor, korlátos IN-darabokban lekérdezve (PERF-02) */
+    private function findRowsByIds(string $table, array $ids): array
+    {
         $byId = [];
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $byId[(int) $row['id']] = $row;
+        foreach (array_chunk(array_values($ids), self::ID_CHUNK_SIZE) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $stmt = $this->pdo->prepare("SELECT * FROM $table WHERE id IN ($placeholders)");
+            $stmt->execute($chunk);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $byId[(int) $row['id']] = $row;
+            }
         }
         return $byId;
     }
@@ -5761,25 +6168,12 @@ class Database
 
     public function bulkSetCustomersDeleted(array $ids, bool $deleted): void
     {
-        if (!$ids) {
-            return;
-        }
-        $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        $stmt = $this->pdo->prepare("UPDATE customers SET is_deleted = ?, updated_at = ? WHERE id IN ($placeholders)");
-        $stmt->execute(array_merge([$deleted ? 1 : 0, date('Y-m-d H:i:s')], array_values($ids)));
+        $this->bulkUpdateByIds('customers', 'is_deleted = ?, updated_at = ?', [$deleted ? 1 : 0, date('Y-m-d H:i:s')], $ids);
     }
 
     public function findCustomersByIds(array $ids): array
     {
-        $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        $stmt = $this->pdo->prepare("SELECT * FROM customers WHERE id IN ($placeholders)");
-        $stmt->execute(array_values($ids));
-
-        $byId = [];
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $byId[(int) $row['id']] = $row;
-        }
-        return $byId;
+        return $this->findRowsByIds('customers', $ids);
     }
 
     public function saveCustomer(array $c): int
@@ -6008,9 +6402,9 @@ class Database
 
     public function countSalesToday(): int
     {
-        $dateExpr = $this->driver === 'mysql' ? 'DATE(created_at)' : "substr(created_at, 1, 10)";
-        $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM sales WHERE $dateExpr = ?");
-        $stmt->execute([date('Y-m-d')]);
+        [$dateCondition, $dateParams] = $this->dayRangeCondition('created_at', date('Y-m-d'));
+        $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM sales WHERE $dateCondition");
+        $stmt->execute($dateParams);
         return (int) $stmt->fetchColumn();
     }
 
@@ -6894,12 +7288,16 @@ class Database
                 // számolva — nincs szükség az újra-SELECT-re.
                 $now = date('Y-m-d H:i:s');
                 if ($deltasByProductId) {
-                    $placeholders = implode(',', array_fill(0, count($deltasByProductId), '?'));
-                    $productsStmt = $this->pdo->prepare("SELECT id, stock_qty, wc_product_id, sync_to_woocommerce, name FROM products WHERE id IN ($placeholders)");
-                    $productsStmt->execute(array_keys($deltasByProductId));
                     $productsById = [];
-                    foreach ($productsStmt->fetchAll(PDO::FETCH_ASSOC) as $p) {
-                        $productsById[(int) $p['id']] = $p;
+                    // PERF-02: korlátos méretű IN-darabokban (nagy katalógus teljes leltáránál
+                    // a módosult termékek száma meghaladhatja az SQL-paraméterkorlátot).
+                    foreach (array_chunk(array_keys($deltasByProductId), self::ID_CHUNK_SIZE) as $chunk) {
+                        $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+                        $productsStmt = $this->pdo->prepare("SELECT id, stock_qty, wc_product_id, sync_to_woocommerce, name FROM products WHERE id IN ($placeholders)");
+                        $productsStmt->execute($chunk);
+                        foreach ($productsStmt->fetchAll(PDO::FETCH_ASSOC) as $p) {
+                            $productsById[(int) $p['id']] = $p;
+                        }
                     }
 
                     $updateStmt = $this->pdo->prepare('UPDATE products SET stock_qty = stock_qty + :delta, updated_at = :now, wc_synced_at = :now WHERE id = :id');
@@ -7342,10 +7740,10 @@ class Database
         $stmt = $this->pdo->prepare("
             SELECT $dateExpr AS day, SUM(total + gift_card_redeemed) AS total, COUNT(*) AS cnt
             FROM sales
-            WHERE $dateExpr >= ?
+            WHERE created_at >= ?
             GROUP BY $dateExpr
         ");
-        $stmt->execute([$since]);
+        $stmt->execute([$since]); // PERF-07: indexelhető alsó határ (a $since maga is 'ÉÉÉÉ-HH-NN')
         $byDate = [];
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $byDate[$row['day']] = ['total' => (float) $row['total'], 'count' => (int) $row['cnt']];
@@ -7357,7 +7755,7 @@ class Database
         $returnsStmt = $this->pdo->prepare("
             SELECT $dateExpr AS day, SUM(COALESCE(value_gross, total_refund + gift_card_refund)) AS total
             FROM returns
-            WHERE $dateExpr >= ?
+            WHERE created_at >= ?
             GROUP BY $dateExpr
         ");
         $returnsStmt->execute([$since]);
@@ -8477,18 +8875,32 @@ class Database
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    /** Top-selling products by total quantity sold (last 90 days) — for the Kassza "gyakran vásárolt" quick-add row. */
+    /**
+     * Top-selling products by total quantity sold (last 90 days) — for the Kassza "gyakran vásárolt" quick-add row.
+     *
+     * PERF-05: a 90 napos eladások a sales.created_at indexéről indulnak, az
+     * összesítés termékenként egy al-lekérdezésben történik, és csak utána
+     * kapcsolódik a termék. A korábbi hármas JOIN-nál az SQLite a kevés értékű
+     * idx_products_deleted indexről indult, és minden termék ÖSSZES eladási
+     * sorát bejárta a dátumszűrés előtt (D2: ~2 s, D3: ~8 s kassza-betöltésenként).
+     * Az eredményhalmaz azonos; azonos mennyiségnél a sorrend mostantól
+     * determinisztikus (termék-azonosító szerint növekvő).
+     */
     public function getTopSellingProducts(int $limit = 8): array
     {
         $since = date('Y-m-d H:i:s', strtotime('-90 days'));
         $stmt = $this->pdo->prepare('
-            SELECT p.id, p.name, p.barcode, p.price, p.stock_qty, SUM(si.qty) AS total_qty
-            FROM sale_items si
-            JOIN products p ON p.id = si.product_id
-            JOIN sales s ON s.id = si.sale_id
-            WHERE p.is_deleted = 0 AND s.created_at >= ?
-            GROUP BY p.id
-            ORDER BY total_qty DESC
+            SELECT p.id, p.name, p.barcode, p.price, p.stock_qty, t.total_qty
+            FROM (
+                SELECT si.product_id, SUM(si.qty) AS total_qty
+                FROM sales s
+                JOIN sale_items si ON si.sale_id = s.id
+                WHERE s.created_at >= ? AND si.product_id IS NOT NULL
+                GROUP BY si.product_id
+            ) t
+            JOIN products p ON p.id = t.product_id
+            WHERE p.is_deleted = 0
+            ORDER BY t.total_qty DESC, p.id
             LIMIT ?
         ');
         $stmt->bindValue(1, $since);
@@ -8559,39 +8971,43 @@ class Database
      * getDailySummary() PONTOS tétel-szintű, kedvezmény-arányosításos
      * logikáját alkalmazza (lásd ott a docblockot), csak tartományra és
      * opcionális fizetésimód-szűrésre általánosítva, plusz napi bontással.
-     * Két batch-lekérdezés (sales + sale_items IN (...)) — nincs N+1.
+     *
+     * PERF-02: egyetlen, streamelve olvasott sales ⟕ sale_items lekérdezés,
+     * eladásonként csoportosítva — nincs a teljes eladáslistát memóriába töltő
+     * fetchAll(), és nincs az eladás-azonosítókból épülő (SQLite-on 32 766,
+     * MySQL-en 65 535 paraméternél elbukó) IN-lista. A memóriaigény egy eladás
+     * sorai + a napi/fizetési módonkénti összesítők, nem a tartomány mérete.
+     * Az eladások sorrendje (created_at, azon belül azonosító) és az eladáson
+     * belüli tételsorrend (azonosító) a korábbival azonos.
      */
     public function getSalesReportSummary(string $dateFrom, string $dateTo, ?string $paymentMethod = null): array
     {
-        $dateExpr = $this->driver === 'mysql' ? 'DATE(created_at)' : "substr(created_at, 1, 10)";
-        $sql = "SELECT * FROM sales WHERE $dateExpr BETWEEN ? AND ?";
-        $params = [$dateFrom, $dateTo];
+        [$dateCondition, $params] = $this->dayRangeCondition('s.created_at', $dateFrom, $dateTo);
+        $where = $dateCondition;
         if ($paymentMethod !== null && $paymentMethod !== '') {
-            $sql .= ' AND payment_method = ?';
+            $where .= ' AND s.payment_method = ?';
             $params[] = $paymentMethod;
         }
-        $stmt = $this->pdo->prepare($sql . ' ORDER BY created_at');
+        $stmt = $this->pdo->prepare("
+            SELECT s.id AS s_id, s.created_at AS s_created_at, s.total AS s_total,
+                   s.gift_card_redeemed AS s_gift_card_redeemed, s.payment_method AS s_payment_method,
+                   si.id AS si_id, si.unit_price, si.qty, si.vat_rate
+            FROM sales s
+            LEFT JOIN sale_items si ON si.sale_id = s.id
+            WHERE $where
+            ORDER BY s.created_at, s.id, si.id
+        ");
         $stmt->execute($params);
-        $sales = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $itemsBySale = [];
-        if ($sales) {
-            $saleIds = array_column($sales, 'id');
-            $placeholders = implode(',', array_fill(0, count($saleIds), '?'));
-            $itemsStmt = $this->pdo->prepare("SELECT * FROM sale_items WHERE sale_id IN ($placeholders) ORDER BY id");
-            $itemsStmt->execute($saleIds);
-            foreach ($itemsStmt->fetchAll(PDO::FETCH_ASSOC) as $item) {
-                $itemsBySale[$item['sale_id']][] = $item;
-            }
-        }
 
         $byDay = [];
         $byPayment = [];
         $totalGross = 0.0;
         $totalNet = 0.0;
         $totalVat = 0.0;
+        $salesCount = 0;
 
-        foreach ($sales as $sale) {
+        $processSale = static function (array $sale, array $items) use (&$byDay, &$byPayment, &$totalGross, &$totalNet, &$totalVat, &$salesCount): void {
+            $salesCount++;
             $day = substr($sale['created_at'], 0, 10);
             $byDay[$day] ??= ['date' => $day, 'gross' => 0.0, 'net' => 0.0, 'count' => 0];
             $saleValue = self::saleGrossValue($sale);
@@ -8602,42 +9018,68 @@ class Database
             self::addToPaymentBreakdown($byPayment, $method, (float) $sale['total'], (float) $sale['gift_card_redeemed'], 1, true);
 
             // Közös ÁFA-szabály (B-13) — ugyanaz, mint a napi zárásban.
-            $breakdown = self::vatBreakdown($saleValue, $itemsBySale[$sale['id']] ?? []);
+            $breakdown = self::vatBreakdown($saleValue, $items);
             $totalNet += $breakdown['net'];
             $totalVat += $breakdown['vat'];
             $byDay[$day]['net'] += $breakdown['net'];
             $totalGross += $saleValue;
+        };
+        $currentSale = null;
+        $currentItems = [];
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            if ($currentSale === null || $row['s_id'] !== $currentSale['id']) {
+                if ($currentSale !== null) {
+                    $processSale($currentSale, $currentItems);
+                }
+                $currentSale = [
+                    'id' => $row['s_id'],
+                    'created_at' => $row['s_created_at'],
+                    'total' => $row['s_total'],
+                    'gift_card_redeemed' => $row['s_gift_card_redeemed'],
+                    'payment_method' => $row['s_payment_method'],
+                ];
+                $currentItems = [];
+            }
+            if ($row['si_id'] !== null) {
+                $currentItems[] = ['unit_price' => $row['unit_price'], 'qty' => $row['qty'], 'vat_rate' => $row['vat_rate']];
+            }
+        }
+        if ($currentSale !== null) {
+            $processSale($currentSale, $currentItems);
         }
 
         // Visszáruk — saját napjuk szerint, ugyanaz a levonás-elv, mint
         // getDailySummary()-nél (lásd ott a docblockot a részletes indoklásért).
-        $returnDateExpr = $this->driver === 'mysql' ? 'DATE(r.created_at)' : "substr(r.created_at, 1, 10)";
-        $returnsSql = "
+        [$returnDateCondition, $returnsParams] = $this->dayRangeCondition('r.created_at', $dateFrom, $dateTo);
+        $returnsWhere = $returnDateCondition;
+        if ($paymentMethod !== null && $paymentMethod !== '') {
+            $returnsWhere .= ' AND s.payment_method = ?';
+            $returnsParams[] = $paymentMethod;
+        }
+        $returnsStmt = $this->pdo->prepare("
             SELECT r.*, s.payment_method
             FROM returns r
             JOIN sales s ON s.id = r.sale_id
-            WHERE $returnDateExpr BETWEEN ? AND ?
-        ";
-        $returnsParams = [$dateFrom, $dateTo];
-        if ($paymentMethod !== null && $paymentMethod !== '') {
-            $returnsSql .= ' AND s.payment_method = ?';
-            $returnsParams[] = $paymentMethod;
-        }
-        $returnsStmt = $this->pdo->prepare($returnsSql);
+            WHERE $returnsWhere
+            ORDER BY r.id
+        ");
         $returnsStmt->execute($returnsParams);
         $returns = $returnsStmt->fetchAll(PDO::FETCH_ASSOC);
 
         $totalReturnsGross = 0.0;
         if ($returns) {
-            $returnIds = array_column($returns, 'id');
-            $riPlaceholders = implode(',', array_fill(0, count($returnIds), '?'));
+            // A visszáru-tételek ugyanazzal a szűréssel, JOIN-nal (nem a
+            // visszáru-azonosítók IN-listájával — PERF-02).
             $riStmt = $this->pdo->prepare("
                 SELECT ri.*, si.vat_rate AS vat_rate
                 FROM return_items ri
+                JOIN returns r ON r.id = ri.return_id
+                JOIN sales s ON s.id = r.sale_id
                 LEFT JOIN sale_items si ON si.id = ri.sale_item_id
-                WHERE ri.return_id IN ($riPlaceholders)
+                WHERE $returnsWhere
+                ORDER BY ri.id
             ");
-            $riStmt->execute($returnIds);
+            $riStmt->execute($returnsParams);
             $returnItemsByReturn = [];
             foreach ($riStmt->fetchAll(PDO::FETCH_ASSOC) as $ri) {
                 $returnItemsByReturn[$ri['return_id']][] = $ri;
@@ -8672,7 +9114,6 @@ class Database
             $row['total'] = round($row['total'], 2);
         }
         unset($row);
-        $salesCount = count($sales);
         $paymentTotalAbs = array_sum(array_map('abs', array_column($byPayment, 'total'))) ?: 0.0;
         foreach ($byPayment as $method => &$row) {
             $row['percent'] = $paymentTotalAbs > 0 ? round(abs($row['total']) / $paymentTotalAbs * 100, 1) : 0.0;
@@ -8712,57 +9153,89 @@ class Database
         // kedvezmény ELŐTTI listaár (unit_price × qty) és a termék JELENLEGI
         // ÁFA-kulcsa szerepelt — egy kuponos eladásnál ugyanaz a riport két
         // különböző nettó forgalmat mutatott.
-        $agg = $this->allocatedProductSales($dateFrom, $dateTo, $paymentMethod);
-        if (!$agg) {
-            return [];
-        }
-        $ids = array_keys($agg);
-        $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        $sql = "SELECT id, name, barcode, group_name, purchase_price_net FROM products WHERE id IN ($placeholders)";
-        $params = $ids;
-        if ($groupName !== null && $groupName !== '') {
-            $sql .= ' AND group_name = ?';
-            $params[] = $groupName;
-        }
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute($params);
-        $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        // Egy bulk lekérdezéssel eldöntjük, mely termékekhez van egyáltalán
-        // valaha rögzített beszerzés — enélkül egy sose beszerzett termék
-        // alapértelmezett 0 purchase_price_net-je hamis (100%-os) árrést
-        // mutatna, lásd PurchaseDecisionService::computeMargin() docblockja.
-        $hasCostHistory = $products ? $this->productsHavePurchaseHistory(array_map('intval', array_column($products, 'id'))) : [];
-
         $result = [];
-        foreach ($products as $p) {
-            $pid = (int) $p['id'];
-            $qty = $agg[$pid]['qty'];
-            $revenueGross = $agg[$pid]['gross'] / 100.0;
-            $revenueNet = $agg[$pid]['net'] / 100.0;
-            // Az árrés a (kedvezmény utáni, allokált) nettó egységárból és a
-            // termék "utolsó ismert" nettó beszerzési árából — lásd README.
-            $margin = PurchaseDecisionService::computeMargin(
-                $qty > 0 ? round($revenueNet / $qty, 4) : null,
-                (float) $p['purchase_price_net'],
-                !empty($hasCostHistory[$pid])
-            );
-            $result[] = [
-                'product_id'     => $pid,
-                'name'           => $p['name'],
-                'barcode'        => $p['barcode'],
-                'group_name'     => $p['group_name'],
-                'qty'            => $qty,
-                'revenue'        => round($revenueGross, 2),
-                'revenue_net'    => round($revenueNet, 2),
-                'cost_net_total' => $margin !== null ? round(((float) $p['purchase_price_net']) * $qty, 2) : null,
-                'margin_net'     => $margin !== null ? round($revenueNet - ((float) $p['purchase_price_net']) * $qty, 2) : null,
-                'margin_pct'     => $margin['margin_pct'] ?? null,
-            ];
-        }
+        $this->eachTopProductRow($dateFrom, $dateTo, $groupName, $minQty, $paymentMethod, static function (array $row) use (&$result, $limit): bool {
+            $result[] = $row;
+            return $limit <= 0 || count($result) < $limit;
+        });
+        return $limit <= 0 ? array_slice($result, 0, $limit) : $result;
+    }
 
-        $result = array_values(array_filter($result, static fn ($r) => $r['qty'] >= $minQty));
-        usort($result, static fn ($a, $b) => $b['qty'] <=> $a['qty']);
-        return array_slice($result, 0, $limit);
+    /**
+     * PERF-02 — a getTopProductsReport() sorai eladott mennyiség szerint
+     * csökkenő (azonos mennyiségnél termék-azonosító szerint növekvő)
+     * sorrendben, egyenként átadva $consumer-nek (false = elég). A korábbi
+     * változat az összes eladott termék azonosítóját egyetlen IN-listába tette
+     * (D3-on 100 000 termék → „too many SQL variables”), és minden sort
+     * felépített a végső array_slice() előtt. Most a jelöltek először mennyiség
+     * szerint rendeződnek (ez volt a korábbi stabil usort() sorrendje az
+     * azonosító szerint rendezett termékeken), a termékadatok és a beszerzési
+     * előzmény korlátos méretű darabokban töltődnek be, és a bejárás megáll,
+     * amint a hívónak elég. A sorok tartalma és számítása változatlan.
+     */
+    private function eachTopProductRow(string $dateFrom, string $dateTo, ?string $groupName, int $minQty, ?string $paymentMethod, callable $consumer): void
+    {
+        $agg = $this->allocatedProductSales($dateFrom, $dateTo, $paymentMethod);
+        $candidates = [];
+        foreach ($agg as $pid => $a) {
+            if ($a['qty'] >= $minQty) {
+                $candidates[] = $pid;
+            }
+        }
+        usort($candidates, static fn (int $a, int $b) => [$agg[$b]['qty'], $a] <=> [$agg[$a]['qty'], $b]);
+
+        foreach (array_chunk($candidates, self::ID_CHUNK_SIZE) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $sql = "SELECT id, name, barcode, group_name, purchase_price_net FROM products WHERE id IN ($placeholders)";
+            $params = $chunk;
+            if ($groupName !== null && $groupName !== '') {
+                $sql .= ' AND group_name = ?';
+                $params[] = $groupName;
+            }
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute($params);
+            $products = [];
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $p) {
+                $products[(int) $p['id']] = $p;
+            }
+            // Egy bulk lekérdezéssel eldöntjük, mely termékekhez van egyáltalán
+            // valaha rögzített beszerzés — enélkül egy sose beszerzett termék
+            // alapértelmezett 0 purchase_price_net-je hamis (100%-os) árrést
+            // mutatna, lásd PurchaseDecisionService::computeMargin() docblockja.
+            $hasCostHistory = $products ? $this->productsHavePurchaseHistory(array_keys($products)) : [];
+
+            foreach ($chunk as $pid) {
+                if (!isset($products[$pid])) {
+                    continue;
+                }
+                $p = $products[$pid];
+                $qty = $agg[$pid]['qty'];
+                $revenueGross = $agg[$pid]['gross'] / 100.0;
+                $revenueNet = $agg[$pid]['net'] / 100.0;
+                // Az árrés a (kedvezmény utáni, allokált) nettó egységárból és a
+                // termék "utolsó ismert" nettó beszerzési árából — lásd README.
+                $margin = PurchaseDecisionService::computeMargin(
+                    $qty > 0 ? round($revenueNet / $qty, 4) : null,
+                    (float) $p['purchase_price_net'],
+                    !empty($hasCostHistory[$pid])
+                );
+                $row = [
+                    'product_id'     => $pid,
+                    'name'           => $p['name'],
+                    'barcode'        => $p['barcode'],
+                    'group_name'     => $p['group_name'],
+                    'qty'            => $qty,
+                    'revenue'        => round($revenueGross, 2),
+                    'revenue_net'    => round($revenueNet, 2),
+                    'cost_net_total' => $margin !== null ? round(((float) $p['purchase_price_net']) * $qty, 2) : null,
+                    'margin_net'     => $margin !== null ? round($revenueNet - ((float) $p['purchase_price_net']) * $qty, 2) : null,
+                    'margin_pct'     => $margin['margin_pct'] ?? null,
+                ];
+                if ($consumer($row) === false) {
+                    return;
+                }
+            }
+        }
     }
 
     /**
@@ -8782,9 +9255,7 @@ class Database
      */
     private function allocatedProductSales(string $dateFrom, string $dateTo, ?string $paymentMethod, ?int $onlyProductId = null): array
     {
-        $dateExpr = $this->driver === 'mysql' ? 'DATE(s.created_at)' : 'substr(s.created_at, 1, 10)';
-        $where = "$dateExpr BETWEEN ? AND ?";
-        $params = [$dateFrom, $dateTo];
+        [$where, $params] = $this->dayRangeCondition('s.created_at', $dateFrom, $dateTo);
         if ($paymentMethod !== null && $paymentMethod !== '') {
             $where .= ' AND s.payment_method = ?';
             $params[] = $paymentMethod;
@@ -8798,7 +9269,7 @@ class Database
             FROM sale_items si
             JOIN sales s ON s.id = si.sale_id
             WHERE $where
-            ORDER BY si.sale_id, si.id
+            ORDER BY s.created_at, s.id, si.id
         ");
         $stmt->execute($params);
 
@@ -8835,9 +9306,7 @@ class Database
             return [];
         }
 
-        $returnDateExpr = $this->driver === 'mysql' ? 'DATE(r.created_at)' : 'substr(r.created_at, 1, 10)';
-        $rWhere = "$returnDateExpr BETWEEN ? AND ?";
-        $rParams = [$dateFrom, $dateTo];
+        [$rWhere, $rParams] = $this->dayRangeCondition('r.created_at', $dateFrom, $dateTo);
         if ($paymentMethod !== null && $paymentMethod !== '') {
             $rWhere .= ' AND s.payment_method = ?';
             $rParams[] = $paymentMethod;
@@ -9153,6 +9622,44 @@ class Database
     }
 
     /**
+     * PERF-07 — egy (vagy több) naptári napra szűrés indexelhető tartomány-
+     * feltétellel: `col >= 'from' AND col < 'to+1'` a korábbi, indexet nem
+     * használó `substr(col, 1, 10) BETWEEN from AND to` (MySQL: `DATE(col)`)
+     * helyett. A két feltétel minden legalább 10 karakteres (a tárolt
+     * 'Y-m-d H:i:s' alakú) értékre pontosan ugyanazokat a sorokat adja: a
+     * határok maguk is 10 karakteres napok, így a szöveges összehasonlítás a
+     * dátumrészen dől el. Az időzóna-szabály nem változik — a tárolt helyi
+     * idő napja számít, mint eddig. Nem 'ÉÉÉÉ-HH-NN' (vagy nem létező) dátumnál
+     * a korábbi kifejezés marad, hogy az eredmény ott is azonos legyen.
+     *
+     * @return array{0: string, 1: list<string>} [SQL-feltétel, paraméterek]
+     */
+    private function dayRangeCondition(string $column, string $from, ?string $to = null): array
+    {
+        $to ??= $from;
+        $next = self::isoDayAfter($to);
+        if (self::isIsoDay($from) && $next !== null) {
+            return ["$column >= ? AND $column < ?", [$from, $next]];
+        }
+        $expr = $this->driver === 'mysql' ? "DATE($column)" : "substr($column, 1, 10)";
+        return ["$expr BETWEEN ? AND ?", [$from, $to]];
+    }
+
+    private static function isIsoDay(string $date): bool
+    {
+        return preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $date, $m) === 1 && checkdate((int) $m[2], (int) $m[3], (int) $m[1]);
+    }
+
+    /** A következő nap ('ÉÉÉÉ-HH-NN'), vagy null, ha $date nem érvényes ilyen alakú dátum. */
+    private static function isoDayAfter(string $date): ?string
+    {
+        if (!self::isIsoDay($date)) {
+            return null;
+        }
+        return DateTimeImmutable::createFromFormat('!Y-m-d', $date, new DateTimeZone('UTC'))->modify('+1 day')->format('Y-m-d');
+    }
+
+    /**
      * Egyszerű, átlátható készlet-előrejelzés (lásd a kör 10. pontja) —
      * NEM ML/bonyolult forecasting, csak "átlagos napi fogyás + aktuális
      * készlet = becsült hátralévő napok". A visszárukkal NETTÓSÍTOTT
@@ -9183,39 +9690,43 @@ class Database
             return [];
         }
         $since = date('Y-m-d H:i:s', strtotime("-$windowDays days"));
-        $placeholders = implode(',', array_fill(0, count($productIds), '?'));
-
-        $soldStmt = $this->pdo->prepare("
-            SELECT si.product_id, SUM(si.qty) AS qty, COUNT(DISTINCT substr(s.created_at, 1, 10)) AS sale_days
-            FROM sale_items si
-            JOIN sales s ON s.id = si.sale_id
-            WHERE si.product_id IN ($placeholders) AND s.created_at >= ?
-            GROUP BY si.product_id
-        ");
-        $soldStmt->execute(array_merge($productIds, [$since]));
         $sold = [];
-        foreach ($soldStmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
-            $sold[(int) $r['product_id']] = ['qty' => (int) $r['qty'], 'days' => (int) $r['sale_days']];
-        }
-
-        $returnedStmt = $this->pdo->prepare("
-            SELECT ri.product_id, SUM(ri.qty) AS qty, COUNT(DISTINCT substr(r.created_at, 1, 10)) AS return_days
-            FROM return_items ri
-            JOIN returns r ON r.id = ri.return_id
-            WHERE ri.product_id IN ($placeholders) AND r.created_at >= ?
-            GROUP BY ri.product_id
-        ");
-        $returnedStmt->execute(array_merge($productIds, [$since]));
         $returned = [];
-        foreach ($returnedStmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
-            $returned[(int) $r['product_id']] = ['qty' => (int) $r['qty'], 'days' => (int) $r['return_days']];
-        }
-
-        $stockStmt = $this->pdo->prepare("SELECT id, stock_qty FROM products WHERE id IN ($placeholders)");
-        $stockStmt->execute($productIds);
         $stockByProduct = [];
-        foreach ($stockStmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
-            $stockByProduct[(int) $r['id']] = (int) $r['stock_qty'];
+        // PERF-02: termékenként csoportosított aggregátumok — korlátos méretű
+        // IN-darabokban lekérdezve ugyanazok az értékek, mint egyben.
+        foreach (array_chunk($productIds, self::ID_CHUNK_SIZE) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+
+            $soldStmt = $this->pdo->prepare("
+                SELECT si.product_id, SUM(si.qty) AS qty, COUNT(DISTINCT substr(s.created_at, 1, 10)) AS sale_days
+                FROM sale_items si
+                JOIN sales s ON s.id = si.sale_id
+                WHERE si.product_id IN ($placeholders) AND s.created_at >= ?
+                GROUP BY si.product_id
+            ");
+            $soldStmt->execute(array_merge($chunk, [$since]));
+            foreach ($soldStmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                $sold[(int) $r['product_id']] = ['qty' => (int) $r['qty'], 'days' => (int) $r['sale_days']];
+            }
+
+            $returnedStmt = $this->pdo->prepare("
+                SELECT ri.product_id, SUM(ri.qty) AS qty, COUNT(DISTINCT substr(r.created_at, 1, 10)) AS return_days
+                FROM return_items ri
+                JOIN returns r ON r.id = ri.return_id
+                WHERE ri.product_id IN ($placeholders) AND r.created_at >= ?
+                GROUP BY ri.product_id
+            ");
+            $returnedStmt->execute(array_merge($chunk, [$since]));
+            foreach ($returnedStmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                $returned[(int) $r['product_id']] = ['qty' => (int) $r['qty'], 'days' => (int) $r['return_days']];
+            }
+
+            $stockStmt = $this->pdo->prepare("SELECT id, stock_qty FROM products WHERE id IN ($placeholders)");
+            $stockStmt->execute($chunk);
+            foreach ($stockStmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                $stockByProduct[(int) $r['id']] = (int) $r['stock_qty'];
+            }
         }
 
         $result = [];
@@ -9321,13 +9832,13 @@ class Database
     /** Beszerzések összege egy dátumtartományra (bruttó) — Dashboard "mai/időszaki beszerzés" KPI-hoz. */
     public function getPeriodPurchaseTotal(string $dateFrom, string $dateTo): array
     {
-        $dateExpr = $this->driver === 'mysql' ? 'DATE(created_at)' : "substr(created_at, 1, 10)";
+        [$dateCondition, $dateParams] = $this->dayRangeCondition('created_at', $dateFrom, $dateTo);
         $stmt = $this->pdo->prepare("
             SELECT COUNT(*) AS cnt, COALESCE(SUM(total_gross), 0) AS total_gross, COALESCE(SUM(total_net), 0) AS total_net
             FROM purchases
-            WHERE $dateExpr BETWEEN ? AND ?
+            WHERE $dateCondition
         ");
-        $stmt->execute([$dateFrom, $dateTo]);
+        $stmt->execute($dateParams);
         $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
         return [
             'count'       => (int) ($row['cnt'] ?? 0),
@@ -9359,15 +9870,16 @@ class Database
     public function productsHavePurchaseHistory(array $productIds): array
     {
         $productIds = array_values(array_unique(array_map('intval', $productIds)));
-        if (!$productIds) {
-            return [];
-        }
-        $placeholders = implode(',', array_fill(0, count($productIds), '?'));
-        $stmt = $this->pdo->prepare("SELECT DISTINCT product_id FROM purchase_items WHERE product_id IN ($placeholders)");
-        $stmt->execute($productIds);
         $result = [];
-        foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $pid) {
-            $result[(int) $pid] = true;
+        // PERF-02: korlátos méretű darabokban (egy korlátlan IN-lista SQLite-on
+        // 32 766, MySQL-en 65 535 paraméternél elbukik).
+        foreach (array_chunk($productIds, self::ID_CHUNK_SIZE) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $stmt = $this->pdo->prepare("SELECT DISTINCT product_id FROM purchase_items WHERE product_id IN ($placeholders)");
+            $stmt->execute($chunk);
+            foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $pid) {
+                $result[(int) $pid] = true;
+            }
         }
         return $result;
     }
@@ -9402,15 +9914,18 @@ class Database
         // címkével ("Folyamatban", nem "Javasolt").
         $recentPurchaseWindowDays = 3;
         $recentSince = date('Y-m-d H:i:s', strtotime("-$recentPurchaseWindowDays days"));
-        $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        $recentStmt = $this->pdo->prepare("
-            SELECT DISTINCT pi.product_id
-            FROM purchase_items pi
-            JOIN purchases pu ON pu.id = pi.purchase_id
-            WHERE pi.product_id IN ($placeholders) AND pu.created_at >= ?
-        ");
-        $recentStmt->execute(array_merge($ids, [$recentSince]));
-        $recentlyOrdered = array_fill_keys(array_map('intval', $recentStmt->fetchAll(PDO::FETCH_COLUMN)), true);
+        $recentlyOrdered = [];
+        foreach (array_chunk($ids, self::ID_CHUNK_SIZE) as $chunk) { // PERF-02: korlátos IN-darabok
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $recentStmt = $this->pdo->prepare("
+                SELECT DISTINCT pi.product_id
+                FROM purchase_items pi
+                JOIN purchases pu ON pu.id = pi.purchase_id
+                WHERE pi.product_id IN ($placeholders) AND pu.created_at >= ?
+            ");
+            $recentStmt->execute(array_merge($chunk, [$recentSince]));
+            $recentlyOrdered += array_fill_keys(array_map('intval', $recentStmt->fetchAll(PDO::FETCH_COLUMN)), true);
+        }
 
         $result = [];
         foreach ($lowStock as $row) {
@@ -9587,26 +10102,28 @@ class Database
      */
     public function getInventoryValuationSummary(): array
     {
+        // PERF-02: a beszerzési előzmény termékenként EXISTS-szel ugyanebben a
+        // lekérdezésben (korábban az összes készleten lévő termék azonosítója
+        // egyetlen IN-listában — D3-on 100 000 termékkel elbukott), és a sorok
+        // streamelve, nem fetchAll()-lal.
         $stmt = $this->pdo->query('
-            SELECT id, stock_qty, purchase_price_net, net_price
-            FROM products
-            WHERE is_deleted = 0 AND stock_qty > 0
+            SELECT p.id, p.stock_qty, p.purchase_price_net, p.net_price,
+                   EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.product_id = p.id) AS has_cost
+            FROM products p
+            WHERE p.is_deleted = 0 AND p.stock_qty > 0
+            ORDER BY p.id
         ');
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        if (!$rows) {
-            return ['cost_value_net' => 0.0, 'retail_value_net' => 0.0, 'potential_margin_value_net' => 0.0, 'products_with_reliable_cost' => 0, 'products_total' => 0];
-        }
-
-        $hasCost = $this->productsHavePurchaseHistory(array_column($rows, 'id'));
 
         $costValue = 0.0;
         $retailValue = 0.0;
         $potentialMargin = 0.0;
         $reliableCount = 0;
-        foreach ($rows as $row) {
+        $total = 0;
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $total++;
             $qty = (int) $row['stock_qty'];
             $retailValue += $qty * (float) $row['net_price'];
-            if (!empty($hasCost[(int) $row['id']])) {
+            if ((int) $row['has_cost'] === 1) {
                 $costValue += $qty * (float) $row['purchase_price_net'];
                 $potentialMargin += $qty * ((float) $row['net_price'] - (float) $row['purchase_price_net']);
                 $reliableCount++;
@@ -9618,7 +10135,7 @@ class Database
             'retail_value_net'            => round($retailValue, 2),
             'potential_margin_value_net'  => round($potentialMargin, 2),
             'products_with_reliable_cost' => $reliableCount,
-            'products_total'              => count($rows),
+            'products_total'              => $total,
         ];
     }
 
@@ -9633,14 +10150,16 @@ class Database
     public function getSalesMarginSummary(string $dateFrom, string $dateTo, ?string $paymentMethod = null): array
     {
         // DB-07: ugyanaz a fizetésimód-szűrés, mint a riport összesítőjénél.
-        $products = $this->getTopProductsReport($dateFrom, $dateTo, null, 0, 100000, $paymentMethod);
-
+        // PERF-02: a getTopProductsReport() sorai egyenként összegezve (nem egy
+        // legfeljebb 100 000 elemű tömbként) — ugyanazok a sorok, ugyanabban a
+        // sorrendben, ugyanazzal a 100 000-es felső határral.
         $revenueNet = 0.0;
         $costNet = 0.0;
         $marginNet = 0.0;
         $productsWithMargin = 0;
         $productsWithoutMargin = 0;
-        foreach ($products as $p) {
+        $seen = 0;
+        $this->eachTopProductRow($dateFrom, $dateTo, null, 0, $paymentMethod, static function (array $p) use (&$revenueNet, &$costNet, &$marginNet, &$productsWithMargin, &$productsWithoutMargin, &$seen): bool {
             $revenueNet += $p['revenue_net'];
             if ($p['margin_net'] !== null) {
                 $costNet += $p['cost_net_total'];
@@ -9649,7 +10168,8 @@ class Database
             } else {
                 $productsWithoutMargin++;
             }
-        }
+            return ++$seen < self::REPORT_ALL_PRODUCTS_LIMIT;
+        });
 
         return [
             'revenue_net'             => round($revenueNet, 2),
@@ -9672,17 +10192,18 @@ class Database
      */
     public function getTopCategoriesReport(string $dateFrom, string $dateTo, int $limit = 20): array
     {
-        $products = $this->getTopProductsReport($dateFrom, $dateTo, null, 0, 100000);
-
+        // PERF-02: soronként összegezve, lásd getSalesMarginSummary().
         $byCategory = [];
-        foreach ($products as $p) {
+        $seen = 0;
+        $this->eachTopProductRow($dateFrom, $dateTo, null, 0, null, static function (array $p) use (&$byCategory, &$seen): bool {
             $category = $p['group_name'] !== null && $p['group_name'] !== '' ? $p['group_name'] : '(kategória nélkül)';
             $byCategory[$category] ??= ['category' => $category, 'qty' => 0, 'revenue' => 0.0, 'revenue_net' => 0.0, 'product_count' => 0];
             $byCategory[$category]['qty'] += $p['qty'];
             $byCategory[$category]['revenue'] += $p['revenue'];
             $byCategory[$category]['revenue_net'] += $p['revenue_net'];
             $byCategory[$category]['product_count']++;
-        }
+            return ++$seen < self::REPORT_ALL_PRODUCTS_LIMIT;
+        });
 
         foreach ($byCategory as &$row) {
             $row['revenue'] = round($row['revenue'], 2);
@@ -9706,16 +10227,16 @@ class Database
      */
     public function getSalesByHourReport(string $dateFrom, string $dateTo): array
     {
-        $dateExpr = $this->driver === 'mysql' ? 'DATE(created_at)' : "substr(created_at, 1, 10)";
+        [$dateCondition, $dateParams] = $this->dayRangeCondition('created_at', $dateFrom, $dateTo);
         $hourExpr = $this->driver === 'mysql' ? 'HOUR(created_at)' : "CAST(substr(created_at, 12, 2) AS INTEGER)";
 
         $stmt = $this->pdo->prepare("
             SELECT $hourExpr AS hour, COUNT(*) AS cnt, SUM(total + gift_card_redeemed) AS total
             FROM sales
-            WHERE $dateExpr BETWEEN ? AND ?
+            WHERE $dateCondition
             GROUP BY $hourExpr
         ");
-        $stmt->execute([$dateFrom, $dateTo]);
+        $stmt->execute($dateParams);
 
         $byHour = [];
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
@@ -9759,9 +10280,9 @@ class Database
      */
     public function getReturnsCountInRange(string $dateFrom, string $dateTo): int
     {
-        $dateExpr = $this->driver === 'mysql' ? 'DATE(created_at)' : "substr(created_at, 1, 10)";
-        $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM returns WHERE $dateExpr BETWEEN ? AND ?");
-        $stmt->execute([$dateFrom, $dateTo]);
+        [$dateCondition, $dateParams] = $this->dayRangeCondition('created_at', $dateFrom, $dateTo);
+        $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM returns WHERE $dateCondition");
+        $stmt->execute($dateParams);
         return (int) $stmt->fetchColumn();
     }
 

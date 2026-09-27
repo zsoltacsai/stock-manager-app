@@ -1,4 +1,16 @@
-let allProducts = [];
+// PERF-09: szerveroldali lapozás (/api/products-page.php). Korábban az egész
+// katalógus letöltődött, és minden szűrt sor kirajzolódott (10 000 terméknél
+// 181 707 DOM-elem, ~7,9 s). Most csak az aktuális oldal (PAGE_SIZE sor) kerül
+// a DOM-ba; a szűrés és a rendezés szabálya a korábbi (lásd
+// Database::listProductsPage()). A szűrésnek megfelelő ÖSSZES azonosító
+// (lastFilteredIds) továbbra is megvan, így a kijelölés, a „mind kijelölése”,
+// az export és a tömeges műveletek a teljes szűrt halmazon működnek, mint eddig.
+const PAGE_SIZE = 100;
+let pageRows = [];
+let totalCount = 0;
+let currentOffset = 0;
+let loadSeq = 0;
+let filterTimer = null;
 let globalLowStockThreshold = 5;
 let sortColumn = 'name';
 let sortDir = 'asc';
@@ -25,6 +37,10 @@ const bulkGroupInput = document.getElementById('bulk-group-input');
 const bulkGroupList = document.getElementById('bulk-group-list');
 const bulkSetGroupBtn = document.getElementById('bulk-set-group-btn');
 const bulkDeleteBtn = document.getElementById('bulk-delete-btn');
+const productsPager = document.getElementById('products-pager');
+const productsPageInfo = document.getElementById('products-page-info');
+const productsPrevBtn = document.getElementById('products-prev-btn');
+const productsNextBtn = document.getElementById('products-next-btn');
 
 function currentStaffId() {
     try {
@@ -42,21 +58,51 @@ async function loadSettingsForThreshold() {
     } catch (e) { /* keep default */ }
 }
 
+function pageQuery() {
+    const q = new URLSearchParams();
+    q.set('name', fName.value.trim());
+    q.set('cikkszam', fCikkszam.value.trim());
+    q.set('barcode', fBarcode.value.trim());
+    q.set('group', fGroup.value);
+    if (fZeroStock.checked) q.set('zero_stock', '1');
+    if (fWebshopOnly.checked) q.set('webshop_only', '1');
+    if (fDeleted.checked) q.set('include_deleted', '1');
+    q.set('sort', sortColumn);
+    q.set('dir', sortDir);
+    q.set('offset', String(currentOffset));
+    q.set('limit', String(PAGE_SIZE));
+    return q.toString();
+}
+
 async function loadProducts() {
-    const includeDeleted = fDeleted.checked ? '?include_deleted=1' : '';
+    const seq = ++loadSeq;
     try {
-        const data = await fetchJson('/api/products.php' + includeDeleted);
-        allProducts = data.products || [];
-        populateGroupFilter();
+        let data = await fetchJson('/api/products-page.php?' + pageQuery());
+        // Ha a lista rövidebb lett (pl. törlés után), az utolsó létező oldalra lépünk.
+        if (seq === loadSeq && data.filtered_count > 0 && currentOffset >= data.filtered_count) {
+            currentOffset = Math.floor((data.filtered_count - 1) / PAGE_SIZE) * PAGE_SIZE;
+            data = await fetchJson('/api/products-page.php?' + pageQuery());
+        }
+        if (seq !== loadSeq) return; // egy újabb betöltés már elindult
+        pageRows = data.products || [];
+        lastFilteredIds = data.ids || [];
+        totalCount = data.total_count || 0;
+        populateGroupFilter(data.groups || []);
         renderTable();
     } catch (err) {
+        if (seq !== loadSeq) return;
         productsBody.innerHTML = `<tr><td colspan="11" class="muted" style="text-align:center; padding:24px;">Hiba a termékek betöltésekor: ${escapeHtml(err.message)}</td></tr>`;
     }
 }
 
-function populateGroupFilter() {
+function reloadFromFirstPage() {
+    currentOffset = 0;
+    loadProducts();
+}
+
+function populateGroupFilter(groupNames) {
     const current = fGroup.value;
-    const groups = Array.from(new Set(allProducts.map(p => p.group_name).filter(Boolean))).sort();
+    const groups = Array.from(new Set(groupNames.filter(Boolean))).sort();
     fGroup.innerHTML = '<option value="">- Mind -</option>' +
         groups.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('');
     fGroup.value = groups.includes(current) ? current : '';
@@ -72,61 +118,32 @@ function effectiveThreshold(p) {
         : globalLowStockThreshold;
 }
 
-function sortValue(p, col) {
-    switch (col) {
-        case 'name': return (p.name || '').toLowerCase();
-        case 'cikkszam': return (p.cikkszam || '').toLowerCase();
-        case 'group_name': return (p.group_name || '').toLowerCase();
-        case 'barcode': return (p.barcode || '').toLowerCase();
-        case 'stock_qty': return Number(p.stock_qty);
-        case 'purchase_price_net': return Number(p.purchase_price_net);
-        case 'net_price': return Number(p.net_price);
-        case 'price': return Number(p.price);
-        default: return '';
-    }
+function renderPager() {
+    if (!productsPageInfo) return;
+    const filtered = lastFilteredIds.length;
+    const from = filtered === 0 ? 0 : currentOffset + 1;
+    const to = Math.min(currentOffset + PAGE_SIZE, filtered);
+    productsPageInfo.textContent = filtered > PAGE_SIZE ? `${from}–${to} / ${filtered}` : '';
+    productsPrevBtn.disabled = currentOffset === 0;
+    productsNextBtn.disabled = currentOffset + PAGE_SIZE >= filtered;
+    productsPager.classList.toggle('hidden', filtered <= PAGE_SIZE);
 }
 
 function renderTable() {
-    const nameQ = fName.value.trim().toLowerCase();
-    const cikkQ = fCikkszam.value.trim().toLowerCase();
-    const barcodeQ = fBarcode.value.trim().toLowerCase();
-    const groupQ = fGroup.value;
-    const zeroOnly = fZeroStock.checked;
-    const webshopOnly = fWebshopOnly.checked;
-
-    const filtered = allProducts.filter(p => {
-        if (nameQ && !p.name.toLowerCase().includes(nameQ)) return false;
-        if (cikkQ && !(p.cikkszam || '').toLowerCase().includes(cikkQ)) return false;
-        if (barcodeQ && !(p.barcode || '').toLowerCase().includes(barcodeQ)) return false;
-        if (groupQ && p.group_name !== groupQ) return false;
-        if (zeroOnly && Number(p.stock_qty) > 0) return false;
-        if (webshopOnly && !Number(p.show_webshop)) return false;
-        return true;
-    });
-
-    filtered.sort((a, b) => {
-        const va = sortValue(a, sortColumn);
-        const vb = sortValue(b, sortColumn);
-        let cmp = 0;
-        if (typeof va === 'number' && typeof vb === 'number') cmp = va - vb;
-        else cmp = String(va).localeCompare(String(vb), 'hu');
-        return sortDir === 'asc' ? cmp : -cmp;
-    });
-
-    productsCount.textContent = `${filtered.length} / ${allProducts.length} árucikk`;
+    productsCount.textContent = `${lastFilteredIds.length} / ${totalCount} árucikk`;
     productsBody.innerHTML = '';
-    lastFilteredIds = filtered.map(p => p.id);
     updateSelectedCount();
 
     updateSortIndicators();
+    renderPager();
 
-    if (filtered.length === 0) {
+    if (lastFilteredIds.length === 0) {
         productsBody.innerHTML = '<tr><td colspan="11" class="muted" style="text-align:center; padding:24px;">Nincs a szűrésnek megfelelő árucikk.</td></tr>';
         updateSelectAllCheckbox();
         return;
     }
 
-    for (const p of filtered) {
+    for (const p of pageRows) {
         const tr = document.createElement('tr');
         if (Number(p.is_deleted)) tr.classList.add('deleted-row');
 
@@ -300,12 +317,27 @@ document.querySelectorAll('#products-table-head th[data-sort]').forEach(th => {
             sortColumn = col;
             sortDir = 'asc';
         }
-        renderTable();
+        reloadFromFirstPage();
     });
 });
 
+if (productsPrevBtn) {
+    productsPrevBtn.addEventListener('click', () => {
+        currentOffset = Math.max(0, currentOffset - PAGE_SIZE);
+        loadProducts();
+    });
+}
+if (productsNextBtn) {
+    productsNextBtn.addEventListener('click', () => {
+        if (currentOffset + PAGE_SIZE < lastFilteredIds.length) {
+            currentOffset += PAGE_SIZE;
+            loadProducts();
+        }
+    });
+}
+
 function openEdit(id) {
-    const product = allProducts.find(p => p.id === id);
+    const product = pageRows.find(p => p.id === id);
     if (!product) return;
     ProductModal.open(product, '', () => loadProducts());
 }
@@ -346,7 +378,7 @@ function buildFullProductPayload(product, overrides) {
 }
 
 async function toggleDeleted(id) {
-    const product = allProducts.find(p => p.id === id);
+    const product = pageRows.find(p => p.id === id);
     if (!product) return;
 
     const nextDeleted = !Number(product.is_deleted);
@@ -365,7 +397,7 @@ async function toggleDeleted(id) {
 }
 
 async function toggleWebshop(id, nextValue) {
-    const product = allProducts.find(p => p.id === id);
+    const product = pageRows.find(p => p.id === id);
     if (!product) return;
 
     const res = await fetch('/api/product-save.php', {
@@ -386,9 +418,12 @@ async function toggleWebshop(id, nextValue) {
     product.show_webshop = nextValue ? 1 : 0;
 }
 
-[fName, fCikkszam, fBarcode].forEach(input => input.addEventListener('input', renderTable));
-[fGroup, fZeroStock, fWebshopOnly].forEach(input => input.addEventListener('change', renderTable));
-fDeleted.addEventListener('change', loadProducts);
+[fName, fCikkszam, fBarcode].forEach(input => input.addEventListener('input', () => {
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(reloadFromFirstPage, 200);
+}));
+[fGroup, fZeroStock, fWebshopOnly].forEach(input => input.addEventListener('change', reloadFromFirstPage));
+fDeleted.addEventListener('change', reloadFromFirstPage);
 
 newArticleBtn.addEventListener('click', () => {
     ProductModal.open(null, '', () => loadProducts());
@@ -396,5 +431,5 @@ newArticleBtn.addEventListener('click', () => {
 
 document.addEventListener('stockmanager:synced', () => loadProducts());
 
-loadSettingsForThreshold().then(() => { if (allProducts.length) renderTable(); });
+loadSettingsForThreshold().then(() => { if (pageRows.length) renderTable(); });
 loadProducts();

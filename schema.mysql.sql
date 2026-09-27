@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS products (
     KEY idx_products_wc_id (wc_product_id),
     KEY idx_products_group (group_name),
     KEY idx_products_deleted (is_deleted),
-    KEY idx_products_preferred_supplier (preferred_supplier_id)
+    KEY idx_products_preferred_supplier (preferred_supplier_id),
+    KEY idx_products_unit_name (unit, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Beszállító-törzs (supplier master data) — beszerzés still keeps its own

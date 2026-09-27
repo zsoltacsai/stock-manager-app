@@ -33,7 +33,8 @@ function buildQuery(offset) {
 async function loadProducts() {
     const select = document.getElementById('sm-product');
     try {
-        const data = await fetchJson('/api/products.php');
+        // PERF-04: könnyű, streamelt termékjegyzék (id, név, vonalkód) a teljes katalógus helyett.
+        const data = await fetchJson('/api/products-lookup.php');
         select.innerHTML = '<option value="">Összes termék</option>' + (data.products || [])
             .map(p => `<option value="${p.id}">${escapeHtml(p.name)}${p.barcode ? ' (' + escapeHtml(p.barcode) + ')' : ''}</option>`).join('');
     } catch (e) { /* nem blokkoló — a szűrő "Összes termék"-en marad */ }

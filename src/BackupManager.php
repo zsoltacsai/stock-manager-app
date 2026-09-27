@@ -28,6 +28,30 @@ class BackupManager
      */
     private const ENCRYPTED_MAGIC = "FTBKENC1";
 
+    /**
+     * PERF-03 — darabolt (streamelt) titkosítási formátum, minden új mentés ez.
+     * A korábbi formátum (ENCRYPTED_MAGIC, ill. jelző nélküli régi .enc) a teljes
+     * fájlt egyben olvasta és titkosította: a PHP-memória ~3× az adatbázis
+     * mérete volt, és ~42 MB-os adatbázis felett a 128 MB-os korláton a mentés
+     * elbukott. Felépítés:
+     *
+     *   "FTBKENC2" || prefix(8) || rekord*
+     *   rekord = flag(1: 0x00 köztes, 0x01 utolsó) || len(4, big-endian) || tag(16) || ciphertext(len)
+     *
+     * Minden rekord külön AES-256-GCM hitelesítéssel; nonce = prefix || index(4),
+     * AAD = jelző || prefix || index || flag. Az index és az „utolsó” jelző a
+     * hitelesített adat része, így a rekordok cseréje, elhagyása, a fájl csonkolása
+     * vagy utólagos bővítése is visszafejtési hibát ad — ugyanúgy, mint a korábbi
+     * egyetlen GCM-tag. A régi formátumok visszafejtése változatlanul támogatott.
+     */
+    private const ENCRYPTED_MAGIC_V2 = "FTBKENC2";
+
+    /** A darabolt formátum egy rekordjának mérete (1 MiB) — ennyi a memóriaigény is. */
+    private const ENCRYPTION_CHUNK_BYTES = 1048576;
+
+    /** Egy rekord megengedett legnagyobb hossza visszafejtéskor (sérült/rosszindulatú hossz-mező elleni korlát). */
+    private const ENCRYPTION_MAX_RECORD_BYTES = 16777216;
+
     /** A SQLite fájlformátum saját, kötelező aláírása — https://www.sqlite.org/fileformat.html */
     private const SQLITE_MAGIC = "SQLite format 3\x00";
 
@@ -167,30 +191,107 @@ class BackupManager
         return $key;
     }
 
-    /** Titkosítja $plainPath tartalmát $encPath-ba (AES-256-GCM, hitelesített titkosítás), majd törli az eredeti sima fájlt. */
+    /**
+     * Titkosítja $plainPath tartalmát $encPath-ba (AES-256-GCM, hitelesített
+     * titkosítás, darabolt formátum — lásd ENCRYPTED_MAGIC_V2), majd törli az
+     * eredeti sima fájlt. PERF-03: fájlból fájlba, rekordonként dolgozik — a
+     * memóriaigény egy-két rekord, nem a fájl mérete.
+     */
     private function encryptFileInPlace(string $plainPath, string $encPath): void
     {
-        $plaintext = file_get_contents($plainPath);
-        if ($plaintext === false) {
+        $in = @fopen($plainPath, 'rb');
+        if ($in === false) {
             throw new RuntimeException('A titkosítandó fájl nem olvasható: ' . $plainPath);
         }
         $key = $this->encryptionKey();
-        $iv = random_bytes(12);
-        $tag = '';
-        $ciphertext = openssl_encrypt($plaintext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
-        if ($ciphertext === false || $tag === '') {
-            throw new RuntimeException('A mentés titkosítása sikertelen.');
-        }
-        if (file_put_contents($encPath, self::ENCRYPTED_MAGIC . $iv . $tag . $ciphertext) === false) {
+        $out = @fopen($encPath, 'wb');
+        if ($out === false) {
+            fclose($in);
             throw new RuntimeException('A titkosított mentés írása sikertelen: ' . $encPath);
         }
         @chmod($encPath, 0600);
+        $ok = false;
+        try {
+            $prefix = random_bytes(8);
+            self::writeAll($out, self::ENCRYPTED_MAGIC_V2 . $prefix, $encPath);
+            $index = 0;
+            $chunk = self::readChunk($in, $plainPath);
+            do {
+                $next = $chunk === '' ? '' : self::readChunk($in, $plainPath);
+                $flag = $next === '' ? "\x01" : "\x00";
+                $tag = '';
+                $ciphertext = openssl_encrypt($chunk, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $prefix . pack('N', $index), $tag, self::ENCRYPTED_MAGIC_V2 . $prefix . pack('N', $index) . $flag);
+                if ($ciphertext === false || $tag === '') {
+                    throw new RuntimeException('A mentés titkosítása sikertelen.');
+                }
+                self::writeAll($out, $flag . pack('N', strlen($ciphertext)) . $tag . $ciphertext, $encPath);
+                $chunk = $next;
+                $index++;
+            } while ($flag === "\x00");
+            $ok = true;
+        } finally {
+            fclose($in);
+            fclose($out);
+            if (!$ok) {
+                @unlink($encPath);
+            }
+        }
         @unlink($plainPath);
+    }
+
+    /** Egy teljes rekordnyi (vagy a fájl végén kevesebb) bájt olvasása; '' = fájl vége. */
+    private static function readChunk($handle, string $path): string
+    {
+        $data = '';
+        while (strlen($data) < self::ENCRYPTION_CHUNK_BYTES && !feof($handle)) {
+            $part = fread($handle, self::ENCRYPTION_CHUNK_BYTES - strlen($data));
+            if ($part === false) {
+                throw new RuntimeException('A titkosítandó fájl nem olvasható: ' . $path);
+            }
+            if ($part === '') {
+                break;
+            }
+            $data .= $part;
+        }
+        return $data;
+    }
+
+    private static function readExactly($handle, int $length): ?string
+    {
+        $data = '';
+        while (strlen($data) < $length && !feof($handle)) {
+            $part = fread($handle, $length - strlen($data));
+            if ($part === false || $part === '') {
+                break;
+            }
+            $data .= $part;
+        }
+        return strlen($data) === $length ? $data : null;
+    }
+
+    private static function writeAll($handle, string $data, string $path): void
+    {
+        $written = 0;
+        $length = strlen($data);
+        while ($written < $length) {
+            $n = fwrite($handle, $written === 0 ? $data : substr($data, $written));
+            if ($n === false || $n === 0) {
+                throw new RuntimeException('A titkosított mentés írása sikertelen: ' . $path);
+            }
+            $written += $n;
+        }
     }
 
     /** Visszafejti $encPath-ot egy ideiglenes fájlba, és visszaadja annak elérési útját — a hívó felelőssége törölni, ha végzett vele. */
     private function decryptToTempFile(string $encPath, string $suffix): string
     {
+        $header = (string) @file_get_contents($encPath, false, null, 0, strlen(self::ENCRYPTED_MAGIC_V2));
+        if ($header === self::ENCRYPTED_MAGIC_V2) {
+            return $this->decryptChunkedToTempFile($encPath, $suffix);
+        }
+
+        // Régi (egyben titkosított) formátum — csak a PERF-03 előtt készült
+        // mentéseknél; ezek visszafejtése továbbra is a teljes fájlt olvassa.
         $raw = file_get_contents($encPath);
         if ($raw === false) {
             throw new RuntimeException('A titkosított mentés fájlja sérült vagy nem olvasható: ' . $encPath);
@@ -227,6 +328,74 @@ class BackupManager
         // finally blokkban ugyanígy törli a fájlt, akár sikerült a chmod,
         // akár nem.
         @chmod($tmpPath, 0600);
+        return $tmpPath;
+    }
+
+    /**
+     * PERF-03 — a darabolt formátum (ENCRYPTED_MAGIC_V2) visszafejtése
+     * rekordonként egy ideiglenes fájlba. Bármely rekord hitelesítési hibája,
+     * hiányzó „utolsó” rekord (csonkolás) vagy az utolsó rekord utáni adat
+     * esetén az ideiglenes fájl törlődik, és ugyanaz a hiba jön, mint a régi
+     * formátumnál — részlegesen visszafejtett tartalom sosem kerül a hívóhoz.
+     */
+    private function decryptChunkedToTempFile(string $encPath, string $suffix): string
+    {
+        $failure = 'A titkosított mentés visszafejtése sikertelen (hibás kulcs, vagy a fájl sérült/módosított).';
+        $in = @fopen($encPath, 'rb');
+        if ($in === false) {
+            throw new RuntimeException('A titkosított mentés fájlja sérült vagy nem olvasható: ' . $encPath);
+        }
+        $tmpPath = sys_get_temp_dir() . '/stockmanager_decrypt_' . bin2hex(random_bytes(8)) . $suffix;
+        $out = @fopen($tmpPath, 'wb');
+        if ($out === false) {
+            fclose($in);
+            throw new RuntimeException('Az ideiglenes visszafejtett fájl írása sikertelen.');
+        }
+        @chmod($tmpPath, 0600); // lásd decryptToTempFile() azonos megjegyzése
+        $ok = false;
+        try {
+            $key = $this->encryptionKey();
+            $header = self::readExactly($in, strlen(self::ENCRYPTED_MAGIC_V2) + 8);
+            if ($header === null) {
+                throw new RuntimeException('A titkosított mentés fájlja sérült vagy nem olvasható: ' . $encPath);
+            }
+            $prefix = substr($header, strlen(self::ENCRYPTED_MAGIC_V2));
+            $index = 0;
+            while (true) {
+                $recordHeader = self::readExactly($in, 1 + 4 + 16);
+                if ($recordHeader === null) {
+                    throw new RuntimeException($failure); // csonka: hiányzik az utolsó rekord
+                }
+                $flag = $recordHeader[0];
+                $length = unpack('N', substr($recordHeader, 1, 4))[1];
+                if (($flag !== "\x00" && $flag !== "\x01") || $length > self::ENCRYPTION_MAX_RECORD_BYTES || $index > 0xFFFFFFFF) {
+                    throw new RuntimeException($failure);
+                }
+                $ciphertext = $length === 0 ? '' : self::readExactly($in, $length);
+                if ($ciphertext === null) {
+                    throw new RuntimeException($failure);
+                }
+                $plaintext = openssl_decrypt($ciphertext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $prefix . pack('N', $index), substr($recordHeader, 5, 16), self::ENCRYPTED_MAGIC_V2 . $prefix . pack('N', $index) . $flag);
+                if ($plaintext === false) {
+                    throw new RuntimeException($failure);
+                }
+                self::writeAll($out, $plaintext, $tmpPath);
+                $index++;
+                if ($flag === "\x01") {
+                    break;
+                }
+            }
+            if (fread($in, 1) !== '') {
+                throw new RuntimeException($failure); // az utolsó rekord után nem lehet adat
+            }
+            $ok = true;
+        } finally {
+            fclose($in);
+            fclose($out);
+            if (!$ok) {
+                @unlink($tmpPath);
+            }
+        }
         return $tmpPath;
     }
 
@@ -533,7 +702,7 @@ class BackupManager
         if ($header === '' && !is_readable($sourcePath)) {
             throw new RuntimeException('A visszaállítandó fájl nem olvasható: ' . $sourcePath);
         }
-        if (str_starts_with($header, self::ENCRYPTED_MAGIC)) {
+        if (str_starts_with($header, self::ENCRYPTED_MAGIC_V2) || str_starts_with($header, self::ENCRYPTED_MAGIC)) {
             return true;
         }
         if ($header === self::SQLITE_MAGIC) {
@@ -735,11 +904,9 @@ class BackupManager
      */
     private function restoreMysqlFromFile(string $sourcePath): void
     {
-        $sql = file_get_contents($sourcePath);
-        if ($sql === false) {
-            throw new RuntimeException('A mentési fájl nem olvasható.');
-        }
-        $statements = self::validateMysqlDump($sql);
+        // PERF-03: az ellenőrzés és a végrehajtás is streamelve olvassa a dumpot
+        // (korábban file_get_contents + a teljes utasítás-tömb: ~2–3× a dump mérete).
+        self::validateMysqlDumpFile($sourcePath);
 
         if ($this->mysqlCliAvailable('mysql')) {
             $m = $this->dbConfig['mysql'];
@@ -770,7 +937,7 @@ class BackupManager
         $pdo->exec('SET FOREIGN_KEY_CHECKS=0');
         try {
             $this->restoreTouchedLive = true;
-            foreach ($statements as $statement) {
+            foreach (self::iterateSqlStatementsFromFile($sourcePath) as $statement) {
                 if (preg_match('/^SET\s+FOREIGN_KEY_CHECKS\s*=\s*1$/i', $statement)) {
                     continue; // a visszakapcsolás a finally-ben, a teljes lefutás után
                 }
@@ -817,58 +984,181 @@ class BackupManager
      */
     public static function splitSqlStatements(string $sql): array
     {
-        $statements = [];
+        $done = false;
+        return iterator_to_array(self::iterateSqlStatements(function () use ($sql, &$done): string {
+            if ($done) {
+                return '';
+            }
+            $done = true;
+            return $sql;
+        }), false);
+    }
+
+    /**
+     * PERF-03 — a MySQL-dump ellenőrzése fájlból, streamelve (a validateMysqlDump()
+     * ugyanazon szabályai, a teljes fájl memóriába olvasása nélkül). Az élő
+     * adatbázis érintése ELŐTT fut (DB-01).
+     */
+    public static function validateMysqlDumpFile(string $path): void
+    {
+        $size = @filesize($path);
+        $fh = $size === false ? false : @fopen($path, 'rb');
+        if ($fh === false) {
+            throw new RuntimeException('A mentési fájl nem olvasható.');
+        }
+        try {
+            fseek($fh, -min($size, 65536), SEEK_END);
+            $trimmed = rtrim((string) stream_get_contents($fh));
+        } finally {
+            fclose($fh);
+        }
+        $complete = str_ends_with($trimmed, self::PHP_DUMP_COMPLETED_MARKER)
+            || preg_match('/SET FOREIGN_KEY_CHECKS=1;$/', $trimmed)
+            || str_contains(substr($trimmed, -300), '-- Dump completed');
+        if (!$complete) {
+            throw new RuntimeException('A MySQL-mentés csonka vagy sérült (hiányzik a teljességet jelző zárás) — a visszaállítás nem indult el.');
+        }
+        $count = 0;
+        $missingTables = ['products' => true, 'sales' => true, 'customers' => true];
+        foreach (self::iterateSqlStatementsFromFile($path) as $statement) {
+            $count++;
+            foreach (array_keys($missingTables) as $table) {
+                if (preg_match('/CREATE TABLE `?' . $table . '`?\s*\(/i', $statement)) {
+                    unset($missingTables[$table]);
+                }
+            }
+        }
+        if ($count === 0) {
+            throw new RuntimeException('A MySQL-mentés nem tartalmaz végrehajtható utasítást.');
+        }
+        foreach (array_keys($missingTables) as $table) {
+            throw new RuntimeException('A fájl nem tűnik FountainTrade adatbázis-mentésnek (hiányzó tábla: ' . $table . ').');
+        }
+    }
+
+    /** @return Generator<int, string> a fájl utasításai, 1 MiB-os darabokban olvasva */
+    public static function iterateSqlStatementsFromFile(string $path): Generator
+    {
+        $fh = @fopen($path, 'rb');
+        if ($fh === false) {
+            throw new RuntimeException('A mentési fájl nem olvasható.');
+        }
+        try {
+            yield from self::iterateSqlStatements(function () use ($fh): string {
+                $chunk = fread($fh, 1048576);
+                return $chunk === false ? '' : $chunk;
+            });
+        } finally {
+            fclose($fh);
+        }
+    }
+
+    /**
+     * A splitSqlStatements() darabolási szabályai folyamként: $read a következő
+     * darabot adja ('' = vége). Egy konstrukció (idézőjeles szakasz, komment)
+     * darabhatáron is átnyúlhat — ilyenkor a feldolgozás a következő darab
+     * beolvasása után ugyanonnan folytatódik.
+     *
+     * @return Generator<int, string>
+     */
+    private static function iterateSqlStatements(callable $read): Generator
+    {
+        $data = '';
+        $i = 0;
+        $eof = false;
         $buf = '';
-        $len = strlen($sql);
         $quote = null;
-        for ($i = 0; $i < $len; $i++) {
-            $c = $sql[$i];
+        $fill = function () use (&$data, &$i, &$eof, $read): void {
+            $chunk = $read();
+            if ($chunk === '') {
+                $eof = true;
+                return;
+            }
+            $data = substr($data, $i) . $chunk;
+            $i = 0;
+        };
+        while (true) {
+            $len = strlen($data);
+            if (!$eof && $len - $i < 3) {
+                $fill(); // legalább 2 bájt előretekintés a darabhatáron is
+                continue;
+            }
+            if ($i >= $len) {
+                break;
+            }
             if ($quote !== null) {
+                $n = strcspn($data, $quote === '`' ? '`' : $quote . '\\', $i);
+                if ($n > 0) {
+                    $buf .= substr($data, $i, $n);
+                    $i += $n;
+                    continue;
+                }
+                $c = $data[$i];
                 $buf .= $c;
-                if ($c === '\\' && $quote !== '`' && $i + 1 < $len) {
-                    $buf .= $sql[++$i];
-                } elseif ($c === $quote) {
-                    if ($i + 1 < $len && $sql[$i + 1] === $quote) {
-                        $buf .= $sql[++$i]; // duplázott idézőjel
+                if ($c === '\\') {
+                    if ($i + 1 < $len) {
+                        $buf .= $data[$i + 1];
+                        $i += 2;
                     } else {
-                        $quote = null;
+                        $i++;
                     }
+                } elseif ($i + 1 < $len && $data[$i + 1] === $quote) {
+                    $buf .= $data[$i + 1]; // duplázott idézőjel
+                    $i += 2;
+                } else {
+                    $quote = null;
+                    $i++;
                 }
                 continue;
             }
+            $n = strcspn($data, "'\"`-#/;", $i);
+            if ($n > 0) {
+                $buf .= substr($data, $i, $n);
+                $i += $n;
+                continue;
+            }
+            $c = $data[$i];
             if ($c === "'" || $c === '"' || $c === '`') {
                 $quote = $c;
                 $buf .= $c;
+                $i++;
                 continue;
             }
-            $startOfLineComment = ($c === '-' && $i + 1 < $len && $sql[$i + 1] === '-' && ($i + 2 >= $len || ctype_space($sql[$i + 2])))
-                || $c === '#';
-            if ($startOfLineComment) {
-                $nl = strpos($sql, "\n", $i);
-                $i = $nl === false ? $len : $nl;
+            if ($c === '#' || ($c === '-' && $i + 1 < $len && $data[$i + 1] === '-' && ($i + 2 >= $len || ctype_space($data[$i + 2])))) {
+                $nl = strpos($data, "\n", $i);
+                if ($nl === false && !$eof) {
+                    $fill();
+                    continue;
+                }
+                $i = $nl === false ? $len : $nl + 1;
                 $buf .= "\n";
                 continue;
             }
-            if ($c === '/' && $i + 1 < $len && $sql[$i + 1] === '*') {
-                $end = strpos($sql, '*/', $i + 2);
+            if ($c === '/' && $i + 1 < $len && $data[$i + 1] === '*') {
+                $end = strpos($data, '*/', $i + 2);
+                if ($end === false && !$eof) {
+                    $fill();
+                    continue;
+                }
                 $end = $end === false ? $len : $end + 2;
-                $buf .= substr($sql, $i, $end - $i);
-                $i = $end - 1;
+                $buf .= substr($data, $i, $end - $i);
+                $i = $end;
                 continue;
             }
             if ($c === ';') {
                 if (trim($buf) !== '') {
-                    $statements[] = trim($buf);
+                    yield trim($buf);
                 }
                 $buf = '';
+                $i++;
                 continue;
             }
             $buf .= $c;
+            $i++;
         }
         if (trim($buf) !== '') {
-            $statements[] = trim($buf);
+            yield trim($buf);
         }
-        return $statements;
     }
 
     /**

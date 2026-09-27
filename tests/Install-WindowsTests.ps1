@@ -489,8 +489,17 @@ Describe 'install-windows.ps1 — Fázis 2 Checkpoint 3 szerkezeti garanciák (s
         $mainScriptText | Should Match "NodeRole -eq 'client'[\s\S]{0,1200}Unregister-ScheduledTask"
     }
     It "A szerver-indítás a `$bindHost változót használja, NEM egy kőbe vésett 'localhost'-ot" {
-        $mainScriptText | Should Match '-S \$\{bindHost\}:\$Port'
+        $mainScriptText | Should Match '--listen=\$\{bindHost\}:\$Port'
+        $mainScriptText | Should Not Match '--listen=localhost:\$Port'
         $mainScriptText | Should Not Match '-S localhost:\$Port -t'
+    }
+    It 'PERF-01 — a szerver a párhuzamos diszpécserrel indul (3 pénztári + 1 háttérfolyamat), nem egyetlen php -S-sel' {
+        $mainScriptText | Should Match "Join-Path \`$toolsDir 'http-dispatcher\.php'"
+        $mainScriptText | Should Match 'New-HiddenLauncherVbs -VbsPath \$serverVbsPath -ExePath \$phpExe -Arguments "`"\$dispatcherScript`" --listen=\$\{bindHost\}:\$Port --webroot=`"\$webrootPath`" --workers=3 --background-workers=1"'
+        $mainScriptText | Should Not Match 'New-HiddenLauncherVbs -VbsPath \$serverVbsPath -ExePath \$phpExe -Arguments "-S '
+    }
+    It 'PERF-01 — a háttérfolyamatok portjait ($Port+1..$Port+4) a telepítő ellenőrzi' {
+        $mainScriptText | Should Match 'foreach \(\$workerPort in \(\$Port \+ 1\)\.\.\(\$Port \+ 4\)\)'
     }
     It 'Szerver módban a szkript ténylegesen létrehoz egy New-NetFirewallRule hívást' {
         $mainScriptText | Should Match "NodeRole -eq 'server'[\s\S]{0,2000}New-NetFirewallRule"

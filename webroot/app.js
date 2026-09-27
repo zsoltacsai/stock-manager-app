@@ -1,5 +1,4 @@
 const cart = new Map();
-let allProducts = [];
 let manualItemIdCounter = 1;
 const manualItems = [];
 
@@ -873,15 +872,10 @@ function resetBuyerForm() {
     setPaymentMethod('Készpénz');
 }
 
-async function loadProducts() {
-    try {
-        const data = await fetchJson('/api/products.php');
-        allProducts = data.products || [];
-    } catch (err) {
-        showScanFeedback('Hiba a termékkatalógus betöltésekor: ' + err.message, true);
-    }
-}
-loadProducts();
+// PERF-04: a kassza nem tölti le a teljes termékkatalógust (D2: 7,8 MB; ~35 000
+// termék felett a szerver memóriakorlátján el is bukott) — a névkeresés
+// szerveroldali (/api/product-search.php, ugyanazzal a szabállyal), a
+// vonalkód továbbra is /api/barcode.php, a gyorsgombok a saját adatukkal.
 loadFrequentProducts();
 
 // --- Gyakran vásárolt gyorsgombok ---
@@ -897,7 +891,7 @@ async function loadFrequentProducts() {
         row.innerHTML = products.map(p => `<button type="button" class="quick-chip" data-id="${p.id}">${escapeHtml(p.name)}</button>`).join('');
         row.querySelectorAll('.quick-chip').forEach(btn => {
             btn.addEventListener('click', () => {
-                const product = allProducts.find(p => p.id === Number(btn.dataset.id));
+                const product = products.find(p => p.id === Number(btn.dataset.id));
                 if (product) {
                     addToCart(product);
                     showScanFeedback(`Hozzáadva: ${product.name}`, false);
@@ -933,15 +927,32 @@ function showScanFeedback(msg, isError) {
     scanFeedback.className = 'feedback ' + (isError ? 'error' : 'ok');
 }
 
+let searchSeq = 0;
+let searchTimer = null;
 searchInput.addEventListener('input', () => {
     const q = searchInput.value.trim().toLowerCase();
     searchResults.innerHTML = '';
+    clearTimeout(searchTimer);
+    const seq = ++searchSeq;
     if (!q) return;
+    // Rövid várakozás gépelés közben, és csak a LEGUTOLSÓ keresés eredménye
+    // jelenik meg (egy lassabb, korábbi válasz nem írhatja felül).
+    searchTimer = setTimeout(async () => {
+        let matches;
+        try {
+            const data = await fetchJson('/api/product-search.php?limit=20&q=' + encodeURIComponent(q));
+            matches = data.products || [];
+        } catch (err) {
+            if (seq === searchSeq) showScanFeedback('Hiba a keresés közben: ' + err.message, true);
+            return;
+        }
+        if (seq !== searchSeq) return;
+        renderSearchResults(matches);
+    }, 150);
+});
 
-    const matches = allProducts
-        .filter(p => p.name.toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q))
-        .slice(0, 20);
-
+function renderSearchResults(matches) {
+    searchResults.innerHTML = '';
     for (const p of matches) {
         const row = document.createElement('div');
         row.className = 'search-result-item';
@@ -953,10 +964,11 @@ searchInput.addEventListener('input', () => {
             addToCart(p);
             searchInput.value = '';
             searchResults.innerHTML = '';
+            searchSeq++;
         });
         searchResults.appendChild(row);
     }
-});
+}
 
 // --- Kosár ---
 // --- Rövid "pitty" hang sikeres beolvasásnál (Web Audio API, nincs fájl) ---

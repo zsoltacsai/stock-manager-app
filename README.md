@@ -833,8 +833,9 @@ MySQL sémába (oszlopsorrendet egyeztetve) töltése a pragmatikus út.
 
 - **Nincs több N+1 lekérdezés**: a napi zárás riport korábban
   eladásonként egy külön lekérdezést futtatott a tételek behúzásához;
-  most egyetlen `WHERE sale_id IN (...)` lekérdezéssel húzza be egy
-  nap összes tételét.
+  most egyetlen, a nap eladásaihoz JOIN-olt lekérdezéssel húzza be egy
+  nap összes tételét (a PERF-02 óta nem egy eladás-azonosítónként bővülő
+  `IN (...)` listával — lásd „Teljesítmény, futtatási modell és kapacitás”).
 - **Tranzakciók a több-írásos műveletek körül**: egy kassza-eladás, egy
   sok tételes beszerzés, egy WooCommerce behúzás és a CSV import
   mindegyike egy tranzakcióba van csomagolva, ahelyett hogy minden
@@ -858,6 +859,109 @@ MySQL sémába (oszlopsorrendet egyeztetve) töltése a pragmatikus út.
 Ez semmin nem változtat viselkedésben — ugyanazok a funkciók, csak
 olcsóbb futtatni, ahogy az eladási tábla tízezres-százezres sorszámra
 nő.
+
+### Teljesítmény, futtatási modell és kapacitás
+
+A Phase 6 teljesítmény-audit mérései alapján javítva (PERF-01…PERF-09).
+A mért értékek egy i7-1165G7 / 31 GB RAM / NVMe SSD gépen, PHP 8.3,
+SQLite 3.53 (WAL), `memory_limit=128M` mellett készültek; MySQL-en
+**nem** mértünk (a MySQL-ágakat kódszinten és SQL-rögzítéssel ellenőriztük).
+
+**Futtatási modell (Windows-telepítő).** A telepítő nem egyetlen
+`php -S` folyamatot indít, hanem a `tools/http-dispatcher.php` diszpécsert:
+
+- 3 pénztári + 1 háttér `php -S` folyamat fut 127.0.0.1-en, a
+  `$Port+1..$Port+4` portokon (LAN-ról nem elérhetők; a tűzfalszabály
+  változatlanul csak a `$Port`-ra vonatkozik). Ezeknek a portoknak szabadnak
+  kell lenniük — a telepítő ellenőrzi.
+- A diszpécser a `${bindHost}:$Port` címen fogad, és minden kérést egy
+  **szabad** folyamatnak ad. Windows-on a beépített szerver egyszálú — a
+  javítás előtt egy AI-futás, egy lassú Számlázz.hu/NAV/WooCommerce-hívás,
+  egy cron-futás vagy egy hosszú riport alatt minden kassza várt.
+- Ütemezés: a cron-végpontok (`*-run.php`) csak a háttérfolyamaton futnak;
+  a hosszú kérések (AI, külső szolgáltatás, mentés, export) legfeljebb
+  2 pénztári folyamatot foglalhatnak, egy mindig a rövid (kassza)
+  kéréseké; a visszaállítás és a frissítés-telepítés megvárja a
+  folyamatban lévő kéréseket, és egyedül fut (az élő adatbázis-fájlt
+  cseréli); az import és a leltárzárás alatt új író kérés **vár** (nem
+  bukik el 5 s után „database is locked”-dal), az olvasások közben is
+  kiszolgálhatók.
+- A kliens-IP és a HTTPS-jelzés bizalmi szabálya ugyanaz, mint korábban:
+  nem loopback kliens `X-Forwarded-*`/`X-Real-IP`/`Forwarded` fejlécei
+  törlődnek, és a diszpécser `X-Forwarded-For`-ban adja át a valódi címet
+  (lásd `GeoBlocker::resolveClientIp()`); loopback kliens (pl. egy helyi
+  reverse proxy) fejlécei változatlanul mennek tovább.
+- A hosszú végpontok a hitelesítés után elengedik a PHP session-zárat,
+  így ugyanannak a böngészőnek egy másik lapja (pl. a kassza) sem vár egy
+  AI-futásra.
+- **Meglévő telepítésen** az önfrissítés a `tools/http-dispatcher.php`-t
+  telepíti, de a Feladatütemező szerver-bejegyzését nem írja át — a
+  párhuzamos futtatásra való átálláshoz a `FountainTrade-Setup.bat`-ot
+  egyszer újra kell futtatni (idempotens, az adatokat nem érinti).
+- Nginx/Apache + PHP-FPM telepítésnél (`telepites-tavoli-szerver.txt`) a
+  diszpécser nem kell: ott a párhuzamos kiszolgálást a PHP-FPM adja. Az
+  ütemezési szabályok (cron-elkülönítés, kizárólagos visszaállítás, író-
+  kizárólagos import) viszont csak a diszpécserrel érvényesülnek — FPM-en
+  a visszaállítást és a nagy importot forgalommentes időszakban érdemes
+  futtatni.
+
+**Memória.** A mentés és a visszaállítás darabolt, streamelt
+titkosítást használ (1 MiB-os rekordok), a memóriaigénye nem függ az
+adatbázis méretétől (korábban ~3× DB-méret, ~42 MB-os adatbázis felett
+elbukott). A riportok streamelve, SQL-oldali JOIN-nal/aggregálással
+dolgoznak (nincs a teljes eladáslistát betöltő `fetchAll()`, nincs
+korlátlan `IN (...)` lista). A kassza és a Beszerzés szerveroldalon keres
+(`/api/product-search.php`), a Termékek oldal szerveroldalon lapoz
+(`/api/products-page.php`, 100 sor/oldal), így a böngésző és a szerver
+memóriája sem a katalógus méretével nő. A Termékek oldal szöveges
+rendezése a korábbi JS `localeCompare('hu')` szerinti magyar ábécé-rendet
+követi (SQLite-on egy PHP-ban számolt rendezőkulccsal — a PHP-ban nincs
+intl/ICU; a teszt a node-os `localeCompare('hu')`-val veti össze; a
+kettőzött kettős betűk, pl. „ssz” ICU-féle feloldását nem követi).
+
+**Mért értékek a javítás előtt → után** (p50; D2 = 10 000 termék /
+100 000 eladás / 300 000 eladási sor, D3 = 100 000 termék / 100 000 eladás /
+1 000 000 eladási sor; ≥ 3 ismétlés, bemelegített gyorsítótárral):
+
+| Művelet | D2 | D3 |
+|---|---|---|
+| Eladás egy 6 s-os AI-stream alatt (HTTP) | — | 5,8–6,1 s → 46–63 ms |
+| Kassza gyorsgombok | 2,3 s → 75 ms | 9,7 s → 0,28 s |
+| Kassza termékkatalógus / névkeresés | 7,8 MB letöltés → 11 ms/keresés | HTTP 500 → 92 ms/keresés |
+| Értékesítési riport, 365 nap | HTTP 500 → 1,6 s | HTTP 500 → 4,3 s |
+| Top termékek / árrés, 365 nap | 1,7 s → 1,8 s | HTTP 500 → 5,9–6,9 s |
+| Készletérték | 24 ms → 17 ms | HTTP 500 → 0,15 s |
+| Termékek oldal (DOM, 10 000 termék) | 181 707 elem → 2 231 elem | 500 → ~1 s/lap (név szerint), ~0,1 s (szűrt/szám szerint) |
+| Mentés + visszaállítás memóriacsúcs | 122 MB → 6,3 MB | fatal → 6,3 MB |
+| Import, 50 000 sor | ~30 perc → ~8 s | → ~12 s |
+| 20 párhuzamos kassza, eladás | 50 → 77 req/s | — |
+| 20 kassza, eladás + riport vegyesen | 18 → 42 req/s, p50 1,06 s → 0,17 s | — |
+
+**Kapacitás (mért, nem garantált).** A fenti gépen a napi kasszaműveletek
+(eladás, visszáru, zárás, vonalkód) 100 000 termék és 1 000 000 eladási sor
+mellett is ~1 ms-os adatbázis-idejűek. Elsőként a hosszú időszakos riportok
+lassulnak lineárisan az eladási sorok számával (1 000 000 sor/év mellett
+egy éves riport ~4–10 s), és a Termékek oldal név szerinti rendezése a
+termékszámmal (100 000 terméknél ~1 s/lap) — ezek már nem buknak el, és a
+diszpécser miatt nem akasztják meg a kasszákat. MySQL-en és más hardveren
+nem mértünk.
+
+**Ismert, nem javított tételek.**
+
+- PIN-belépés: minden aktív dolgozó bcrypt-hash-ét végigpróbálja
+  (~63 ms/dolgozó). A PIN-hez nincs felhasználónév; egy közvetlen keresés
+  gyors, determinisztikus PIN-lenyomatot igényelne, amivel egy kiszivárgott
+  adatbázisból a rövid PIN-ek azonnal visszafejthetők — ezért szándékosan
+  változatlan. A diszpécser miatt már nem blokkol más kasszát.
+- Statikus fájlok: a `php -S` tömörítés és cache-fejléc nélkül szolgálja
+  ki őket (LAN-on 2–3 ms). Ha kell, egy elé tett reverse proxy
+  (gzip/brotli, `Cache-Control: max-age` a verziózott fájlokra) megoldja.
+- Polling: a felső sáv 25 s-onként kérdezi a rendszerállapotot
+  (fülenként, ~100 ms szerveridő 100 000 termékes adatbázison).
+- Nagy import: egy 50 000 soros import továbbra is egyetlen író-
+  tranzakció (a „DB-hiba esetén semmi nem kerül mentésre” szerződés
+  miatt), de ~8 s (D2) / ~12 s (D3), nem ~30 perc; alatta a diszpécser az új író
+  kéréseket várakoztatja.
 
 ### Migráció megbízhatóság / helyreállítás
 

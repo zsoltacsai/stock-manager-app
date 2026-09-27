@@ -120,6 +120,11 @@ if (!Auth::isLoggedIn($appSettings)) {
             </tbody>
         </table>
     </div>
+    <div id="products-pager" class="products-toolbar hidden" style="justify-content:center; margin-top:12px;">
+        <button type="button" id="products-prev-btn" class="btn btn-secondary" style="width:auto;">&lsaquo; Előző</button>
+        <span id="products-page-info" class="muted"></span>
+        <button type="button" id="products-next-btn" class="btn btn-secondary" style="width:auto;">Következő &rsaquo;</button>
+    </div>
 </div>
 
 <!-- New / edit product modal ("Árucikk módosítása") — shared markup with beszerzes.php -->

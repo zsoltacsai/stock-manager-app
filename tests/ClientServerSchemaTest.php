@@ -39,7 +39,7 @@ final class ClientServerSchemaTest extends TestCase
         );
     }
 
-    public function testSchemaVersionIs37AfterFreshInstall(): void
+    public function testSchemaVersionIs38AfterFreshInstall(): void
     {
         $db = tests_new_database();
         $pdoProp = new ReflectionProperty(Database::class, 'pdo');
@@ -47,7 +47,7 @@ final class ClientServerSchemaTest extends TestCase
         $pdo = $pdoProp->getValue($db);
 
         $version = (int) $pdo->query('SELECT version FROM schema_version LIMIT 1')->fetchColumn();
-        $this->assertSame(37, $version);
+        $this->assertSame(38, $version);
     }
 
     public function testClientIdAndSessionIdAreUniquelyIndexed(): void
@@ -101,7 +101,7 @@ final class ClientServerSchemaTest extends TestCase
         $this->assertNotEmpty($clientSessionsCols);
 
         $version = (int) $pdo2->query('SELECT version FROM schema_version LIMIT 1')->fetchColumn();
-        $this->assertSame(37, $version);
+        $this->assertSame(38, $version);
     }
 
     public function testReRunningMigrationAgainstAnAlreadyMigratedDatabaseIsANoOp(): void

@@ -22,7 +22,13 @@ class GoogleDriveProvider implements CloudBackupProvider
         return 'Google Drive';
     }
 
-    private function getAccessToken(): string
+    /** A feltöltési végpont — tesztben helyi szerverre irányítható. */
+    protected function uploadUrl(): string
+    {
+        return 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+    }
+
+    protected function getAccessToken(): string
     {
         $ch = curl_init('https://oauth2.googleapis.com/token');
         curl_setopt_array($ch, [
@@ -61,30 +67,62 @@ class GoogleDriveProvider implements CloudBackupProvider
         }
 
         $boundary = 'stockmanagerbackup' . bin2hex(random_bytes(8));
-        $fileContent = file_get_contents($localFilePath);
 
-        $body = "--$boundary\r\n"
+        // PERF-03: a multipart törzs (fejrész || fájl || zárás) streamelve megy
+        // fel egy olvasó-visszahívással — a fájl nem kerül egyben a memóriába.
+        $head = "--$boundary\r\n"
             . "Content-Type: application/json; charset=UTF-8\r\n\r\n"
             . json_encode($metadata) . "\r\n"
             . "--$boundary\r\n"
-            . "Content-Type: application/x-sqlite3\r\n\r\n"
-            . $fileContent . "\r\n"
-            . "--$boundary--";
+            . "Content-Type: application/x-sqlite3\r\n\r\n";
+        $tail = "\r\n--$boundary--";
+        $size = filesize($localFilePath);
+        $fh = fopen($localFilePath, 'rb');
+        if ($size === false || $fh === false) {
+            throw new RuntimeException('Google Drive feltöltési hiba: a mentési fájl nem olvasható.');
+        }
+        $pending = $head;
+        $fileDone = false;
+        $tailSent = false;
+        $read = function ($ch, $in, int $length) use (&$pending, &$fileDone, &$tailSent, $fh, $tail): string {
+            while ($pending === '') {
+                if (!$fileDone) {
+                    $chunk = fread($fh, max(1, $length));
+                    if ($chunk === false || $chunk === '') {
+                        $fileDone = true;
+                        continue;
+                    }
+                    $pending = $chunk;
+                } elseif (!$tailSent) {
+                    $pending = $tail;
+                    $tailSent = true;
+                } else {
+                    return '';
+                }
+            }
+            $out = substr($pending, 0, $length);
+            $pending = (string) substr($pending, strlen($out));
+            return $out;
+        };
 
-        $ch = curl_init('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart');
+        $ch = curl_init($this->uploadUrl());
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST           => true,
             CURLOPT_HTTPHEADER     => [
                 'Authorization: Bearer ' . $accessToken,
                 'Content-Type: multipart/related; boundary=' . $boundary,
+                'Expect:',
             ],
-            CURLOPT_POSTFIELDS => $body,
-            CURLOPT_TIMEOUT    => 60,
+            CURLOPT_UPLOAD        => true,
+            CURLOPT_CUSTOMREQUEST => 'POST',
+            CURLOPT_READFUNCTION  => $read,
+            CURLOPT_INFILESIZE    => strlen($head) + $size + strlen($tail),
+            CURLOPT_TIMEOUT       => 60,
         ]);
         $response = curl_exec($ch);
         $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
+        fclose($fh);
 
         if ($response === false || $status >= 400) {
             throw new RuntimeException("Google Drive feltöltési hiba ($status): $response");

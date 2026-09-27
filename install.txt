@@ -308,6 +308,17 @@ Windows szolgáltatásként vagy a Feladatütemezőben "bejelentkezéskor
 induljon" beállítással automatizálni (lásd 8. pont), vagy csak hagyd a
 parancssor-ablakot futni a háttérben a kasszagépen.
 
+FONTOS (éles üzem): a fenti egyetlen "php -S" Windows-on minden kérést
+SORBAN szolgál ki — egy AI-futás, egy lassú számlázó-/webshop-hívás vagy
+egy cron-feladat alatt minden kassza vár. Éles használatra a telepítő
+(FountainTrade-Setup.bat) által is használt párhuzamos indítást ajánljuk:
+
+    C:\tools\php83\php.exe tools\http-dispatcher.php --listen=localhost:8000 --webroot=webroot
+
+Ez 3 pénztári + 1 háttér "php -S" folyamatot indít a 8001-8004 portokon
+(csak a gépen belül elérhetők) — ezeknek szabadnak kell lenniük. Lásd
+README "Teljesítmény, futtatási modell és kapacitás".
+
 
 ---------------------------------------------------------------
 5. TELEPÍTŐ VARÁZSLÓ (első indítás)
@@ -472,8 +483,8 @@ A FountainTrade-Setup.bat ablaka egy pillanatra felvillan, majd eltűnik
      vagy kövesd az 1-8. pont szerinti kézi telepítést.
 
 "This site can't be reached" / nem töltődik be az oldal
-  -> Fut-e még a php -S parancssor-ablak (vagy a "FountainTrade -
-     Szerver" Feladatütemező-bejegyzés)? Ha kézzel indítottad és
+  -> Fut-e még a php -S (vagy a tools\http-dispatcher.php) parancssor-
+     ablak (vagy a "FountainTrade - Szerver" Feladatütemező-bejegyzés)? Ha kézzel indítottad és
      bezártad az ablakot, indítsd újra (4. pont), vagy futtasd újra a
      FountainTrade-Setup.bat-ot — az idempotens, nem hoz létre
      duplikált bejegyzést.

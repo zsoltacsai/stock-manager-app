@@ -311,26 +311,160 @@ final class BackupManagerTest extends TestCase
         $backupDir = $this->tmpRoot . '/data/backups';
         $manager = new BackupManager(['driver' => 'sqlite', 'sqlite' => ['path' => $this->tmpRoot . '/unused.sqlite']], $backupDir);
 
-        $plainPath = $backupDir . '/legacy-plain-for-roundtrip.txt';
         $originalContent = 'ez a tartalom megy át egy RÉGI formátumú (jelző nélküli) titkosításon';
-        file_put_contents($plainPath, $originalContent);
 
-        // encryptFileInPlace()-t hívjuk, majd a MAGIC jelzőt kézzel
-        // levágjuk, hogy pontosan a "jelző bevezetése ELŐTTI" fájlformátumot
-        // szimuláljuk.
-        $encPath = $backupDir . '/legacy-plain-for-roundtrip.txt.enc';
-        $this->invokePrivate($manager, 'encryptFileInPlace', [$plainPath, $encPath]);
+        // PERF-03 óta az encryptFileInPlace() a darabolt (FTBKENC2) formátumot
+        // írja — a régi, egyben titkosított formátumot ezért itt közvetlenül
+        // állítjuk elő: IV||TAG||ciphertext, jelző NÉLKÜL ("a jelző bevezetése
+        // ELŐTTI" fájl), és ugyanez az FTBKENC1 jelzővel.
         $magic = (new ReflectionClassConstant(BackupManager::class, 'ENCRYPTED_MAGIC'))->getValue();
-        $withMagic = file_get_contents($encPath);
-        $this->assertStringStartsWith($magic, $withMagic);
-        file_put_contents($encPath, substr($withMagic, strlen($magic)));
+        $this->assertSame('FTBKENC1', $magic);
+        $key = $this->invokePrivate($manager, 'encryptionKey', []);
+        foreach (['' => 'jelző NÉLKÜLI', $magic => 'FTBKENC1 jelzős'] as $prefix => $label) {
+            $iv = random_bytes(12);
+            $tag = '';
+            $ciphertext = openssl_encrypt($originalContent, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+            $encPath = $backupDir . '/legacy-plain-for-roundtrip-' . bin2hex(random_bytes(3)) . '.txt.enc';
+            file_put_contents($encPath, $prefix . $iv . $tag . $ciphertext);
 
-        $tmpPath = $this->invokePrivate($manager, 'decryptToTempFile', [$encPath, '.txt']);
-        try {
-            $this->assertSame($originalContent, file_get_contents($tmpPath), 'Egy jelző NÉLKÜLI (régi formátumú) titkosított fájlnak is helyesen kell visszafejtődnie.');
-        } finally {
-            @unlink($tmpPath);
+            $tmpPath = $this->invokePrivate($manager, 'decryptToTempFile', [$encPath, '.txt']);
+            try {
+                $this->assertSame($originalContent, file_get_contents($tmpPath), "Egy $label (régi formátumú) titkosított fájlnak is helyesen kell visszafejtődnie.");
+            } finally {
+                @unlink($tmpPath);
+            }
         }
+    }
+
+    private function encryptedFixture(BackupManager $manager, string $content): string
+    {
+        $plainPath = $this->tmpRoot . '/data/backups/plain-' . bin2hex(random_bytes(4)) . '.bin';
+        file_put_contents($plainPath, $content);
+        $encPath = $plainPath . '.enc';
+        $this->invokePrivate($manager, 'encryptFileInPlace', [$plainPath, $encPath]);
+        $this->assertFileDoesNotExist($plainPath, 'A titkosítás után a sima fájl nem maradhat meg.');
+        return $encPath;
+    }
+
+    /** @return list<string> a stockmanager_decrypt_* ideiglenes fájlok (a hibás visszafejtés nem hagyhat ilyet maga után) */
+    private function decryptTempFiles(): array
+    {
+        return glob(sys_get_temp_dir() . '/stockmanager_decrypt_*') ?: [];
+    }
+
+    /**
+     * PERF-03: a darabolt formátum oda-vissza azonos minden méretnél — üres fájl,
+     * egy rekordnál kisebb, pontosan egy rekord (1 MiB), rekordhatárt átlépő és
+     * több rekordos fájl.
+     */
+    public function testChunkedEncryptionRoundTripsAcrossRecordBoundaries(): void
+    {
+        $manager = new BackupManager(['driver' => 'sqlite', 'sqlite' => ['path' => $this->tmpRoot . '/unused.sqlite']], $this->tmpRoot . '/data/backups');
+        $chunk = (new ReflectionClassConstant(BackupManager::class, 'ENCRYPTION_CHUNK_BYTES'))->getValue();
+        foreach ([0, 1, 1000, $chunk - 1, $chunk, $chunk + 1, 2 * $chunk, 3 * $chunk + 12345] as $size) {
+            $content = $size === 0 ? '' : random_bytes($size);
+            $encPath = $this->encryptedFixture($manager, $content);
+            $this->assertStringStartsWith('FTBKENC2', (string) file_get_contents($encPath, false, null, 0, 8));
+            $this->assertTrue($this->invokePrivate($manager, 'detectEncryption', [$encPath, false]));
+            $tmp = $this->invokePrivate($manager, 'decryptToTempFile', [$encPath, '.bin']);
+            try {
+                $this->assertSame(hash('sha256', $content), hash_file('sha256', $tmp), "Oda-vissza eltérés $size bájtnál.");
+            } finally {
+                @unlink($tmp);
+            }
+        }
+    }
+
+    /**
+     * PERF-03: a darabolás nem gyengítheti a hitelesítést — rekord módosítása,
+     * cseréje, elhagyása (csonkolás), az „utolsó” jelző átírása és a fájl
+     * bővítése egyaránt visszafejtési hibát ad, és nem marad visszafejtett
+     * ideiglenes fájl.
+     */
+    public function testChunkedEncryptionRejectsTamperingReorderingTruncationAndExtension(): void
+    {
+        $manager = new BackupManager(['driver' => 'sqlite', 'sqlite' => ['path' => $this->tmpRoot . '/unused.sqlite']], $this->tmpRoot . '/data/backups');
+        $chunk = (new ReflectionClassConstant(BackupManager::class, 'ENCRYPTION_CHUNK_BYTES'))->getValue();
+        $content = random_bytes(3 * $chunk);
+        $encPath = $this->encryptedFixture($manager, $content);
+        $raw = (string) file_get_contents($encPath);
+
+        $header = 16;                       // "FTBKENC2" + 8 bájt prefix
+        $record = 1 + 4 + 16 + $chunk;      // flag + hossz + tag + 1 MiB
+        $this->assertSame($header + 3 * $record, strlen($raw), '3 teljes rekord, a harmadik az utolsó.');
+        $r = fn (int $n) => substr($raw, $header + $n * $record, $record);
+
+        $variants = [
+            'ciphertext-bájt módosítva' => substr_replace($raw, chr(ord($raw[$header + 100]) ^ 1), $header + 100, 1),
+            'tag módosítva'             => substr_replace($raw, chr(ord($raw[$header + 6]) ^ 1), $header + 6, 1),
+            'két rekord felcserélve'    => substr($raw, 0, $header) . $r(1) . $r(0) . substr($raw, $header + 2 * $record),
+            'utolsó rekord elhagyva'    => substr($raw, 0, $header + 2 * $record),
+            'csak az első rekord'       => substr($raw, 0, $header + $record),
+            'rekord közepén csonkolva'  => substr($raw, 0, $header + $record + 500),
+            'közbenső rekord „utolsó”'  => substr_replace($raw, "\x01", $header, 1),
+            'adat a záró rekord után'   => $raw . 'x',
+            'prefix módosítva'          => substr_replace($raw, chr(ord($raw[9]) ^ 1), 9, 1),
+            'túl nagy rekordhossz'      => substr_replace($raw, pack('N', 0x7FFFFFFF), $header + 1, 4),
+        ];
+        $before = $this->decryptTempFiles();
+        foreach ($variants as $label => $bytes) {
+            $bad = $this->tmpRoot . '/data/backups/tampered.enc';
+            file_put_contents($bad, $bytes);
+            try {
+                $tmp = $this->invokePrivate($manager, 'decryptToTempFile', [$bad, '.bin']);
+                @unlink($tmp);
+                $this->fail("A(z) „{$label}” változatnak visszafejtési hibát kellett volna adnia.");
+            } catch (RuntimeException $e) {
+                $this->assertStringContainsString('sikertelen', $e->getMessage(), $label);
+            }
+        }
+        $this->assertSame($before, $this->decryptTempFiles(), 'Hibás visszafejtés után nem maradhat (részleges) visszafejtett ideiglenes fájl.');
+    }
+
+    /**
+     * PERF-03 regresszió: a mentés és a visszaállítás memóriaigénye nem a
+     * DB-méret többszöröse. Egy ~64 MB-os adatbázis mentése + visszaállítása
+     * egy 32 MB-os memory_limit-tel futó külön PHP-folyamatban sikerül
+     * (korábban ~3× DB-méret, azaz ~190 MB kellett volna), az adatok
+     * bitre azonosak, és a mért csúcs nem nő a DB méretével.
+     */
+    public function testBackupAndRestoreOfLargeDatabaseRunWithinSmallFixedMemoryLimit(): void
+    {
+        $dbPath = $this->tmpRoot . '/live.sqlite';
+        $db = new Database(['driver' => 'sqlite', 'sqlite' => ['path' => $dbPath]], dirname(__DIR__));
+        $pdo = $db->pdo();
+        $pdo->exec('CREATE TABLE perf_filler (id INTEGER PRIMARY KEY, payload BLOB)');
+        $pdo->exec('WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 64) INSERT INTO perf_filler (payload) SELECT randomblob(1048576) FROM n');
+        $pdo->exec("INSERT INTO products (name) VALUES ('PERF03-MARKER')");
+        $digest = fn (PDO $p) => md5(implode('|', $p->query('SELECT hex(payload) FROM perf_filler ORDER BY id LIMIT 3')->fetchAll(PDO::FETCH_COLUMN)) . $p->query('SELECT COUNT(*) FROM perf_filler')->fetchColumn());
+        $expectedDigest = $digest($pdo);
+        unset($db, $pdo);
+        $this->assertGreaterThan(64 * 1024 * 1024, filesize($dbPath));
+
+        $script = $this->tmpRoot . '/run.php';
+        file_put_contents($script, '<?php
+            require ' . var_export(dirname(__DIR__) . '/src/BackupManager.php', true) . ';
+            $bm = new BackupManager(["driver" => "sqlite", "sqlite" => ["path" => ' . var_export($dbPath, true) . ']], ' . var_export($this->tmpRoot . '/data/backups', true) . ');
+            memory_reset_peak_usage();
+            $r = $bm->run(["backup_retention_count" => 5, "backup_provider" => "none"]);
+            $backupPeak = memory_get_peak_usage();
+            memory_reset_peak_usage();
+            $bm->restoreFromFile(' . var_export($this->tmpRoot . '/data/backups/', true) . ' . $r["filename"], true);
+            echo json_encode(["file" => $r["filename"], "backup_peak" => $backupPeak, "restore_peak" => memory_get_peak_usage()]);
+        ');
+        $out = [];
+        exec(escapeshellarg(PHP_BINARY) . ' -d memory_limit=32M ' . escapeshellarg($script) . ' 2>&1', $out, $code);
+        $this->assertSame(0, $code, implode("\n", $out));
+        $result = json_decode((string) end($out), true);
+        $this->assertIsArray($result, implode("\n", $out));
+        $this->assertLessThan(16 * 1024 * 1024, $result['backup_peak'], 'A mentés memóriacsúcsa nem függhet a ~64 MB-os DB-mérettől.');
+        $this->assertLessThan(16 * 1024 * 1024, $result['restore_peak'], 'A visszaállítás memóriacsúcsa nem függhet a ~64 MB-os DB-mérettől.');
+        $this->assertGreaterThan(64 * 1024 * 1024, filesize($this->tmpRoot . '/data/backups/' . $result['file']));
+
+        $restored = new PDO('sqlite:' . $dbPath);
+        $this->assertSame($expectedDigest, $digest($restored), 'A visszaállított adatbázis tartalma eltér a mentettől.');
+        $this->assertSame('PERF03-MARKER', $restored->query("SELECT name FROM products WHERE name = 'PERF03-MARKER'")->fetchColumn());
+        $this->assertSame('ok', $restored->query('PRAGMA integrity_check')->fetchColumn());
     }
 
     public function testRestoreFromCorruptBackupFailsCleanlyWithoutTouchingLiveDatabase(): void

@@ -39,6 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_products_wc_id   ON products(wc_product_id);
 CREATE INDEX IF NOT EXISTS idx_products_group   ON products(group_name);
 CREATE INDEX IF NOT EXISTS idx_products_deleted ON products(is_deleted);
 CREATE INDEX IF NOT EXISTS idx_products_preferred_supplier ON products(preferred_supplier_id);
+CREATE INDEX IF NOT EXISTS idx_products_unit_name ON products(unit, name);
 
 CREATE TABLE IF NOT EXISTS sales (
     id                       INTEGER PRIMARY KEY AUTOINCREMENT,

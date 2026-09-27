@@ -1,4 +1,3 @@
-let allProducts = [];
 const purchaseCart = new Map();
 
 // Idempotencia-kulcs a jelenlegi beszerzés-rögzítési kísérlethez — PONTOSAN
@@ -72,30 +71,34 @@ supplierPicker.addEventListener('change', () => {
     supplierCountry.value = supplier.country || 'Magyarország';
 });
 
-async function loadProducts() {
-    try {
-        const data = await fetchJson('/api/products.php');
-        allProducts = data.products || [];
-    } catch (err) {
-        showScanFeedback('Hiba a termékkatalógus betöltésekor: ' + err.message, 'error');
-    }
-}
-
-Promise.all([loadSuppliers(), loadProducts()]).then(applyPurchasePrefill);
+// PERF-04: a Beszerzés sem tölti le a teljes termékkatalógust — a vonalkód,
+// a név-/cikkszám-keresés és az előtöltés (beszerzési javaslatból) célzott
+// szerveroldali lekérdezés (/api/product-search.php), mindig friss adattal.
+loadSuppliers().then(applyPurchasePrefill);
 
 // A beszerzési javaslat oldalról érkező, előre kiválasztott tételek
 // betöltése — sessionStorage-on keresztül adja át, mert ez csak az adott
 // böngésző-fülre/munkamenetre vonatkozó, egyszeri átadás. Csak akkor fut,
 // miután a termékek ÉS a beszállítók is betöltődtek, hogy a beszállító
 // legördülőben már létezzen a kiválasztandó opció.
-function applyPurchasePrefill() {
+async function applyPurchasePrefill() {
     const raw = sessionStorage.getItem('sm_purchase_prefill');
     if (!raw) return;
     sessionStorage.removeItem('sm_purchase_prefill');
     try {
         const prefill = JSON.parse(raw);
+        const ids = (prefill.items || []).map(item => Number(item.product_id)).filter(Boolean);
+        let byId = new Map();
+        if (ids.length) {
+            try {
+                const data = await fetchJson('/api/product-search.php?ids=' + ids.join(','));
+                byId = new Map((data.products || []).map(p => [p.id, p]));
+            } catch (err) {
+                showScanFeedback('Hiba a termékek betöltésekor: ' + err.message, 'error');
+            }
+        }
         (prefill.items || []).forEach(item => {
-            const product = allProducts.find(p => p.id === item.product_id);
+            const product = byId.get(item.product_id);
             if (!product) return;
             addToPurchaseCart(product);
             const line = purchaseCart.get(product.id);
@@ -124,13 +127,20 @@ function netFromGross(gross, vatRate) {
 
 let lastFailedBarcode = '';
 
-barcodeInput.addEventListener('keydown', (e) => {
+barcodeInput.addEventListener('keydown', async (e) => {
     if (e.key !== 'Enter') return;
     const code = barcodeInput.value.trim();
     barcodeInput.value = '';
     if (!code) return;
 
-    const product = allProducts.find(p => p.barcode === code);
+    let product = null;
+    try {
+        const data = await fetchJson('/api/product-search.php?barcode=' + encodeURIComponent(code));
+        product = (data.products || [])[0] || null;
+    } catch (err) {
+        showScanFeedback('Hiba a keresés közben: ' + err.message, 'error');
+        return;
+    }
     if (!product) {
         lastFailedBarcode = code;
         showScanFeedback(`Nincs találat: ${code} — vidd fel új termékként.`, 'error');
@@ -145,15 +155,31 @@ function showScanFeedback(msg, kind) {
     scanFeedback.className = 'feedback ' + (kind || '');
 }
 
+let searchSeq = 0;
+let searchTimer = null;
 searchInput.addEventListener('input', () => {
     const q = searchInput.value.trim().toLowerCase();
     searchResults.innerHTML = '';
+    clearTimeout(searchTimer);
+    const seq = ++searchSeq;
     if (!q) return;
+    searchTimer = setTimeout(async () => {
+        let matches;
+        try {
+            const data = await fetchJson('/api/product-search.php?limit=20&q=' + encodeURIComponent(q));
+            matches = data.products || [];
+        } catch (err) {
+            if (seq === searchSeq) showScanFeedback('Hiba a keresés közben: ' + err.message, 'error');
+            return;
+        }
+        if (seq !== searchSeq) return;
+        searchResults.innerHTML = '';
+        renderSearchMatches(matches);
+    }, 150);
+});
 
-    allProducts
-        .filter(p => p.name.toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q))
-        .slice(0, 20)
-        .forEach(p => {
+function renderSearchMatches(matches) {
+    matches.forEach(p => {
             const row = document.createElement('div');
             row.className = 'search-result-item';
             row.innerHTML = `<span>${escapeHtml(p.name)}</span><span>${p.stock_qty} db készleten</span>`;
@@ -161,10 +187,11 @@ searchInput.addEventListener('input', () => {
                 addToPurchaseCart(p);
                 searchInput.value = '';
                 searchResults.innerHTML = '';
+                searchSeq++;
             });
             searchResults.appendChild(row);
         });
-});
+}
 
 function addToPurchaseCart(product) {
     const existing = purchaseCart.get(product.id);
@@ -315,7 +342,6 @@ saveBtn.addEventListener('click', async () => {
         resetPurchaseIdempotencyKey();
         purchaseCart.clear();
         renderCart();
-        loadProducts();
         barcodeInput.focus();
     } catch (err) {
         saveFeedback.textContent = 'Hiba: ' + err.message;
@@ -330,13 +356,11 @@ saveBtn.addEventListener('click', async () => {
 // -------------------------------------------------------------------------
 newProductBtn.addEventListener('click', () => {
     ProductModal.open(null, lastFailedBarcode, (savedProduct) => {
-        loadProducts();
         addToPurchaseCart(savedProduct);
         showScanFeedback(`Új termék létrehozva és hozzáadva: ${savedProduct.name}`, 'ok');
         lastFailedBarcode = '';
     });
 });
 
-document.addEventListener('stockmanager:synced', () => loadProducts());
 
 renderCart();

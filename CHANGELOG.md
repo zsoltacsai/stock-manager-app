@@ -373,6 +373,79 @@ ellenőrzése, ha rendelkezésre áll. Lásd README "Fázis 11" alszakasz.
   loopback/LAN); nem modell- és nem pénztáros-vezérelt.
 - Validáció: helyi, szkriptelt AI-provider stubokkal és valódi php -S
   folyamatokkal; élő OpenAI / Anthropic / Ollama viselkedés nincs igazolva.
+
+### Fixed — adatbázis-integritási audit (DB-01…DB-12), séma v37
+
+- **MySQL-visszaállítás (DB-01)**: a PHP-s visszaállítás (Windows-on eddig
+  mindig ez futott, mert a `command -v` ott nem létezik — most `where`)
+  a fejléc-kommentekkel egy darabba került `SET FOREIGN_KEY_CHECKS=0`-t
+  kihagyta, és az első hivatkozott szülőtáblánál félúton megállt,
+  részben visszaállított adatbázist hagyva. Most: a dump az élő adatbázis
+  érintése előtt ellenőrzött (teljesség, FountainTrade-táblák), az
+  FK-ellenőrzés a visszaállítás idejére explicit ki-, a végén (hiba esetén
+  is) visszakapcsol, az utasítások darabolása idézőjel- és kommenttudatos.
+  Ha a visszaállítás a módosítás közben bukik el, a visszaállítás előtti
+  biztonsági mentés automatikusan visszaáll, és a művelet hibát jelez;
+  ha ez sem sikerül, a hibaüzenet kézi helyreállítást kér. Az updater
+  visszagörgetése ugyanezt a mechanizmust használja.
+- **Párhuzamos visszáru (DB-02)**: a visszavehető mennyiség adatbázis-
+  szinten védett (`sale_items.returned_qty`, feltételes foglalás; MySQL-en
+  az eladás sorainak `SELECT … FOR UPDATE` zárolása) — két párhuzamos
+  visszáru együtt sem vehet vissza többet, mint amennyi eladásra került,
+  és a kedvezmény-visszaforgatás legfeljebb egyszer fut. A meglévő
+  visszáruk a v37 migrációban beszámítódnak.
+- **Kasszazárás (DB-03, P-A)**: a zárás első lépése a műszak zárolása,
+  így a várható összeg egyetlen konzisztens állapotból számolódik; a zárás
+  közben érkező pénzmozgás/eladás megvárja a zárást (utána lezárt műszakot
+  lát). SQLite-on a zárás már nem bukik el emiatt „database is locked”
+  hibával.
+- **Telephelyi készlet (DB-04)**: túladás utáni visszárunál a telephelyre
+  csak annyi kerül vissza, amennyi az összesített készletből még nincs
+  telephelyhez rendelve — a telephelyi bontás visszáru után sem haladja meg
+  az összesített készletet (korábban 1 db-ból 3 db „fantom”, elmozgatható
+  telephelyi készlet lett).
+- **ÁFA-kulcs és fizetési mód (DB-05)**: a backend az irányadó. Az eladás
+  (kézi tétel is), a termék- és beszerzés-mentés, a módosító számla és az
+  alapértelmezett ÁFA-beállítás csak a támogatott kulcsokat
+  (27/18/5/0/AAM/TAM), az eladás és a webes rendelés leadása csak a
+  beállított fizetési módokat fogadja el (a webes rendelésnél a rendelés
+  saját fizetési módját is, ahogy a felület kínálja). A NAV- és a
+  Számlázz.hu-számla sem fogad el más kulcsot.
+- **Számlaszám restore után (DB-06)**: egy régebbi mentés visszaállítása
+  után a NAV-számlaszám-sorozat (és a modificationIndex) nem esik a
+  visszaállítás előtti érték alá; az allokáció egy már szereplő
+  számlaszámot átlép.
+- **Riport-konzisztencia (DB-07)**: a Top termékek, a kategóriák, az
+  árrés-blokk és a termékenkénti forgalom ugyanazt a forgalom-definíciót
+  használja, mint a riport-összesítő és a napi zárás: az eladás
+  (kedvezmény utáni) értékének allokációja az eladáskori ÁFA-kulccsal, a
+  visszáru a tárolt allokált értékkel; az árrés-blokk a fizetési mód
+  szűrőt is alkalmazza. Korábban a kedvezmény előtti listaárral és a
+  termék jelenlegi ÁFA-kulcsával számolt.
+- **MySQL-mentés (DB-08)**: a PHP-s dump egyetlen konzisztens
+  InnoDB-pillanatképből készül (`START TRANSACTION WITH CONSISTENT
+  SNAPSHOT`), teljesség-jelzővel zárul; a `mysqldump` a jelszót ideiglenes
+  option-fájlból kapja, a kimenete csak a mentésbe kerül (korábban egy
+  figyelmeztetés a mentési fájl elejére kerülhetett).
+- **Hűségpont-főkönyv (DB-09)**: a főkönyvbe a ténylegesen alkalmazott
+  változás kerül (az egyenleg 0 alá nem mehet) — Σ főkönyv = egyenleg.
+- **FK-paritás (DB-10)**: a régebbi kiadásokról frissített adatbázisok a
+  v37 migrációban megkapják a friss telepítés FK-it (SQLite: tábla-
+  újraépítés, MySQL: `ADD CONSTRAINT`), adatvesztés nélkül; orphan adat
+  esetén az adott FK kimarad, és a Rendszeresemények között
+  figyelmeztetés jelenik meg. A MySQL friss séma is megkapta a
+  `sales.location_id` és a `return_items.sale_item_id` FK-t.
+- **Időbélyegek (DB-11, P-B)**: az adatbázisba írt időbélyegek
+  `ÉÉÉÉ-HH-NN óó:pp:mm` (helyi idő) alakúak — nincs ISO 8601 / időzóna-
+  eltolás MySQL `DATETIME` oszlopba; a korábban így tárolt SQLite-értékek
+  a v37 migrációban normalizálódnak (eltolás nélkül).
+- **Webes rendelés kerekítése (DB-12)**: a rendelés értéke a WooCommerce
+  sorösszege; a leadáskor egy két tizedessel nem ábrázolható sor két
+  eladási sorra bomlik (pl. 10.00 Ft / 3 db = 1 × 3.34 + 2 × 3.33), így az
+  eladás, a riport és a számla fillérre a WooCommerce-sor (korábban 9.99).
+- Validáció: SQLite-on valódi többfolyamatos tesztekkel; a MySQL-ágak
+  SQL-rögzítéssel és egy MySQL-t szimuláló PDO-val — **élő MySQL-szerveren
+  nem ellenőrizve**.
 - A fizetési visszatérítés külön fogalom maradt: a fizetési módon a
   befizetett rész arányos része jár vissza; az ajándékutalványra jutó rész
   változatlanul a teljes visszavételkor íródik vissza (B-06). A riport az

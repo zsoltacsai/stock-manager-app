@@ -316,7 +316,8 @@ PHP);
 
     public function testWebshopOrderInvoiceFollowsTheSameAllocation(): void
     {
-        // Webes rendelés: 3 db, sorösszeg 10 Ft → egységár 3.33, eladás 9.99.
+        // Webes rendelés: 3 db, sorösszeg 10 Ft → egységár 3.33; DB-12 óta az eladás
+        // értéke a WooCommerce sorösszege (10.00), nem 3 × 3.33 = 9.99.
         $orderId = random_int(1_000_000, 9_000_000);
         $order = ['id' => $orderId, 'number' => (string) $orderId, 'status' => 'processing',
             'billing' => ['first_name' => 'Web', 'last_name' => 'Vevő', 'postcode' => '1111', 'city' => 'Budapest', 'address_1' => 'Fő utca 1.'],
@@ -338,7 +339,7 @@ PHP);
         $this->assertInvoiceMatchesBreakdown($lines, Database::vatBreakdown(Database::saleGrossValue($sale), $sale['items']), 'webes rendelés');
         [$closeAfter] = $this->reports();
         $this->assertInvoiceMatchesReportDelta($lines, self::reportDelta($closeBefore, $closeAfter), 'webes rendelés (napi zárás)');
-        $this->assertSame(['net' => 787, 'vat' => 212, 'gross' => 999], array_intersect_key(self::sumLines($lines), ['net' => 1, 'vat' => 1, 'gross' => 1]), 'sor-szintű nettó: 9.99/1.27 = 7.87 (a régi egységár-alapú számla 7.86-ot adott)');
+        $this->assertSame(['net' => 787, 'vat' => 213, 'gross' => 1000], array_intersect_key(self::sumLines($lines), ['net' => 1, 'vat' => 1, 'gross' => 1]), 'DB-12: a számla fillérre a WooCommerce-sor (nettó 7.87 + ÁFA 2.13 = 10.00), nem a kerekített egységár × mennyiség (9.99)');
     }
 
     // ------------------------------------------------------------------

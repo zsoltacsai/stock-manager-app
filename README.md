@@ -1588,6 +1588,10 @@ pont mennyi kedvezményt ér beváltáskor. Bekapcsolva:
 - A `vasarlok.html` kezeli a vásárlólistát, és megmutatja minden
   vásárló teljes pontelőzményét (minden jóváírás/beváltás, azzal az
   eladással, amiből származott).
+- Az egyenleg 0 alá nem mehet. Ha egy visszavonás (pl. teljes visszáru
+  miatt) nagyobb, mint a még meglévő egyenleg, az előzménybe a
+  ténylegesen levont pontszám kerül, a megjegyzésben a kért értékkel
+  (DB-09) — az előzmény összege így mindig az egyenleg.
 - **Ismert korlát**: ha egy vásárló egyszerre vált be pontokat *és* kér
   névre szóló számlát ugyanabban az eladásban, a Számlázz.hu számla a
   teljes, kedvezmény előtti összegre kerül kiállításra, nem a
@@ -1855,6 +1859,13 @@ tarthat, mint egy sima mezőfrissítés.
 
 ## Beérkező eladások (webshop-rendelések jóváhagyással)
 
+**Rendelésérték (DB-12)**: a piszkozat értéke a WooCommerce-sorok bruttó
+összege (`total` + `total_tax`). Leadáskor egy két tizedessel nem
+ábrázolható sor (pl. 10.00 Ft / 3 db) legfeljebb két eladási sorra bomlik
+(1 × 3.34 + 2 × 3.33), így az eladás, a riport és a számla fillérre a
+webshop sorértéke. A szállítás/díj továbbra sem kerül át (P-C, üzleti
+döntés).
+
 **Foglalás (B-08)**: a WooCommerce a rendeléskor azonnal levonja a saját
 készletét, a helyi készlet viszont csak a leadáskor csökken. Amíg egy
 rendelés piszkozat, a darabjai foglaltak: a WooCommerce felé kiküldött
@@ -1957,9 +1968,28 @@ bejelentkezett munkamenet elérheti ezt is. Bármelyik úton:
   lecserélné az élő adatbázisfájlt.
 - MySQL: előnyben részesíti a `mysql` CLI binárist a dump futtatásához
   (ugyanígy, ahogy a mentések maguk is a `mysqldump`-ot részesítik
-  előnyben); ha a CLI nem elérhető (gyakori megosztott tárhelyen), egy
-  PHP-n keresztüli, a dump utasításait egyenként végrehajtó megoldásra
-  esik vissza.
+  előnyben; Windows-on a felderítés a `where` paranccsal történik); ha a
+  CLI nem elérhető (gyakori megosztott tárhelyen), egy PHP-n keresztüli, a
+  dump utasításait egyenként végrehajtó megoldásra esik vissza. Mindkét
+  úton (DB-01): a dump az élő adatbázis érintése ELŐTT ellenőrzött
+  (teljesség-jelző, FountainTrade-táblák), az FK-ellenőrzés a
+  visszaállítás idejére ki-, utána vissza kapcsol. Mivel a MySQL DDL-je
+  nem tranzakciós, egy a visszaállítás KÖZBEN fellépő hiba esetén a
+  visszaállítás előtti biztonsági mentés automatikusan visszaáll, és a
+  művelet hibát jelez (sosem „sikeres”); ha ez is elbukik, a hibaüzenet
+  kézi helyreállítást kér a megnevezett biztonsági mentésből.
+- A PHP-s MySQL-mentés (DB-08) egyetlen konzisztens InnoDB-pillanatképből
+  készül (`START TRANSACTION WITH CONSISTENT SNAPSHOT`, táblazár nélkül),
+  és teljesség-jelzővel zárul — egy csonka mentés visszaállítása el sem
+  indul.
+- **Számlaszámok (DB-06)**: a visszaállítás a NAV-számlaszám-sorozatot (és
+  a NAV modificationIndex-sorozatokat) a visszaállítás ELŐTTI élő értékre
+  emeli, így egy régebbi mentés visszaállítása után sem osztható ki újra
+  egy helyben már kiadott szám. Korlát: egy MÁSIK gépre (élő adatbázis
+  nélkül) visszaállított mentésnél nincs helyi előzmény — ilyenkor a NAV
+  felületén kell ellenőrizni az utolsó kiadott sorszámot. A külső
+  rendszerek (NAV, Számlázz.hu, WooCommerce) állapota a visszaállítással
+  nem áll vissza.
 - Egy megerősítő párbeszédablak jelenik meg, mielőtt bármelyik
   visszaállítási út folytatódna — ez a művelet felülírja az élő
   adatokat.
@@ -2282,6 +2312,12 @@ változatlanul használ — a telephelyenkénti bontás egy kiegészítő réteg
   nincs telephely-oszlop) — ezek csak az összesített készletet
   változtatják, a különbség "telephelyhez nem rendelt" készletként marad,
   a rendszer nem osztja szét mesterségesen.
+- **Túladás és visszáru (DB-04)**: a telephelyi készlet eladáskor 0 alá
+  nem megy (a túladott rész nem vonódik le a telephelyről). A visszáru
+  ezért a telephelyre csak annyit ír vissza, amennyi az összesített
+  készletből még nincs telephelyhez rendelve — a telephelyi bontás így
+  visszáru után sem haladhatja meg az összesített készletet (az az
+  irányadó).
 
 ## Ügyféllista (bővített vásárlói profil)
 
@@ -2613,6 +2649,24 @@ termékek nettósítva (eladott − visszáru) számol, nem egyszerű
 kerül a forgalom-számításba — a `sales`/`returns` a forgalom egyetlen
 forrása, ez zárja ki a sales/invoice fogalom összekeverését.
 
+**Egyetlen forgalom-definíció (DB-07).** A riport minden blokkja — az
+összesítő, a napi bontás, az árrés-blokk (`margin`), a Top termékek és
+kategóriák, a termékenkénti forgalom (AI Sales/Anomaly eszközök is) —
+ugyanazt az értéket használja:
+
+| Fogalom | Definíció |
+|---|---|
+| bruttó forgalom | az eladás értéke: befizetett összeg + az ajándékutalvánnyal fedezett rész (az utalvány fizetési eszköz, nem kedvezmény), a kupon, a hűségpont-beváltás és a hűségszint-kedvezmény UTÁN |
+| soronkénti / termékenkénti érték | ennek `VatAllocation`-allokációja a sorokra (a kedvezmény előtti sorérték arányában, fillérre pontosan) |
+| nettó / ÁFA | soronként az eladáskori ÁFA-kulccsal (`sale_items.vat_rate`) |
+| visszáru | a saját napján, az eredeti eladás allokációjából tárolt értékkel (A-03) levonva |
+| fizetési mód szűrő | az eladás fizetési módja — minden blokkra ugyanúgy (a visszárura az eredeti eladásé) |
+| költség / árrés | a termék „utolsó ismert” nettó beszerzési ára × a nettósított mennyiség; árrés = allokált nettó forgalom − költség |
+
+A kézi (termékhez nem kötött) sorok az összesítőben benne vannak, a
+termékenkénti blokkokban nem (nincs termékük) — ez az egyetlen szándékos
+eltérés az összesítő és a termék-összegek között.
+
 ### Készlet riport (`inventory-report.php`)
 
 Összesített termékszám/készleten/nulla/negatív/alacsony készlet, teljes
@@ -2858,8 +2912,9 @@ admin/CSRF-védett `purchase-save.php`-n megy keresztül.
 
 - A "Megrendelve → Részben beérkezett → Beérkezett" beszerzési workflow
   nincs implementálva (lásd fent — dokumentált, szándékos döntés).
-- A beszerzési/margin-képletek a JELENLEGI (nem historikus) árakat és
-  ÁFA-kulcsot használják — lásd fent.
+- A beszerzési/margin-képletek a JELENLEGI (nem historikus) beszerzési
+  árat használják — lásd fent. (A forgalom oldala DB-07 óta az eladáskori
+  ÁFA-kulccsal és a kedvezmény utáni, allokált értékkel számol.)
 - `REVIEW_PERIOD_DAYS`/`TARGET_COVERAGE_DAYS` fix, dokumentált
   konstansok (nem beszállítónkénti szállítási időből származtatva) — ha
   a jövőben a `suppliers` tábla kapna egy `lead_time_days` mezőt, ez

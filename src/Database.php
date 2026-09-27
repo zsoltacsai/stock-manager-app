@@ -9,7 +9,7 @@ require_once __DIR__ . '/VatAllocation.php';
 
 class Database
 {
-    private const SCHEMA_VERSION = 36;
+    private const SCHEMA_VERSION = 37;
 
     private PDO $pdo;
     private string $driver;
@@ -233,6 +233,10 @@ class Database
             if ($version < 36) {
                 $this->migrateV36ReturnValueAllocation();
             }
+            if ($version < 37) {
+                $this->migrateV37ReturnedQtyAndDatetimeFormat();
+                $this->repairForeignKeysToCanonicalSchema($schemaPath);
+            }
         }
 
         $this->setSchemaVersion(self::SCHEMA_VERSION);
@@ -248,13 +252,14 @@ class Database
         }
     }
 
-    private function runSchemaFile(string $schemaPath): void
+    private function runSchemaFile(string $schemaPath, ?PDO $target = null): void
     {
+        $target ??= $this->pdo;
         $schema = file_get_contents($schemaPath);
         foreach (array_filter(array_map('trim', explode(";\n", str_replace(";\r\n", ";\n", $schema)))) as $statement) {
             $statement = rtrim(trim($statement), ';');
             if ($statement !== '') {
-                $this->pdo->exec($statement);
+                $target->exec($statement);
             }
         }
     }
@@ -2088,6 +2093,238 @@ class Database
         }
     }
 
+    /**
+     * DB-02 — `sale_items.returned_qty`: a soronként MÁR visszavett darabszám,
+     * amelyet a visszáru egy feltételes UPDATE-tel (`returned_qty + k <= qty`)
+     * foglal le — ez az adatbázis-szintű, motorfüggetlen (SQLite és InnoDB)
+     * garancia arra, hogy két párhuzamos visszáru együtt se vehessen vissza
+     * többet, mint amennyi eladásra került. A backfill a meglévő, eladási
+     * tételhez kötött visszáru-sorokból számol (a sale_item_id nélküli, régi
+     * sorok eddig sem számítottak bele a korlátba).
+     *
+     * DB-11 — a `products.updated_at` / `wc_synced_at` és `customers.updated_at`
+     * korábban `date('Y-m-d H:i:s')` (ISO 8601, `T` elválasztóval és időzóna-eltolással)
+     * formában íródott. SQLite-on ez szövegként maradt meg, és a többi, helyi
+     * idejű oszloptól eltérően rendeződött; itt a helyi időrészre
+     * normalizáljuk (a tárolt érték a helyi idő + az akkori eltolás volt, tehát
+     * a helyi rész a helyes, időzóna-konverzió nélkül). MySQL-en a szerver már
+     * DATETIME-ként tárolta, ott nincs teendő.
+     */
+    private function migrateV37ReturnedQtyAndDatetimeFormat(): void
+    {
+        $isMysql = $this->driver === 'mysql';
+        $this->migrateColumns('sale_items', [
+            'returned_qty' => $isMysql ? 'INT NOT NULL DEFAULT 0' : 'INTEGER NOT NULL DEFAULT 0',
+        ]);
+        $this->pdo->exec('
+            UPDATE sale_items SET returned_qty = (
+                SELECT COALESCE(SUM(ri.qty), 0) FROM return_items ri WHERE ri.sale_item_id = sale_items.id
+            )
+        ');
+        if (!$isMysql) {
+            foreach (['products' => ['updated_at', 'wc_synced_at'], 'customers' => ['updated_at']] as $table => $columns) {
+                foreach ($columns as $column) {
+                    $this->pdo->exec("UPDATE $table SET $column = substr(replace($column, 'T', ' '), 1, 19) WHERE $column LIKE '____-__-__T%'");
+                }
+            }
+        }
+    }
+
+    /**
+     * DB-10 — a régebbi kiadásokról frissített adatbázisokban a migrációk FK
+     * nélkül hozták létre a táblákat/oszlopokat, a friss telepítés viszont a
+     * kanonikus sémafájlból (schema.sql / schema.mysql.sql) FK-val jön létre.
+     * Ez a lépés a KANONIKUS sémafájlhoz méri az aktuális FK-kat, és csak az
+     * eltérő táblákat javítja:
+     *   - SQLite: a tábla újraépítése a kanonikus CREATE TABLE-lel (a SQLite
+     *     dokumentált 12 lépéses eljárása: foreign_keys=OFF, új tábla, adat-
+     *     másolás, régi eldobása, átnevezés, indexek, foreign_key_check);
+     *   - MySQL: `ALTER TABLE … ADD CONSTRAINT`.
+     * Idempotens (eltérés nélkül nem csinál semmit), és adatot nem veszít: ha
+     * egy táblában a kanonikus sémában nem szereplő oszlop van, vagy a meglévő
+     * adat FK-sértő (orphan) sort tartalmaz, az adott tábla/FK javítása
+     * KIMARAD, és ez `system_events`-be naplózódik (nem rejtve el).
+     *
+     * @return array{repaired: list<string>, skipped: array<string,string>}
+     */
+    public function repairForeignKeysToCanonicalSchema(string $schemaPath): array
+    {
+        $report = $this->driver === 'mysql'
+            ? $this->repairMysqlForeignKeys($schemaPath)
+            : $this->repairSqliteForeignKeys($schemaPath);
+        foreach ($report['skipped'] as $what => $reason) {
+            try {
+                $this->logSystemEvent('database', 'fk_repair_skipped', 'warning', 'failure',
+                    'Egy adatbázis-kapcsolat (FK) utólagos pótlása kimaradt — ellenőrzés szükséges.',
+                    "$what: $reason", 365);
+            } catch (Throwable $e) {
+                error_log('[fountaintrade] FK-javítás kihagyva: ' . $what . ': ' . $reason);
+            }
+        }
+        return $report;
+    }
+
+    /** @return array<string, list<string>> tábla => rendezett "oszlop->céltábla.oszlop" lista */
+    private static function sqliteForeignKeyMap(PDO $pdo): array
+    {
+        $map = [];
+        foreach ($pdo->query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")->fetchAll(PDO::FETCH_COLUMN) as $table) {
+            $fks = [];
+            foreach ($pdo->query('PRAGMA foreign_key_list(' . $table . ')')->fetchAll(PDO::FETCH_ASSOC) as $fk) {
+                $fks[] = $fk['from'] . '->' . $fk['table'] . '.' . $fk['to'];
+            }
+            sort($fks);
+            $map[$table] = $fks;
+        }
+        return $map;
+    }
+
+    /** @return array{repaired: list<string>, skipped: array<string,string>} */
+    private function repairSqliteForeignKeys(string $schemaPath): array
+    {
+        $report = ['repaired' => [], 'skipped' => []];
+        $canonical = new PDO('sqlite::memory:');
+        $canonical->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $this->runSchemaFile($schemaPath, $canonical);
+        $wanted = self::sqliteForeignKeyMap($canonical);
+        $schemaSql = str_replace("\r\n", "\n", (string) file_get_contents($schemaPath));
+
+        $candidates = [];
+        foreach (self::sqliteForeignKeyMap($this->pdo) as $table => $fks) {
+            if (isset($wanted[$table]) && $wanted[$table] !== $fks && array_diff($wanted[$table], $fks)) {
+                $candidates[] = $table;
+            }
+        }
+        if (!$candidates) {
+            return $report;
+        }
+
+        // A foreign_keys PRAGMA tranzakción belül nem állítható — előtte ki, utána vissza.
+        $this->pdo->exec('PRAGMA foreign_keys = OFF');
+        try {
+            foreach ($candidates as $table) {
+                if (!preg_match('/CREATE TABLE IF NOT EXISTS ' . preg_quote($table, '/') . ' \((.*?)\n\);/s', $schemaSql, $m)) {
+                    $report['skipped'][$table] = 'a kanonikus CREATE TABLE nem található';
+                    continue;
+                }
+                $this->pdo->beginTransaction();
+                try {
+                    // Írással kezdünk: a többi folyamat a busy_timeout szerint vár,
+                    // az alábbi újraellenőrzés így a friss állapotot látja.
+                    $this->pdo->exec('UPDATE schema_version SET version = version');
+                    $current = self::sqliteForeignKeyMap($this->pdo)[$table] ?? [];
+                    if (!array_diff($wanted[$table], $current)) {
+                        $this->pdo->commit();
+                        continue; // egy párhuzamos folyamat közben megjavította
+                    }
+                    $oldCols = array_column($this->pdo->query("PRAGMA table_info($table)")->fetchAll(PDO::FETCH_ASSOC), 'name');
+                    $newCols = array_column($canonical->query("PRAGMA table_info($table)")->fetchAll(PDO::FETCH_ASSOC), 'name');
+                    $extra = array_diff($oldCols, $newCols);
+                    if ($extra) {
+                        $this->pdo->rollBack();
+                        $report['skipped'][$table] = 'a kanonikus sémában nem szereplő oszlop(ok): ' . implode(', ', $extra);
+                        continue;
+                    }
+                    $tmp = '__fk_repair_' . $table;
+                    $this->pdo->exec("DROP TABLE IF EXISTS $tmp");
+                    $this->pdo->exec("CREATE TABLE $tmp (" . $m[1] . "\n)");
+                    $cols = implode(', ', array_values(array_intersect($newCols, $oldCols)));
+                    $this->pdo->exec("INSERT INTO $tmp ($cols) SELECT $cols FROM $table");
+                    $seq = $this->pdo->query("SELECT seq FROM sqlite_sequence WHERE name = " . $this->pdo->quote($table))->fetchColumn();
+                    $this->pdo->exec("DROP TABLE $table");
+                    $this->pdo->exec("ALTER TABLE $tmp RENAME TO $table");
+                    if ($seq !== false) {
+                        $this->pdo->prepare('UPDATE sqlite_sequence SET seq = ? WHERE name = ? AND seq < ?')->execute([(int) $seq, $table, (int) $seq]);
+                    }
+                    if (preg_match_all('/^CREATE (?:UNIQUE )?INDEX IF NOT EXISTS \w+ ON ' . preg_quote($table, '/') . '\(.*?\);$/m', $schemaSql, $idx)) {
+                        foreach ($idx[0] as $indexSql) {
+                            $this->pdo->exec(rtrim($indexSql, ';'));
+                        }
+                    }
+                    $violations = $this->pdo->query("PRAGMA foreign_key_check($table)")->fetchAll();
+                    if ($violations) {
+                        $this->pdo->rollBack();
+                        $report['skipped'][$table] = count($violations) . ' FK-sértő (orphan) sor — az FK nem pótolható, amíg ezek nincsenek rendezve';
+                        continue;
+                    }
+                    $this->pdo->commit();
+                    $report['repaired'][] = $table;
+                } catch (Throwable $e) {
+                    if ($this->pdo->inTransaction()) {
+                        $this->pdo->rollBack();
+                    }
+                    $report['skipped'][$table] = 'hiba: ' . $e->getMessage();
+                }
+            }
+        } finally {
+            $this->pdo->exec('PRAGMA foreign_keys = ON');
+        }
+        return $report;
+    }
+
+    /**
+     * A kanonikus MySQL-séma FK-i: a CREATE TABLE-ön belüli és az utólagos
+     * `ALTER TABLE … ADD CONSTRAINT` definíciók.
+     *
+     * @return list<array{table:string, name:string, column:string, ref_table:string, ref_column:string}>
+     */
+    public static function canonicalMysqlForeignKeys(string $schemaPath): array
+    {
+        $sql = str_replace("\r\n", "\n", (string) file_get_contents($schemaPath));
+        $fks = [];
+        if (preg_match_all('/CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\)[^;]*;/s', $sql, $tables, PREG_SET_ORDER)) {
+            foreach ($tables as [, $table, $body]) {
+                preg_match_all('/CONSTRAINT (\w+) FOREIGN KEY \((\w+)\) REFERENCES (\w+)\((\w+)\)/', $body, $c, PREG_SET_ORDER);
+                foreach ($c as [, $name, $col, $refTable, $refCol]) {
+                    $fks[] = ['table' => $table, 'name' => $name, 'column' => $col, 'ref_table' => $refTable, 'ref_column' => $refCol];
+                }
+            }
+        }
+        preg_match_all('/ALTER TABLE (\w+) ADD CONSTRAINT (\w+)\s+FOREIGN KEY \((\w+)\) REFERENCES (\w+)\((\w+)\)/s', $sql, $alters, PREG_SET_ORDER);
+        foreach ($alters as [, $table, $name, $col, $refTable, $refCol]) {
+            $fks[] = ['table' => $table, 'name' => $name, 'column' => $col, 'ref_table' => $refTable, 'ref_column' => $refCol];
+        }
+        return $fks;
+    }
+
+    /** @return array{repaired: list<string>, skipped: array<string,string>} */
+    private function repairMysqlForeignKeys(string $schemaPath): array
+    {
+        $report = ['repaired' => [], 'skipped' => []];
+        $existing = [];
+        foreach ($this->pdo->query("
+            SELECT TABLE_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME
+            FROM information_schema.KEY_COLUMN_USAGE
+            WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_NAME IS NOT NULL
+        ")->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $existing[$row['TABLE_NAME'] . '.' . $row['COLUMN_NAME'] . '->' . $row['REFERENCED_TABLE_NAME']] = true;
+        }
+        foreach (self::canonicalMysqlForeignKeys($schemaPath) as $fk) {
+            $key = $fk['table'] . '.' . $fk['column'] . '->' . $fk['ref_table'];
+            if (isset($existing[$key])) {
+                continue;
+            }
+            try {
+                $orphans = (int) $this->pdo->query(sprintf(
+                    'SELECT COUNT(*) FROM `%s` c LEFT JOIN `%s` p ON p.`%s` = c.`%s` WHERE c.`%s` IS NOT NULL AND p.`%s` IS NULL',
+                    $fk['table'], $fk['ref_table'], $fk['ref_column'], $fk['column'], $fk['column'], $fk['ref_column']
+                ))->fetchColumn();
+                if ($orphans > 0) {
+                    $report['skipped'][$key] = "$orphans FK-sértő (orphan) sor — az FK nem pótolható, amíg ezek nincsenek rendezve";
+                    continue;
+                }
+                $this->pdo->exec(sprintf(
+                    'ALTER TABLE `%s` ADD CONSTRAINT `%s` FOREIGN KEY (`%s`) REFERENCES `%s`(`%s`)',
+                    $fk['table'], $fk['name'], $fk['column'], $fk['ref_table'], $fk['ref_column']
+                ));
+                $report['repaired'][] = $key;
+            } catch (Throwable $e) {
+                $report['skipped'][$key] = 'hiba: ' . $e->getMessage();
+            }
+        }
+        return $report;
+    }
+
     private function migrateV34SaleLocationAndGiftCardRefund(): void
     {
         $isMysql = $this->driver === 'mysql';
@@ -2831,7 +3068,7 @@ class Database
      */
     public function saveProduct(array $p): int
     {
-        $now = date('c');
+        $now = date('Y-m-d H:i:s');
 
         if (!empty($p['id'])) {
             $existing = $this->findProductById((int) $p['id']);
@@ -3013,7 +3250,7 @@ class Database
         $stmt->execute([
             ':qty'  => $p['stock_qty'],
             ':cost' => $p['purchase_price_net'],
-            ':now'  => date('c'),
+            ':now'  => date('Y-m-d H:i:s'),
             ':id'   => $id,
         ]);
 
@@ -3049,7 +3286,7 @@ class Database
         $stmt = $this->pdo->prepare('
             UPDATE products SET stock_qty = stock_qty + :qty, updated_at = :now WHERE id = :id
         ');
-        $stmt->execute([':qty' => $qty, ':now' => date('c'), ':id' => $productId]);
+        $stmt->execute([':qty' => $qty, ':now' => date('Y-m-d H:i:s'), ':id' => $productId]);
     }
 
     public function applyPurchaseLine(int $productId, int $qtyDelta, float $newCost): void
@@ -3059,7 +3296,7 @@ class Database
             SET stock_qty = stock_qty + :qty, purchase_price_net = :cost, updated_at = :now
             WHERE id = :id
         ');
-        $stmt->execute([':qty' => $qtyDelta, ':cost' => $newCost, ':now' => date('c'), ':id' => $productId]);
+        $stmt->execute([':qty' => $qtyDelta, ':cost' => $newCost, ':now' => date('Y-m-d H:i:s'), ':id' => $productId]);
     }
 
     public function upsertProductFromWc(array $p): void
@@ -3101,7 +3338,7 @@ class Database
             return;
         }
 
-        $now = date('c');
+        $now = date('Y-m-d H:i:s');
 
         // B-11: egy még ki nem küldött import-módosítás (név/ár) helyben az
         // irányadó — a pull nem írja vissza a régi WooCommerce-értékkel
@@ -3183,7 +3420,7 @@ class Database
             SET stock_qty = stock_qty - :qty, updated_at = :now
             WHERE id = :id
         ');
-        $stmt->execute([':qty' => $qty, ':now' => date('c'), ':id' => $productId]);
+        $stmt->execute([':qty' => $qty, ':now' => date('Y-m-d H:i:s'), ':id' => $productId]);
     }
 
     public function setStock(int $productId, int $qty): void
@@ -3191,7 +3428,7 @@ class Database
         $stmt = $this->pdo->prepare('
             UPDATE products SET stock_qty = :qty, updated_at = :now, wc_synced_at = :now WHERE id = :id
         ');
-        $stmt->execute([':qty' => $qty, ':now' => date('c'), ':id' => $productId]);
+        $stmt->execute([':qty' => $qty, ':now' => date('Y-m-d H:i:s'), ':id' => $productId]);
     }
 
     /**
@@ -3205,7 +3442,7 @@ class Database
     public function touchWcSyncedAt(int $productId): void
     {
         $stmt = $this->pdo->prepare('UPDATE products SET wc_synced_at = :now WHERE id = :id');
-        $stmt->execute([':now' => date('c'), ':id' => $productId]);
+        $stmt->execute([':now' => date('Y-m-d H:i:s'), ':id' => $productId]);
     }
 
     /**
@@ -3704,6 +3941,25 @@ class Database
             $stmt = $this->pdo->prepare('SELECT last_allocated_number FROM invoice_sequences WHERE provider = ?');
             $stmt->execute([$provider]);
             $number = (int) $stmt->fetchColumn();
+
+            // DB-06: duplikátum-felismerés — ha a lefoglalt sorszámhoz tartozó
+            // számlaszám már szerepel az invoices táblában (pl. egy régebbi
+            // mentés visszaállítása után a sorozat visszaugrott), a sorozat a
+            // már ismert szám fölé lép; egy kiadott számlaszám SOSE osztható ki
+            // újra. (A visszaállításkor a sorozat a visszaállítás előtti élő
+            // értékre emelkedik — BackupManager::reconcileInvoiceSequences().)
+            // A sorozat évfordulókor nem áll vissza, ezért az év bármely lehet (LIKE ____).
+            $exists = $this->pdo->prepare('SELECT 1 FROM invoices WHERE provider = ? AND invoice_number LIKE ? LIMIT 1');
+            for ($guard = 0; $guard < 10000; $guard++) {
+                $exists->execute([$provider, InvoiceNumbering::format($provider, $number, '____')]);
+                if ($exists->fetchColumn() === false) {
+                    break;
+                }
+                $exists->closeCursor();
+                $number++;
+                $this->pdo->prepare('UPDATE invoice_sequences SET last_allocated_number = ?, updated_at = ? WHERE provider = ?')
+                    ->execute([$number, $now, $provider]);
+            }
 
             if (!$wasInTransaction) {
                 $this->pdo->commit();
@@ -5102,7 +5358,7 @@ class Database
         }
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
         $stmt = $this->pdo->prepare("UPDATE products SET is_deleted = ?, updated_at = ? WHERE id IN ($placeholders)");
-        $stmt->execute(array_merge([$deleted ? 1 : 0, date('c')], array_values($ids)));
+        $stmt->execute(array_merge([$deleted ? 1 : 0, date('Y-m-d H:i:s')], array_values($ids)));
     }
 
     public function bulkSetProductsGroup(array $ids, ?string $groupName): void
@@ -5112,7 +5368,7 @@ class Database
         }
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
         $stmt = $this->pdo->prepare("UPDATE products SET group_name = ?, updated_at = ? WHERE id IN ($placeholders)");
-        $stmt->execute(array_merge([$groupName !== '' ? $groupName : null, date('c')], array_values($ids)));
+        $stmt->execute(array_merge([$groupName !== '' ? $groupName : null, date('Y-m-d H:i:s')], array_values($ids)));
     }
 
     public function findProductsByIds(array $ids): array
@@ -5491,7 +5747,7 @@ class Database
                 is_deleted = 1, updated_at = :now
             WHERE id = :id
         ");
-        $stmt->execute([':name' => $anonName, ':now' => date('c'), ':id' => $id]);
+        $stmt->execute([':name' => $anonName, ':now' => date('Y-m-d H:i:s'), ':id' => $id]);
 
         // A customers.name törlése önmagában nem elég: minden korábbi
         // eladás sale_items.buyer_name mezője a vásárló nevét a
@@ -5510,7 +5766,7 @@ class Database
         }
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
         $stmt = $this->pdo->prepare("UPDATE customers SET is_deleted = ?, updated_at = ? WHERE id IN ($placeholders)");
-        $stmt->execute(array_merge([$deleted ? 1 : 0, date('c')], array_values($ids)));
+        $stmt->execute(array_merge([$deleted ? 1 : 0, date('Y-m-d H:i:s')], array_values($ids)));
     }
 
     public function findCustomersByIds(array $ids): array
@@ -5604,24 +5860,55 @@ class Database
         // (egyparaméteres) függvény — ott a GREATEST() az azonos jelentésű
         // skalár megfelelő. Driver-függő SQL-t igényel, mint a séma-
         // migrációk többi driver-specifikus ága ebben az osztályban.
-        $clampFn = $this->driver === 'mysql' ? 'GREATEST' : 'MAX';
-        $stmt = $this->pdo->prepare("
-            UPDATE customers SET loyalty_points = $clampFn(0, loyalty_points + :delta), updated_at = :now WHERE id = :id
-        ");
-        $stmt->execute([':delta' => $delta, ':now' => date('Y-m-d H:i:s'), ':id' => $customerId]);
-        if ($stmt->rowCount() === 0) {
-            return 0;
+        //
+        // DB-09: az egyenleg (customers.loyalty_points) az irányadó, 0 alá nem
+        // mehet (üzleti szabály); a főkönyvbe (loyalty_transactions) a
+        // TÉNYLEGESEN alkalmazott változás kerül (új − régi egyenleg), nem a
+        // kért delta — így Σ points_delta mindig az egyenleg. A régi egyenleg
+        // zárolt, friss olvasás: SQLite-on egy első írás adja a kizárólagos
+        // zárat, MySQL-en SELECT … FOR UPDATE.
+        $wasInTransaction = $this->pdo->inTransaction();
+        if (!$wasInTransaction) {
+            $this->pdo->beginTransaction();
         }
+        try {
+            if ($this->driver === 'mysql') {
+                $oldStmt = $this->pdo->prepare('SELECT loyalty_points FROM customers WHERE id = ? FOR UPDATE');
+            } else {
+                $this->pdo->prepare('UPDATE customers SET loyalty_points = loyalty_points WHERE id = ?')->execute([$customerId]);
+                $oldStmt = $this->pdo->prepare('SELECT loyalty_points FROM customers WHERE id = ?');
+            }
+            $oldStmt->execute([$customerId]);
+            $old = $oldStmt->fetchColumn();
+            if ($old === false) {
+                if (!$wasInTransaction) {
+                    $this->pdo->commit();
+                }
+                return 0;
+            }
+            $old = (int) $old;
+            $newBalance = max(0, $old + $delta);
+            $this->pdo->prepare('UPDATE customers SET loyalty_points = ?, updated_at = ? WHERE id = ?')
+                ->execute([$newBalance, date('Y-m-d H:i:s'), $customerId]);
 
-        $balanceStmt = $this->pdo->prepare('SELECT loyalty_points FROM customers WHERE id = ?');
-        $balanceStmt->execute([$customerId]);
-        $newBalance = (int) $balanceStmt->fetchColumn();
-
-        if ($delta !== 0) {
-            $this->pdo->prepare('
-                INSERT INTO loyalty_transactions (customer_id, sale_id, points_delta, note, created_at)
-                VALUES (?, ?, ?, ?, ?)
-            ')->execute([$customerId, $saleId, $delta, $note, date('Y-m-d H:i:s')]);
+            if ($delta !== 0) {
+                $applied = $newBalance - $old;
+                if ($applied !== $delta) {
+                    $note .= " (kért: $delta pont, az egyenleg 0 alá nem mehet — alkalmazva: $applied)";
+                }
+                $this->pdo->prepare('
+                    INSERT INTO loyalty_transactions (customer_id, sale_id, points_delta, note, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                ')->execute([$customerId, $saleId, $applied, $note, date('Y-m-d H:i:s')]);
+            }
+            if (!$wasInTransaction) {
+                $this->pdo->commit();
+            }
+        } catch (Throwable $e) {
+            if (!$wasInTransaction && $this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
         }
 
         return $newBalance;
@@ -6151,40 +6438,58 @@ class Database
             }
             $returnId = (int) $this->pdo->lastInsertId();
 
-            // Frissen, a TRANZAKCIÓN BELÜL ellenőrizzük, mennyi lett eddig
-            // ténylegesen visszavéve — a hívó (api/return-create.php) saját,
-            // tranzakción KÍVÜLI olvasása elavulttá válhat két majdnem
-            // egyidejű visszáru-kérés között (mindkettő ugyanazt a "még nem
-            // lett visszavéve" állapotot látná, és mindkettő átmenne az
-            // ellenőrzésen). Az SQLite soros végrehajtása miatt ez az
-            // olvasás itt már biztosan látja egy közben lefutott és
-            // commit-olt párhuzamos visszáru tételeit is, így a második
-            // kérés itt helyesen elutasítható — enélkül ugyanaz a mennyiség
-            // kétszer is visszavehető lenne, és emiatt (ha ez a visszáru a
-            // "teljesen visszavéve" küszöböt átlépi) a hűségpontok/kupon/
-            // ajándékutalvány is kétszer pörögne vissza lentebb.
-            $alreadyReturned = $this->getReturnedQuantitiesForSale($saleId);
-            $originalItemsById = [];
-            foreach ($sale['items'] ?? [] as $si) {
-                $originalItemsById[(int) $si['id']] = $si;
+            // DB-02: a visszavehető mennyiség ADATBÁZIS-szintű, motorfüggetlen
+            // védelme. Korábban egy tranzakción belüli, NEM zároló olvasás
+            // (getReturnedQuantitiesForSale()) döntött, ami csak az SQLite
+            // soros írása miatt volt helyes — InnoDB REPEATABLE READ alatt két
+            // párhuzamos visszáru pillanatképe egymás sorait nem látta, és
+            // mindkettő átment. Most:
+            //   1. az eladás ÖSSZES tételsora zárolódik (MySQL: SELECT … FOR
+            //      UPDATE, id-sorrendben — az ugyanarra az eladásra érkező
+            //      visszáruk sorosulnak; SQLite-on a tranzakció első írása már
+            //      kizárólagos író-zárat adott), és a friss `returned_qty` innen
+            //      jön — ez adja a "teljesen visszavéve" döntés alapját is;
+            //   2. minden visszavett sor egy feltételes UPDATE-tel foglalja le a
+            //      darabokat (`returned_qty + k <= qty`) — ez az atomikus
+            //      invariáns; rowCount()===0 → elutasítás, a teljes tranzakció
+            //      (a returns-sor és az idempotencia-kulcs is) visszagördül.
+            $lockStmt = $this->pdo->prepare('SELECT id, qty, returned_qty FROM sale_items WHERE sale_id = ? ORDER BY id' . ($this->driver === 'mysql' ? ' FOR UPDATE' : ''));
+            $lockStmt->execute([$saleId]);
+            $saleLineQty = [];
+            $alreadyReturned = [];
+            foreach ($lockStmt->fetchAll(PDO::FETCH_ASSOC) as $line) {
+                $saleLineQty[(int) $line['id']] = (int) $line['qty'];
+                $alreadyReturned[(int) $line['id']] = (int) $line['returned_qty'];
             }
             // A korlát a kérésen belüli ÖSSZESÍTETT mennyiségre vonatkozik
             // tételenként — egy ismételt sale_item_id-jű sor sose kerülheti
             // meg a visszavehető mennyiséget.
             $requestedBySaleItem = [];
             foreach ($items as $item) {
-                $saleItemId = (int) ($item['sale_item_id'] ?? 0);
-                $requestedBySaleItem[$saleItemId] = ($requestedBySaleItem[$saleItemId] ?? 0) + (int) $item['qty'];
-            }
-            foreach ($items as $item) {
-                $saleItemId = (int) ($item['sale_item_id'] ?? 0);
-                $original = $originalItemsById[$saleItemId] ?? null;
-                if ($original === null) {
-                    continue; // nincs eredeti tétel-adat átadva (pl. régi hívó) — nem tudjuk itt ellenőrizni
+                if ((int) $item['qty'] <= 0) {
+                    throw new RuntimeException("\"{$item['name']}\" tételből érvénytelen visszavételi mennyiség.");
                 }
-                $maxReturnable = (int) $original['qty'] - ($alreadyReturned[$saleItemId] ?? 0);
-                if ((int) $item['qty'] <= 0 || $requestedBySaleItem[$saleItemId] > $maxReturnable) {
-                    throw new RuntimeException("\"{$item['name']}\" tételből időközben már csak $maxReturnable db vihető vissza.");
+                $saleItemId = (int) ($item['sale_item_id'] ?? 0);
+                if ($saleItemId > 0) {
+                    $requestedBySaleItem[$saleItemId] = ($requestedBySaleItem[$saleItemId] ?? 0) + (int) $item['qty'];
+                }
+            }
+            $claimStmt = $this->pdo->prepare('
+                UPDATE sale_items SET returned_qty = returned_qty + :k
+                WHERE id = :id AND sale_id = :sale AND returned_qty + :k2 <= qty
+            ');
+            foreach ($requestedBySaleItem as $saleItemId => $k) {
+                $claimStmt->execute([':k' => $k, ':id' => $saleItemId, ':sale' => $saleId, ':k2' => $k]);
+                if ($claimStmt->rowCount() === 0) {
+                    $name = '#' . $saleItemId;
+                    foreach ($items as $item) {
+                        if ((int) ($item['sale_item_id'] ?? 0) === $saleItemId) {
+                            $name = (string) $item['name'];
+                            break;
+                        }
+                    }
+                    $maxReturnable = isset($saleLineQty[$saleItemId]) ? max(0, $saleLineQty[$saleItemId] - $alreadyReturned[$saleItemId]) : 0;
+                    throw new RuntimeException("\"$name\" tételből időközben már csak $maxReturnable db vihető vissza.");
                 }
             }
 
@@ -6253,7 +6558,16 @@ class Database
                 if (!empty($item['product_id'])) {
                     $this->incrementStock((int) $item['product_id'], (int) $item['qty']);
                     if ($saleLocationId !== null) {
-                        $this->adjustLocationStock((int) $item['product_id'], $saleLocationId, (int) $item['qty']);
+                        // DB-04: az összesített készlet az irányadó; a telephelyi
+                        // bontás (könyvelési célú) nem haladhatja meg. Az eladás a
+                        // telephelyi készletet 0-ra vágva csökkentette (túladásnál
+                        // a hiányzó rész el sem vonódott) — a visszáru ezért csak
+                        // annyit ír vissza a telephelyre, amennyi az összesített
+                        // készletből még nincs telephelyhez rendelve.
+                        $restore = $this->locationRestoreQuantity((int) $item['product_id'], (int) $item['qty']);
+                        if ($restore > 0) {
+                            $this->adjustLocationStock((int) $item['product_id'], $saleLocationId, $restore);
+                        }
                     }
                     // A visszavett készlet a webshopba is jusson el — ugyanaz
                     // a tranzakción belüli beütemezés, mint eladásnál/
@@ -6267,7 +6581,17 @@ class Database
                 }
             }
 
-            if ($sale && $this->isSaleNowFullyReturned($saleId, $sale)) {
+            // A "teljesen visszavéve" döntés a fent ZÁROLT, friss sorállapotból
+            // és az ebben a visszáruban lefoglalt darabokból — két párhuzamos
+            // visszáru közül így pontosan az egyik látja magát utolsónak.
+            $fullyReturned = $saleLineQty !== [];
+            foreach ($saleLineQty as $lineId => $lineQty) {
+                if ($alreadyReturned[$lineId] + ($requestedBySaleItem[$lineId] ?? 0) < $lineQty) {
+                    $fullyReturned = false;
+                    break;
+                }
+            }
+            if ($sale && $fullyReturned) {
                 $this->reverseSaleBenefits($saleId, $sale, $returnId);
             }
 
@@ -6279,15 +6603,23 @@ class Database
         }
     }
 
-    private function isSaleNowFullyReturned(int $saleId, array $sale): bool
+    /**
+     * DB-04 — egy visszáru által a telephelyre visszaírható darabszám: az
+     * összesített készletből (a már megnövelt stock_qty) a telephelyekhez még
+     * nem rendelt rész, legfeljebb a visszavett mennyiség. Mindkét olvasás
+     * zároló (MySQL: FOR UPDATE; a termék sorát a hívó incrementStock()-ja már
+     * zárolta), így a párhuzamos készletmozgások a friss értéket látják.
+     */
+    private function locationRestoreQuantity(int $productId, int $qty): int
     {
-        $returned = $this->getReturnedQuantitiesForSale($saleId);
-        foreach ($sale['items'] as $si) {
-            if (($returned[(int) $si['id']] ?? 0) < (int) $si['qty']) {
-                return false;
-            }
-        }
-        return true;
+        $forUpdate = $this->driver === 'mysql' ? ' FOR UPDATE' : '';
+        $totalStmt = $this->pdo->prepare('SELECT stock_qty FROM products WHERE id = ?' . $forUpdate);
+        $totalStmt->execute([$productId]);
+        $total = (int) $totalStmt->fetchColumn();
+        $sumStmt = $this->pdo->prepare('SELECT COALESCE(SUM(stock_qty), 0) FROM location_stock WHERE product_id = ?' . $forUpdate);
+        $sumStmt->execute([$productId]);
+        $assigned = (int) $sumStmt->fetchColumn();
+        return max(0, min($qty, $total - $assigned));
     }
 
     /**
@@ -6560,7 +6892,7 @@ class Database
                 // bulk lekérdezéssel is megkaphatjuk, a frissített
                 // stock_qty pedig egyszerűen oldStock+delta, PHP-ban
                 // számolva — nincs szükség az újra-SELECT-re.
-                $now = date('c');
+                $now = date('Y-m-d H:i:s');
                 if ($deltasByProductId) {
                     $placeholders = implode(',', array_fill(0, count($deltasByProductId), '?'));
                     $productsStmt = $this->pdo->prepare("SELECT id, stock_qty, wc_product_id, sync_to_woocommerce, name FROM products WHERE id IN ($placeholders)");
@@ -6918,6 +7250,18 @@ class Database
     {
         $this->beginTransaction();
         try {
+            // DB-03 (P-A): a zárás ELSŐ utasítása egy írás a műszak során.
+            // SQLite: ez kizárólagos író-zárat ad, a párhuzamos mozgás/eladás/
+            // visszáru a zárás commitjáig vár (busy_timeout), a lenti
+            // összesítések tehát konzisztens, végleges állapotból számolnak.
+            // MySQL/InnoDB: az UPDATE X-zárat tesz a műszak sorára — megvárja a
+            // műszakot már olvasó (S-zárat tartó) eladás-/visszáru-tranzakciókat,
+            // és mivel a tranzakcióban ez az első utasítás (nem egy konzisztens
+            // olvasás), a lenti SUM-ok olvasási pillanatképe a zár megszerzése
+            // UTÁN jön létre, azokat is tartalmazva; a zárás közben érkező
+            // mozgás/eladás INSERT … SELECT-je (S-zár a műszak során) a commitig
+            // vár, utána már lezárt műszakot lát. Csendes kihagyás nem lehet.
+            $this->pdo->prepare('UPDATE cash_sessions SET status = status WHERE id = ?')->execute([$id]);
             $session = $this->getCashSession($id);
             if (!$session || $session['status'] !== 'open') {
                 throw new RuntimeException('Ez a műszak már le van zárva, vagy nem létezik.');
@@ -8357,103 +8701,189 @@ class Database
      * aggregált SQL lekérdezés (eladás + visszáru), PHP-ban összefésülve —
      * nincs N+1, nincs termékenkénti külön lekérdezés.
      */
-    public function getTopProductsReport(string $dateFrom, string $dateTo, ?string $groupName = null, int $minQty = 0, int $limit = 50): array
+    public function getTopProductsReport(string $dateFrom, string $dateTo, ?string $groupName = null, int $minQty = 0, int $limit = 50, ?string $paymentMethod = null): array
     {
-        $dateExpr = $this->driver === 'mysql' ? 'DATE(s.created_at)' : "substr(s.created_at, 1, 10)";
-        $sql = "
-            SELECT si.product_id, p.name, p.barcode, p.group_name, p.vat_rate, p.purchase_price_net,
-                   SUM(si.qty) AS qty, SUM(si.unit_price * si.qty) AS revenue
-            FROM sale_items si
-            JOIN sales s ON s.id = si.sale_id
-            JOIN products p ON p.id = si.product_id
-            WHERE $dateExpr BETWEEN ? AND ? AND si.product_id IS NOT NULL
-        ";
-        $params = [$dateFrom, $dateTo];
+        // DB-07: a termékenkénti forgalom UGYANAZ az üzleti érték, mint az
+        // értékesítési riport összesítője (getSalesReportSummary()): az eladás
+        // értékének (kupon/pont/hűségszint-kedvezmény UTÁN, az utalványos rész
+        // is — saleGrossValue()) VatAllocation szerinti sor-allokációja, az
+        // eladáskori ÁFA-kulccsal; a visszáru a tárolt allokált értékkel
+        // (A-03). Ugyanaz a dátum- és fizetésimód-szűrés. Korábban itt a
+        // kedvezmény ELŐTTI listaár (unit_price × qty) és a termék JELENLEGI
+        // ÁFA-kulcsa szerepelt — egy kuponos eladásnál ugyanaz a riport két
+        // különböző nettó forgalmat mutatott.
+        $agg = $this->allocatedProductSales($dateFrom, $dateTo, $paymentMethod);
+        if (!$agg) {
+            return [];
+        }
+        $ids = array_keys($agg);
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $sql = "SELECT id, name, barcode, group_name, purchase_price_net FROM products WHERE id IN ($placeholders)";
+        $params = $ids;
         if ($groupName !== null && $groupName !== '') {
-            $sql .= ' AND p.group_name = ?';
+            $sql .= ' AND group_name = ?';
             $params[] = $groupName;
         }
-        $sql .= ' GROUP BY si.product_id';
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($params);
-
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
         // Egy bulk lekérdezéssel eldöntjük, mely termékekhez van egyáltalán
         // valaha rögzített beszerzés — enélkül egy sose beszerzett termék
         // alapértelmezett 0 purchase_price_net-je hamis (100%-os) árrést
         // mutatna, lásd PurchaseDecisionService::computeMargin() docblockja.
-        $hasCostHistory = $rows ? $this->productsHavePurchaseHistory(array_column($rows, 'product_id')) : [];
+        $hasCostHistory = $products ? $this->productsHavePurchaseHistory(array_map('intval', array_column($products, 'id'))) : [];
 
-        $byProduct = [];
-        foreach ($rows as $row) {
-            $pid = (int) $row['product_id'];
-            $vatPct = is_numeric($row['vat_rate']) ? ((float) $row['vat_rate']) / 100 : 0.0;
-            $revenueGross = round((float) $row['revenue'], 2);
-            // Az árrés-számításhoz nettósítunk — a TERMÉK JELENLEGI áfakulcsával
-            // (nem az eladáskori sale_items.vat_rate-tel): dokumentált
-            // egyszerűsítés, konzisztensen a jelenlegi purchase_price_net
-            // ("utolsó ismert" költség) használatával — lásd README.
-            $revenueNet = is_numeric($row['vat_rate']) ? round($revenueGross / (1 + $vatPct), 2) : $revenueGross;
+        $result = [];
+        foreach ($products as $p) {
+            $pid = (int) $p['id'];
+            $qty = $agg[$pid]['qty'];
+            $revenueGross = $agg[$pid]['gross'] / 100.0;
+            $revenueNet = $agg[$pid]['net'] / 100.0;
+            // Az árrés a (kedvezmény utáni, allokált) nettó egységárból és a
+            // termék "utolsó ismert" nettó beszerzési árából — lásd README.
             $margin = PurchaseDecisionService::computeMargin(
-                (float) $row['qty'] > 0 ? round($revenueNet / max(1, (int) $row['qty']), 4) : null,
-                (float) $row['purchase_price_net'],
+                $qty > 0 ? round($revenueNet / $qty, 4) : null,
+                (float) $p['purchase_price_net'],
                 !empty($hasCostHistory[$pid])
             );
-            $unitNet = (int) $row['qty'] > 0 ? $revenueNet / (int) $row['qty'] : 0.0;
-            $byProduct[$pid] = [
+            $result[] = [
                 'product_id'     => $pid,
-                'name'           => $row['name'],
-                'barcode'        => $row['barcode'],
-                'group_name'     => $row['group_name'],
-                'qty'            => (int) $row['qty'],
-                'revenue'        => $revenueGross,
-                'revenue_net'    => $revenueNet,
-                'cost_net_total' => $margin !== null ? round(((float) $row['purchase_price_net']) * (int) $row['qty'], 2) : null,
-                'margin_net'     => $margin !== null ? round($margin['margin_ft'] * (int) $row['qty'], 2) : null,
+                'name'           => $p['name'],
+                'barcode'        => $p['barcode'],
+                'group_name'     => $p['group_name'],
+                'qty'            => $qty,
+                'revenue'        => round($revenueGross, 2),
+                'revenue_net'    => round($revenueNet, 2),
+                'cost_net_total' => $margin !== null ? round(((float) $p['purchase_price_net']) * $qty, 2) : null,
+                'margin_net'     => $margin !== null ? round($revenueNet - ((float) $p['purchase_price_net']) * $qty, 2) : null,
                 'margin_pct'     => $margin['margin_pct'] ?? null,
-                // Csak belső újraszámoláshoz (visszáru-nettósítás) — a
-                // hívó felé sose adjuk vissza, lásd a metódus végét.
-                '_unit_net'       => $unitNet,
-                '_unit_cost_net'  => $margin !== null ? (float) $row['purchase_price_net'] : null,
-                '_unit_margin'    => $margin['margin_ft'] ?? null,
             ];
         }
 
-        $returnDateExpr = $this->driver === 'mysql' ? 'DATE(r.created_at)' : "substr(r.created_at, 1, 10)";
-        $returnsStmt = $this->pdo->prepare("
-            SELECT ri.product_id, SUM(ri.qty) AS qty, SUM(ri.unit_price * ri.qty) AS revenue
-            FROM return_items ri
-            JOIN returns r ON r.id = ri.return_id
-            WHERE $returnDateExpr BETWEEN ? AND ? AND ri.product_id IS NOT NULL
-            GROUP BY ri.product_id
-        ");
-        $returnsStmt->execute([$dateFrom, $dateTo]);
-        foreach ($returnsStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $pid = (int) $row['product_id'];
-            if (!isset($byProduct[$pid])) {
-                continue; // visszáru olyan termékre, ami ebben a tartományban nem is szerepelt eladásként — nincs mit nettósítani
-            }
-            $byProduct[$pid]['qty'] -= (int) $row['qty'];
-            $byProduct[$pid]['revenue'] = round($byProduct[$pid]['revenue'] - (float) $row['revenue'], 2);
-            // A nettó forgalmat/költséget/árrést az ÚJ (visszáruval csökkentett)
-            // darabszámból, az egységértékekből számoljuk újra — pontosan
-            // ugyanaz az elv, mint a bruttó forgalomnál, csak levezetve.
-            $adjQty = $byProduct[$pid]['qty'];
-            $byProduct[$pid]['revenue_net'] = round($byProduct[$pid]['_unit_net'] * $adjQty, 2);
-            if ($byProduct[$pid]['_unit_cost_net'] !== null) {
-                $byProduct[$pid]['cost_net_total'] = round($byProduct[$pid]['_unit_cost_net'] * $adjQty, 2);
-                $byProduct[$pid]['margin_net'] = round($byProduct[$pid]['_unit_margin'] * $adjQty, 2);
-            }
-        }
-
-        foreach ($byProduct as $pid => &$row) {
-            unset($row['_unit_net'], $row['_unit_cost_net'], $row['_unit_margin']);
-        }
-        unset($row);
-
-        $result = array_values(array_filter($byProduct, static fn ($r) => $r['qty'] >= $minQty));
+        $result = array_values(array_filter($result, static fn ($r) => $r['qty'] >= $minQty));
         usort($result, static fn ($a, $b) => $b['qty'] <=> $a['qty']);
         return array_slice($result, 0, $limit);
+    }
+
+    /**
+     * DB-07 — termékenkénti eladott mennyiség és allokált bruttó/nettó érték
+     * (egész fillérben) egy dátumtartományra, a visszáruval nettósítva — a
+     * getSalesReportSummary()-vel AZONOS szabályokkal:
+     *   - eladás: a created_at dátuma szerint, opcionális payment_method
+     *     szűréssel; az érték saleGrossValue(), sorokra VatAllocation::
+     *     breakdown()-nal osztva (a kézi, termék nélküli sorok is részt
+     *     vesznek az allokációban, csak nem jelennek meg termékként);
+     *   - visszáru: a SAJÁT dátuma szerint, az eredeti eladás fizetési
+     *     módjával szűrve, a tárolt allokált értékkel (returnValueBreakdown());
+     *     csak olyan termékre, amely a tartományban eladásként is szerepel
+     *     (a korábbi szabály változatlan).
+     *
+     * @return array<int, array{qty:int, gross:int, net:int}>
+     */
+    private function allocatedProductSales(string $dateFrom, string $dateTo, ?string $paymentMethod, ?int $onlyProductId = null): array
+    {
+        $dateExpr = $this->driver === 'mysql' ? 'DATE(s.created_at)' : 'substr(s.created_at, 1, 10)';
+        $where = "$dateExpr BETWEEN ? AND ?";
+        $params = [$dateFrom, $dateTo];
+        if ($paymentMethod !== null && $paymentMethod !== '') {
+            $where .= ' AND s.payment_method = ?';
+            $params[] = $paymentMethod;
+        }
+        if ($onlyProductId !== null) {
+            $where .= ' AND s.id IN (SELECT sale_id FROM sale_items WHERE product_id = ?)';
+            $params[] = $onlyProductId;
+        }
+        $stmt = $this->pdo->prepare("
+            SELECT si.*, s.total AS sale_total, s.gift_card_redeemed AS sale_gift_card_redeemed
+            FROM sale_items si
+            JOIN sales s ON s.id = si.sale_id
+            WHERE $where
+            ORDER BY si.sale_id, si.id
+        ");
+        $stmt->execute($params);
+
+        $agg = [];
+        $flush = static function (array $lines) use (&$agg, $onlyProductId): void {
+            if (!$lines) {
+                return;
+            }
+            $value = self::saleGrossValue(['total' => $lines[0]['sale_total'], 'gift_card_redeemed' => $lines[0]['sale_gift_card_redeemed']]);
+            $breakdown = self::vatBreakdown($value, $lines);
+            foreach ($lines as $i => $line) {
+                $pid = $line['product_id'] !== null ? (int) $line['product_id'] : null;
+                if ($pid === null || ($onlyProductId !== null && $pid !== $onlyProductId) || !isset($breakdown['lines'][$i])) {
+                    continue;
+                }
+                $agg[$pid] ??= ['qty' => 0, 'gross' => 0, 'net' => 0];
+                $agg[$pid]['qty'] += (int) $line['qty'];
+                $agg[$pid]['gross'] += (int) round($breakdown['lines'][$i]['gross'] * 100);
+                $agg[$pid]['net'] += (int) round($breakdown['lines'][$i]['net'] * 100);
+            }
+        };
+        $current = [];
+        $currentSale = null;
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            if ($row['sale_id'] !== $currentSale) {
+                $flush($current);
+                $current = [];
+                $currentSale = $row['sale_id'];
+            }
+            $current[] = $row;
+        }
+        $flush($current);
+        if (!$agg) {
+            return [];
+        }
+
+        $returnDateExpr = $this->driver === 'mysql' ? 'DATE(r.created_at)' : 'substr(r.created_at, 1, 10)';
+        $rWhere = "$returnDateExpr BETWEEN ? AND ?";
+        $rParams = [$dateFrom, $dateTo];
+        if ($paymentMethod !== null && $paymentMethod !== '') {
+            $rWhere .= ' AND s.payment_method = ?';
+            $rParams[] = $paymentMethod;
+        }
+        $rStmt = $this->pdo->prepare("
+            SELECT r.id AS r_id, r.total_refund AS r_total_refund, r.gift_card_refund AS r_gift_card_refund, r.value_gross AS r_value_gross,
+                   ri.product_id, ri.qty, ri.unit_price, ri.value_gross, ri.value_net, ri.value_vat, si.vat_rate
+            FROM return_items ri
+            JOIN returns r ON r.id = ri.return_id
+            JOIN sales s ON s.id = r.sale_id
+            LEFT JOIN sale_items si ON si.id = ri.sale_item_id
+            WHERE $rWhere
+            ORDER BY r.id, ri.id
+        ");
+        $rStmt->execute($rParams);
+        $flushReturn = static function (array $items) use (&$agg): void {
+            if (!$items) {
+                return;
+            }
+            $breakdown = self::returnValueBreakdown([
+                'value_gross' => $items[0]['r_value_gross'],
+                'total_refund' => $items[0]['r_total_refund'],
+                'gift_card_refund' => $items[0]['r_gift_card_refund'],
+            ], $items);
+            foreach ($items as $i => $item) {
+                $pid = $item['product_id'] !== null ? (int) $item['product_id'] : null;
+                if ($pid === null || !isset($agg[$pid]) || !isset($breakdown['lines'][$i])) {
+                    continue; // visszáru olyan termékre, ami ebben a tartományban nem is szerepelt eladásként
+                }
+                $agg[$pid]['qty'] -= (int) $item['qty'];
+                $agg[$pid]['gross'] -= (int) round($breakdown['lines'][$i]['gross'] * 100);
+                $agg[$pid]['net'] -= (int) round($breakdown['lines'][$i]['net'] * 100);
+            }
+        };
+        $current = [];
+        $currentReturn = null;
+        while ($row = $rStmt->fetch(PDO::FETCH_ASSOC)) {
+            if ($row['r_id'] !== $currentReturn) {
+                $flushReturn($current);
+                $current = [];
+                $currentReturn = $row['r_id'];
+            }
+            $current[] = $row;
+        }
+        $flushReturn($current);
+        return $agg;
     }
 
     /**
@@ -9202,7 +9632,8 @@ class Database
      */
     public function getSalesMarginSummary(string $dateFrom, string $dateTo, ?string $paymentMethod = null): array
     {
-        $products = $this->getTopProductsReport($dateFrom, $dateTo, null, 0, 100000);
+        // DB-07: ugyanaz a fizetésimód-szűrés, mint a riport összesítőjénél.
+        $products = $this->getTopProductsReport($dateFrom, $dateTo, null, 0, 100000, $paymentMethod);
 
         $revenueNet = 0.0;
         $costNet = 0.0;
@@ -9311,31 +9742,13 @@ class Database
      */
     public function getProductSalesInRange(int $productId, string $dateFrom, string $dateTo): array
     {
-        $dateExpr = $this->driver === 'mysql' ? 'DATE(s.created_at)' : "substr(s.created_at, 1, 10)";
-        $soldStmt = $this->pdo->prepare("
-            SELECT COALESCE(SUM(si.qty), 0) AS qty, COALESCE(SUM(si.unit_price * si.qty), 0) AS revenue
-            FROM sale_items si
-            JOIN sales s ON s.id = si.sale_id
-            WHERE si.product_id = ? AND $dateExpr BETWEEN ? AND ?
-        ");
-        $soldStmt->execute([$productId, $dateFrom, $dateTo]);
-        $sold = $soldStmt->fetch(PDO::FETCH_ASSOC) ?: ['qty' => 0, 'revenue' => 0];
-
-        $returnDateExpr = $this->driver === 'mysql' ? 'DATE(r.created_at)' : "substr(r.created_at, 1, 10)";
-        $returnedStmt = $this->pdo->prepare("
-            SELECT COALESCE(SUM(ri.qty), 0) AS qty, COALESCE(SUM(ri.unit_price * ri.qty), 0) AS revenue
-            FROM return_items ri
-            JOIN returns r ON r.id = ri.return_id
-            WHERE ri.product_id = ? AND $returnDateExpr BETWEEN ? AND ?
-        ");
-        $returnedStmt->execute([$productId, $dateFrom, $dateTo]);
-        $returned = $returnedStmt->fetch(PDO::FETCH_ASSOC) ?: ['qty' => 0, 'revenue' => 0];
-
+        // DB-07: ugyanaz az allokált érték-definíció, mint getTopProductsReport()-nál.
+        $agg = $this->allocatedProductSales($dateFrom, $dateTo, null, $productId)[$productId] ?? ['qty' => 0, 'gross' => 0];
         return [
             'date_from' => $dateFrom,
             'date_to'   => $dateTo,
-            'qty'       => (int) $sold['qty'] - (int) $returned['qty'],
-            'revenue'   => round((float) $sold['revenue'] - (float) $returned['revenue'], 2),
+            'qty'       => (int) $agg['qty'],
+            'revenue'   => round($agg['gross'] / 100.0, 2),
         ];
     }
 

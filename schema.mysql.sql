@@ -197,6 +197,7 @@ CREATE TABLE IF NOT EXISTS sale_items (
     qty          INT NOT NULL,
     unit_price   DECIMAL(12,2) NOT NULL,
     vat_rate     VARCHAR(8) NOT NULL,
+    returned_qty INT NOT NULL DEFAULT 0, -- DB-02: lásd schema.sql
     KEY idx_sale_items_sale_id (sale_id),
     KEY idx_sale_items_product_id (product_id),
     -- Regresszió (1.3.1): korábban ON DELETE CASCADE volt itt, DE a SQLite
@@ -371,6 +372,7 @@ CREATE TABLE IF NOT EXISTS return_items (
     KEY idx_return_items_return_id (return_id),
     KEY idx_return_items_product_id (product_id),
     CONSTRAINT fk_return_items_return FOREIGN KEY (return_id) REFERENCES returns(id),
+    CONSTRAINT fk_return_items_sale_item FOREIGN KEY (sale_item_id) REFERENCES sale_items(id), -- DB-10: a SQLite-séma óta megvan
     CONSTRAINT fk_return_items_product FOREIGN KEY (product_id) REFERENCES products(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -494,6 +496,8 @@ CREATE TABLE IF NOT EXISTS cash_movements (
 -- definiálva, MySQL-ben pedig egy CONSTRAINT csak már létező táblára mutathat.
 ALTER TABLE sales ADD CONSTRAINT fk_sales_cash_session FOREIGN KEY (cash_session_id) REFERENCES cash_sessions(id);
 ALTER TABLE returns ADD CONSTRAINT fk_returns_cash_session FOREIGN KEY (cash_session_id) REFERENCES cash_sessions(id);
+-- DB-10: a SQLite-séma óta megvan; a locations tábla a sales után van definiálva.
+ALTER TABLE sales ADD CONSTRAINT fk_sales_location FOREIGN KEY (location_id) REFERENCES locations(id);
 
 -- Kliens/szerver architektúra (Fázis 2) — regisztrált kliens gépek + a
 -- proxyzott kérésekben azonosított dolgozói munkamenetek. Csak a Szerver/

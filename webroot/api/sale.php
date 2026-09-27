@@ -14,6 +14,11 @@ $input = json_input();
 $cart  = $input['items'] ?? [];
 $buyer = $input['buyer'] ?? null; // when null, "Vevő számlát kér" wasn't checked — no Szamlazz.hu call happens at all in that case
 $paymentMethod = $input['payment_method'] ?? 'Készpénz';
+// DB-05: a fizetési mód a beállított listából — a kasszazárás ebből
+// sorolja be a készpénzt, egy listán kívüli érték csendben kimaradna.
+if (!is_string($paymentMethod) || !in_array($paymentMethod, Settings::paymentMethodValues($appSettings), true)) {
+    send_json(['error' => 'Érvénytelen fizetési mód.'], 400);
+}
 $customerId = !empty($input['customer_id']) ? (int) $input['customer_id'] : null;
 $redeemPoints = max(0, (int) ($input['redeem_points'] ?? 0));
 $locationId = !empty($input['location_id']) ? (int) $input['location_id'] : null;
@@ -117,6 +122,10 @@ foreach ($cart as $line) {
         }
         if ($unitPrice < 0) {
             send_json(['error' => "Érvénytelen egységár: $name"], 400);
+        }
+        // DB-05: az ÁFA-kulcs a támogatott kódok közül (VatAllocation::SUPPORTED_RATES).
+        if (!VatAllocation::isSupportedRate($vatRate)) {
+            send_json(['error' => "Érvénytelen ÁFA-kulcs: $name"], 400);
         }
 
         $lineItems[] = [

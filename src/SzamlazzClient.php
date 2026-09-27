@@ -223,6 +223,10 @@ class SzamlazzClient
             // (allokált tétel: a riporttal azonos sorértékek; régi,
             // allokáció nélküli payload: a korábbi egységár-alapú értékek).
             $line = VatAllocation::renderLine($item);
+            // DB-05: csak a rendszer támogatott ÁFA-kódjai kerülhetnek a számlára.
+            if (!VatAllocation::isSupportedRate((string) $item['vat_rate'])) {
+                throw new InvalidArgumentException("Ismeretlen vagy érvénytelen ÁFA-kód a számla tételén: '{$item['vat_rate']}'.");
+            }
 
             $xw->startElement('tetel');
             $xw->writeElement('megnevezes', $item['name']);

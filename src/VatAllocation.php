@@ -81,6 +81,20 @@ declare(strict_types=1);
 final class VatAllocation
 {
     /**
+     * DB-05 — a rendszerben használt ÁFA-kódok (a termék-, beszerzés- és
+     * kassza-űrlapok választói, a NAV-leképezés — NavInvoiceXmlBuilder::
+     * vatCategory() — és a Számlázz.hu `afakulcs` értékei). A backend az
+     * irányadó: minden értékesítési adatot író végpont és a számla-építők
+     * ezt a listát ellenőrzik, nem a UI választójára hagyatkoznak.
+     */
+    public const SUPPORTED_RATES = ['27', '18', '5', '0', 'AAM', 'TAM'];
+
+    public static function isSupportedRate(mixed $rate): bool
+    {
+        return is_string($rate) && in_array($rate, self::SUPPORTED_RATES, true);
+    }
+
+    /**
      * @param array<int, array{unit_price:mixed, qty:mixed, vat_rate:mixed}> $lines
      * @return array{lines: list<array{vat_rate:string, gross:float, net:float, vat:float}>, gross:float, net:float, vat:float}
      */

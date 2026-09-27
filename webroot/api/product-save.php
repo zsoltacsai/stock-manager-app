@@ -15,6 +15,11 @@ if (empty($p['name'])) {
 }
 
 $vatRate = (string) ($p['vat_rate'] ?? $config['szamlazz']['default_vat_rate']);
+// DB-05: a termék ÁFA-kulcsa minden kasszai eladásba, riportba és számlába
+// továbbmegy — csak a támogatott kódok fogadhatók el.
+if (!VatAllocation::isSupportedRate($vatRate)) {
+    send_json(['error' => 'Érvénytelen ÁFA-kulcs.'], 400);
+}
 $vatPct  = is_numeric($vatRate) ? ((float) $vatRate) / 100 : 0.0;
 
 // A backend a HITELES forrás minden ár-validációra (lásd PriceValidator

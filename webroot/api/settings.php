@@ -29,6 +29,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $input = json_input();
     $update = [];
 
+    // DB-05: az alapértelmezett ÁFA-kulcs a webes rendelések párosítatlan
+    // tételeibe és az új termékekbe kerül — csak támogatott kód lehet.
+    if (isset($input['szamlazz_default_vat']) && trim((string) $input['szamlazz_default_vat']) !== ''
+        && !VatAllocation::isSupportedRate(trim((string) $input['szamlazz_default_vat']))) {
+        send_json(['error' => 'Érvénytelen alapértelmezett ÁFA-kulcs.'], 400);
+    }
+
     // Egyszerű szöveges mezők — trim-elve, változtatás nélkül eltárolva.
     $stringFields = [
         'printer_ip', 'dropbox_access_token', 'dropbox_folder',

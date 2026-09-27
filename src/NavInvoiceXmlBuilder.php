@@ -442,7 +442,10 @@ class NavInvoiceXmlBuilder
             return ['type' => 'exemption', 'case' => $code, 'reason' => self::VAT_EXEMPTION_REASONS[$code]];
         }
         $trimmed = trim($vatRate);
-        if ($trimmed !== '' && is_numeric($trimmed) && (float) $trimmed >= 0 && (float) $trimmed <= 100) {
+        // DB-05: csak a rendszer támogatott numerikus kulcsai (27/18/5/0) —
+        // egy tetszőleges 0–100 közötti érték (pl. 13 vagy 100) nem kerülhet
+        // a NAV-hoz.
+        if (is_numeric($trimmed) && VatAllocation::isSupportedRate($trimmed)) {
             return ['type' => 'percentage', 'rate' => ((float) $trimmed) / 100];
         }
         throw new InvalidArgumentException("Ismeretlen vagy érvénytelen ÁFA-kód a NAV-számla tételén: '$vatRate' (támogatott: numerikus kulcs, AAM, TAM).");

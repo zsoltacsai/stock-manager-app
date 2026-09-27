@@ -130,6 +130,9 @@ foreach ($order['line_items'] as $li) {
         'unit_price'    => $unitPrice,
         'vat_rate'      => $product['vat_rate'] ?? ($appSettings['szamlazz_default_vat'] ?? '27'),
         'matched'       => $product !== null,
+        // DB-12: a WooCommerce sor pontos bruttó összege — az egységár két
+        // tizedesre kerekített, a mennyiséggel szorozva eltérhet tőle.
+        'line_total'    => round($lineTotal, 2),
     ];
 }
 
@@ -137,7 +140,11 @@ if (!$items) {
     send_json(['ignored' => true, 'reason' => 'no usable line items']);
 }
 
-$total = array_sum(array_map(fn($i) => $i['qty'] * $i['unit_price'], $items));
+// DB-12: a rendelés értéke a WooCommerce sorösszegeinek összege (nem a
+// kerekített egységár × mennyiség — pl. 10.00 Ft / 3 db → 3 × 3.33 = 9.99).
+// Az egységár csak megjelenítési/arányosítási alap: a leadott eladás értéke
+// ez az összeg, a számlasorokra a VatAllocation osztja szét fillérre pontosan.
+$total = round(array_sum(array_column($items, 'line_total')), 2);
 
 // B-08: a draft (a helyi foglalás) és a WooCommerce-push beütemezése EGY
 // tranzakcióban — a WooCommerce a rendeléskor már levonta a darabokat, a

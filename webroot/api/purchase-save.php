@@ -47,6 +47,9 @@ foreach ($lines as $line) {
     }
 
     $vatRate = (string) ($line['vat_rate'] ?? $product['vat_rate']);
+    if (!VatAllocation::isSupportedRate($vatRate)) {
+        send_json(['error' => "Érvénytelen ÁFA-kulcs: {$product['name']}"], 400);
+    }
     $vatPct  = is_numeric($vatRate) ? ((float) $vatRate) / 100 : 0.0;
 
     $unitCostNet = (float) $line['unit_cost_net'];

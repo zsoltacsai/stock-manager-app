@@ -442,6 +442,25 @@ class Settings
      * telepítés frissítés után is helyesen számolja a kasszazárás várható
      * összegét, admin beavatkozás nélkül.
      */
+    /**
+     * DB-05 — a beállított fizetési módok neve (Beállítások → Fizetési módok):
+     * az értékesítési végpontok ezt a listát fogadják el, a kasszazárás is
+     * ebből sorolja be a készpénzt (is_cash) — a backend az irányadó.
+     *
+     * @return list<string>
+     */
+    public static function paymentMethodValues(array $settings): array
+    {
+        $values = [];
+        foreach ((array) ($settings['payment_methods'] ?? []) as $m) {
+            $value = is_array($m) ? (string) ($m['value'] ?? '') : (string) $m;
+            if ($value !== '') {
+                $values[] = $value;
+            }
+        }
+        return $values;
+    }
+
     private static function backfillPaymentMethodIsCash(array $settings): array
     {
         if (!isset($settings['payment_methods']) || !is_array($settings['payment_methods'])) {

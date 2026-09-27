@@ -338,7 +338,10 @@ final class MysqlDialectRegressionTest extends TestCase
 
         $normalized = array_map([self::class, 'normalize'], $pdo->log);
         $this->assertContains('UPDATE coupons SET times_used = GREATEST(0, times_used - 1) WHERE id = ?', $normalized);
-        $this->assertNotEmpty(array_filter($normalized, fn($sql) => str_contains($sql, 'loyalty_points = GREATEST(0, loyalty_points + :delta)')));
+        // DB-09: a hűségpont-változás MySQL-en zárolt olvasás (FOR UPDATE) + a PHP-ban
+        // 0-ra korlátozott új egyenleg — a főkönyvbe a ténylegesen alkalmazott delta kerül.
+        $this->assertContains('SELECT loyalty_points FROM customers WHERE id = ? FOR UPDATE', $normalized);
+        $this->assertContains('UPDATE customers SET loyalty_points = ?, updated_at = ? WHERE id = ?', $normalized);
         $this->assertNotEmpty(array_filter($normalized, fn($sql) => str_starts_with($sql, 'INSERT INTO gift_card_transactions')), 'A teljes kódút (ajándékkártya-ág is) lefutott.');
         $this->assertNoSqliteOnlySyntax($pdo->log);
     }

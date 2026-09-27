@@ -31,9 +31,18 @@ class BackupManager
     /** A SQLite fájlformátum saját, kötelező aláírása — https://www.sqlite.org/fileformat.html */
     private const SQLITE_MAGIC = "SQLite format 3\x00";
 
+    /** DB-08: a PHP-s MySQL dump teljességét jelző záró sor — a restore enélkül nem indul el (csonka fájl). */
+    public const PHP_DUMP_COMPLETED_MARKER = '-- FountainTrade dump completed';
+
     private array $dbConfig;
     private string $backupDir;
     private string $driver;
+    /** MySQL-kapcsolat gyártó — alapból valódi PDO; tesztekben SQL-rögzítő/szimuláló PDO adható (nincs helyi MySQL). */
+    private ?Closure $mysqlPdoFactory = null;
+    /** A mysql/mysqldump CLI elérhetőségének felülírása (null = felderítés, lásd commandExists()). */
+    private ?bool $mysqlCliOverride = null;
+    /** DB-01: igaz, amint a visszaállítás az ÉLŐ adatbázist ténylegesen módosítani kezdte — ekkor hiba esetén kompenzálni kell. */
+    private bool $restoreTouchedLive = false;
 
     public function __construct(array $dbConfig, string $backupDir)
     {
@@ -41,6 +50,55 @@ class BackupManager
         $this->driver = $dbConfig['driver'] ?? 'sqlite';
         $this->backupDir = rtrim($backupDir, '/');
         @mkdir($this->backupDir, 0775, true);
+    }
+
+    public function setMysqlPdoFactory(?Closure $factory): void
+    {
+        $this->mysqlPdoFactory = $factory;
+    }
+
+    public function setMysqlCliAvailable(?bool $available): void
+    {
+        $this->mysqlCliOverride = $available;
+    }
+
+    private function mysqlPdo(bool $unbuffered = false): PDO
+    {
+        if ($this->mysqlPdoFactory !== null) {
+            return ($this->mysqlPdoFactory)($unbuffered);
+        }
+        $m = $this->dbConfig['mysql'];
+        $dsn = sprintf('mysql:host=%s;port=%d;dbname=%s;charset=%s', $m['host'], $m['port'] ?? 3306, $m['database'], $m['charset'] ?? 'utf8mb4');
+        $options = [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION];
+        if ($unbuffered) {
+            $options[PDO::MYSQL_ATTR_USE_BUFFERED_QUERY] = false;
+        }
+        return new PDO($dsn, $m['username'], $m['password'], $options);
+    }
+
+    private function mysqlCliAvailable(string $binary): bool
+    {
+        if ($this->mysqlCliOverride !== null) {
+            return $this->mysqlCliOverride;
+        }
+        return function_exists('exec') && $this->commandExists($binary);
+    }
+
+    /**
+     * A MySQL-jelszó egy ideiglenes, csak a tulajdonos által olvasható
+     * option-fájlba kerül (nem a parancssorba): nem jelenik meg a folyamat-
+     * listában, és a kliens nem ír "Using a password on the command line"
+     * figyelmeztetést — ez korábban a `> dump 2>&1` átirányítással a mentési
+     * fájl ELEJÉRE került, és a restore az első során elbukott.
+     */
+    private function writeMysqlDefaultsFile(): string
+    {
+        $m = $this->dbConfig['mysql'];
+        $path = sys_get_temp_dir() . '/stockmanager_mycnf_' . bin2hex(random_bytes(8)) . '.cnf';
+        $password = str_replace(['\\', '"'], ['\\\\', '\\"'], (string) $m['password']);
+        file_put_contents($path, "[client]\npassword=\"$password\"\n");
+        @chmod($path, 0600);
+        return $path;
     }
 
     private function extension(): string
@@ -259,22 +317,31 @@ class BackupManager
         $destination = $this->backupDir . '/' . $filename;
         $m = $this->dbConfig['mysql'];
 
-        if (function_exists('exec') && $this->commandExists('mysqldump')) {
-            $cmd = sprintf(
-                'mysqldump --host=%s --port=%d --user=%s --password=%s --single-transaction --quick %s > %s 2>&1',
-                escapeshellarg($m['host']),
-                (int) ($m['port'] ?? 3306),
-                escapeshellarg($m['username']),
-                escapeshellarg($m['password']),
-                escapeshellarg($m['database']),
-                escapeshellarg($destination)
-            );
-            exec($cmd, $output, $exitCode);
+        if ($this->mysqlCliAvailable('mysqldump')) {
+            // --single-transaction: InnoDB-n egyetlen konzisztens pillanatkép
+            // (DB-08). --result-file: a dump KIZÁRÓLAG a fájlba kerül, a
+            // kliens hibái/figyelmeztetései a $output-ba (nem a mentésbe).
+            $defaultsFile = $this->writeMysqlDefaultsFile();
+            try {
+                $cmd = sprintf(
+                    'mysqldump --defaults-extra-file=%s --host=%s --port=%d --user=%s --single-transaction --quick --result-file=%s %s 2>&1',
+                    escapeshellarg($defaultsFile),
+                    escapeshellarg($m['host']),
+                    (int) ($m['port'] ?? 3306),
+                    escapeshellarg($m['username']),
+                    escapeshellarg($destination),
+                    escapeshellarg($m['database'])
+                );
+                exec($cmd, $output, $exitCode);
+            } finally {
+                @unlink($defaultsFile);
+            }
             if ($exitCode === 0 && is_file($destination) && filesize($destination) > 0) {
                 @chmod($destination, 0600); // lásd createSqliteSnapshot() azonos megjegyzése
                 $this->backupSettingsSidecar($filename);
                 return $filename;
             }
+            @unlink($destination);
         }
 
         $this->dumpMysqlWithPhp($destination);
@@ -283,20 +350,32 @@ class BackupManager
         return $filename;
     }
 
+    /**
+     * DB-01: Windows cmd-ben nincs `command -v` — ott a `where` a megfelelője.
+     * Korábban Windows-on ez MINDIG hamisat adott, és a mentés/visszaállítás
+     * akkor is a PHP-s tartalékra esett, ha a mysql/mysqldump elérhető volt.
+     */
     private function commandExists(string $binary): bool
     {
-        $which = @shell_exec('command -v ' . escapeshellarg($binary) . ' 2>/dev/null');
+        $cmd = PHP_OS_FAMILY === 'Windows'
+            ? 'where ' . escapeshellarg($binary) . ' 2>NUL'
+            : 'command -v ' . escapeshellarg($binary) . ' 2>/dev/null';
+        $which = @shell_exec($cmd);
         return !empty(trim((string) $which));
     }
 
+    /**
+     * PHP-s MySQL dump (ha a mysqldump nem érhető el). DB-08: az összes tábla
+     * EGYETLEN konzisztens InnoDB-pillanatképből (REPEATABLE READ + START
+     * TRANSACTION WITH CONSISTENT SNAPSHOT — a `mysqldump --single-transaction`
+     * megfelelője, táblazár nélkül); korábban táblánként külön autocommit
+     * SELECT futott, és a dump közben commitolt eladás egyes tábláiban
+     * szerepelt, másokban nem. A fájl a restore által ellenőrzött záró sorral
+     * végződik (csonka dump nem állítható vissza).
+     */
     private function dumpMysqlWithPhp(string $destination): void
     {
-        $m = $this->dbConfig['mysql'];
-        $dsn = sprintf('mysql:host=%s;port=%d;dbname=%s;charset=%s', $m['host'], $m['port'] ?? 3306, $m['database'], $m['charset'] ?? 'utf8mb4');
-        $pdo = new PDO($dsn, $m['username'], $m['password'], [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::MYSQL_ATTR_USE_BUFFERED_QUERY => false,
-        ]);
+        $pdo = $this->mysqlPdo(true);
 
         $out = fopen($destination, 'w');
         if (!$out) {
@@ -304,28 +383,36 @@ class BackupManager
         }
         @chmod($destination, 0600); // rögtön a létrehozás után, még az írás megkezdése előtt
 
-        fwrite($out, "-- FountainTrade PHP-based MySQL dump (mysqldump not available)\n");
-        fwrite($out, "-- Generated: " . date('c') . "\n\nSET FOREIGN_KEY_CHECKS=0;\n\n");
+        $pdo->exec('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        $pdo->exec('START TRANSACTION WITH CONSISTENT SNAPSHOT');
+        try {
+            fwrite($out, "-- FountainTrade PHP-based MySQL dump (mysqldump not available)\n");
+            fwrite($out, "-- Generated: " . date('Y-m-d H:i:s') . " (consistent snapshot)\n\n");
+            fwrite($out, "SET FOREIGN_KEY_CHECKS=0;\n\n");
 
-        $tables = $pdo->query('SHOW TABLES')->fetchAll(PDO::FETCH_COLUMN);
-        foreach ($tables as $table) {
-            $createRow = $pdo->query("SHOW CREATE TABLE `$table`")->fetch(PDO::FETCH_ASSOC);
-            fwrite($out, "DROP TABLE IF EXISTS `$table`;\n");
-            fwrite($out, $createRow['Create Table'] . ";\n\n");
+            $tables = $pdo->query('SHOW TABLES')->fetchAll(PDO::FETCH_COLUMN);
+            foreach ($tables as $table) {
+                $createRow = $pdo->query("SHOW CREATE TABLE `$table`")->fetch(PDO::FETCH_ASSOC);
+                fwrite($out, "DROP TABLE IF EXISTS `$table`;\n");
+                fwrite($out, $createRow['Create Table'] . ";\n\n");
 
-            $stmt = $pdo->query("SELECT * FROM `$table`");
-            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                $columns = array_map(fn($c) => "`$c`", array_keys($row));
-                $values = array_map(function ($v) use ($pdo) {
-                    return $v === null ? 'NULL' : $pdo->quote((string) $v);
-                }, array_values($row));
-                fwrite($out, "INSERT INTO `$table` (" . implode(',', $columns) . ') VALUES (' . implode(',', $values) . ");\n");
+                $stmt = $pdo->query("SELECT * FROM `$table`");
+                while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                    $columns = array_map(fn($c) => "`$c`", array_keys($row));
+                    $values = array_map(function ($v) use ($pdo) {
+                        return $v === null ? 'NULL' : $pdo->quote((string) $v);
+                    }, array_values($row));
+                    fwrite($out, "INSERT INTO `$table` (" . implode(',', $columns) . ') VALUES (' . implode(',', $values) . ");\n");
+                }
+                fwrite($out, "\n");
             }
-            fwrite($out, "\n");
-        }
 
-        fwrite($out, "SET FOREIGN_KEY_CHECKS=1;\n");
-        fclose($out);
+            fwrite($out, "SET FOREIGN_KEY_CHECKS=1;\n");
+            fwrite($out, self::PHP_DUMP_COMPLETED_MARKER . "\n");
+        } finally {
+            $pdo->exec('COMMIT');
+            fclose($out);
+        }
     }
 
     /**
@@ -506,11 +593,23 @@ class BackupManager
                 $effectiveSourcePath = $decryptedDbPath;
             }
 
-            if ($this->driver === 'mysql') {
-                $this->restoreMysqlFromFile($effectiveSourcePath);
-            } else {
-                $this->restoreSqliteFromFile($effectiveSourcePath);
+            // DB-06: a visszaállítás ELŐTTI élő számlaszám-sorozatok (a helyben
+            // valaha kiadott legmagasabb sorszámok) — a visszaállított,
+            // régebbi állapot sorozata ezek alá nem eshet.
+            $sequenceFloors = $this->captureInvoiceSequenceFloors();
+
+            $this->restoreTouchedLive = false;
+            try {
+                if ($this->driver === 'mysql') {
+                    $this->restoreMysqlFromFile($effectiveSourcePath);
+                } else {
+                    $this->restoreSqliteFromFile($effectiveSourcePath);
+                }
+            } catch (Throwable $restoreError) {
+                $this->compensateFailedRestore($restoreError, $safetyBackup);
             }
+
+            $sequencesReconciled = $sequenceFloors !== null ? $this->reconcileInvoiceSequences($sequenceFloors) : false;
 
             $settingsRestored = false;
             if ($isEncrypted) {
@@ -526,7 +625,7 @@ class BackupManager
                 $settingsRestored = $this->restoreSettingsSidecarIfPresent($plainSidecar);
             }
 
-            return ['safety_backup' => $safetyBackup, 'settings_restored' => $settingsRestored];
+            return ['safety_backup' => $safetyBackup, 'settings_restored' => $settingsRestored, 'invoice_sequences_reconciled' => $sequencesReconciled];
         } finally {
             if ($decryptedDbPath !== null) {
                 @unlink($decryptedDbPath);
@@ -574,6 +673,7 @@ class BackupManager
             // mindig eltünteti a maradék -wal/-shm fájlokat.
         }
 
+        $this->restoreTouchedLive = true;
         if (!copy($sourcePath, $liveDbPath)) {
             throw new RuntimeException('Nem sikerült a fájlt a helyére másolni. Ellenőrizd a jogosultságokat.');
         }
@@ -613,41 +713,285 @@ class BackupManager
         return @copy($sidecarPath, $settingsPath);
     }
 
+    /**
+     * DB-01 — MySQL-visszaállítás. Korábban a PHP-s út a `;\n` mentén darabolt,
+     * és minden `--`-szal kezdődő darabot kihagyott: az első darab a fejléc-
+     * kommentekkel kezdődött, így a `SET FOREIGN_KEY_CHECKS=0` sosem futott le,
+     * és az első, gyerektábla által hivatkozott szülőtábla eldobásánál (MySQL
+     * 3730) a restore félúton megállt — kevert (részben visszaállított)
+     * adatbázist hagyva. Most:
+     *   1. a dump az élő adatbázis ÉRINTÉSE ELŐTT ellenőrzött (teljesség-
+     *      jelző, FountainTrade-táblák, értelmezhető utasítások);
+     *   2. az FK-ellenőrzés EXPLICIT ki van kapcsolva ugyanazon a kapcsolaton
+     *      (CLI: --init-command; PHP: SET FOREIGN_KEY_CHECKS=0), és a végén —
+     *      hiba esetén is — visszakapcsol;
+     *   3. az utasítások darabolása idézőjel- és kommenttudatos
+     *      (splitSqlStatements());
+     *   4. ha a módosítás megkezdése után bármi elbukik, a hívó
+     *      (restoreFromFile()) a visszaállítás előtti biztonsági mentést
+     *      állítja vissza ugyanezzel a mechanizmussal, és hibát jelez.
+     * (MySQL-en a DDL implicit commitol, ezért az atomicitás tranzakcióval
+     * nem érhető el — ezt a kompenzáló visszaállítás pótolja.)
+     */
     private function restoreMysqlFromFile(string $sourcePath): void
     {
-        $m = $this->dbConfig['mysql'];
+        $sql = file_get_contents($sourcePath);
+        if ($sql === false) {
+            throw new RuntimeException('A mentési fájl nem olvasható.');
+        }
+        $statements = self::validateMysqlDump($sql);
 
-        if (function_exists('exec') && $this->commandExists('mysql')) {
-            $cmd = sprintf(
-                'mysql --host=%s --port=%d --user=%s --password=%s %s < %s 2>&1',
-                escapeshellarg($m['host']),
-                (int) ($m['port'] ?? 3306),
-                escapeshellarg($m['username']),
-                escapeshellarg($m['password']),
-                escapeshellarg($m['database']),
-                escapeshellarg($sourcePath)
-            );
-            exec($cmd, $output, $exitCode);
+        if ($this->mysqlCliAvailable('mysql')) {
+            $m = $this->dbConfig['mysql'];
+            $defaultsFile = $this->writeMysqlDefaultsFile();
+            try {
+                $cmd = sprintf(
+                    'mysql --defaults-extra-file=%s --host=%s --port=%d --user=%s --init-command=%s %s < %s 2>&1',
+                    escapeshellarg($defaultsFile),
+                    escapeshellarg($m['host']),
+                    (int) ($m['port'] ?? 3306),
+                    escapeshellarg($m['username']),
+                    escapeshellarg('SET FOREIGN_KEY_CHECKS=0'),
+                    escapeshellarg($m['database']),
+                    escapeshellarg($sourcePath)
+                );
+                $this->restoreTouchedLive = true;
+                exec($cmd, $output, $exitCode);
+            } finally {
+                @unlink($defaultsFile);
+            }
             if ($exitCode === 0) {
                 return;
             }
             throw new RuntimeException('A mysql parancs sikertelen volt: ' . implode("\n", $output));
         }
 
-        $dsn = sprintf('mysql:host=%s;port=%d;dbname=%s;charset=%s', $m['host'], $m['port'] ?? 3306, $m['database'], $m['charset'] ?? 'utf8mb4');
-        $pdo = new PDO($dsn, $m['username'], $m['password'], [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-
-        $sql = file_get_contents($sourcePath);
-        if ($sql === false) {
-            throw new RuntimeException('A mentési fájl nem olvasható.');
+        $pdo = $this->mysqlPdo();
+        $pdo->exec('SET FOREIGN_KEY_CHECKS=0');
+        try {
+            $this->restoreTouchedLive = true;
+            foreach ($statements as $statement) {
+                if (preg_match('/^SET\s+FOREIGN_KEY_CHECKS\s*=\s*1$/i', $statement)) {
+                    continue; // a visszakapcsolás a finally-ben, a teljes lefutás után
+                }
+                $pdo->exec($statement);
+            }
+        } finally {
+            $pdo->exec('SET FOREIGN_KEY_CHECKS=1');
         }
+    }
 
-        foreach (explode(";\n", $sql) as $statement) {
-            $statement = trim($statement);
-            if ($statement === '' || str_starts_with($statement, '--')) {
+    /**
+     * A MySQL-dump ellenőrzése az élő adatbázis érintése ELŐTT.
+     *
+     * @return list<string> a végrehajtandó utasítások
+     */
+    public static function validateMysqlDump(string $sql): array
+    {
+        $trimmed = rtrim($sql);
+        $complete = str_ends_with($trimmed, self::PHP_DUMP_COMPLETED_MARKER)   // PHP-s dump (DB-08 óta)
+            || preg_match('/SET FOREIGN_KEY_CHECKS=1;$/', $trimmed)             // korábbi PHP-s dump
+            || str_contains(substr($trimmed, -300), '-- Dump completed');         // mysqldump
+        if (!$complete) {
+            throw new RuntimeException('A MySQL-mentés csonka vagy sérült (hiányzik a teljességet jelző zárás) — a visszaállítás nem indult el.');
+        }
+        $statements = self::splitSqlStatements($sql);
+        if (!$statements) {
+            throw new RuntimeException('A MySQL-mentés nem tartalmaz végrehajtható utasítást.');
+        }
+        foreach (['products', 'sales', 'customers'] as $table) {
+            if (!preg_match('/CREATE TABLE `?' . $table . '`?\s*\(/i', $sql)) {
+                throw new RuntimeException('A fájl nem tűnik FountainTrade adatbázis-mentésnek (hiányzó tábla: ' . $table . ').');
+            }
+        }
+        return $statements;
+    }
+
+    /**
+     * Idézőjel- és kommenttudatos SQL-darabolás: a `;` csak idézőjelen,
+     * backtick-en és kommenten KÍVÜL választ el; a `-- …` és `# …` sorvégi
+     * kommentek kimaradnak; a `/* … *\/` blokk (a MySQL feltételes
+     * `/*! … *\/` alakja is) az utasítás része marad, a szerver értelmezi.
+     *
+     * @return list<string>
+     */
+    public static function splitSqlStatements(string $sql): array
+    {
+        $statements = [];
+        $buf = '';
+        $len = strlen($sql);
+        $quote = null;
+        for ($i = 0; $i < $len; $i++) {
+            $c = $sql[$i];
+            if ($quote !== null) {
+                $buf .= $c;
+                if ($c === '\\' && $quote !== '`' && $i + 1 < $len) {
+                    $buf .= $sql[++$i];
+                } elseif ($c === $quote) {
+                    if ($i + 1 < $len && $sql[$i + 1] === $quote) {
+                        $buf .= $sql[++$i]; // duplázott idézőjel
+                    } else {
+                        $quote = null;
+                    }
+                }
                 continue;
             }
-            $pdo->exec($statement);
+            if ($c === "'" || $c === '"' || $c === '`') {
+                $quote = $c;
+                $buf .= $c;
+                continue;
+            }
+            $startOfLineComment = ($c === '-' && $i + 1 < $len && $sql[$i + 1] === '-' && ($i + 2 >= $len || ctype_space($sql[$i + 2])))
+                || $c === '#';
+            if ($startOfLineComment) {
+                $nl = strpos($sql, "\n", $i);
+                $i = $nl === false ? $len : $nl;
+                $buf .= "\n";
+                continue;
+            }
+            if ($c === '/' && $i + 1 < $len && $sql[$i + 1] === '*') {
+                $end = strpos($sql, '*/', $i + 2);
+                $end = $end === false ? $len : $end + 2;
+                $buf .= substr($sql, $i, $end - $i);
+                $i = $end - 1;
+                continue;
+            }
+            if ($c === ';') {
+                if (trim($buf) !== '') {
+                    $statements[] = trim($buf);
+                }
+                $buf = '';
+                continue;
+            }
+            $buf .= $c;
+        }
+        if (trim($buf) !== '') {
+            $statements[] = trim($buf);
+        }
+        return $statements;
+    }
+
+    /**
+     * DB-01 — ha a visszaállítás az élő adatbázis módosítása KÖZBEN bukott el,
+     * a visszaállítás előtti biztonsági mentést állítja vissza (ugyanazzal a
+     * javított mechanizmussal), majd MINDENKÉPP hibát dob — egy félbemaradt
+     * visszaállítás sosem jelenhet meg sikeresként.
+     */
+    private function compensateFailedRestore(Throwable $restoreError, string $safetyBackupFilename): never
+    {
+        if (!$this->restoreTouchedLive) {
+            throw $restoreError; // az élő adatbázis érintetlen maradt
+        }
+        $tmp = null;
+        try {
+            $tmp = $this->decryptToTempFile($this->backupDir . '/' . $safetyBackupFilename, '.' . $this->extension());
+            if ($this->driver === 'mysql') {
+                $this->restoreMysqlFromFile($tmp);
+            } else {
+                $this->restoreSqliteFromFile($tmp);
+            }
+        } catch (Throwable $compensationError) {
+            throw new RuntimeException(
+                'A visszaállítás félbeszakadt, és a visszaállítás előtti állapot automatikus helyreállítása is sikertelen — KÉZI HELYREÁLLÍTÁS SZÜKSÉGES a(z) '
+                . $safetyBackupFilename . ' biztonsági mentésből. Hiba: ' . $restoreError->getMessage() . ' / ' . $compensationError->getMessage(),
+                0,
+                $restoreError
+            );
+        } finally {
+            if ($tmp !== null) {
+                @unlink($tmp);
+            }
+        }
+        throw new RuntimeException(
+            'A visszaállítás sikertelen volt, az adatbázis a visszaállítás előtti állapotra állt vissza (' . $safetyBackupFilename . '). Hiba: ' . $restoreError->getMessage(),
+            0,
+            $restoreError
+        );
+    }
+
+    private function sequencePdo(): ?PDO
+    {
+        if ($this->driver === 'mysql') {
+            return $this->mysqlPdo();
+        }
+        $path = $this->dbConfig['sqlite']['path'];
+        if (!is_file($path)) {
+            return null;
+        }
+        $pdo = new PDO('sqlite:' . $path);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo->exec('PRAGMA busy_timeout = 5000');
+        return $pdo;
+    }
+
+    /**
+     * DB-06 — az élő adatbázis számlaszám-sorozatai (NAV-sorozat és a NAV
+     * modificationIndex) a visszaállítás ELŐTT. null, ha nem olvashatók (pl.
+     * nincs még élő adatbázis) — ekkor nincs mihez igazítani.
+     *
+     * @return array{invoice: array<string,int>, modification: array<int,int>}|null
+     */
+    private function captureInvoiceSequenceFloors(): ?array
+    {
+        try {
+            $pdo = $this->sequencePdo();
+            if ($pdo === null) {
+                return null;
+            }
+            $floors = ['invoice' => [], 'modification' => []];
+            foreach ($pdo->query('SELECT provider, last_allocated_number FROM invoice_sequences')->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $floors['invoice'][(string) $row['provider']] = (int) $row['last_allocated_number'];
+            }
+            foreach ($pdo->query('SELECT original_invoice_id, last_allocated_index FROM invoice_modification_sequences')->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $floors['modification'][(int) $row['original_invoice_id']] = (int) $row['last_allocated_index'];
+            }
+            return $floors;
+        } catch (Throwable $e) {
+            error_log('[fountaintrade] A számlaszám-sorozatok nem olvashatók a visszaállítás előtt: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * DB-06 — a visszaállított adatbázis sorozatai nem eshetnek a visszaállítás
+     * előtti élő érték alá: egy régebbi mentés visszaállítása után sem osztható
+     * ki újra egy helyben már kiadott (esetleg a NAV-hoz beküldött) sorszám.
+     * A kulcsmódosítás csak felfelé emel (a visszaállított érték, ha nagyobb,
+     * megmarad). Egy modificationIndex-sorozat csak akkor, ha az eredeti számla
+     * a visszaállított adatbázisban is létezik.
+     */
+    private function reconcileInvoiceSequences(array $floors): bool
+    {
+        try {
+            $pdo = $this->sequencePdo();
+            if ($pdo === null) {
+                return false;
+            }
+            $now = date('Y-m-d H:i:s');
+            $ignore = $this->driver === 'mysql' ? 'INSERT IGNORE' : 'INSERT OR IGNORE';
+            foreach ($floors['invoice'] as $provider => $floor) {
+                $pdo->prepare("$ignore INTO invoice_sequences (provider, last_allocated_number, updated_at) VALUES (?, 0, ?)")->execute([$provider, $now]);
+                $pdo->prepare('UPDATE invoice_sequences SET last_allocated_number = ?, updated_at = ? WHERE provider = ? AND last_allocated_number < ?')
+                    ->execute([$floor, $now, $provider, $floor]);
+            }
+            $exists = $pdo->prepare('SELECT 1 FROM invoices WHERE id = ?');
+            foreach ($floors['modification'] as $originalId => $floor) {
+                $exists->execute([$originalId]);
+                $found = $exists->fetchColumn() !== false;
+                $exists->closeCursor();
+                if (!$found) {
+                    continue;
+                }
+                $pdo->prepare("$ignore INTO invoice_modification_sequences (original_invoice_id, last_allocated_index, updated_at) VALUES (?, 0, ?)")->execute([$originalId, $now]);
+                $pdo->prepare('UPDATE invoice_modification_sequences SET last_allocated_index = ?, updated_at = ? WHERE original_invoice_id = ? AND last_allocated_index < ?')
+                    ->execute([$floor, $now, $originalId, $floor]);
+            }
+            return true;
+        } catch (Throwable $e) {
+            // Pl. egy a sorozat-tábla (1.1.0) előtti mentés — a hívó az
+            // eredményben látja, hogy az egyeztetés nem történt meg.
+            error_log('[fountaintrade] A számlaszám-sorozatok egyeztetése a visszaállítás után sikertelen: ' . $e->getMessage());
+            return false;
         }
     }
 }

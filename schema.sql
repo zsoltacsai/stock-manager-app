@@ -95,7 +95,8 @@ CREATE TABLE IF NOT EXISTS sale_items (
     name         TEXT NOT NULL,
     qty          INTEGER NOT NULL,
     unit_price   REAL NOT NULL,   -- gross unit price at time of sale
-    vat_rate     TEXT NOT NULL
+    vat_rate     TEXT NOT NULL,
+    returned_qty INTEGER NOT NULL DEFAULT 0 -- DB-02: már visszavett darab; a visszáru feltételes UPDATE-tel foglalja (returned_qty + k <= qty)
 );
 
 CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id);

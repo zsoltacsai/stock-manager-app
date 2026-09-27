@@ -28,6 +28,16 @@ if (!is_array($items) || count($items) === 0) {
 if (!is_array($buyer)) {
     send_json(['error' => 'A vevő adatai kötelezők.'], 400);
 }
+// DB-05: a módosító számla tételeinek ÁFA-kulcsa és a fizetési mód ugyanabból
+// a listából, mint az eladásé (plusz az utalványos fizetés számla-címkéje).
+foreach ($items as $item) {
+    if (!is_array($item) || !VatAllocation::isSupportedRate($item['vat_rate'] ?? null)) {
+        send_json(['error' => 'Érvénytelen ÁFA-kulcs a tételek között.'], 400);
+    }
+}
+if ($paymentMethod !== null && !in_array($paymentMethod, array_merge(Settings::paymentMethodValues($appSettings), [Database::GIFT_CARD_PAYMENT_LABEL]), true)) {
+    send_json(['error' => 'Érvénytelen fizetési mód.'], 400);
+}
 if ($operationUuid !== null && strlen($operationUuid) > 100) {
     // operation_uuid az operation_key ('modify:{id}:{uuid}') része, ami
     // egy UNIQUE VARCHAR(191) oszlopba kerül — egy indokolatlanul hosszú

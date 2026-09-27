@@ -24,6 +24,11 @@ if ($order['status'] !== 'draft') {
 if ($paymentMethod === '') {
     $paymentMethod = $order['payment_method'] ?: 'Készpénz';
 }
+// DB-05: a leadási felület a beállított fizetési módokat és a rendelés saját
+// (WooCommerce-ből érkezett) fizetési módját kínálja — a backend ugyanezt fogadja el.
+if (!in_array($paymentMethod, Settings::paymentMethodValues($appSettings), true) && $paymentMethod !== (string) $order['payment_method']) {
+    send_json(['error' => 'Érvénytelen fizetési mód.'], 400);
+}
 
 // A tételek közül csak azok csökkentik a helyi készletet, amik egy
 // meglévő helyi termékhez vannak párosítva (product_id) — a
@@ -39,13 +44,31 @@ foreach ($order['items'] as $item) {
     $productId = !empty($item['product_id']) ? (int) $item['product_id'] : null;
     $product = $productId ? $db->findProductById($productId) : null;
 
-    $lineItems[] = [
+    $base = [
         'product_id' => $product ? $product['id'] : null,
         'name'       => $item['name'] ?? ($product['name'] ?? 'Tétel'),
-        'qty'        => $qty,
-        'unit_price' => (float) ($item['unit_price'] ?? 0),
         'vat_rate'   => (string) ($item['vat_rate'] ?? ($product['vat_rate'] ?? '27')),
     ];
+    // DB-12: a WooCommerce sor pontos bruttó összege (line_total, a webhook
+    // tárolja) két tizedesre kerekített egységárral nem mindig ábrázolható
+    // (10.00 Ft / 3 db). Ilyenkor a sort legfeljebb két eladási sorra bontjuk
+    // (1 × 3.34 + 2 × 3.33 = 10.00) — ugyanaz a minta, mint a számlatételeknél
+    // (VatAllocation::splitForUnitPrice()), így az allokáció súlya, a számla
+    // és a riport fillérre a WooCommerce-sor értéke. Régi (line_total nélküli)
+    // piszkozatnál a korábbi egységár × mennyiség marad.
+    if (isset($item['line_total'])) {
+        $cents = (int) round((float) $item['line_total'] * 100);
+        $unitCents = intdiv($cents, $qty);
+        $extra = $cents - $unitCents * $qty;
+        if ($extra > 0) {
+            $lineItems[] = $base + ['qty' => $extra, 'unit_price' => ($unitCents + 1) / 100];
+        }
+        if ($qty - $extra > 0) {
+            $lineItems[] = $base + ['qty' => $qty - $extra, 'unit_price' => $unitCents / 100];
+        }
+    } else {
+        $lineItems[] = $base + ['qty' => $qty, 'unit_price' => (float) ($item['unit_price'] ?? 0)];
+    }
 
     if ($product) {
         $stockBefore = (int) $product['stock_qty'];

@@ -54,7 +54,7 @@ if (!Auth::isLoggedIn($appSettings)) {
     <div class="import-card">
         <h2>Legnagyobb készletértékű termékek</h2>
         <div class="sample-table-wrap">
-            <table class="sample-table">
+            <table class="sample-table rt-cards">
                 <thead><tr><th>Termék</th><th>Készlet</th><th>Beszerzési ár (nettó)</th><th>Készletérték</th></tr></thead>
                 <tbody id="ir-top-value-body"></tbody>
             </table>
@@ -76,7 +76,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             </div>
         </div>
         <div class="sample-table-wrap" style="margin-top:12px;">
-            <table class="sample-table">
+            <table class="sample-table rt-cards">
                 <thead><tr><th>Termék</th><th>Csoport</th><th>Készlet</th><th>Minimum</th><th>Javasolt mennyiség</th><th>Előrejelzés</th><th>Beszállító</th></tr></thead>
                 <tbody id="ir-low-stock-body"></tbody>
             </table>

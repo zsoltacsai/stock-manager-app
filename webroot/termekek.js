@@ -41,6 +41,12 @@ const productsPager = document.getElementById('products-pager');
 const productsPageInfo = document.getElementById('products-page-info');
 const productsPrevBtn = document.getElementById('products-prev-btn');
 const productsNextBtn = document.getElementById('products-next-btn');
+// Phase 8 responsive remediation (RESP-02) — ≤768px-nél a táblázat
+// kártyás nézetre vált (thead rejtve), ezért a "mind kijelölése" checkbox
+// és a fejléc-kattintásos rendezés csak mobilon látható másolatot / helyette-
+// sítő vezérlőt kap; l. style.css .rt-mobile-toolbar és lent a bekötést.
+const selectAllProductsMobile = document.getElementById('select-all-products-mobile');
+const productsMobileSort = document.getElementById('products-mobile-sort');
 
 function currentStaffId() {
     try {
@@ -158,19 +164,19 @@ function renderTable() {
             : '';
 
         tr.innerHTML = `
-            <td><input type="checkbox" class="row-select-checkbox" data-id="${p.id}"${selectedProductIds.has(p.id) ? ' checked' : ''}></td>
-            <td>${escapeHtml(p.name)}</td>
-            <td>${escapeHtml(p.cikkszam || '')}</td>
-            <td>${escapeHtml(p.group_name || '')}</td>
-            <td>${escapeHtml(p.barcode || '')}</td>
-            <td><span class="stock-badge ${stockBadgeClass}">${warnIcon}${p.stock_qty} ${escapeHtml(p.unit || 'db')}</span></td>
-            <td>${fmt(p.purchase_price_net)}</td>
-            <td>${fmt(p.net_price)}</td>
-            <td>${fmt(p.price)}</td>
-            <td>
+            <td class="rt-checkbox"><input type="checkbox" class="row-select-checkbox" data-id="${p.id}"${selectedProductIds.has(p.id) ? ' checked' : ''}></td>
+            <td class="rt-title">${escapeHtml(p.name)}</td>
+            <td data-label="Cikkszám">${escapeHtml(p.cikkszam || '—')}</td>
+            <td data-label="Csoport">${escapeHtml(p.group_name || '—')}</td>
+            <td data-label="Vonalkód">${escapeHtml(p.barcode || '—')}</td>
+            <td data-label="Készlet"><span class="stock-badge ${stockBadgeClass}">${warnIcon}${p.stock_qty} ${escapeHtml(p.unit || 'db')}</span></td>
+            <td data-label="Nettó Beszerzési ár">${fmt(p.purchase_price_net)}</td>
+            <td data-label="Nettó Eladási ár">${fmt(p.net_price)}</td>
+            <td data-label="Bruttó Eladási ár">${fmt(p.price)}</td>
+            <td data-label="Webshopban">
                 <button type="button" class="toggle-switch webshop-toggle-btn${Number(p.show_webshop) ? ' on' : ''}" data-id="${p.id}" title="Feltüntetve a webáruházban"></button>
             </td>
-            <td>
+            <td class="rt-actions">
                 <div class="row-actions">
                     <button class="edit-btn" data-id="${p.id}">Módosítás</button>
                     <button class="toggle-delete-btn danger" data-id="${p.id}">${Number(p.is_deleted) ? 'Visszaállítás' : 'Törlés'}</button>
@@ -228,11 +234,13 @@ function updateSelectedCount() {
 }
 
 function updateSelectAllCheckbox() {
-    if (!selectAllProducts) return;
     const allSelected = lastFilteredIds.length > 0 && lastFilteredIds.every(id => selectedProductIds.has(id));
     const someSelected = lastFilteredIds.some(id => selectedProductIds.has(id));
-    selectAllProducts.checked = allSelected;
-    selectAllProducts.indeterminate = someSelected && !allSelected;
+    [selectAllProducts, selectAllProductsMobile].forEach(el => {
+        if (!el) return;
+        el.checked = allSelected;
+        el.indeterminate = someSelected && !allSelected;
+    });
 }
 
 function exportIdsForCurrentView() {
@@ -240,9 +248,10 @@ function exportIdsForCurrentView() {
     return visibleSelected.length > 0 ? visibleSelected : lastFilteredIds;
 }
 
-if (selectAllProducts) {
-    selectAllProducts.addEventListener('change', () => {
-        if (selectAllProducts.checked) {
+function bindSelectAll(el) {
+    if (!el) return;
+    el.addEventListener('change', () => {
+        if (el.checked) {
             lastFilteredIds.forEach(id => selectedProductIds.add(id));
         } else {
             lastFilteredIds.forEach(id => selectedProductIds.delete(id));
@@ -250,6 +259,8 @@ if (selectAllProducts) {
         renderTable();
     });
 }
+bindSelectAll(selectAllProducts);
+bindSelectAll(selectAllProductsMobile);
 
 if (exportProductsCsvBtn) {
     exportProductsCsvBtn.addEventListener('click', () => {
@@ -308,6 +319,11 @@ function updateSortIndicators() {
             th.classList.add(sortDir === 'asc' ? 'sort-asc' : 'sort-desc');
         }
     });
+    // Phase 8 (RESP-02) — a mobil rendezés-legördülő mindig tükrözze a
+    // tényleges állapotot, akár a fejléc-kattintás (desktop), akár saját
+    // maga (mobil) állította be — pl. átméretezéskor/forgatáskor ne
+    // maradjon elavult érték kiválasztva.
+    if (productsMobileSort) productsMobileSort.value = `${sortColumn}:${sortDir}`;
 }
 
 document.querySelectorAll('#products-table-head th[data-sort]').forEach(th => {
@@ -322,6 +338,15 @@ document.querySelectorAll('#products-table-head th[data-sort]').forEach(th => {
         reloadFromFirstPage();
     });
 });
+
+if (productsMobileSort) {
+    productsMobileSort.addEventListener('change', () => {
+        const [col, dir] = productsMobileSort.value.split(':');
+        sortColumn = col;
+        sortDir = dir;
+        reloadFromFirstPage();
+    });
+}
 
 if (productsPrevBtn) {
     productsPrevBtn.addEventListener('click', () => {

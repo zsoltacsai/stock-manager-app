@@ -45,17 +45,17 @@ function renderTable(rows) {
     }
     body.innerHTML = rows.map(r => `
         <tr>
-            <td><input type="checkbox" class="bj-row-check" data-id="${r.id}" ${selected.has(r.id) ? 'checked' : ''}></td>
-            <td>
+            <td class="rt-checkbox"><input type="checkbox" class="bj-row-check" data-id="${r.id}" ${selected.has(r.id) ? 'checked' : ''}></td>
+            <td class="rt-title">
                 <span class="stock-badge ${URGENCY_BADGE_CLASS[r.urgency] || 'ok'}" style="margin-right:8px;">${URGENCY_LABELS[r.urgency] || r.urgency}</span>
                 ${escapeHtml(r.name)}${r.barcode ? ' <span class="muted">(' + escapeHtml(r.barcode) + ')</span>' : ''}
                 ${r.workflow_status === 'in_progress' ? ' <span class="muted">— nemrég rendelve</span>' : ''}
             </td>
-            <td>${r.stock_qty} db</td>
-            <td>${r.avg_daily_consumption !== null ? r.avg_daily_consumption + ' db/nap' : '—'}</td>
-            <td>${fmtDays(r.estimated_days_remaining)}</td>
-            <td><input type="number" min="0" value="${r.recommended_qty}" class="bj-qty-input" data-id="${r.id}" style="width:80px;"></td>
-            <td class="muted" style="font-size:12px;">${escapeHtml(r.reason)}</td>
+            <td data-label="Készlet">${r.stock_qty} db</td>
+            <td data-label="Napi fogyás">${r.avg_daily_consumption !== null ? r.avg_daily_consumption + ' db/nap' : '—'}</td>
+            <td data-label="Kifogyás">${fmtDays(r.estimated_days_remaining)}</td>
+            <td data-label="Javasolt mennyiség"><input type="number" min="0" value="${r.recommended_qty}" class="bj-qty-input" data-id="${r.id}" style="width:80px;"></td>
+            <td data-label="Indok" class="muted" style="font-size:12px;">${escapeHtml(r.reason)}</td>
         </tr>
     `).join('');
 
@@ -90,9 +90,17 @@ function onRowCheckChange(checkbox) {
 
 function syncSelectAllCheckbox() {
     const boxes = Array.from(document.querySelectorAll('.bj-row-check'));
-    const selectAll = document.getElementById('bj-select-all');
-    selectAll.checked = boxes.length > 0 && boxes.every(b => b.checked);
-    selectAll.indeterminate = boxes.some(b => b.checked) && !selectAll.checked;
+    const allChecked = boxes.length > 0 && boxes.every(b => b.checked);
+    const someChecked = boxes.some(b => b.checked);
+    // Phase 8 (RESP-03) — a mobil kártyanézetben a fejléc (és vele a
+    // checkbox) rejtve van, ezért van egy második, mobil-only másolat
+    // (l. beszerzesi-javaslat.php .rt-mobile-select-all) — mindkettő
+    // ugyanazt az állapotot tükrözi.
+    [document.getElementById('bj-select-all'), document.getElementById('bj-select-all-mobile')].forEach(el => {
+        if (!el) return;
+        el.checked = allChecked;
+        el.indeterminate = someChecked && !allChecked;
+    });
 }
 
 function updateSelectedButton() {
@@ -101,12 +109,17 @@ function updateSelectedButton() {
     btn.disabled = selected.size === 0;
 }
 
-document.getElementById('bj-select-all').addEventListener('change', (e) => {
-    document.querySelectorAll('.bj-row-check').forEach(cb => {
-        cb.checked = e.target.checked;
-        onRowCheckChange(cb);
+function bindSelectAll(el) {
+    if (!el) return;
+    el.addEventListener('change', (e) => {
+        document.querySelectorAll('.bj-row-check').forEach(cb => {
+            cb.checked = e.target.checked;
+            onRowCheckChange(cb);
+        });
     });
-});
+}
+bindSelectAll(document.getElementById('bj-select-all'));
+bindSelectAll(document.getElementById('bj-select-all-mobile'));
 
 document.querySelectorAll('.bj-tab').forEach(btn => {
     btn.addEventListener('click', () => {

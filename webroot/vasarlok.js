@@ -7,6 +7,7 @@ const customersBody = document.getElementById('customers-body');
 const newCustomerBtn = document.getElementById('new-customer-btn');
 const customersSelectedCount = document.getElementById('customers-selected-count');
 const selectAllCustomers = document.getElementById('select-all-customers');
+const selectAllCustomersMobile = document.getElementById('select-all-customers-mobile');
 const exportCustomersCsvBtn = document.getElementById('export-customers-csv-btn');
 const exportCustomersXlsBtn = document.getElementById('export-customers-xls-btn');
 const customersBulkBar = document.getElementById('customers-bulk-bar');
@@ -74,12 +75,12 @@ function renderTable() {
         const tier = tierFor(c.total_spent);
         return `
         <tr class="clickable-row ${Number(c.is_deleted) ? 'deleted-row' : ''}" data-id="${c.id}">
-            <td><input type="checkbox" class="row-select-checkbox" data-id="${c.id}"${selectedCustomerIds.has(c.id) ? ' checked' : ''}></td>
-            <td>${escapeHtml(c.name)}${Number(c.is_deleted) ? ' <span class="muted">(törölve)</span>' : ''}</td>
-            <td>${escapeHtml(c.phone || '—')}</td>
-            <td>${escapeHtml(c.email || '—')}</td>
-            <td><span class="stock-badge ok">${c.loyalty_points} pont</span> <span class="stock-badge ${tier.cls}">${tier.label}</span></td>
-            <td>
+            <td class="rt-checkbox"><input type="checkbox" class="row-select-checkbox" data-id="${c.id}"${selectedCustomerIds.has(c.id) ? ' checked' : ''}></td>
+            <td class="rt-title">${escapeHtml(c.name)}${Number(c.is_deleted) ? ' <span class="muted">(törölve)</span>' : ''}</td>
+            <td data-label="Telefon">${escapeHtml(c.phone || '—')}</td>
+            <td data-label="Email">${escapeHtml(c.email || '—')}</td>
+            <td data-label="Pontegyenleg"><span class="stock-badge ok">${c.loyalty_points} pont</span> <span class="stock-badge ${tier.cls}">${tier.label}</span></td>
+            <td class="rt-actions">
                 <div class="row-actions">
                     <button class="edit-btn" data-id="${c.id}">Módosítás</button>
                     <button class="toggle-delete-btn danger" data-id="${c.id}">${Number(c.is_deleted) ? 'Visszaállítás' : 'Törlés'}</button>
@@ -127,11 +128,13 @@ function updateSelectedCustomerCount() {
 }
 
 function updateSelectAllCustomersCheckbox() {
-    if (!selectAllCustomers) return;
     const allSelected = lastFilteredCustomerIds.length > 0 && lastFilteredCustomerIds.every(id => selectedCustomerIds.has(id));
     const someSelected = lastFilteredCustomerIds.some(id => selectedCustomerIds.has(id));
-    selectAllCustomers.checked = allSelected;
-    selectAllCustomers.indeterminate = someSelected && !allSelected;
+    [selectAllCustomers, selectAllCustomersMobile].forEach(el => {
+        if (!el) return;
+        el.checked = allSelected;
+        el.indeterminate = someSelected && !allSelected;
+    });
 }
 
 function exportCustomerIdsForCurrentView() {
@@ -139,9 +142,10 @@ function exportCustomerIdsForCurrentView() {
     return visibleSelected.length > 0 ? visibleSelected : lastFilteredCustomerIds;
 }
 
-if (selectAllCustomers) {
-    selectAllCustomers.addEventListener('change', () => {
-        if (selectAllCustomers.checked) {
+function bindSelectAllCustomers(el) {
+    if (!el) return;
+    el.addEventListener('change', () => {
+        if (el.checked) {
             lastFilteredCustomerIds.forEach(id => selectedCustomerIds.add(id));
         } else {
             lastFilteredCustomerIds.forEach(id => selectedCustomerIds.delete(id));
@@ -149,6 +153,8 @@ if (selectAllCustomers) {
         renderTable();
     });
 }
+bindSelectAllCustomers(selectAllCustomers);
+bindSelectAllCustomers(selectAllCustomersMobile);
 
 if (exportCustomersCsvBtn) {
     exportCustomersCsvBtn.addEventListener('click', () => {

@@ -117,7 +117,7 @@ if (!Auth::isLoggedIn($appSettings)) {
     </section>
 
     <section class="cart-panel">
-        <table class="cart-table">
+        <table class="cart-table pos-cart-table">
             <thead>
                 <tr>
                     <th>Termék</th>

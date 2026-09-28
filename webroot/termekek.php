@@ -98,8 +98,40 @@ if (!Auth::isLoggedIn($appSettings)) {
         <button id="bulk-delete-btn" class="btn btn-secondary" style="width:auto; border-color:var(--danger); color:var(--danger);">Kijelöltek törlése</button>
     </div>
 
+    <!-- Phase 8 responsive remediation — RESP-02. ≤768px-nél a táblázat
+         kártyás nézetbe vált (l. style.css .rt-cards), a fejléc (thead)
+         ilyenkor rejtve van, ezért a fejléc-kattintásos rendezés (lásd
+         lejjebb #products-table-head th[data-sort]) mobilon nem elérhető
+         — ez a legördülő ugyanazt a sortColumn/sortDir állapotot vezérli
+         (termekek.js), csak deskopon marad rejtve (l. .rt-mobile-toolbar). -->
+    <div class="rt-mobile-toolbar">
+        <label class="rt-mobile-select-all">
+            <input type="checkbox" id="select-all-products-mobile" title="Mind kijelölése">
+            Mind kijelölése
+        </label>
+        <div>
+            <label for="products-mobile-sort" class="gt-hidden-label">Rendezés</label>
+            <select id="products-mobile-sort">
+                <option value="name:asc">Megnevezés (A-Z)</option>
+                <option value="name:desc">Megnevezés (Z-A)</option>
+                <option value="cikkszam:asc">Cikkszám (A-Z)</option>
+                <option value="cikkszam:desc">Cikkszám (Z-A)</option>
+                <option value="group_name:asc">Csoport (A-Z)</option>
+                <option value="group_name:desc">Csoport (Z-A)</option>
+                <option value="stock_qty:asc">Készlet (növekvő)</option>
+                <option value="stock_qty:desc">Készlet (csökkenő)</option>
+                <option value="purchase_price_net:asc">Nettó beszerzési ár (növekvő)</option>
+                <option value="purchase_price_net:desc">Nettó beszerzési ár (csökkenő)</option>
+                <option value="net_price:asc">Nettó eladási ár (növekvő)</option>
+                <option value="net_price:desc">Nettó eladási ár (csökkenő)</option>
+                <option value="price:asc">Bruttó eladási ár (növekvő)</option>
+                <option value="price:desc">Bruttó eladási ár (csökkenő)</option>
+            </select>
+        </div>
+    </div>
+
     <div class="products-table-wrap">
-        <table class="products-table">
+        <table class="products-table rt-cards">
             <thead id="products-table-head">
                 <tr>
                     <th style="width:32px;"><input type="checkbox" id="select-all-products" title="Mind kijelölése"></th>

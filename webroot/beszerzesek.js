@@ -35,12 +35,12 @@ function renderResults(purchases, total) {
     resultsBody.innerHTML = purchases.length
         ? purchases.map(p => `
             <tr class="clickable-row" data-id="${p.id}">
-                <td>#${p.id}</td>
-                <td>${p.created_at}</td>
-                <td>${escapeHtml(p.supplier_name || '—')}</td>
-                <td>${fmt(p.total_net)}</td>
-                <td>${fmt(p.total_gross)}</td>
-                <td>${escapeHtml(p.payment_method || '')}</td>
+                <td class="rt-title">#${p.id}</td>
+                <td data-label="Dátum">${p.created_at}</td>
+                <td data-label="Beszállító">${escapeHtml(p.supplier_name || '—')}</td>
+                <td data-label="Nettó">${fmt(p.total_net)}</td>
+                <td data-label="Bruttó">${fmt(p.total_gross)}</td>
+                <td data-label="Fizetés">${escapeHtml(p.payment_method || '')}</td>
             </tr>
         `).join('')
         : '<tr><td colspan="6" class="muted" style="text-align:center; padding:24px;">Nincs a szűrésnek megfelelő beszerzés.</td></tr>';
@@ -62,12 +62,12 @@ async function openDetail(id) {
         }
         const p = data.purchase;
         const rows = p.items.map(item => `
-            <tr><td>${escapeHtml(item.name)}</td><td>${item.qty}</td><td>${fmt(item.unit_cost_net)}</td><td>${fmt(item.line_gross)}</td></tr>
+            <tr><td class="rt-title">${escapeHtml(item.name)}</td><td data-label="Menny.">${item.qty}</td><td data-label="Nettó egységár">${fmt(item.unit_cost_net)}</td><td data-label="Bruttó érték">${fmt(item.line_gross)}</td></tr>
         `).join('');
         detailContent.innerHTML = `
             <p class="muted">Beszerzés #${p.id} · ${p.created_at}${p.supplier_name ? ' · ' + escapeHtml(p.supplier_name) : ''} · ${escapeHtml(p.payment_method || '')}</p>
             <div class="sample-table-wrap">
-            <table class="sample-table">
+            <table class="sample-table rt-cards">
                 <thead><tr><th>Termék</th><th>Menny.</th><th>Nettó egységár</th><th>Bruttó érték</th></tr></thead>
                 <tbody>${rows}</tbody>
             </table>

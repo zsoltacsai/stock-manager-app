@@ -54,16 +54,16 @@ function renderResults(invoices) {
     resultsBody.innerHTML = invoices.length
         ? invoices.map(i => `
             <tr class="clickable-row" data-id="${i.id}">
-                <td>${escapeHtml(i.invoice_number || '—')}</td>
-                <td>${escapeHtml(i.supplier_name || '—')}</td>
-                <td>${escapeHtml(i.supplier_tax_number || '—')}</td>
-                <td>${escapeHtml(i.invoice_delivery_date || '—')}</td>
-                <td>${escapeHtml(i.invoice_issue_date || '—')}</td>
-                <td>${escapeHtml(i.payment_date || '—')}</td>
-                <td>${fmt(i.net_total)}</td>
-                <td>${fmt(i.vat_total)}</td>
-                <td>${fmt(i.gross_total)}</td>
-                <td>${operationBadge(i.invoice_operation)}</td>
+                <td class="rt-title">${escapeHtml(i.invoice_number || '—')}</td>
+                <td data-label="Szállító">${escapeHtml(i.supplier_name || '—')}</td>
+                <td data-label="Adószám">${escapeHtml(i.supplier_tax_number || '—')}</td>
+                <td data-label="Teljesítés">${escapeHtml(i.invoice_delivery_date || '—')}</td>
+                <td data-label="Kiállítás">${escapeHtml(i.invoice_issue_date || '—')}</td>
+                <td data-label="Fiz. határidő">${escapeHtml(i.payment_date || '—')}</td>
+                <td data-label="Nettó">${fmt(i.net_total)}</td>
+                <td data-label="ÁFA">${fmt(i.vat_total)}</td>
+                <td data-label="Bruttó">${fmt(i.gross_total)}</td>
+                <td data-label="Típus">${operationBadge(i.invoice_operation)}</td>
             </tr>
         `).join('')
         : '<tr><td colspan="10" class="muted" style="text-align:center; padding:24px;">Nincs a szűrésnek megfelelő számla.</td></tr>';

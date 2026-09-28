@@ -13,6 +13,13 @@ $__smHeaderLinks = [
     ['href' => 'zaras.php', 'label' => 'Napi zárás'],
 ];
 ?>
+<!-- Phase 8 responsive remediation — RESP-01: mobil navigáció fallback
+     nyitó gombja. Csak ≤768px szélességnél látszik (l. style.css
+     .mobile-nav-toggle), a sidebarmenu.php-ban kirenderelt
+     #mobile-nav-drawer-t nyitja/zárja (l. topbar.js legvégén). -->
+<button type="button" id="mobile-nav-toggle" class="mobile-nav-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="mobile-nav-drawer" title="Navigáció megnyitása">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+</button>
 <nav class="nav-track">
 <?php foreach ($__smHeaderLinks as $__smLink): if ($__smLink['href'] === $__smHeaderCurrent) continue; ?>
         <a href="<?= $__smLink['href'] ?>" class="nav-link"><?= $__smLink['label'] ?></a>

@@ -33,12 +33,12 @@ function renderTable() {
 
     suppliersBody.innerHTML = filtered.length ? filtered.map(s => `
         <tr class="clickable-row ${Number(s.is_deleted) ? 'deleted-row' : ''}" data-id="${s.id}">
-            <td>${escapeHtml(s.name)}${Number(s.is_deleted) ? ' <span class="muted">(törölve)</span>' : ''}</td>
-            <td>${escapeHtml(s.contact_name || '—')}</td>
-            <td>${escapeHtml(s.phone || '—')}</td>
-            <td>${escapeHtml(s.email || '—')}</td>
-            <td>${escapeHtml(s.payment_terms || '—')}</td>
-            <td><button class="edit-btn" data-id="${s.id}">Módosítás</button></td>
+            <td class="rt-title">${escapeHtml(s.name)}${Number(s.is_deleted) ? ' <span class="muted">(törölve)</span>' : ''}</td>
+            <td data-label="Kapcsolattartó">${escapeHtml(s.contact_name || '—')}</td>
+            <td data-label="Telefon">${escapeHtml(s.phone || '—')}</td>
+            <td data-label="Email">${escapeHtml(s.email || '—')}</td>
+            <td data-label="Fizetési feltételek">${escapeHtml(s.payment_terms || '—')}</td>
+            <td class="rt-actions"><button class="edit-btn" data-id="${s.id}">Módosítás</button></td>
         </tr>
     `).join('') : '<tr><td colspan="6" class="muted" style="text-align:center; padding:24px;">Nincs a szűrésnek megfelelő beszállító.</td></tr>';
 

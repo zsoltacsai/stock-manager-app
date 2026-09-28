@@ -50,8 +50,16 @@ if (!Auth::isLoggedIn($appSettings)) {
         <div id="customers-bulk-bar" class="products-toolbar hidden" style="margin-top:-10px;">
             <button id="bulk-delete-customers-btn" class="btn btn-secondary" style="width:auto; border-color:var(--danger); color:var(--danger);">Kijelöltek törlése</button>
         </div>
+        <!-- Phase 8 responsive remediation — RESP-03, l. termekek.php-ban
+             ugyanezt a mintát az rt-cards mobil kártyanézetnél. -->
+        <div class="rt-mobile-toolbar">
+            <label class="rt-mobile-select-all">
+                <input type="checkbox" id="select-all-customers-mobile" title="Mind kijelölése">
+                Mind kijelölése
+            </label>
+        </div>
         <div class="sample-table-wrap">
-<table class="sample-table">
+<table class="sample-table rt-cards">
             <thead>
                 <tr><th style="width:32px;"><input type="checkbox" id="select-all-customers" title="Mind kijelölése"></th><th>Név</th><th>Telefon</th><th>Email</th><th>Pontegyenleg</th><th></th></tr>
             </thead>

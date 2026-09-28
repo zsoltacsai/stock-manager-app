@@ -73,7 +73,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <span id="results-count" class="muted"></span>
         </div>
         <div class="sample-table-wrap">
-<table class="sample-table">
+<table class="sample-table rt-cards">
             <thead>
                 <tr><th>#</th><th>Dátum</th><th>Beszállító</th><th>Nettó</th><th>Bruttó</th><th>Fizetés</th></tr>
             </thead>

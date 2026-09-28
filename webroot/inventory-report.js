@@ -28,7 +28,7 @@ async function loadOverview() {
 
         topBody.innerHTML = o.top_by_value.length
             ? o.top_by_value.map(p => `
-                <tr><td>${escapeHtml(p.name)}</td><td>${p.stock_qty} db</td><td>${fmtHuf(p.purchase_price_net)}</td><td>${fmtHuf(p.value)}</td></tr>
+                <tr><td class="rt-title">${escapeHtml(p.name)}</td><td data-label="Készlet">${p.stock_qty} db</td><td data-label="Beszerzési ár (nettó)">${fmtHuf(p.purchase_price_net)}</td><td data-label="Készletérték">${fmtHuf(p.value)}</td></tr>
             `).join('')
             : '<tr><td colspan="4" class="muted" style="text-align:center; padding:16px;">Nincs adat.</td></tr>';
 
@@ -64,13 +64,13 @@ async function loadLowStock() {
         body.innerHTML = data.products.length
             ? data.products.map(p => `
                 <tr>
-                    <td>${escapeHtml(p.name)}${p.barcode ? ' <span class="muted">(' + escapeHtml(p.barcode) + ')</span>' : ''}</td>
-                    <td>${escapeHtml(p.group_name || '')}</td>
-                    <td>${p.stock_qty} db</td>
-                    <td>${p.threshold} db</td>
-                    <td>${p.suggested_qty} db</td>
-                    <td>${forecastLabel(p.forecast)}</td>
-                    <td>${escapeHtml(p.supplier_name || '')}</td>
+                    <td class="rt-title">${escapeHtml(p.name)}${p.barcode ? ' <span class="muted">(' + escapeHtml(p.barcode) + ')</span>' : ''}</td>
+                    <td data-label="Csoport">${escapeHtml(p.group_name || '')}</td>
+                    <td data-label="Készlet">${p.stock_qty} db</td>
+                    <td data-label="Minimum">${p.threshold} db</td>
+                    <td data-label="Javasolt mennyiség">${p.suggested_qty} db</td>
+                    <td data-label="Előrejelzés">${forecastLabel(p.forecast)}</td>
+                    <td data-label="Beszállító">${escapeHtml(p.supplier_name || '')}</td>
                 </tr>
             `).join('')
             : '<tr><td colspan="7" class="muted" style="text-align:center; padding:16px;">Nincs találat.</td></tr>';

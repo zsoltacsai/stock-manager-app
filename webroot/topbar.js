@@ -2199,8 +2199,16 @@ if ('serviceWorker' in navigator) {
     let lastKnownDraftCount = null;
 
     function refreshWebshopOrderBadge(count) {
-        const badge = document.getElementById('sidebar-webshop-badge');
-        if (badge) badge.classList.toggle('hidden', count === 0);
+        // Phase 8 responsive remediation (RESP-01) — a mobil navigációs
+        // fiókban (sidebarmenu.php #mobile-nav-drawer) a "Beérkező
+        // eladások" linknek MÁSODIK, saját pötty-span-je is van (nem lehet
+        // ugyanaz az id kétszer a DOM-ban) — mindkettő ugyanazt a
+        // `data-badge-group="sidebar-webshop-badge"` jelölést viseli, hogy
+        // itt egy lekérdezéssel mindkettő frissüljön, ne csak a desktop
+        // ikon-sávé.
+        document.querySelectorAll('[data-badge-group="sidebar-webshop-badge"]').forEach(badge => {
+            badge.classList.toggle('hidden', count === 0);
+        });
     }
 
     function showOrderPopup(newCount, total) {
@@ -2386,4 +2394,50 @@ if ('serviceWorker' in navigator) {
             renderBadge(data);
         })
         .catch(() => { /* Kliens módban is előfordulhat átmeneti hiba a lekérdezésben — a jelvény ilyenkor egyszerűen rejtve marad, nem téveszt meg hamis állapottal */ });
+})();
+
+// ---------------------------------------------------------------------
+// Phase 8 responsive remediation — RESP-01: mobil navigáció fallback
+// (nyit/zár logika). A #mobile-nav-toggle gombot (headermenu.php) és a
+// #mobile-nav-drawer/#mobile-nav-backdrop párt (sidebarmenu.php) minden
+// oldal renderel — ez a blokk önálló, semmilyen más scope-tól nem függ,
+// hogy biztosan lefusson attól függetlenül, hol tart a fájl többi,
+// jóval korábban indult IIFE-je.
+// ---------------------------------------------------------------------
+(function () {
+    const toggle = document.getElementById('mobile-nav-toggle');
+    const drawer = document.getElementById('mobile-nav-drawer');
+    const backdrop = document.getElementById('mobile-nav-backdrop');
+    const closeBtn = document.getElementById('mobile-nav-close');
+    if (!toggle || !drawer || !backdrop) return; // pl. install.php-n egyik sincs jelen
+
+    function isOpen() { return drawer.classList.contains('open'); }
+
+    function openDrawer() {
+        drawer.classList.add('open');
+        backdrop.classList.add('open');
+        toggle.setAttribute('aria-expanded', 'true');
+        document.body.classList.add('mobile-nav-open');
+        if (closeBtn) closeBtn.focus();
+    }
+
+    function closeDrawer() {
+        drawer.classList.remove('open');
+        backdrop.classList.remove('open');
+        toggle.setAttribute('aria-expanded', 'false');
+        document.body.classList.remove('mobile-nav-open');
+    }
+
+    toggle.addEventListener('click', () => { isOpen() ? closeDrawer() : openDrawer(); });
+    if (closeBtn) closeBtn.addEventListener('click', () => { closeDrawer(); toggle.focus(); });
+    backdrop.addEventListener('click', () => { closeDrawer(); toggle.focus(); });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && isOpen()) { closeDrawer(); toggle.focus(); }
+    });
+    // Ha valaki átméretezi az ablakot (pl. tabletet forgat) desktop-
+    // szélességre, miközben a fiók nyitva volt, ne maradjon nyitva, "lógó"
+    // állapotban a háttér mögött (a gomb ilyenkor úgyis eltűnik).
+    window.addEventListener('resize', () => {
+        if (isOpen() && window.innerWidth > 768) closeDrawer();
+    });
 })();

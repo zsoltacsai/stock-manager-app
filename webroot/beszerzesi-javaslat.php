@@ -60,9 +60,18 @@ if (!Auth::isLoggedIn($appSettings)) {
         </div>
     </div>
 
+    <!-- Phase 8 responsive remediation — RESP-03. l. termekek.php ugyanezt
+         a mintát az "rt-cards" mobil kártyanézetnél. -->
+    <div class="rt-mobile-toolbar">
+        <label class="rt-mobile-select-all">
+            <input type="checkbox" id="bj-select-all-mobile" title="Mind kijelölése">
+            Mind kijelölése
+        </label>
+    </div>
+
     <div class="import-card">
         <div class="sample-table-wrap">
-            <table class="sample-table">
+            <table class="sample-table rt-cards">
                 <thead>
                     <tr>
                         <th><input type="checkbox" id="bj-select-all"></th>

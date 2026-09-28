@@ -47,12 +47,12 @@ function renderResults(sales, total) {
     resultsBody.innerHTML = sales.length
         ? sales.map(s => `
             <tr class="clickable-row" data-id="${s.id}">
-                <td>#${s.id}</td>
-                <td>${s.created_at}</td>
-                <td>${escapeHtml(s.buyer_name || '—')}</td>
-                <td>${fmt(s.total)}</td>
-                <td>${paymentBadge(s.payment_method)}</td>
-                <td>${s.status === 'invoice_failed' ? 'Sikertelen' : escapeHtml(s.szamlazz_invoice_number || '—')}</td>
+                <td class="rt-title">#${s.id}</td>
+                <td data-label="Dátum">${s.created_at}</td>
+                <td data-label="Vevő">${escapeHtml(s.buyer_name || '—')}</td>
+                <td data-label="Összeg">${fmt(s.total)}</td>
+                <td data-label="Fizetés">${paymentBadge(s.payment_method)}</td>
+                <td data-label="Számla">${s.status === 'invoice_failed' ? 'Sikertelen' : escapeHtml(s.szamlazz_invoice_number || '—')}</td>
             </tr>
         `).join('')
         : '<tr><td colspan="6" class="muted" style="text-align:center; padding:24px;">Nincs a szűrésnek megfelelő eladás.</td></tr>';
@@ -89,11 +89,11 @@ async function openDetail(id, successMessage) {
             const maxReturnable = item.qty - already;
             return `
                 <tr>
-                    <td>${escapeHtml(item.name)}${already ? ` <span class="muted" style="font-size:11px;">(${already} db már visszavéve)</span>` : ''}</td>
-                    <td>${item.qty}</td>
-                    <td>${fmt(item.unit_price)}</td>
-                    <td>${fmt(item.unit_price * item.qty)}</td>
-                    <td class="return-qty-cell hidden">
+                    <td class="rt-title">${escapeHtml(item.name)}${already ? ` <span class="muted" style="font-size:11px;">(${already} db már visszavéve)</span>` : ''}</td>
+                    <td data-label="Menny.">${item.qty}</td>
+                    <td data-label="Egységár">${fmt(item.unit_price)}</td>
+                    <td data-label="Össz.">${fmt(item.unit_price * item.qty)}</td>
+                    <td class="return-qty-cell hidden" data-label="Visszaveendő">
                         ${maxReturnable > 0 ? `<input type="number" min="0" max="${maxReturnable}" value="0" data-sale-item-id="${item.id}" class="return-qty-input" style="width:60px;">` : '—'}
                     </td>
                 </tr>
@@ -109,7 +109,7 @@ async function openDetail(id, successMessage) {
             ${successMessage ? `<p class="feedback ok" style="margin-top:0;">${escapeHtml(successMessage)}</p>` : ''}
             <p class="muted">Eladás #${sale.id} · ${sale.created_at} · ${paymentBadge(sale.payment_method)}${sale.buyer_name ? ' · ' + escapeHtml(sale.buyer_name) : ''}</p>
             <div class="sample-table-wrap">
-            <table class="sample-table">
+            <table class="sample-table rt-cards">
                 <thead><tr><th>Termék</th><th>Menny.</th><th>Egységár</th><th>Össz.</th><th class="return-qty-header hidden">Visszaveendő</th></tr></thead>
                 <tbody>${rows}</tbody>
             </table>

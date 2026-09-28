@@ -18,7 +18,15 @@ $__smSidebarLinks = [
         'href' => 'beerkezo-eladasok.php',
         'title' => 'Beérkező eladások',
         'icon' => '<path d="M22 12h-6l-2 3h-4l-2-3H2"></path><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path>',
+        // A `badge_id` MARAD a desktop ikon-sáv span-jének egyedi id-je
+        // (megőrizve a meglévő viselkedést), a `badge_group` egy közös,
+        // nem-egyedi jelölés, amit MOST a mobil fiók (lásd lent) ugyanerre
+        // a bejegyzésre rajzolt második span-je is felvesz — így a
+        // topbar.js badge-frissítő kódja (refreshWebshopOrderBadge())
+        // mindkettőt egyszerre tudja mutatni/rejteni, egy `id` kettőzése
+        // nélkül (l. Phase 8 responsive remediation, RESP-01).
         'badge_id' => 'sidebar-webshop-badge',
+        'badge_group' => 'sidebar-webshop-badge',
     ],
     [
         // UX-09 (Phase 7 audit) — korábban ugyanaz a "dokumentum" alap-alak
@@ -98,12 +106,60 @@ $__smSidebarLinks = [
     <a href="<?= $__smLink['href'] ?>" class="sidebar-link<?= $__smLink['href'] === $__smSidebarCurrent ? ' active' : '' ?>" title="<?= $__smLink['title'] ?>">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><?= $__smLink['icon'] ?></svg>
 <?php if (!empty($__smLink['badge_id'])): ?>
-        <span class="sidebar-badge-dot hidden" id="<?= $__smLink['badge_id'] ?>"></span>
+        <span class="sidebar-badge-dot hidden" id="<?= $__smLink['badge_id'] ?>" data-badge-group="<?= $__smLink['badge_group'] ?? $__smLink['badge_id'] ?>"></span>
 <?php endif; ?>
     </a>
 <?php endforeach; ?>
     <div class="sidebar-spacer"></div>
     <a href="beallitasok.php" class="sidebar-link<?= $__smSidebarCurrent === 'beallitasok.php' ? ' active' : '' ?>" title="Beállítások">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+    </a>
+</nav>
+
+<?php
+// ---------------------------------------------------------------------
+// Phase 8 responsive remediation — RESP-01 (HIGH, ui-ux-audit... helyett
+// responsive-mobile-audit-phase8-2026-09-28.md).
+//
+// A fenti `.icon-sidebar` ≤768px szélességnél `display:none`-ra vált
+// (style.css) — ez a szándékos, hely-felszabadító viselkedés VÁLTOZATLAN
+// marad. A hiányzó helyettesítő navigáció volt a talált hiba, nem maga az
+// elrejtés. Az alábbi hamburger-gomb + off-canvas fiók UGYANAZT a 16
+// célpontot adja vissza (Dashboard + a fenti $__smSidebarLinks +
+// Beállítások — szó szerint ugyanaz a PHP tömb, nincs duplikált,
+// karbantartandó linklista), UGYANAZOKKAL a jogosultságokkal, mint eddig
+// (a sidebarmenu.php sosem végzett szerepkör-szűrést a linkeken — ez itt
+// sem változik). ≥769px szélességnél a `.mobile-nav-toggle` gomb
+// `display:none` marad (l. style.css), tehát desktopon ez az egész blokk
+// néma/inaktív.
+// ---------------------------------------------------------------------
+?>
+<div id="mobile-nav-backdrop" class="mobile-nav-backdrop"></div>
+<nav id="mobile-nav-drawer" class="mobile-nav-drawer" aria-label="Navigáció">
+    <div class="mobile-nav-drawer-header">
+        <a href="dashboard.php" class="mobile-nav-brand<?= $__smSidebarCurrent === 'dashboard.php' ? ' active' : '' ?>">
+            <img src="assets/logo-default.svg" alt="" style="width:26px;height:26px;border-radius:7px;">
+            <span>FountainTrade</span>
+        </a>
+        <button type="button" id="mobile-nav-close" class="mobile-nav-close" aria-label="Navigáció bezárása">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+    </div>
+    <a href="dashboard.php" class="mobile-nav-link<?= $__smSidebarCurrent === 'dashboard.php' ? ' active' : '' ?>">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"></rect><rect x="14" y="3" width="7" height="5"></rect><rect x="14" y="12" width="7" height="9"></rect><rect x="3" y="16" width="7" height="5"></rect></svg>
+        <span>Dashboard</span>
+    </a>
+<?php foreach ($__smSidebarLinks as $__smLink): ?>
+    <a href="<?= $__smLink['href'] ?>" class="mobile-nav-link<?= $__smLink['href'] === $__smSidebarCurrent ? ' active' : '' ?>">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><?= $__smLink['icon'] ?></svg>
+        <span><?= $__smLink['title'] ?></span>
+<?php if (!empty($__smLink['badge_id'])): ?>
+        <span class="sidebar-badge-dot hidden" data-badge-group="<?= $__smLink['badge_group'] ?? $__smLink['badge_id'] ?>" style="position:static; margin-left:auto; border:none;"></span>
+<?php endif; ?>
+    </a>
+<?php endforeach; ?>
+    <a href="beallitasok.php" class="mobile-nav-link<?= $__smSidebarCurrent === 'beallitasok.php' ? ' active' : '' ?>">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        <span>Beállítások</span>
     </a>
 </nav>

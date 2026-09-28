@@ -45,7 +45,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <button id="new-supplier-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">+ Új beszállító</button>
         </div>
         <div class="sample-table-wrap">
-<table class="sample-table">
+<table class="sample-table rt-cards">
             <thead>
                 <tr><th>Név</th><th>Kapcsolattartó</th><th>Telefon</th><th>Email</th><th>Fizetési feltételek</th><th></th></tr>
             </thead>

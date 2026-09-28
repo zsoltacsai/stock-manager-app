@@ -102,7 +102,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <span id="results-count" class="muted"></span>
         </div>
         <div class="sample-table-wrap">
-<table class="sample-table">
+<table class="sample-table rt-cards">
             <thead>
                 <tr><th>Számlaszám</th><th>Szállító</th><th>Adószám</th><th>Teljesítés</th><th>Kiállítás</th><th>Fiz. határidő</th><th>Nettó</th><th>ÁFA</th><th>Bruttó</th><th>Típus</th></tr>
             </thead>

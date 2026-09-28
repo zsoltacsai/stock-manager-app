@@ -141,6 +141,14 @@ a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-
     flex-shrink: 0;
 }
 .icon-btn:hover { color: var(--text); border-color: var(--accent); }
+/* Phase 8 responsive remediation — RESP-06/08 (LOW, touch targets). A
+   34×34px vizuális méret VÁLTOZATLAN marad (nem nő a gomb, nem tolódik el
+   semmilyen elrendezés) — ehelyett egy láthatatlan, a valódi dobozon túlnyúló
+   ::before bővíti a TALÁLATI területet kb. 44×44px-re. Az 5px minden
+   irányban pontosan illeszkedik a topbar-actions/icon-sidebar 10px-es
+   gap-jéhez (5+5=10) — a szomszédos gombok bővített területei éppen csak
+   összeérnek, nem fedik át egymást, tehát nem okozhat téves találatot. */
+.icon-btn::before { content: ''; position: absolute; inset: -5px; }
 .icon-btn svg { width: 18px; height: 18px; }
 .icon-btn.syncing svg { animation: icon-spin 0.9s linear infinite; }
 @keyframes icon-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
@@ -159,6 +167,15 @@ body { padding-left: 72px; }
     border-right: 1px solid var(--sidebar-bg, var(--border));
     display: flex; flex-direction: column; align-items: center;
     padding: 16px 0; gap: 10px; z-index: 40;
+    /* Phase 8 responsive remediation (RESP-01) — alacsony magasságú
+       viewportnál (pl. fekvő telefon, ~390px magasság) a 15 elem (logó +
+       14 link) nem fér el a képernyőn; eddig overflow:visible miatt a
+       lista egyszerűen NÉMÁN, görgetés nélkül levágódott a viewport
+       alján (l. audit RESP-01 landscape-bizonyítéka). Ez a két sor nem
+       változtat semmit olyan viewporton, ahol amúgy is elfér a tartalom
+       (nincs vizuális különbség, ha nincs túlcsordulás). */
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
 }
 .icon-sidebar .sidebar-logo {
     width: 40px; height: 40px; border-radius: 12px; object-fit: cover;
@@ -186,13 +203,74 @@ body { padding-left: 72px; }
 .icon-sidebar .sidebar-spacer { flex: 1; }
 @media print { .icon-sidebar { display: none !important; } body { padding-left: 0 !important; } }
 /* On a phone-width screen, the 72px fixed sidebar eats a meaningful slice
-   of the viewport for icons that are mostly reachable another way anyway
-   (topbar nav-track links, the gear icon, the notification bell's link to
-   Rendszerállapot) — hiding it below tablet width gives that space back
-   to the actual content instead. */
+   of the viewport — hiding it below tablet width gives that space back to
+   the actual content instead. This used to leave several destinations
+   (Dashboard, Leltározás, Kassza-riport, Ügyféllista, Telephelyek,
+   Rendszerállapot, Kliensek, AI Asszisztens, Kimenő/Beérkezett számlák)
+   completely unreachable below 768px — see Phase 8 responsive audit,
+   RESP-01. The #mobile-nav-toggle/#mobile-nav-drawer pair right below
+   (rendered by sidebarmenu.php, using the exact same link list) is the
+   fallback that replaces them. */
 @media (max-width: 768px) {
     .icon-sidebar { display: none; }
     body { padding-left: 0; }
+}
+
+/* Phase 8 responsive remediation — RESP-01: mobil navigáció fallback.
+   A gomb (headermenu.php-ban) és a fiók/backdrop (sidebarmenu.php-ban)
+   minden oldalon jelen van a DOM-ban, de ≥769px szélességnél a gomb
+   display:none, tehát desktopon ez az egész blokk vizuálisan és
+   funkcionálisan inaktív marad — nem változtat semmit a meglévő desktop
+   navigáción. */
+.mobile-nav-toggle {
+    display: none;
+    width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--panel-light); color: var(--text); cursor: pointer;
+    align-items: center; justify-content: center; flex-shrink: 0;
+}
+.mobile-nav-toggle svg { width: 18px; height: 18px; }
+.mobile-nav-toggle[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+
+.mobile-nav-backdrop {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.55);
+    z-index: 55; opacity: 0; transition: opacity .2s ease;
+}
+.mobile-nav-backdrop.open { display: block; opacity: 1; }
+
+.mobile-nav-drawer {
+    position: fixed; top: 0; left: 0; bottom: 0; width: min(300px, 84vw);
+    background: var(--sidebar-bg, var(--panel)); z-index: 56;
+    transform: translateX(-100%); transition: transform .22s ease;
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
+    padding: 4px 0 24px;
+    box-shadow: 4px 0 28px rgba(0,0,0,.45);
+}
+.mobile-nav-drawer.open { transform: translateX(0); }
+.mobile-nav-drawer-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 10px 14px 16px; margin-bottom: 6px; border-bottom: 1px solid var(--border);
+}
+.mobile-nav-close {
+    width: 34px; height: 34px; border-radius: 8px; border: none; background: none;
+    color: var(--sidebar-icon, var(--muted)); cursor: pointer;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.mobile-nav-close svg { width: 18px; height: 18px; }
+.mobile-nav-close:hover { color: var(--sidebar-icon-hover, var(--text)); }
+.mobile-nav-brand {
+    display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 14px;
+    color: var(--sidebar-icon-hover, var(--text)); text-decoration: none;
+}
+.mobile-nav-link {
+    display: flex; align-items: center; gap: 14px; padding: 12px 16px;
+    color: var(--sidebar-icon, var(--muted)); text-decoration: none; font-size: 14px;
+}
+.mobile-nav-link svg { width: 20px; height: 20px; flex-shrink: 0; }
+.mobile-nav-link:hover { color: var(--sidebar-icon-hover, var(--text)); background: rgba(255,255,255,0.06); }
+.mobile-nav-link.active { color: var(--sidebar-active-icon, #052e12); background: var(--sidebar-active-bg, var(--accent)); font-weight: 600; }
+body.mobile-nav-open { overflow: hidden; }
+@media (max-width: 768px) {
+    .mobile-nav-toggle { display: inline-flex; }
 }
 #app-footer-badge {
     position: fixed; bottom: 6px; right: 10px; font-size: 11px;
@@ -427,6 +505,31 @@ select:hover { border-color: var(--accent); }
     .cart-panel { overflow-x: auto; }
     .cart-table { min-width: 480px; }
 }
+/* Phase 8 responsive remediation — RESP-04a. A fenti, minden .cart-table-re
+   érvényes szabály (min-width:480px + vízszintes görgetés) a Beszerzés
+   (beszerzes.php, 7 oszlop) kosarán VÁLTOZATLANUL marad — azt az audit nem
+   vizsgálta/nem igazolta hibásnak. A Kassza (index.php, 5 oszlop) saját,
+   `.pos-cart-table` jelölésű kosara viszont — ahol az audit ténylegesen
+   igazolta, hogy a +/− lépegető és a törlés gomb rejtve marad görgetés
+   nélkül — innentől NEM vízszintesen görgethető, hanem minden sor a
+   termék nevét (teljes szélességben, továbbra is tördelve — ez a
+   pozitív, megőrzendő viselkedés) és alatta egy, szükség esetén
+   FÜGGŐLEGESEN tördelő sávot mutat a mennyiséggel/árral/törléssel —
+   vízszintes görgetés így sose kell hozzá. */
+@media (max-width: 480px) {
+    .pos-cart-table { min-width: 0; }
+    .pos-cart-table thead { display: none; }
+    .pos-cart-table, .pos-cart-table tbody { display: block; width: 100%; }
+    .pos-cart-table tr {
+        display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; row-gap: 6px;
+        padding: 10px 0; border-bottom: 1px solid var(--border);
+    }
+    .pos-cart-table tr.empty-row { display: block; }
+    .pos-cart-table td { padding: 0; border-bottom: none; }
+    .pos-cart-table td:first-child { flex: 1 1 100%; }
+    .pos-cart-table td:nth-child(3) { color: var(--muted); font-size: 13px; }
+    .pos-cart-table td:nth-child(4) { font-weight: 600; margin-left: auto; }
+}
 .cart-table th {
     text-align: left;
     font-size: 12px;
@@ -448,11 +551,16 @@ select:hover { border-color: var(--accent); }
     color: var(--text);
 }
 
-.qty-stepper { display: flex; align-items: center; gap: 4px; }
+.qty-stepper { display: flex; align-items: center; gap: 6px; }
+/* Phase 8 responsive remediation — RESP-06/08. Itt (eltérően a fenti
+   .icon-btn/.remove-btn hit-slop trükkjétől) a valódi méretet növeltük
+   24→30px-re: a +/− gombok között csak 4px volt a rés, egy láthatatlan
+   bővített találati terület átfedné a szomszédos gombot/mennyiség-mezőt,
+   ami TÉVES találatot okozna — ez itt biztonságosabb, mint egy hit-slop. */
 .qty-step-btn {
-    width: 24px; height: 24px; border-radius: 6px; border: 1px solid var(--border);
+    width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--panel-light); color: var(--text); cursor: pointer;
-    font-size: 15px; line-height: 1; flex-shrink: 0; padding: 0;
+    font-size: 16px; line-height: 1; flex-shrink: 0; padding: 0;
 }
 .qty-step-btn:hover { border-color: var(--accent); color: var(--accent); }
 
@@ -516,7 +624,12 @@ html[data-theme="light"] #global-search-input {
     justify-content: center;
     padding: 0;
     flex-shrink: 0;
+    position: relative;
 }
+/* Phase 8 responsive remediation — RESP-06/08, lásd .icon-btn::before
+   ugyanezt a mintát; 32px-es vizuális méret változatlan, ~40px találati
+   terület. */
+.remove-btn::before { content: ''; position: absolute; inset: -4px; }
 .remove-btn svg { width: 16px; height: 16px; }
 .remove-btn:hover { background: rgba(239, 68, 68, 0.2); }
 
@@ -692,7 +805,20 @@ html[data-theme="light"] #global-search-input {
 }
 .toggle-switch.on::after { left: 22px; }
 
-.modal-actions { display: flex; gap: 10px; margin-top: 20px; }
+/* Phase 8 responsive remediation — RESP-04b. Korábban a teljes .modal-card
+   görgetett együtt (fejléc+tartalom+gombsor), ezért alacsony magasságú
+   viewportnál (pl. fekvő telefon, ~390px) a Mégse/elsődleges gombsor a
+   kezdeti, betöltés utáni nézetben a látható területen KÍVÜLRE kerülhetett
+   — elérhető maradt lejjebb görgetve, de nem volt nyilvánvaló, hogy kell.
+   A `position: sticky; bottom: 0` a .modal-card SAJÁT görgetési
+   kontextusán belül tartja a gombsort a látható terület alján, amint a
+   tartalom magasabb, mint a modal — rövid tartalomnál (a legtöbb esetben)
+   nincs vizuális hatása, a gombsor pontosan ott marad, ahol eddig is. */
+.modal-actions {
+    display: flex; gap: 10px; margin-top: 20px;
+    position: sticky; bottom: 0; background: var(--panel);
+    padding-top: 10px; padding-bottom: 2px;
+}
 .modal-actions .btn { width: auto; flex: 1; }
 .modal-feedback { font-size: 13px; margin-top: 10px; min-height: 18px; }
 .modal-feedback.error { color: var(--danger); }
@@ -807,6 +933,76 @@ html[data-theme="light"] #global-search-input {
     padding: 5px 10px; border-radius: 6px; font-size: 12px; cursor: pointer;
 }
 .row-actions-btn:hover { color: var(--text); border-color: var(--accent); }
+
+/* ---------------------------------------------------------------------
+   Phase 8 responsive remediation — RESP-02 (HIGH) / RESP-03 (MEDIUM).
+   `.rt-cards` — közös, opt-in "responsive table" minta: a táblázat
+   ≤768px szélességnél kártyás nézetre vált (fejléc elrejtve, minden sor
+   egy kártya, minden cella "címke: érték" formában a `data-label`
+   attribútumból). A `.products-table`/`.sample-table` ALAP szabályai
+   (desktop nézet, ≥769px) VÁLTOZATLANOK maradnak — ez a class csak azokon
+   a táblázatokon van jelen (a <table> elem class-listájában), amelyeknél
+   az audit ténylegesen igazolta a súlyos, jelzés nélküli vízszintes
+   görgetést (l. responsive-mobile-audit-phase8-2026-09-28.md RESP-02/03)
+   — más, nem-auditált `.sample-table`-t használó oldal (pl. Leltározás,
+   Dolgozók, Pénztárgépek) emiatt LÁTVÁNYBAN NEM változik.
+   --------------------------------------------------------------------- */
+@media (max-width: 768px) {
+    .rt-cards thead { display: none; }
+    .rt-cards, .rt-cards tbody { display: block; width: 100%; }
+    .rt-cards tr {
+        display: block; background: var(--panel-light); border: 1px solid var(--border);
+        border-radius: 10px; padding: 12px 14px; margin-bottom: 10px;
+    }
+    .rt-cards tr:last-child { margin-bottom: 0; }
+    .rt-cards td {
+        display: flex; align-items: center; justify-content: space-between; gap: 12px;
+        padding: 7px 0; border-bottom: 1px solid var(--border);
+        white-space: normal; text-align: right; font-size: 13px;
+    }
+    .rt-cards td:last-child { border-bottom: none; }
+    /* Egy `<td class="... hidden">` (pl. eladasok.js return-qty-cell, ami
+       csak a visszáru-mód bekapcsolásakor kap láthatóságot) a `.hidden`
+       (display:none) szabály nélkül itt VISSZA-látszana, mert a
+       `.rt-cards td` szelektor specificitása nagyobb — ez a sor biztosítja,
+       hogy a `.hidden` mindig érvényesüljön kártyás nézetben is. */
+    .rt-cards td.hidden { display: none; }
+    .rt-cards td[data-label]::before {
+        content: attr(data-label); color: var(--muted); font-size: 12px; font-weight: 600;
+        text-align: left; margin-right: auto; flex-shrink: 0;
+    }
+    /* A terméknév/sor-cím oszlop (nincs data-label — az a kártya "címe",
+       nem egy címke:érték pár) és a jelölőnégyzet-oszlop nem osztott
+       flex-sor, hanem a kártya tetején, balra igazítva jelenik meg. */
+    .rt-cards td.rt-title {
+        font-weight: 700; font-size: 15px; justify-content: flex-start; text-align: left;
+        padding-top: 0; color: var(--text);
+    }
+    .rt-cards td.rt-checkbox { justify-content: flex-start; border-bottom: none; padding-bottom: 2px; }
+    .rt-cards td.rt-actions { justify-content: flex-end; padding-top: 10px; border-bottom: none; }
+    .rt-cards td.rt-actions .row-actions { width: 100%; }
+    .rt-cards td.rt-actions .row-actions button { flex: 1; }
+    /* Néhány oldalon (pl. Beszállítók) a "Módosítás" gomb nincs .row-actions
+       wrapperbe csomagolva — közvetlenül a cellában van egy önálló gomb. */
+    .rt-cards td.rt-actions > button { width: 100%; }
+}
+/* A mobil "mind kijelölése" + rendezés sáv (l. termekek.php és a többi
+   RESP-03-as oldal) csak akkor látszik, ha a táblázat is kártyás nézetben
+   van — ugyanazzal a töréspontтал. */
+.rt-mobile-toolbar { display: none; }
+@media (max-width: 768px) {
+    .rt-mobile-toolbar {
+        display: flex; align-items: center; justify-content: space-between; gap: 12px;
+        flex-wrap: wrap; margin-bottom: 12px;
+    }
+    .rt-mobile-toolbar > div { flex: 1 1 200px; min-width: 160px; }
+    .rt-mobile-toolbar select { margin-bottom: 0; }
+}
+.rt-mobile-select-all {
+    display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text);
+    cursor: pointer; white-space: nowrap;
+}
+.rt-mobile-select-all input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 
 @media print {
     .no-print, .topbar-actions, .sync-toast, .modal-overlay { display: none !important; }

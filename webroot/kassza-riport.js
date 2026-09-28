@@ -53,17 +53,17 @@ async function loadReport() {
             const varianceStyle = s.variance == null ? '' : (Number(s.variance) < 0 ? 'color:var(--danger);' : (Number(s.variance) > 0 ? 'color:var(--accent);' : ''));
             return `
             <tr>
-                <td>${s.id}</td>
-                <td>${escapeHtml(s.location_name || '')}</td>
-                <td>${escapeHtml(s.register_name || '')}</td>
-                <td>${escapeHtml(s.staff_name || '—')}</td>
-                <td>${s.status === 'open' ? '<span class="stock-badge ok">Nyitva</span>' : '<span class="stock-badge">Zárva</span>'}</td>
-                <td>${s.opened_at}</td>
-                <td>${s.closed_at || '—'}</td>
-                <td>${fmtFt(s.opening_amount)}</td>
-                <td>${fmtFt(s.closing_amount)}</td>
-                <td>${fmtFt(s.expected_amount)}</td>
-                <td style="${varianceStyle}">${s.variance == null ? '—' : fmtFt(s.variance)}</td>
+                <td class="rt-title">#${s.id}</td>
+                <td data-label="Telephely">${escapeHtml(s.location_name || '')}</td>
+                <td data-label="Pénztárgép">${escapeHtml(s.register_name || '')}</td>
+                <td data-label="Kasszás">${escapeHtml(s.staff_name || '—')}</td>
+                <td data-label="Állapot">${s.status === 'open' ? '<span class="stock-badge ok">Nyitva</span>' : '<span class="stock-badge">Zárva</span>'}</td>
+                <td data-label="Nyitás">${s.opened_at}</td>
+                <td data-label="Zárás">${s.closed_at || '—'}</td>
+                <td data-label="Nyitó">${fmtFt(s.opening_amount)}</td>
+                <td data-label="Számolt">${fmtFt(s.closing_amount)}</td>
+                <td data-label="Várható">${fmtFt(s.expected_amount)}</td>
+                <td data-label="Eltérés" style="${varianceStyle}">${s.variance == null ? '—' : fmtFt(s.variance)}</td>
             </tr>
         `;
         }).join('') : '<tr><td colspan="11" class="muted" style="text-align:center; padding:24px;">Nincs találat a megadott szűrőkkel.</td></tr>';

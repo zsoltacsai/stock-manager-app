@@ -9,4 +9,6 @@ $filters = [
     'query' => $_GET['query'] ?? '',
 ];
 
-send_json(['purchases' => $db->listPurchases($filters)]);
+$purchases = $db->listPurchases($filters);
+// UX-06 (Phase 7 audit) — lásd sales-list.php-ban ugyanezt a mintát.
+send_json(['purchases' => $purchases, 'total' => $db->countPurchases($filters)]);

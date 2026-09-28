@@ -1139,6 +1139,23 @@ if (!Auth::isLoggedIn($appSettings)) {
     </div>
 </div>
 
+<!-- UX-11 (Phase 7 audit) — a mentés-visszaállítás vezetői PIN-je eddig
+     maszkolatlan natív prompt()-ban kérdezett; ez egy maszkolt input mezős
+     modal, ugyanahhoz a megerősítéshez, konzisztensen a dolgozói PIN-belépés
+     (type="password") mintájával. A gomb pontos szövegét/jelentését a hívó
+     (topbar.js askPinForRestore()) tölti ki. -->
+<div class="modal-overlay" id="pin-confirm-modal">
+    <div class="modal-card">
+        <h2>Vezetői PIN megerősítés</h2>
+        <p class="muted" id="pin-confirm-text">Add meg a vezetői PIN-kódot a folytatáshoz (ha nincs beállítva dolgozói PIN-rendszer, hagyd üresen).</p>
+        <input type="password" id="pin-confirm-input" autocomplete="off">
+        <div class="modal-actions" style="margin-top:20px;">
+            <button class="btn btn-secondary" id="pin-confirm-cancel" style="flex:1;">Mégse</button>
+            <button class="btn btn-primary" id="pin-confirm-ok" style="flex:1;">Megerősítés</button>
+        </div>
+    </div>
+</div>
+
 <script src="api.js"></script>
 <script src="topbar.js"></script>
 <script src="import.js"></script>

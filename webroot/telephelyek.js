@@ -118,19 +118,19 @@ transferProductSearch.addEventListener('input', () => {
         const data = await res.json();
         const products = data.products || [];
         transferProductResults.innerHTML = products.map(p => `
-            <div class="search-result-item" data-id="${p.id}" data-name="${escapeHtml(p.name)}">
+            <div class="search-result-item" data-id="${p.id}" data-name="${escapeHtml(p.name)}" data-stock="${p.stock_qty}">
                 <span>${escapeHtml(p.name)}</span><span>${p.stock_qty} db összesen</span>
             </div>
         `).join('') || '<div class="muted">Nincs találat.</div>';
 
         transferProductResults.querySelectorAll('.search-result-item').forEach(row => {
-            row.addEventListener('click', () => selectProductForTransfer(Number(row.dataset.id), row.dataset.name));
+            row.addEventListener('click', () => selectProductForTransfer(Number(row.dataset.id), row.dataset.name, Number(row.dataset.stock)));
         });
     }, 200);
 });
 
-async function selectProductForTransfer(id, name) {
-    selectedProduct = { id, name };
+async function selectProductForTransfer(id, name, globalStockQty) {
+    selectedProduct = { id, name, globalStockQty };
     transferProductSearch.value = '';
     transferProductResults.innerHTML = '';
     transferProductName.textContent = name;
@@ -140,8 +140,22 @@ async function selectProductForTransfer(id, name) {
 
     const res = await fetch('/api/location-stock.php?product_id=' + id);
     const data = await res.json();
-    const rows = (data.stock || []).map(s => `${s.location_name}: ${s.stock_qty} db`).join(' · ');
-    transferCurrentStock.textContent = rows || 'Nincs még telephelyi bontás ehhez a termékhez.';
+    const stock = data.stock || [];
+    const rows = stock.map(s => `${s.location_name}: ${s.stock_qty} db`).join(' · ');
+    transferCurrentStock.innerHTML = escapeHtml(rows || 'Nincs még telephelyi bontás ehhez a termékhez.');
+
+    // UX-07 (Phase 7 audit) — a telephelyi bontás (fentebb) és az "N db
+    // összesen" (a keresési találatban, globalStockQty) KÉT KÜLÖN számláló;
+    // a normál termékszerkesztő csak a globálist írja, a telephelyi bontást
+    // soha nem érinti. Ha a kettő eltér, ez itt magyarázatot ad — az
+    // eltérés maga nem hiba, csak eddig nem volt hozzá szöveges indoklás.
+    const locationTotal = stock.reduce((sum, s) => sum + Number(s.stock_qty || 0), 0);
+    if (typeof globalStockQty === 'number' && locationTotal !== globalStockQty) {
+        transferCurrentStock.innerHTML += `<br><span class="muted" style="font-size:12px;">` +
+            `A telephelyi bontás összege (${locationTotal} db) eltér az összesített készlettől (${globalStockQty} db) — ` +
+            `ez akkor fordul elő, ha a készletet korábban közvetlenül az Árucikk-szerkesztőn állították be, ` +
+            `mozgatás/beszerzés nélkül, ami nem került telephelyhez rendelésre.</span>`;
+    }
 }
 
 // N-2: egy mozgatás-kísérlet stabil idempotencia-kulcsa — sikerig (vagy a

@@ -130,6 +130,10 @@ async function loadInvoices() {
     if (fStatus.value) params.set('status', fStatus.value);
     if (fQuery.value.trim()) params.set('query', fQuery.value.trim());
 
+    // UX-08 (Phase 7 audit) — betöltés közben ne legyen megkülönböztethetetlen
+    // egy üres/hibás listától (a minta a Beérkező eladások/Forgalmi riport
+    // oldalakon már jól működik, itt eddig hiányzott).
+    resultsBody.innerHTML = '<tr><td colspan="7" class="muted" style="text-align:center; padding:24px;"><span class="spinner"></span> Betöltés...</td></tr>';
     try {
         const data = await fetchJson('/api/invoices-list.php?' + params.toString());
         renderResults(data.invoices || []);

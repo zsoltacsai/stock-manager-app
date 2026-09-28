@@ -26,16 +26,24 @@ async function loadSales() {
     if (fId.value.trim()) params.set('id', fId.value.trim());
     if (fQuery.value.trim()) params.set('query', fQuery.value.trim());
 
+    // UX-08 (Phase 7 audit) — betöltés közben ne legyen a táblázat
+    // megkülönböztethetetlen egy üres/hibás listától.
+    resultsBody.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center; padding:24px;"><span class="spinner"></span> Betöltés...</td></tr>';
     try {
         const data = await fetchJson('/api/sales-list.php?' + params.toString());
-        renderResults(data.sales || []);
+        renderResults(data.sales || [], data.total);
     } catch (err) {
         resultsBody.innerHTML = `<tr><td colspan="6" class="muted">Hiba: ${escapeHtml(err.message)}</td></tr>`;
     }
 }
 
-function renderResults(sales) {
-    resultsCount.textContent = `${sales.length} eladás`;
+function renderResults(sales, total) {
+    // UX-06 (Phase 7 audit) — ha a szerver a lekérdezett szűrésnek megfelelő
+    // összes találatnál (total) kevesebb sort adott vissza (a listSales()
+    // limitje miatt), ezt jelezzük — ne csendben csonkoljon.
+    resultsCount.textContent = (typeof total === 'number' && total > sales.length)
+        ? `${sales.length} / ${total} eladás — szűrj a teljes listához`
+        : `${sales.length} eladás`;
     resultsBody.innerHTML = sales.length
         ? sales.map(s => `
             <tr class="clickable-row" data-id="${s.id}">
@@ -54,7 +62,11 @@ function renderResults(sales) {
     });
 }
 
-async function openDetail(id) {
+// UX-05 (Phase 7 audit) — az opcionális `successMessage` egy imént
+// befejezett visszáru zöld visszajelzését viszi át az újrarenderelt
+// (friss adatokkal betöltött) modalba, hogy az összeg ne tűnjön el
+// azonnal egy apró, szürke "Korábbi visszáruk" sorra cserélődve.
+async function openDetail(id, successMessage) {
     detailContent.innerHTML = '<div class="spinner-row"><span class="spinner"></span>Betöltés...</div>';
     detailModal.classList.add('open');
     try {
@@ -94,6 +106,7 @@ async function openDetail(id) {
         ` : '';
 
         detailContent.innerHTML = `
+            ${successMessage ? `<p class="feedback ok" style="margin-top:0;">${escapeHtml(successMessage)}</p>` : ''}
             <p class="muted">Eladás #${sale.id} · ${sale.created_at} · ${paymentBadge(sale.payment_method)}${sale.buyer_name ? ' · ' + escapeHtml(sale.buyer_name) : ''}</p>
             <div class="sample-table-wrap">
             <table class="sample-table">
@@ -190,9 +203,7 @@ async function openDetail(id) {
                 const resultData = await res.json();
                 if (!res.ok) throw new Error(resultData.error || 'ismeretlen hiba');
 
-                returnFeedback.textContent = `Visszáru rögzítve, visszatérítendő összeg: ${fmt(resultData.total_refund)}.`;
-                returnFeedback.className = 'modal-feedback';
-                openDetail(sale.id); // refresh with updated returned quantities
+                openDetail(sale.id, `Visszáru rögzítve, visszatérítendő összeg: ${fmt(resultData.total_refund)}.`); // refresh with updated returned quantities, success message survives the refresh (UX-05)
             } catch (err) {
                 returnFeedback.textContent = 'Hiba: ' + err.message;
                 returnFeedback.className = 'modal-feedback error';

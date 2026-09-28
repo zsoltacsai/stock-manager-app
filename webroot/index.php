@@ -151,6 +151,11 @@ if (!Auth::isLoggedIn($appSettings)) {
                 </div>
             </div>
         </div>
+        <!-- UX-04 (Phase 7 audit) — saját, a mezők közvetlen közelében lévő
+             visszajelző elem a kupon/utalvány hibáknak, a #scan-feedback
+             mintája szerint (eddig a ~250px-re lévő #checkout-feedback-be
+             írt üzenet könnyen észrevétlen maradt). -->
+        <p id="coupon-feedback" class="feedback"></p>
         <div id="applied-discounts"></div>
         <p class="muted" style="margin-top:-6px;"><a href="kedvezmenyek.php" target="_blank">Kuponok / utalványok kezelése</a></p>
 

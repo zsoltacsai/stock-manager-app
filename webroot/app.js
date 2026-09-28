@@ -331,10 +331,25 @@ function updateCashStatusBadge() {
         return;
     }
     cashStatusBtn.classList.remove('hidden');
-    const reg = currentLocationRegisters().find(r => r.id === regId);
-    const isOpen = !!(reg && reg.open);
+    const isOpen = isCurrentCashRegisterOpen();
     cashStatusText.textContent = isOpen ? 'Kassza: NYITVA' : 'Kassza: ZÁRVA';
     cashStatusBtn.style.color = isOpen ? 'var(--accent)' : 'var(--danger)';
+}
+
+// UX-02 (Phase 7 audit) — ugyanaz a forrás (a telephely-lista pénztárgép-
+// bontása, lásd currentLocationRegisters()), amiből a fenti "Kassza:
+// NYITVA/ZÁRVA" jelző is számol, hogy a checkout-gomb ELŐZETES ellenőrzése
+// (lásd checkoutBtn lentebb) sose mondjon mást, mint amit a jelző mutat.
+// Ha nincs kiválasztott pénztárgép (a bolt egyáltalán nem használ
+// kasszakezelést — currentCashRegisterId() null), ez "nyitva"-nak számít:
+// a fizetés ilyenkor a kasszakezelés bevezetése előtti, változatlan
+// útvonalon megy (lásd api/sale.php docblokkja), ezt a Phase 7 audit sem
+// kifogásolta.
+function isCurrentCashRegisterOpen() {
+    const regId = currentCashRegisterId();
+    if (!regId) return true;
+    const reg = currentLocationRegisters().find(r => r.id === regId);
+    return !!(reg && reg.open);
 }
 
 function refreshCashRegistersForLocation() {
@@ -1163,6 +1178,7 @@ const couponApplyBtn = document.getElementById('coupon-apply-btn');
 const giftCardCodeInput = document.getElementById('gift-card-code');
 const giftCardApplyBtn = document.getElementById('gift-card-apply-btn');
 const appliedDiscountsBox = document.getElementById('applied-discounts');
+const couponFeedback = document.getElementById('coupon-feedback');
 
 let appliedCoupon = null;
 let appliedGiftCard = null;
@@ -1226,18 +1242,21 @@ couponApplyBtn.addEventListener('click', async () => {
         });
         const data = await res.json();
         if (!data.ok) {
-            checkoutFeedback.textContent = data.error || 'A kupon nem érvényes.';
-            checkoutFeedback.className = 'feedback error';
+            // UX-04 (Phase 7 audit) — a kupon-hibaüzenet a mező közvetlen
+            // közelébe kerül (#coupon-feedback), nem a ~250px-re lévő,
+            // közös #checkout-feedback-be — lásd #scan-feedback mintáját.
+            couponFeedback.textContent = data.error || 'A kupon nem érvényes.';
+            couponFeedback.className = 'feedback error';
             return;
         }
         appliedCoupon = { code: data.coupon.code, discount: data.discount };
         couponCodeInput.value = '';
-        checkoutFeedback.textContent = '';
+        couponFeedback.textContent = '';
         renderAppliedDiscounts();
         updateGrandTotalDisplay();
     } catch (err) {
-        checkoutFeedback.textContent = 'Hiba: ' + err.message;
-        checkoutFeedback.className = 'feedback error';
+        couponFeedback.textContent = 'Hiba: ' + err.message;
+        couponFeedback.className = 'feedback error';
     }
 });
 
@@ -1252,22 +1271,37 @@ giftCardApplyBtn.addEventListener('click', async () => {
         });
         const data = await res.json();
         if (!data.ok) {
-            checkoutFeedback.textContent = data.error || 'Az utalvány nem érvényes.';
-            checkoutFeedback.className = 'feedback error';
+            // UX-04 (Phase 7 audit) — lásd a kupon-ágnál fent, ugyanaz a minta.
+            couponFeedback.textContent = data.error || 'Az utalvány nem érvényes.';
+            couponFeedback.className = 'feedback error';
             return;
         }
         appliedGiftCard = { code: data.gift_card.code, redeemable: data.redeemable };
         giftCardCodeInput.value = '';
-        checkoutFeedback.textContent = '';
+        couponFeedback.textContent = '';
         renderAppliedDiscounts();
         updateGrandTotalDisplay();
     } catch (err) {
-        checkoutFeedback.textContent = 'Hiba: ' + err.message;
-        checkoutFeedback.className = 'feedback error';
+        couponFeedback.textContent = 'Hiba: ' + err.message;
+        couponFeedback.className = 'feedback error';
     }
 });
 
 checkoutBtn.addEventListener('click', async () => {
+    // UX-02 (Phase 7 audit) — korábban a "Kassza: ZÁRVA" jelző tisztán
+    // dekoratív volt: semmi nem akadályozta meg a fizetést egy nyitott
+    // műszak nélküli pénztárgépen, és az így létrejött eladás
+    // `cash_session_id = NULL`-lal, nyomtalanul, egyetlen kasszazárásban
+    // sem szerepelve maradt. A szerver (api/sale.php) ugyanezt MOST MÁR
+    // el is utasítja (409, "cash_session_required") — ez az ellenőrzés itt
+    // csak a felesleges kör elé kerül: azonnali, helyben történő
+    // visszajelzést ad, mielőtt egyáltalán elindulna a kérés.
+    if (!isCurrentCashRegisterOpen()) {
+        checkoutFeedback.textContent = 'Nincs nyitva műszak ezen a pénztárgépen — nyisd meg a Kassza gombbal a fejlécben, mielőtt eladást rögzítenél.';
+        checkoutFeedback.className = 'feedback error';
+        return;
+    }
+
     const buyerInput = collectBuyerInput();
     if (buyerInput.error) {
         checkoutFeedback.textContent = buyerInput.error;
@@ -1386,7 +1420,17 @@ checkoutBtn.addEventListener('click', async () => {
         renderCart();
         resetBuyerForm();
         clearSelectedCustomer();
-        loadProducts();
+        // UX-01 javítás: a PERF-04 (Phase 6) óta a kassza NEM tölt be teljes
+        // katalógust — a névkeresés (/api/product-search.php) minden
+        // billentyűleütésnél friss, szerveroldali lekérdezést futtat, a
+        // gyorsgombok pedig saját, önálló lekérdezéssel frissülnek. Egy
+        // korábbi, itt maradt `loadProducts()` hívás (a régi, kliensoldali
+        // teljes katalógus frissítésére szolgált) ReferenceError-t dobott —
+        // ezt a try/catch elkapta, és a már beírt SIKER-üzenetet felülírta
+        // egy "Hiba: loadProducts is not defined" szöveggel MINDEN sikeres
+        // eladás után (UX-01, Phase 7 audit). Nincs mit frissíteni itt: a
+        // következő keresés/gyorsgomb-lekérdezés úgyis a friss adatbázis-
+        // állapotot adja vissza.
         barcodeInput.focus();
     } catch (err) {
         checkoutFeedback.textContent = 'Hiba: ' + err.message;
@@ -1402,7 +1446,6 @@ checkoutBtn.addEventListener('click', async () => {
     }
 });
 
-document.addEventListener('stockmanager:synced', () => loadProducts());
 
 viewReceiptBtn.addEventListener('click', () => {
     if (lastSaleId) {
@@ -1475,7 +1518,10 @@ undoSaleBtn.addEventListener('click', async () => {
         undoSaleBtn.classList.add('hidden');
         undoSaleFeedback.textContent = `Az eladás visszavonva. Visszatérítendő összeg: ${fmt(data.total_refund)}.`;
         undoSaleFeedback.className = 'feedback ok';
-        loadProducts(); // a visszavont készlet frissen jelenjen meg a keresésben
+        // UX-01 javítás — lásd a checkoutBtn sikeres ágának megjegyzését:
+        // a visszavont készlet a következő kereséskor úgyis frissen jön
+        // vissza a szerveroldali /api/product-search.php-ből, nincs
+        // kliensoldali katalógus, amit frissíteni kellene.
     } catch (err) {
         undoSaleFeedback.textContent = 'Hiba: ' + err.message;
         undoSaleFeedback.className = 'feedback error';

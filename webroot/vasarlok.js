@@ -179,7 +179,8 @@ if (bulkDeleteCustomersBtn) {
             selectedCustomerIds.clear();
             loadCustomers();
         } catch (err) {
-            alert('Hiba: ' + err.message);
+            // UX-12 (Phase 7 audit) — natív alert() helyett az alkalmazás saját, nem-blokkoló visszajelzése (window.showToast, lásd topbar.js).
+            window.showToast('Hiba: ' + err.message, 'error');
         }
     });
 }
@@ -351,7 +352,8 @@ if (gdprDeleteBtn) {
             modal.classList.remove('open');
             loadCustomers();
         } catch (err) {
-            alert('Hiba: ' + err.message);
+            // UX-12 (Phase 7 audit) — natív alert() helyett az alkalmazás saját, nem-blokkoló visszajelzése (window.showToast, lásd topbar.js).
+            window.showToast('Hiba: ' + err.message, 'error');
         }
     });
 }

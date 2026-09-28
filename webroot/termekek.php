@@ -200,6 +200,11 @@ if (!Auth::isLoggedIn($appSettings)) {
                     <input type="text" id="p-gross" placeholder="0">
                 </div>
             </div>
+            <!-- UX-13 (Phase 7 audit) — élő, gépelés közbeni figyelmeztetés
+                 negatív/érvénytelen árra, a szerveroldali szabály (lásd
+                 product-save.php PriceValidator) tükrözéseként; maga a
+                 mentés-tiltás/validáció változatlanul a szerveren történik. -->
+            <p id="p-price-warning" class="feedback error hidden"></p>
         </div>
 
         <div id="tab-other" class="tab-panel">

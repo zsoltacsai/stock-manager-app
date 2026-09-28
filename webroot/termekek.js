@@ -278,7 +278,9 @@ async function runBulkAction(action, extra) {
         selectedProductIds.clear();
         loadProducts();
     } catch (err) {
-        alert('Hiba: ' + err.message);
+        // UX-12 (Phase 7 audit) — natív alert() helyett az alkalmazás saját,
+        // nem-blokkoló visszajelzése (window.showToast, lásd topbar.js).
+        window.showToast('Hiba: ' + err.message, 'error');
     }
 }
 

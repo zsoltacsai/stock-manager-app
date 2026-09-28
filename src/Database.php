@@ -3894,6 +3894,20 @@ class Database
                 $locationId,
                 $now,
             ]);
+            // UX-02 (Phase 7 audit) — SZÁNDÉKOSAN NINCS itt egy "a beírt
+            // cash_session_id NULL-e" utólagos ellenőrzés/elutasítás: ez az
+            // atomikus primitívum (a korrelált al-lekérdezés) marad a
+            // Fázis 2, Checkpoint 4 óta bevált, race-toleráns viselkedésű —
+            // lásd tests/CashSessionSaleRaceConcurrencyTest.php, ami EXPLICIT
+            // elvárja, hogy egy a beszúrás pillanatában PONT bezáruló
+            // műszaknál az insertSale() sikeresen, kivétel NÉLKÜL írja be a
+            // sort NULL cash_session_id-vel, ne bukjon el. A "nyitott műszak
+            // nélkül ne induljon el eladás" előfeltétel-ellenőrzés ehelyett a
+            // HÍVÓ (api/sale.php) feladata, a tranzakció MEGKEZDÉSE előtt
+            // (lásd ott a $claimError-ág) — az itt maradó, szűk versenyablak
+            // (a session PONT eközben zár be) ugyanaz a már bizonyítottan
+            // biztonságos, nem néma-adatvesztéses eset, mint amit ez a
+            // primitívum mindig is kezelt.
         } else {
             // Nincs pénztárgép megadva ehhez az eladáshoz — a régi, egyszerű
             // VALUES forma, explicit NULL cash_session_id-vel. Ugyanaz a
@@ -5134,6 +5148,73 @@ class Database
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($params);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * UX-06 (Phase 7 audit) — a listSales()/listPurchases() `$limit`-je
+     * (alapértelmezetten 300) néma csonkolást okozott: a képernyő és a CSV-
+     * export (ami 10000-es limittel hívja ugyanazt) eltérő számot mutatott,
+     * jelzés nélkül. Ez a két számláló-metódus (ugyanazokkal a szűrőkkel,
+     * de LIMIT nélkül) teszi lehetővé, hogy a lista-végpontok a tényleges
+     * összes találatot is visszaadják a UI-nak, ami eldöntheti, jelezze-e
+     * a csonkolást ("N / Összesen") — maga a LIMIT nem változik.
+     */
+    public function countSales(array $filters = []): int
+    {
+        $where = [];
+        $params = [];
+
+        if (!empty($filters['date'])) {
+            [$dateCondition, $dateParams] = $this->dayRangeCondition('created_at', (string) $filters['date']);
+            $where[] = $dateCondition;
+            array_push($params, ...$dateParams);
+        }
+        if (!empty($filters['id'])) {
+            $where[] = 'id = ?';
+            $params[] = (int) $filters['id'];
+        }
+        if (!empty($filters['query'])) {
+            $where[] = 'buyer_name LIKE ?';
+            $params[] = '%' . $filters['query'] . '%';
+        }
+
+        $sql = 'SELECT COUNT(*) FROM sales';
+        if ($where) {
+            $sql .= ' WHERE ' . implode(' AND ', $where);
+        }
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+        return (int) $stmt->fetchColumn();
+    }
+
+    public function countPurchases(array $filters = []): int
+    {
+        $where = [];
+        $params = [];
+
+        if (!empty($filters['date'])) {
+            [$dateCondition, $dateParams] = $this->dayRangeCondition('created_at', (string) $filters['date']);
+            $where[] = $dateCondition;
+            array_push($params, ...$dateParams);
+        }
+        if (!empty($filters['id'])) {
+            $where[] = 'id = ?';
+            $params[] = (int) $filters['id'];
+        }
+        if (!empty($filters['query'])) {
+            $where[] = 'supplier_name LIKE ?';
+            $params[] = '%' . $filters['query'] . '%';
+        }
+
+        $sql = 'SELECT COUNT(*) FROM purchases';
+        if ($where) {
+            $sql .= ' WHERE ' . implode(' AND ', $where);
+        }
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+        return (int) $stmt->fetchColumn();
     }
 
     public function getPurchaseWithItems(int $purchaseId): ?array

@@ -220,6 +220,8 @@ if (!Auth::isLoggedIn($appSettings)) {
                     <input type="text" id="p-gross" placeholder="0">
                 </div>
             </div>
+            <!-- UX-13 (Phase 7 audit) — lásd termekek.php-ban ugyanezt a mintát. -->
+            <p id="p-price-warning" class="feedback error hidden"></p>
         </div>
 
         <div id="tab-other" class="tab-panel">

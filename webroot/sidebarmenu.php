@@ -21,9 +21,16 @@ $__smSidebarLinks = [
         'badge_id' => 'sidebar-webshop-badge',
     ],
     [
+        // UX-09 (Phase 7 audit) — korábban ugyanaz a "dokumentum" alap-alak
+        // (mint a "Beérkezett számlák" ikonjáé) + két vízszintes vonal volt
+        // itt, vizuálisan nagyon hasonlítva a "Beérkezett számlák" ikonjára,
+        // annak ellenére, hogy teljesen más munkafolyamathoz (kiállítás vs.
+        // csak-olvasható NAV-beérkezés) tartoznak. A "küldés" (repülő papír)
+        // ikon vizuálisan is kifejezi a "kimenő" irányt, és egyik másik
+        // navigációs ikon alakjával sem egyezik.
         'href' => 'kimeno-szamlak.php',
         'title' => 'Kimenő számlák',
-        'icon' => '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line>',
+        'icon' => '<line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>',
     ],
     [
         'href' => 'beerkezett-szamlak.php',
@@ -34,6 +41,19 @@ $__smSidebarLinks = [
         'href' => 'termekek.php',
         'title' => 'Árucikkek',
         'icon' => '<rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect>',
+    ],
+    [
+        // UX-03 (Phase 7 audit) — a Leltározás (leltar.php) funkció eddig
+        // teljesen elkészült és működött, de sehonnan nem volt elérhető a
+        // felületről (sem itt, sem a felső menüben, sem a Dashboardon) —
+        // csak a közvetlen URL ismeretében. Az Árucikkek mellé kerül, mert
+        // fogalmilag oda tartozik (a teljes katalógus fizikai
+        // átszámolása/egyeztetése), ugyanazokkal a jogosultságokkal, mint
+        // eddig — ez a bejegyzés csak egy belépési pontot ad hozzá, a
+        // leltar.php saját jogosultság-/hozzáférés-kezelését nem érinti.
+        'href' => 'leltar.php',
+        'title' => 'Leltározás',
+        'icon' => '<path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"></path><rect x="9" y="3" width="6" height="4" rx="1" ry="1"></rect><path d="M9 14l2 2 4-4"></path>',
     ],
     [
         'href' => 'zaras.php',

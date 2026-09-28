@@ -57,7 +57,10 @@ newStockTakeBtn.addEventListener('click', async () => {
     if (data.id) {
         openStockTake(data.id);
     } else if (data.error) {
-        alert(data.error);
+        // UX-12 (Phase 7 audit) — natív alert() helyett az alkalmazás saját,
+        // nem-blokkoló visszajelzése (a listanézetnek nincs saját inline
+        // feedback eleme, a #leltar-feedback csak az aktív-leltár nézetben van).
+        window.showToast(data.error, 'error');
         loadStockTakes();
     }
 });
@@ -66,7 +69,7 @@ async function openStockTake(id) {
     const res = await fetch('/api/stock-take-detail.php?id=' + id);
     const data = await res.json();
     if (!res.ok) {
-        alert(data.error || 'A leltár betöltése sikertelen.');
+        window.showToast(data.error || 'A leltár betöltése sikertelen.', 'error');
         return;
     }
     currentTake = data.stock_take;

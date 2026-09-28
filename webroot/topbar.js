@@ -518,6 +518,11 @@ if ('serviceWorker' in navigator) {
         toast.className = 'sync-toast show' + (kind ? ' ' + kind : '');
         setTimeout(() => toast.classList.remove('show'), 4000);
     }
+    // UX-12 (Phase 7 audit) — globálisan elérhetővé téve, hogy más, később
+    // betöltött oldal-scriptek (kliensek.js, leltar.js, termekek.js,
+    // vasarlok.js) is az alkalmazás meglévő, nem-blokkoló inline
+    // visszajelző mintáját használhassák natív alert() helyett.
+    window.showToast = showToast;
 
     async function loadSettings() {
         try {
@@ -728,7 +733,9 @@ if ('serviceWorker' in navigator) {
                     geoBlockAllowIps.value = existing.join(', ');
                 }
             } catch (e) {
-                alert('A saját IP-cím lekérdezése sikertelen: ' + e.message);
+                // UX-12 (Phase 7 audit) — natív alert() helyett az alkalmazás
+                // saját, nem-blokkoló visszajelzése.
+                showToast('A saját IP-cím lekérdezése sikertelen: ' + e.message, 'error');
             }
             geoAddOwnIpBtn.disabled = false;
         });
@@ -764,14 +771,48 @@ if ('serviceWorker' in navigator) {
                 : '<p class="muted" style="font-size:12px;">Még nincs mentés.</p>';
 
             backupListEl.querySelectorAll('.restore-backup-btn').forEach(btn => {
-                btn.addEventListener('click', () => restoreFromBackup(btn.dataset.filename));
+                btn.addEventListener('click', () => { if (!btn.disabled) restoreFromBackup(btn.dataset.filename, btn); });
             });
         } catch (e) {
             backupListEl.textContent = '';
         }
     }
 
-    async function restoreFromBackup(filename) {
+    // UX-11 (Phase 7 audit) — a vezetői PIN bekérése egy maszkolt input
+    // mezős modallal történik natív prompt() helyett (konzisztencia a
+    // dolgozói PIN-belépéssel). Promise-t ad vissza: a beírt PIN-nel oldódik
+    // fel, vagy `null`-lal, ha a felhasználó Mégse-t nyom / bezárja a modalt.
+    // Ha a modal nincs a lapon (pin-confirm-modal hiányzik), üres string-gel
+    // oldódik fel — ez a régi prompt() "hagyd üresen" viselkedésének felel meg.
+    function askPinForRestore(promptText) {
+        const modal = document.getElementById('pin-confirm-modal');
+        if (!modal) return Promise.resolve('');
+        const input = document.getElementById('pin-confirm-input');
+        const text = document.getElementById('pin-confirm-text');
+        const okBtn = document.getElementById('pin-confirm-ok');
+        const cancelBtn = document.getElementById('pin-confirm-cancel');
+        if (promptText) text.textContent = promptText;
+        input.value = '';
+        modal.classList.add('open');
+        input.focus();
+        return new Promise(resolve => {
+            function cleanup(result) {
+                modal.classList.remove('open');
+                okBtn.removeEventListener('click', onOk);
+                cancelBtn.removeEventListener('click', onCancel);
+                input.removeEventListener('keydown', onKeydown);
+                resolve(result);
+            }
+            function onOk() { cleanup(input.value); }
+            function onCancel() { cleanup(null); }
+            function onKeydown(e) { if (e.key === 'Enter') onOk(); else if (e.key === 'Escape') onCancel(); }
+            okBtn.addEventListener('click', onOk);
+            cancelBtn.addEventListener('click', onCancel);
+            input.addEventListener('keydown', onKeydown);
+        });
+    }
+
+    async function restoreFromBackup(filename, triggerBtn) {
         const confirmed = confirm(
             `Biztosan visszaállítod ezt a mentést: "${filename}"?\n\n` +
             `A jelenlegi adatok felülíródnak (bár erről is készül egy biztonsági mentés visszaállítás előtt).`
@@ -780,8 +821,13 @@ if ('serviceWorker' in navigator) {
         // Visszavonhatatlan, teljes adatbázis-felülírás — ha van dolgozói
         // PIN-rendszer használatban, a szerver friss vezetői PIN-t követel
         // meg (nem elég egy tárolt staff_id), lásd api/backup-restore.php.
-        const pin = prompt('Vezetői PIN megerősítéshez (ha nincs beállítva dolgozói PIN-rendszer, hagyd üresen):') || '';
+        const pin = await askPinForRestore();
+        if (pin === null) return; // Mégse
 
+        // UX-11 (Phase 7 audit) — a kiváltó gomb letiltása a kérés idejére,
+        // hogy egy türelmetlen dupla-kattintás ne indítson két párhuzamos
+        // visszaállítást.
+        if (triggerBtn) triggerBtn.disabled = true;
         const restoreFeedback = document.getElementById('restore-feedback');
         if (restoreFeedback) {
             restoreFeedback.textContent = 'Visszaállítás folyamatban...';
@@ -804,6 +850,8 @@ if ('serviceWorker' in navigator) {
                 restoreFeedback.textContent = 'Hiba: ' + err.message;
                 restoreFeedback.className = 'modal-feedback error';
             }
+        } finally {
+            if (triggerBtn) triggerBtn.disabled = false;
         }
     }
 
@@ -811,6 +859,7 @@ if ('serviceWorker' in navigator) {
     const restoreFileBtn = document.getElementById('restore-file-btn');
     if (restoreFileBtn) {
         restoreFileBtn.addEventListener('click', async () => {
+            if (restoreFileBtn.disabled) return; // UX-11 — dupla-kattintás elleni védelem
             const restoreFeedback = document.getElementById('restore-feedback');
             if (!restoreFileInput.files.length) {
                 restoreFeedback.textContent = 'Válassz ki egy fájlt.';
@@ -822,8 +871,10 @@ if ('serviceWorker' in navigator) {
                 'A jelenlegi adatok felülíródnak (bár erről is készül egy biztonsági mentés visszaállítás előtt).'
             );
             if (!confirmed) return;
-            const pin = prompt('Vezetői PIN megerősítéshez (ha nincs beállítva dolgozói PIN-rendszer, hagyd üresen):') || '';
+            const pin = await askPinForRestore();
+            if (pin === null) return; // Mégse
 
+            restoreFileBtn.disabled = true;
             restoreFeedback.textContent = 'Feltöltés és visszaállítás folyamatban...';
             restoreFeedback.className = 'modal-feedback';
             try {
@@ -840,6 +891,8 @@ if ('serviceWorker' in navigator) {
             } catch (err) {
                 restoreFeedback.textContent = 'Hiba: ' + err.message;
                 restoreFeedback.className = 'modal-feedback error';
+            } finally {
+                restoreFileBtn.disabled = false;
             }
         });
     }

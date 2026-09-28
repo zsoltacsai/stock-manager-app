@@ -46,6 +46,12 @@ if (!Auth::isLoggedIn($appSettings)) {
             összesített (minden telephelyen lévő) mennyiséget használja; ez a lista csak a
             telephelyenkénti bontást és a köztük történő mozgatást teszi lehetővé.
         </p>
+        <p class="muted" style="margin-top:0;">
+            <!-- UX-10 (Phase 7 audit) — a Pénztárgépek adminisztráció eddig
+                 kizárólag a Kassza-riportból volt elérhető, pedig a
+                 pénztárgépek fogalmilag a telephelyekhez tartoznak. -->
+            A telephelyekhez tartozó pénztárgépek kezelése (felvétel, szerkesztés): <a href="penztargepek.php">Pénztárgépek kezelése</a>.
+        </p>
         <div class="tabs">
             <button class="tab-btn active" data-tab="tab-locations">Telephelyek</button>
             <button class="tab-btn" data-tab="tab-transfer">Készletmozgatás</button>

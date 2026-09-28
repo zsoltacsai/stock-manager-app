@@ -245,6 +245,7 @@ if ($giftCardCode !== '') {
 $giftCardNewBalance = null;
 $newPointsBalance = null;
 $claimError = null;
+$claimErrorCode = null;
 
 $db->beginTransaction();
 try {
@@ -261,6 +262,19 @@ try {
         $claimError = 'A vásárlónak időközben már nincs elég pontja. Kérlek, próbáld újra.';
     } elseif ($giftCard && $giftCardRedeemed > 0 && !$db->tryClaimGiftCardBalance((int) $giftCard['id'], $giftCardRedeemed)) {
         $claimError = 'Az ajándékutalvány egyenlege időközben megváltozott. Kérlek, próbáld újra.';
+    } elseif ($cashRegisterId !== null && !$db->getOpenCashSession($cashRegisterId)) {
+        // UX-02 (Phase 7 audit) — a hívó (a Kassza oldal) egy KONKRÉT
+        // pénztárgépet nevezett meg (tudja, melyiket, mert legalább egy
+        // pénztárgép konfigurálva van), ezen viszont nincs nyitott műszak.
+        // Korábban ilyenkor is létrejött az eladás, `cash_session_id = NULL`
+        // értékkel — nyomtalanul, egyetlen kasszazárás sem számolta el. A
+        // "$cashRegisterId === null" eset (a hívó EGYÁLTALÁN nem is küldött
+        // pénztárgép-azonosítót — lásd sale.php eleji docblokk) VÁLTOZATLAN
+        // marad: az a kasszakezelést egyáltalán nem használó boltok
+        // visszafelé kompatibilis útvonala, ezt a Phase 7 audit sem
+        // kifogásolta.
+        $claimError = 'Nincs nyitva műszak ezen a pénztárgépen — nyisd meg a Kassza oldalon, mielőtt eladást rögzítenél.';
+        $claimErrorCode = 'cash_session_required';
     }
 
     if ($claimError !== null) {
@@ -363,7 +377,11 @@ try {
 }
 
 if ($claimError !== null) {
-    send_json(['error' => $claimError], 409);
+    $errorResponse = ['error' => $claimError];
+    if ($claimErrorCode !== null) {
+        $errorResponse['code'] = $claimErrorCode;
+    }
+    send_json($errorResponse, 409);
 }
 
 $invoiceResult = null;

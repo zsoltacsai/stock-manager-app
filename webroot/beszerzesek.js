@@ -17,16 +17,21 @@ async function loadPurchases() {
     if (fId.value.trim()) params.set('id', fId.value.trim());
     if (fQuery.value.trim()) params.set('query', fQuery.value.trim());
 
+    // UX-08 (Phase 7 audit) — lásd eladasok.js-ben ugyanezt a mintát.
+    resultsBody.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center; padding:24px;"><span class="spinner"></span> Betöltés...</td></tr>';
     try {
         const data = await fetchJson('/api/purchases-list.php?' + params.toString());
-        renderResults(data.purchases || []);
+        renderResults(data.purchases || [], data.total);
     } catch (err) {
         resultsBody.innerHTML = `<tr><td colspan="6" class="muted">Hiba: ${escapeHtml(err.message)}</td></tr>`;
     }
 }
 
-function renderResults(purchases) {
-    resultsCount.textContent = `${purchases.length} beszerzés`;
+function renderResults(purchases, total) {
+    // UX-06 (Phase 7 audit) — lásd eladasok.js-ben ugyanezt a mintát.
+    resultsCount.textContent = (typeof total === 'number' && total > purchases.length)
+        ? `${purchases.length} / ${total} beszerzés — szűrj a teljes listához`
+        : `${purchases.length} beszerzés`;
     resultsBody.innerHTML = purchases.length
         ? purchases.map(p => `
             <tr class="clickable-row" data-id="${p.id}">

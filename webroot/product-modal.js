@@ -19,6 +19,7 @@ window.ProductModal = (function () {
     const pVat = document.getElementById('p-vat');
     const pNet = document.getElementById('p-net');
     const pGross = document.getElementById('p-gross');
+    const pPriceWarning = document.getElementById('p-price-warning');
     const pBarcode = document.getElementById('p-barcode');
     const pWeight = document.getElementById('p-weight');
     const pVolume = document.getElementById('p-volume');
@@ -321,11 +322,28 @@ window.ProductModal = (function () {
         });
     }
 
+    // UX-13 (Phase 7 audit) — korábban a negatív/érvénytelen ár csak a
+    // Mentés gomb megnyomása UTÁN derült ki (a szerver helyesen elutasítja,
+    // lásd PriceValidator/product-save.php); ez élő, gépelés közbeni
+    // visszajelzést ad ugyanarra a szabályra, a mentést magát nem érinti.
+    function checkPriceWarning() {
+        if (!pPriceWarning) return;
+        const invalid = [pNet.value, pGross.value].some(raw => {
+            if (raw === '') return false;
+            const n = parseFloat(raw);
+            return isNaN(n) || n < 0;
+        });
+        pPriceWarning.textContent = invalid ? 'Negatív vagy nem szám ár nem adható meg — a mentés elutasítja.' : '';
+        pPriceWarning.classList.toggle('hidden', !invalid);
+    }
+
     pNet.addEventListener('input', () => {
+        checkPriceWarning();
         if (pNet.value === '') return;
         pGross.value = grossFromNet(parseFloat(pNet.value) || 0, pVat.value);
     });
     pGross.addEventListener('input', () => {
+        checkPriceWarning();
         if (pGross.value === '') return;
         pNet.value = netFromGross(parseFloat(pGross.value) || 0, pVat.value);
     });
@@ -348,6 +366,7 @@ window.ProductModal = (function () {
         pVat.value = existingProduct ? existingProduct.vat_rate : '27';
         pNet.value = existingProduct ? existingProduct.net_price : '';
         pGross.value = existingProduct ? existingProduct.price : '';
+        if (pPriceWarning) { pPriceWarning.textContent = ''; pPriceWarning.classList.add('hidden'); }
         pBarcode.value = existingProduct ? (existingProduct.barcode || '') : (prefillBarcode || '');
         pWeight.value = existingProduct && existingProduct.weight != null ? existingProduct.weight : '';
         if (pVolume) pVolume.value = existingProduct && existingProduct.volume != null ? existingProduct.volume : '';

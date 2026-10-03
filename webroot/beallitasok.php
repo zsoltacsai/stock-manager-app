@@ -343,12 +343,17 @@ if (!Auth::isLoggedIn($appSettings)) {
             </select>
             <p class="muted" style="margin-top:-6px;">
                 Melyik szolgáltató állítsa ki a tényleges számlákat. A NAV Online
-                Számla keretrendszer szinten már készen áll (közös számla-
-                nyilvántartás, beállítások), DE a tényleges NAV-beküldés még
-                <strong>nincs bekötve ebben a verzióban</strong> — ha mégis ezt
-                választod, az eladás rögzítése változatlanul sikeres marad, csak a
-                számla-kiállítás fog egyértelmű, "még nincs bekötve" hibát adni,
-                amíg a NAV-integráció el nem készül egy következő körben.
+                Számla beküldés <strong>implementált és aszinkron</strong> — a
+                kassza sosem vár a NAV válaszára, egy háttér-worker (és a hozzá
+                tartozó cron feladat) küldi be a számlákat egy belső
+                várólistából. A használatához NAV technikai felhasználó
+                (login, jelszó, aláíró és csere kulcs, adószám) beállítása
+                szükséges — lásd a README "NAV Online Számla" szakaszát a
+                teljes lépéssorért. A teszt rendszer
+                (<code>api-test.onlineszamla.nav.gov.hu</code>) alapból BE van
+                kapcsolva — élesítés előtt ezt tudatosan ki kell kapcsolni. A
+                NAV-beküldést valódi NAV sandbox-hívásokkal ellenőriztük; élő
+                NAV-termelési fiókkal ez a telepítés nem lett validálva.
             </p>
             <button id="settings-save-invoice-provider-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Mentés</button>
             <p id="settings-invoice-provider-feedback" class="modal-feedback"></p>

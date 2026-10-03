@@ -41,9 +41,19 @@ hozzá az ondrej/php PPA-t: `sudo add-apt-repository ppa:ondrej/php`,
 vagy állítsd a fenti sorban 8.3 helyett a nálad elérhető, 8.1+
 verziószámra.)
 
+CSAK akkor, ha MySQL-t választasz adatbázisnak SQLite helyett (lásd
+README "Adatbázis: SQLite vs MySQL" szakasza) — a fenti lista NEM
+tartalmazza, enélkül a MySQL-kapcsolat "could not find driver" hibával
+elbukik:
+
+    sudo apt install php8.3-mysql
+
+Megjegyzés: a MySQL-ágat ez a telepítés NEM validálta élő MySQL-
+szerverrel, csak kódszinten és SQL-rögzítéssel (lásd README).
+
 Ellenőrzés, hogy minden kiterjesztés tényleg bekapcsolt-e:
 
-    php -m | grep -iE "sqlite3|curl|mbstring|gd|xml|zip|fileinfo|openssl|opcache"
+    php -m | grep -iE "sqlite3|curl|mbstring|gd|xml|zip|fileinfo|openssl|opcache|mysql"
 
 Ha valamelyik hiányzik (pl. fileinfo vagy openssl néha külön
 csomagban van disztribúciónként), keresd meg és telepítsd:
@@ -272,6 +282,18 @@ porton, hanem a rendes 80/443-on):
     * * * * *     curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "https://kassza.pelda.hu/api/nav-queue-run.php" > /dev/null
     0 * * * *     curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "https://kassza.pelda.hu/api/nav-incoming-sync-run.php" > /dev/null
     */30 * * * *  curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "https://kassza.pelda.hu/api/update-check-run.php" > /dev/null
+    * * * * *     curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "https://kassza.pelda.hu/api/wc-queue-run.php" > /dev/null
+    */30 * * * *  curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "https://kassza.pelda.hu/api/ai-daily-intelligence-run.php" > /dev/null
+
+(Ez mind a hét, a Windows telepítő által is automatikusan regisztrált
+cron-feladat Linux/crontab megfelelője — lásd install.txt "8.
+AUTOMATIKUS FELADATOK" szakaszát a táblázatos áttekintésért. A
+wc-queue-run.php a helyi eladásokból származó WooCommerce készlet-
+KIKÜLDÉST dolgozza fel (a fenti auto-sync-run.php ezzel szemben a
+termék/rendelés BEHÚZÁST végzi) — enélkül a helyi eladások miatti
+készletcsökkenés sosem jut el a WooCommerce-be. Az ai-daily-
+intelligence-run.php csak akkor csinál bármit, ha a Beállítások → AI
+asszisztens alatt az "AI napi intelligencia" be van kapcsolva.)
 
 (A token a Beállítások → Mentés alatt beállítható cron titkos
 tokennel egyezzen — enélkül ezek a végpontok bejelentkezés nélkül
@@ -283,9 +305,9 @@ Beállítások oldal a "localhost:8000"-es változatot mutatja
 példaként, mert az a helyi/fejlesztői telepítésre utal — élesben a
 fenti, a saját domained szerinti sort használd, a saját tokeneddel.
 
-Az utolsó két sor a NAV Online Számla integrációhoz tartozik: a
-nav-queue-run.php a kimenő (a boltban kiállított) számlák NAV felé
-történő tényleges beküldését végzi, a nav-incoming-sync-run.php a
+A nav-queue-run.php és a nav-incoming-sync-run.php sor a NAV Online
+Számla integrációhoz tartozik: előbbi a kimenő (a boltban kiállított)
+számlák NAV felé történő tényleges beküldését végzi, utóbbi a
 más adózók által kiállított, beérkező számlák szinkronját. Mindkettő
 önmagától "skipped"-del tér vissza, ha a NAV integráció nincs
 bekapcsolva (Beállítások → Számlázz.hu → "NAV számla queue

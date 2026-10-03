@@ -47,13 +47,23 @@ if (!Auth::isLoggedIn($appSettings)) {
             elérheted a Beállításokon keresztül a hiányzó lépéseket (bolt neve, MySQL stb.).
         </p>
 
+        <h2>Dashboard</h2>
+        <p>
+            Bejelentkezés után ez az alapértelmezett kezdőoldal: napi forgalom, nyitott
+            kasszák, alacsony/kifogyott készletű termékek, és az AI napi összefoglaló (ha be
+            van kapcsolva) egy helyen.
+        </p>
+
         <h2>Kassza (mindennapi eladás)</h2>
         <ul>
             <li>Vonalkód-olvasóval (USB-s vagy a kamera ikonnal) vagy kereséssel add hozzá a termékeket a kosárhoz.</li>
             <li>Ha a raktárban nem szereplő tételt (pl. szolgáltatást) kell felvenni, használd a "+ Kézi tétel hozzáadása" gombot.</li>
-            <li>"Vevő számlát kér" bejelölésével a Számlázz.hu-n keresztül automatikusan kiállításra kerül a számla — bejelölés nélkül csak a helyi nyugta készül el.</li>
+            <li>"Vevő számlát kér" bejelölésével a Számlázz.hu-n (vagy NAV Online Számlán, ha azt választottad) keresztül automatikusan kiállításra kerül a számla — bejelölés nélkül csak a helyi nyugta készül el.</li>
             <li>Kupon, ajándékutalvány és törzsvásárlói pontok/hűségszint kedvezménye ugyanazon az eladáson belül is kombinálható.</li>
             <li>Eladás után a nyugta nyomtatható, vagy e-mailben elküldhető (utóbbihoz a szervernek kell tudnia leveleket küldeni).</li>
+            <li>Ha a boltod használja a pénztárgép-szintű kasszanyitást/zárást (Beállítások →
+                Pénztárgépek), eladás előtt nyisd meg a műszakot — egy konkrét pénztárgépen
+                nyitott műszak nélkül az eladás nem rögzíthető azon a gépen.</li>
         </ul>
 
         <h2>Beszerzés</h2>
@@ -80,9 +90,32 @@ if (!Auth::isLoggedIn($appSettings)) {
             <li><strong>Beszállítók</strong>, <strong>Vásárlók</strong>, <strong>Kedvezmények</strong> (kupon, ajándékutalvány) — ezek a Kasszán/Beszerzésen belülről, kontextusból nyílnak meg linkként.</li>
             <li><strong>Dolgozók</strong> — PIN-kódos azonosítás a Kasszán, elszámoltathatósághoz. Nem valódi beléptető rendszer, csak nyomon követés.</li>
             <li><strong>Leltározás</strong> — fizikai készletszámlálás rögzítése, eltérés-riporttal.</li>
+            <li><strong>Telephelyek</strong> — ha több üzleted/raktárad van, itt kezelheted a
+                telephelyeket és mozgathatsz készletet közöttük.</li>
+            <li><strong>Kliensek</strong> — csak a Kliens/Szerver több-terminálos üzemmódnál
+                releváns: itt regisztrálhatod/kezelheted a hálózaton csatlakozó
+                pénztár-gépeket.</li>
+            <li><strong>Kassza-riport</strong> — a pénztárgép-szintű kasszanyitások/zárások
+                listája, eltérés-számítással.</li>
+            <li><strong>Kimenő számlák</strong> — a boltod által kiállított számlák listája
+                (Számlázz.hu vagy NAV, a beállított szolgáltatótól függően).</li>
+            <li><strong>Beérkezett számlák</strong> — más cégek által kiállított, a NAV-tól
+                automatikusan beérkező számlák (csak NAV-integrációnál).</li>
+            <li><strong>Beérkező eladások</strong> — a webáruházból érkező rendelések, admin
+                jóváhagyásra várva, mielőtt a helyi készletből levonásra kerülnének.</li>
+            <li><strong>AI Asszisztens</strong> — ha be van kapcsolva (Beállítások → AI
+                asszisztens): kérdezhetsz tőle a forgalomról/készletről, és (ha az admin
+                engedélyezte) napi automatikus beszerzési javaslatokat is ad, amiket egy
+                vezetőnek kézzel kell jóváhagynia, mielőtt bármi ténylegesen történne.</li>
             <li><strong>Rendszerállapot</strong> — szinkron- és mentés-állapot, bevétel-trend, egy helyen.</li>
             <li><strong>Tevékenységnapló</strong> — ki mit módosított (jelenleg: termék-törlések).</li>
         </ul>
+
+        <h2>Mobil használat</h2>
+        <p>
+            Keskeny képernyőn (≤768px) az oldalsáv helyett a fejléc bal felső sarkában egy
+            hamburger-ikon (☰) nyitja meg az összes oldalt tartalmazó navigációs fiókot.
+        </p>
 
         <h2>Globális kereső</h2>
         <p>

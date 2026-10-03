@@ -4,6 +4,107 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
+## [Unreleased] — Accessibility remediáció (billentyűzet, fókuszkezelés, screen reader-előkészítés)
+
+Teljes alkalmazást érintő, WCAG 2.1/2.2-alapú audit nyomán — CRITICAL
+findingek (POS keresés billentyűzettel elérhetetlen, toast-rendszer nem
+jelez screen readernek, reszponzív kártyanézet elveszíti a
+táblázat-szemantikát) és HIGH findingek (modalok és a mobil navigációs
+fiók nem csapdázzák a fókuszt) javítva, egységes, központi
+mechanizmusokkal (nem oldalankénti duplikáció).
+
+### Fixed
+
+- **POS/globális/vevő-/telephely-kereső billentyűzet-navigáció** — egy
+  megosztott `attachSearchListboxKeyboard()` segédfüggvény (`topbar.js`)
+  ad szabványos combobox+listbox ARIA-mintát (Arrow Up/Down, Enter,
+  Escape, `aria-activedescendant`) minden élő keresési találat-listának
+  — korábban ezek kizárólag egérrel voltak kiválaszthatók.
+- **Toast/visszajelzés-rendszer `aria-live`** — a `#sync-toast` és
+  minden `.feedback`/`.modal-feedback` elem `role="status"`/
+  `aria-live="polite"`-ot kap, hibaüzenetnél `role="alert"`/
+  `aria-live="assertive"`-re váltva.
+- **Reszponzív kártyanézet táblázat-szemantikája** — a `.rt-cards`
+  minta (9 lista-oldal) ≤768px szélességnél elvesztette a `table`/
+  `row`/`cell` ARIA-szerepköröket (a CSS `display`-váltás miatt); egy
+  központi szkript visszaállítja ezeket, és minden sor-jelölő
+  checkbox-nak/akció-gombnak a sor nevét tartalmazó, egyedi accessible
+  name-et ad.
+- **Mobil navigációs fiók fókusz-izolációja** — a fiók `inert` zárt
+  állapotban (linkjei nem kerülnek bele a Tab-sorrendbe), és `inert`-
+  teszi a hátteret nyitott állapotban (valódi fókuszcsapda).
+- **Modal fókuszcsapda** — egyetlen közös megfigyelő ad `role="dialog"`/
+  `aria-modal`/`aria-labelledby`-t és Tab/Shift+Tab-csapdát minden
+  `.modal-overlay` dialógusnak (~28 előfordulás); korábban élőben
+  reprodukálható volt, hogy egy nyitott termék-szerkesztő modal mellett
+  a Tab egy MÁSIK termék "Törlés" gombjára ugrott.
+- Kisebb javítások: `<main>` landmark, táblázat-fejléc `scope="col"`,
+  ARIA tabs-szemantika, néhány kontraszt-javítás, `prefers-reduced-motion`.
+
+### Dokumentált, változatlan korlát
+
+Valódi NVDA/JAWS/Narrator screen reader-validáció **nem történt** ebben
+a körben (a validálási környezetben nem állt rendelkezésre) — a fenti
+javítások kódszinten és a böngésző saját, élő accessibility-fáján
+keresztül vannak megerősítve, nem tényleges hangzó AT-kimenettel.
+
+## [Unreleased] — Reszponzív / mobil remediáció
+
+Reszponzív/mobil audit (320–1920px viewport-mátrix, portrait/landscape)
+nyomán: 2 HIGH, 5 MEDIUM, 1 LOW confirmed finding javítva.
+
+### Fixed
+
+- **Mobil navigáció** — ≤768px szélességnél a desktop ikon-sáv eltűnik;
+  helyette egy hamburger-gomb (`headermenu.php`) nyit egy off-canvas
+  navigációs fiókot (`sidebarmenu.php` `#mobile-nav-drawer`), ami a
+  MEGLÉVŐ linklistából épül fel (garantált parity a desktop sávval).
+- **Reszponzív táblázat → kártya** — egy megosztott `.rt-cards` CSS-
+  komponens (`data-label` attribútumokkal) 9 lista-oldalon alakítja
+  kártyás nézetté a táblázatokat keskeny képernyőn, önálló mobil
+  rendező-legördülővel és "mind kijelölése" tükör-vezérlővel, ahol a
+  desktopos táblázatnak bulk-műveletei vannak.
+- **POS kosár táblázat** mobil nézete saját, szűkített CSS-t kapott
+  (`.pos-cart-table`), hogy 480px alatt is használható maradjon.
+- **Modal action-gombok** `position:sticky`-vel a saját görgetési
+  konténerükön belül, hogy rövid magasságú (fekvő mobil) viewportnál se
+  váljanak elérhetetlenné.
+- **Touch-cél méretek**: mért rés alapján, elemenként választott
+  technika (láthatatlan hit-slop vagy tényleges átméretezés) az
+  érintési célterületek növelésére, átfedés nélkül.
+
+## [Unreleased] — UX-audit javítások (hibaüzenetek, navigáció, visszajelzések)
+
+Egy teljes körű UX-audit (13 finding, CRITICAL-tól LOW-ig) nyomán.
+
+### Fixed
+
+- **UX-01 (CRITICAL)** — egy ottfelejtett `loadProducts()` hívás (a
+  szerveroldali keresésre váltás óta nem létező függvény) minden
+  sikeres eladás UTÁN egy "Hiba: loadProducts is not defined" szöveggel
+  felülírta a már kiírt siker-üzenetet — pusztán kozmetikai hiba volt
+  (az eladás ténylegesen mindig sikeres maradt), de minden egyes
+  eladásnál téves hiba-benyomást keltett.
+- **UX-02 (HIGH)** — ha a kasszás egy konkrét pénztárgépet jelölt meg,
+  de azon nem volt nyitott műszak, az eladás korábban ennek ellenére
+  létrejött, `cash_session_id = NULL`-lal — nyomtalanul, egyetlen
+  kasszazárás sem számolta el. Mostantól ilyenkor az eladás elutasításra
+  kerül, egyértelmű "Nincs nyitva műszak…" üzenettel.
+- **UX-03 (HIGH)** — a Leltározás (`leltar.php`) egy teljesen kész,
+  működő oldal volt, de nem szerepelt a bal oldali navigációban —
+  gyakorlatilag megtalálhatatlan volt URL ismerete nélkül.
+- **UX-04…UX-09 (MEDIUM)** — kupon/utalvány hibaüzenet a mező
+  közelében (nem a távoli checkout-visszajelzésben); a visszáru
+  sikerüzenete túléli a lista újra-renderelését; néma lista-csonkolás
+  jelzése; telephelyi/globális készlet-eltérés magyarázata; konzisztens
+  "Betöltés…" jelzés a lista-oldalakon; a Kimenő és Beérkezett számlák
+  ikonjának megkülönböztetése.
+- **UX-10…UX-13 (LOW)** — kereszthivatkozás Telephelyek↔Pénztárgépek
+  között; natív `prompt()` lecserélése egy maszkolt PIN-dialógusra a
+  mentés-visszaállításnál; natív `alert()` lecserélése az app saját,
+  nem-blokkoló inline visszajelzésére (toast); élő figyelmeztetés
+  negatív/érvénytelen ár gépelése közben.
+
 ## [Unreleased] — Performance remediation (Phase 6 PERF-01…PERF-09)
 
 Bugfix/teljesítmény-javítás, új üzleti funkció nélkül (1.0 RC freeze). A

@@ -138,7 +138,14 @@ irányítani az egyes lépéseket, kövesd az alábbiakat.)
 - Windows 10/11
 - PHP 8.1 vagy újabb (ez az útmutató PHP 8.3-mal lett tesztelve)
 - Az alábbi PHP-kiterjesztések bekapcsolva:
-    pdo_sqlite, sqlite3    -> az adatbázishoz
+    pdo_sqlite, sqlite3    -> az adatbázishoz (alapértelmezett, SQLite)
+    pdo_mysql              -> CSAK akkor kell, ha az 5. pontban MySQL-t
+                              választasz adatbázisnak SQLite helyett —
+                              enélkül a MySQL-hez csatlakozás "could not
+                              find driver" hibával elbukik. Megjegyzés:
+                              a MySQL-ágat ez a telepítő NEM validálta
+                              élő MySQL-szerverrel, csak kódszinten és
+                              SQL-rögzítéssel (lásd README).
     curl                   -> WooCommerce / Számlázz.hu / NAV / Dropbox /
                               Google Drive hívásokhoz
     mbstring               -> ékezetes szövegek, karakterkódolás
@@ -425,7 +432,20 @@ amik ezt futtatják:
   alatt az "Automatikus ellenőrzés" be van kapcsolva):
     curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "http://localhost:8000/api/update-check-run.php"
 
-Mind az öt végpont ugyanazt a hitelesítést használja: a token a
+  WooCommerce készlet-push queue (javasolt: percenként — ettől
+  FÜGGETLEN a fenti "Szinkron" bejegyzéstől: az auto-sync-run.php a
+  termék/rendelés BEHÚZÁST végzi, ez a wc-queue-run.php pedig a helyi
+  eladásokból származó készlet-KIKÜLDÉST dolgozza fel egy belső
+  várólistáról — enélkül a WooCommerce-be sosem jut el a helyi
+  eladások miatti készletcsökkenés):
+    curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "http://localhost:8000/api/wc-queue-run.php"
+
+  AI napi intelligencia (javasolt: 30 percenként — csak akkor csinál
+  bármit, ha a Beállítások → AI asszisztens alatt az "AI napi
+  intelligencia" be van kapcsolva):
+    curl -s -H "X-Cron-Token: IDE_A_CRON_TOKEN" "http://localhost:8000/api/ai-daily-intelligence-run.php"
+
+Mind a hét végpont ugyanazt a hitelesítést használja: a token a
 Beállítások → Mentés alatt beállítható cron titkos tokennel egyezzen
 — enélkül egyik végpont se futna le bejelentkezés nélkül (a
 Feladatütemező nem tud böngészőben bejelentkezni). A token KIZÁRÓLAG
@@ -461,6 +481,35 @@ cron-tick alatt éri utol magát, adatvesztés nélkül, csak késéssel.
 A tényleges gyakoriságot/be- és kikapcsolást a Beállítások →
 Szinkronizálás, Beállítások → Mentés és Beállítások → Számlázz.hu
 füleken állíthatod be.
+
+Mind a hét feladat áttekintése (ugyanez a lista regisztrálódik
+automatikusan a Windows telepítőn, Szerver/Önálló módban — Kliens
+módban EGYIK SEM, mert egy Kliens node-nak nincs saját adatbázisa,
+amin bármelyik worker dolgozhatna):
+
+  Végpont                          | Javasolt gyakoriság | Mit csinál
+  ----------------------------------+----------------------+---------------------------------
+  auto-sync-run.php                | percenként           | WooCommerce termék/rendelés behúzás
+  auto-backup-run.php              | 15 percenként        | Automatikus biztonsági mentés
+  nav-queue-run.php                | percenként           | NAV kimenő számla-queue feldolgozása
+  nav-incoming-sync-run.php        | óránként             | NAV bejövő számla-szinkron
+  update-check-run.php             | 30 percenként        | Önfrissítés-ellenőrzés (csak ellenőriz)
+  wc-queue-run.php                 | percenként           | WooCommerce készlet-push queue feldolgozása
+  ai-daily-intelligence-run.php    | 30 percenként        | AI napi intelligencia (ha be van kapcsolva)
+
+Mind a hét ugyanazt az X-Cron-Token hitelesítést igényli, és mind
+ártalmatlan, ha gyakrabban hívod, mint kell (lásd fentebb).
+
+FONTOS — MEGLÉVŐ TELEPÍTÉS FRISSÍTÉSE UTÁN:
+Ha ezt a gépet korábban (a párhuzamos-futtatási diszpécser bevezetése
+előtti verzióval) telepítetted, és azóta önfrissítéssel/kézi
+kódcserével frissítetted, az önfrissítés telepíti a
+`tools/http-dispatcher.php`-t, DE a Feladatütemező szerver-bejegyzését
+NEM írja át — a párhuzamos futtatásra (3 pénztári + 1 háttér-folyamat,
+lásd README "Teljesítmény, futtatási modell és kapacitás" szakasza) való
+átálláshoz EGYSZER újra kell futtatnod a FountainTrade-Setup.bat-ot
+(idempotens, az adatokat nem érinti). Enélkül a gép csendben, az
+eredeti, egyszálú `php -S`-sel fut tovább.
 
 
 ---------------------------------------------------------------
@@ -524,10 +573,14 @@ Nem tudod eldönteni, hogy "rendben van-e" a rendszer, vagy hogy miért
 nem szinkronizál/mentődik valami
   -> Nyisd meg a Rendszerállapot oldalt (bal oldali menü, vagy
      http://localhost:8000/rendszerallapot.php). Ez EGY helyen mutatja
-     minden beállított integráció (adatbázis, biztonsági mentés,
-     WooCommerce, NAV, SMTP, nyomtató, frissítő) állapotát, az utolsó
-     ellenőrzés/siker időpontját és — hiba esetén — egy emberi nyelvű
-     magyarázatot. A "Figyelmet igényel" kártya (ha megjelenik) mindig
+     a legtöbb beállított integráció (adatbázis, biztonsági mentés,
+     WooCommerce, NAV kimenő queue, SMTP, nyomtató, frissítő) állapotát,
+     az utolsó ellenőrzés/siker időpontját és — hiba esetén — egy emberi
+     nyelvű magyarázatot. (Kivétel: a NAV "Kapcsolat tesztelése" gomb
+     eredménye és a NAV bejövő szinkron utolsó futási ideje jelenleg nem
+     jelenik meg ezen az oldalon — a kapcsolat-teszt eredményét a gomb
+     megnyomása után azonnal, helyben látod.) A "Figyelmet igényel"
+     kártya (ha megjelenik) mindig
      a legfontosabb, azonnal kezelendő problémákat listázza. Az
      "Eseménynapló" kártya az elmúlt események (sikeres/sikertelen
      mentés, szinkron, frissítés stb.) részletes, szűrhető listáját

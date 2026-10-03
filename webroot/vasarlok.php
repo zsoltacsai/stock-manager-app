@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:1100px;">
+<div role="main" class="import-panel" style="max-width:1100px;">
     <div class="import-card">
         <div class="products-toolbar">
             <input type="text" id="search-input" placeholder="Keresés név, telefon, email alapján..." style="max-width:320px; margin-bottom:0;">
@@ -61,7 +61,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <div class="sample-table-wrap">
 <table class="sample-table rt-cards">
             <thead>
-                <tr><th style="width:32px;"><input type="checkbox" id="select-all-customers" title="Mind kijelölése"></th><th>Név</th><th>Telefon</th><th>Email</th><th>Pontegyenleg</th><th></th></tr>
+                <tr><th scope="col" style="width:32px;"><input type="checkbox" id="select-all-customers" title="Mind kijelölése"></th><th scope="col">Név</th><th scope="col">Telefon</th><th scope="col">Email</th><th scope="col">Pontegyenleg</th><th scope="col"></th></tr>
             </thead>
             <tbody id="customers-body"></tbody>
         </table>
@@ -153,7 +153,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <div id="c-tab-items" class="tab-panel">
             <div class="sample-table-wrap" style="max-height:360px; overflow-y:auto;">
                 <table class="sample-table">
-                    <thead><tr><th>Dátum</th><th>Termék</th><th>Menny.</th><th>Egységár</th></tr></thead>
+                    <thead><tr><th scope="col">Dátum</th><th scope="col">Termék</th><th scope="col">Menny.</th><th scope="col">Egységár</th></tr></thead>
                     <tbody id="c-items-body"></tbody>
                 </table>
             </div>

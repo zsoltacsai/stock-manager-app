@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:1100px;">
+<div role="main" class="import-panel" style="max-width:1100px;">
 
     <div class="import-card">
         <p class="muted" style="margin-top:0; margin-bottom:14px;">
@@ -74,13 +74,13 @@ if (!Auth::isLoggedIn($appSettings)) {
             <table class="sample-table rt-cards">
                 <thead>
                     <tr>
-                        <th><input type="checkbox" id="bj-select-all"></th>
-                        <th>Termék</th>
-                        <th>Készlet</th>
-                        <th>Napi fogyás</th>
-                        <th>Kifogyás</th>
-                        <th>Javasolt mennyiség</th>
-                        <th>Indok</th>
+                        <th scope="col"><input type="checkbox" id="bj-select-all"></th>
+                        <th scope="col">Termék</th>
+                        <th scope="col">Készlet</th>
+                        <th scope="col">Napi fogyás</th>
+                        <th scope="col">Kifogyás</th>
+                        <th scope="col">Javasolt mennyiség</th>
+                        <th scope="col">Indok</th>
                     </tr>
                 </thead>
                 <tbody id="bj-body"></tbody>

@@ -43,7 +43,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel">
+<div role="main" class="import-panel">
 
     <div class="import-card">
         <p class="muted" style="margin-top:0;"><a href="penztargepek.php">Pénztárgépek kezelése</a></p>
@@ -89,7 +89,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <div class="sample-table-wrap">
 <table class="sample-table rt-cards">
             <thead>
-                <tr><th>#</th><th>Telephely</th><th>Pénztárgép</th><th>Kasszás</th><th>Állapot</th><th>Nyitás</th><th>Zárás</th><th>Nyitó</th><th>Számolt</th><th>Várható</th><th>Eltérés</th></tr>
+                <tr><th scope="col">#</th><th scope="col">Telephely</th><th scope="col">Pénztárgép</th><th scope="col">Kasszás</th><th scope="col">Állapot</th><th scope="col">Nyitás</th><th scope="col">Zárás</th><th scope="col">Nyitó</th><th scope="col">Számolt</th><th scope="col">Várható</th><th scope="col">Eltérés</th></tr>
             </thead>
             <tbody id="results-body"></tbody>
         </table>

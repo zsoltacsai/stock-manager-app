@@ -94,7 +94,7 @@ async function openDetail(id, successMessage) {
                     <td data-label="Egységár">${fmt(item.unit_price)}</td>
                     <td data-label="Össz.">${fmt(item.unit_price * item.qty)}</td>
                     <td class="return-qty-cell hidden" data-label="Visszaveendő">
-                        ${maxReturnable > 0 ? `<input type="number" min="0" max="${maxReturnable}" value="0" data-sale-item-id="${item.id}" class="return-qty-input" style="width:60px;">` : '—'}
+                        ${maxReturnable > 0 ? `<input type="number" min="0" max="${maxReturnable}" value="0" data-sale-item-id="${item.id}" class="return-qty-input" style="width:60px;" aria-label="Visszaveendő mennyiség – ${escapeHtml(item.name)}">` : '—'}
                     </td>
                 </tr>
             `;

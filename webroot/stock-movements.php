@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:1100px;">
+<div role="main" class="import-panel" style="max-width:1100px;">
 
     <div class="import-card">
         <div class="filter-grid">
@@ -84,7 +84,7 @@ if (!Auth::isLoggedIn($appSettings)) {
     <div class="import-card">
         <div class="sample-table-wrap">
             <table class="sample-table">
-                <thead><tr><th>Dátum</th><th>Termék</th><th>Típus</th><th>Mennyiség változás</th><th>Hivatkozás</th></tr></thead>
+                <thead><tr><th scope="col">Dátum</th><th scope="col">Termék</th><th scope="col">Típus</th><th scope="col">Mennyiség változás</th><th scope="col">Hivatkozás</th></tr></thead>
                 <tbody id="sm-body"></tbody>
             </table>
         </div>

@@ -106,19 +106,25 @@ function populateTransferSelects() {
 }
 
 let productSearchDebounce = null;
+// Phase 9 accessibility remediation (SEM-08, HIGH) — ugyanaz a billentyűzet-
+// navigálható combobox-minta, mint a POS termékkeresésnél.
+const transferProductListbox = window.attachSearchListboxKeyboard(transferProductSearch, transferProductResults, {
+    onEscape: () => { transferProductResults.innerHTML = ''; },
+});
 transferProductSearch.addEventListener('input', () => {
     clearTimeout(productSearchDebounce);
     const q = transferProductSearch.value.trim();
     if (q.length < 2) {
         transferProductResults.innerHTML = '';
+        transferProductListbox.sync();
         return;
     }
     productSearchDebounce = setTimeout(async () => {
         const res = await fetch('/api/global-search.php?query=' + encodeURIComponent(q));
         const data = await res.json();
         const products = data.products || [];
-        transferProductResults.innerHTML = products.map(p => `
-            <div class="search-result-item" data-id="${p.id}" data-name="${escapeHtml(p.name)}" data-stock="${p.stock_qty}">
+        transferProductResults.innerHTML = products.map((p, i) => `
+            <div class="search-result-item" role="option" id="transfer-result-opt-${i}" data-id="${p.id}" data-name="${escapeHtml(p.name)}" data-stock="${p.stock_qty}">
                 <span>${escapeHtml(p.name)}</span><span>${p.stock_qty} db összesen</span>
             </div>
         `).join('') || '<div class="muted">Nincs találat.</div>';
@@ -126,6 +132,7 @@ transferProductSearch.addEventListener('input', () => {
         transferProductResults.querySelectorAll('.search-result-item').forEach(row => {
             row.addEventListener('click', () => selectProductForTransfer(Number(row.dataset.id), row.dataset.name, Number(row.dataset.stock)));
         });
+        transferProductListbox.sync();
     }, 200);
 });
 
@@ -133,6 +140,7 @@ async function selectProductForTransfer(id, name, globalStockQty) {
     selectedProduct = { id, name, globalStockQty };
     transferProductSearch.value = '';
     transferProductResults.innerHTML = '';
+    transferProductListbox.sync();
     transferProductName.textContent = name;
     transferForm.classList.remove('hidden');
     transferFeedback.textContent = '';

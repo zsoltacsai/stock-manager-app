@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" id="leltar-list-view">
+<div role="main" class="import-panel" id="leltar-list-view">
     <div class="import-card">
         <div class="products-toolbar">
             <span class="muted">Fizikai készletszámlálás rögzítése, eltérés-riporttal.</span>
@@ -47,7 +47,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <div class="sample-table-wrap">
 <table class="sample-table">
             <thead>
-                <tr><th>Indítva</th><th>Lezárva</th><th>Megjegyzés</th><th></th></tr>
+                <tr><th scope="col">Indítva</th><th scope="col">Lezárva</th><th scope="col">Megjegyzés</th><th scope="col"></th></tr>
             </thead>
             <tbody id="stock-takes-body"></tbody>
         </table>
@@ -55,7 +55,7 @@ if (!Auth::isLoggedIn($appSettings)) {
     </div>
 </div>
 
-<div class="import-panel hidden" id="leltar-active-view" style="max-width:900px;">
+<div role="main" class="import-panel hidden" id="leltar-active-view" style="max-width:900px;">
     <div class="import-card">
         <div class="products-toolbar">
             <input type="text" id="leltar-search-input" placeholder="Keresés termék neve alapján..." style="max-width:320px; margin-bottom:0;">
@@ -64,7 +64,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <div class="sample-table-wrap">
 <table class="sample-table">
             <thead>
-                <tr><th>Termék</th><th>Rendszer szerint</th><th>Megszámolt</th><th>Eltérés</th></tr>
+                <tr><th scope="col">Termék</th><th scope="col">Rendszer szerint</th><th scope="col">Megszámolt</th><th scope="col">Eltérés</th></tr>
             </thead>
             <tbody id="leltar-items-body"></tbody>
         </table>

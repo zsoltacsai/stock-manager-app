@@ -100,7 +100,7 @@ $__smSidebarLinks = [
     ],
 ];
 ?>
-<nav class="icon-sidebar">
+<nav class="icon-sidebar" aria-label="Fő navigáció">
     <a href="dashboard.php" title="Dashboard"><img src="assets/logo-default.svg" class="sidebar-logo" alt="Logó" id="sidebar-logo"></a>
 <?php foreach ($__smSidebarLinks as $__smLink): ?>
     <a href="<?= $__smLink['href'] ?>" class="sidebar-link<?= $__smLink['href'] === $__smSidebarCurrent ? ' active' : '' ?>" title="<?= $__smLink['title'] ?>">

@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel">
+<div role="main" class="import-panel">
 
     <div class="import-card no-print">
         <div class="filter-grid filter-grid-toolbar">
@@ -61,7 +61,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <h2>Fizetési módok szerint</h2>
         <div class="sample-table-wrap">
 <table class="sample-table" id="zaras-payment-table">
-            <thead><tr><th>Fizetési mód</th><th>Darab</th><th>Bruttó összeg</th></tr></thead>
+            <thead><tr><th scope="col">Fizetési mód</th><th scope="col">Darab</th><th scope="col">Bruttó összeg</th></tr></thead>
             <tbody></tbody>
         </table>
 </div>
@@ -71,7 +71,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <h2>ÁFA kulcsok szerint</h2>
         <div class="sample-table-wrap">
 <table class="sample-table" id="zaras-vat-table">
-            <thead><tr><th>Áfakulcs</th><th>Nettó</th><th>ÁFA</th><th>Bruttó</th></tr></thead>
+            <thead><tr><th scope="col">Áfakulcs</th><th scope="col">Nettó</th><th scope="col">ÁFA</th><th scope="col">Bruttó</th></tr></thead>
             <tbody></tbody>
         </table>
 </div>
@@ -81,7 +81,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <h2>Tranzakciók</h2>
         <div class="sample-table-wrap">
 <table class="sample-table" id="zaras-transactions-table">
-            <thead><tr><th>#</th><th>Idő</th><th>Összeg</th><th>Fizetés</th><th>Számla</th><th class="no-print"></th></tr></thead>
+            <thead><tr><th scope="col">#</th><th scope="col">Idő</th><th scope="col">Összeg</th><th scope="col">Fizetés</th><th scope="col">Számla</th><th scope="col" class="no-print"></th></tr></thead>
             <tbody></tbody>
         </table>
 </div>

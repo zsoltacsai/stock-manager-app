@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:900px;">
+<div role="main" class="import-panel" style="max-width:900px;">
     <div class="import-card">
         <p class="muted" style="margin-top:0;">
             A pénztárgépek a kasszanyitás/kasszazárás alapegységei — minden pénztárgéphez
@@ -52,7 +52,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         </div>
         <div class="sample-table-wrap">
 <table class="sample-table">
-            <thead><tr><th>Név</th><th>Kód</th><th>Telephely</th><th>Aktív</th><th></th></tr></thead>
+            <thead><tr><th scope="col">Név</th><th scope="col">Kód</th><th scope="col">Telephely</th><th scope="col">Aktív</th><th scope="col"></th></tr></thead>
             <tbody id="registers-body"></tbody>
         </table>
 </div>

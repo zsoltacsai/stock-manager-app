@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:1000px;">
+<div role="main" class="import-panel" style="max-width:1000px;">
 
     <div class="import-card hidden" id="wcs-not-configured">
         <p class="muted" style="margin:0;">A WooCommerce szinkron nincs beállítva ezen a telepítésen (Beállítások → WooCommerce).</p>
@@ -54,7 +54,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <p class="muted" style="margin-top:-6px;">Csak terminális (sikertelen) állapotú sorra engedélyezett a kézi újrapróbálkozás, vezetői jogszint szükséges hozzá.</p>
         <div class="sample-table-wrap">
             <table class="sample-table">
-                <thead><tr><th>Termék</th><th>Kiváltó esemény</th><th>Próbálkozások</th><th>Utolsó hiba</th><th>Frissítve</th><th></th></tr></thead>
+                <thead><tr><th scope="col">Termék</th><th scope="col">Kiváltó esemény</th><th scope="col">Próbálkozások</th><th scope="col">Utolsó hiba</th><th scope="col">Frissítve</th><th scope="col"></th></tr></thead>
                 <tbody id="wcs-failed-body"></tbody>
             </table>
         </div>

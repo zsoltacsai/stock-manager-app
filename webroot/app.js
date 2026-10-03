@@ -525,6 +525,12 @@ const cpCity = document.getElementById('cp-city');
 const cpAddress = document.getElementById('cp-address');
 const cpCountry = document.getElementById('cp-country');
 
+// Phase 9 accessibility remediation (SEM-08, HIGH) — ugyanaz a billentyűzet-
+// navigálható combobox-minta, mint a termékkeresésnél (lásd fent).
+const buyerNameListbox = window.attachSearchListboxKeyboard(buyerName, buyerNameResults, {
+    onEscape: () => { buyerNameResults.innerHTML = ''; },
+});
+
 function fillBuyerFieldsFromCustomer(customer) {
     buyerName.value = customer.name || '';
     if (customer.zip) buyerZip.value = customer.zip;
@@ -537,6 +543,7 @@ function fillBuyerFieldsFromCustomer(customer) {
         buyerTaxnum.value = customer.tax_number;
     }
     buyerNameResults.innerHTML = '';
+    buyerNameListbox.sync();
 }
 
 // Élő javaslatok gépelés közben
@@ -544,14 +551,15 @@ buyerName.addEventListener('input', async () => {
     const q = buyerName.value.trim();
     if (q.length < 2) {
         buyerNameResults.innerHTML = '';
+        buyerNameListbox.sync();
         return;
     }
     try {
         const res = await fetch('/api/customer-search.php?query=' + encodeURIComponent(q));
         const data = await res.json();
         const matches = data.customers || [];
-        buyerNameResults.innerHTML = matches.map(c => `
-            <div class="search-result-item" data-id="${c.id}">
+        buyerNameResults.innerHTML = matches.map((c, i) => `
+            <div class="search-result-item" role="option" id="buyer-result-opt-${i}" data-id="${c.id}">
                 <span>${escapeHtml(c.name)}</span>
                 <span>${escapeHtml(c.city || c.phone || '')}</span>
             </div>
@@ -562,11 +570,13 @@ buyerName.addEventListener('input', async () => {
                 if (customer) fillBuyerFieldsFromCustomer(customer);
             });
         });
+        buyerNameListbox.sync();
     } catch (e) { /* autocomplete hiccup — just show nothing */ }
 });
 document.addEventListener('click', (e) => {
     if (!e.target.closest('#buyer-name') && !e.target.closest('#buyer-name-results')) {
         buyerNameResults.innerHTML = '';
+        buyerNameListbox.sync();
     }
 });
 
@@ -708,6 +718,12 @@ const redeemValueHint = document.getElementById('redeem-value-hint');
 let selectedCustomer = null;
 let loyaltyPointValueHuf = 0;
 
+// Phase 9 accessibility remediation (SEM-08, HIGH) — ugyanaz a billentyűzet-
+// navigálható combobox-minta, mint a termékkeresésnél (lásd fent).
+const customerSearchListbox = window.attachSearchListboxKeyboard(customerSearch, customerSearchResults, {
+    onEscape: () => { customerSearchResults.innerHTML = ''; },
+});
+
 async function initLoyalty() {
     try {
         const data = await window.smSettingsPromise;
@@ -723,6 +739,7 @@ function selectCustomer(customer) {
     selectedCustomer = customer;
     customerSearch.value = '';
     customerSearchResults.innerHTML = '';
+    customerSearchListbox.sync();
     selectedCustomerBox.classList.remove('hidden');
     selectedCustomerName.textContent = customer.name + (customer.phone ? ` (${customer.phone})` : '');
     selectedCustomerPoints.textContent = customer.loyalty_points;
@@ -751,14 +768,15 @@ customerSearch.addEventListener('input', async () => {
     const q = customerSearch.value.trim();
     if (!q) {
         customerSearchResults.innerHTML = '';
+        customerSearchListbox.sync();
         return;
     }
     try {
         const res = await fetch('/api/customer-search.php?query=' + encodeURIComponent(q));
         const data = await res.json();
         const customers = data.customers || [];
-        customerSearchResults.innerHTML = customers.map(c => `
-            <div class="search-result-item" data-id="${c.id}">
+        customerSearchResults.innerHTML = customers.map((c, i) => `
+            <div class="search-result-item" role="option" id="customer-result-opt-${i}" data-id="${c.id}">
                 <span>${escapeHtml(c.name)}${c.phone ? ' — ' + escapeHtml(c.phone) : ''}</span>
                 <span>${c.loyalty_points} pont</span>
             </div>
@@ -769,6 +787,7 @@ customerSearch.addEventListener('input', async () => {
                 if (customer) selectCustomer(customer);
             });
         });
+        customerSearchListbox.sync();
     } catch (e) { /* search hiccup — just show nothing */ }
 });
 
@@ -944,9 +963,18 @@ function showScanFeedback(msg, isError) {
 
 let searchSeq = 0;
 let searchTimer = null;
+// Phase 9 accessibility remediation (KBD-01, CRITICAL) — a POS termékkereső
+// találati listája ezelőtt kizárólag egérrel volt kiválasztható. Lásd
+// attachSearchListboxKeyboard() a topbar.js-ben: Arrow Up/Down mozgat a
+// találatok között, Enter kiválasztja a kiemeltet, Escape bezárja a listát
+// (a keresett szöveget megtartva, csak a találatokat törölve).
+const searchListbox = window.attachSearchListboxKeyboard(searchInput, searchResults, {
+    onEscape: () => { searchResults.innerHTML = ''; searchSeq++; },
+});
 searchInput.addEventListener('input', () => {
     const q = searchInput.value.trim().toLowerCase();
     searchResults.innerHTML = '';
+    searchListbox.sync();
     clearTimeout(searchTimer);
     const seq = ++searchSeq;
     if (!q) return;
@@ -968,9 +996,11 @@ searchInput.addEventListener('input', () => {
 
 function renderSearchResults(matches) {
     searchResults.innerHTML = '';
-    for (const p of matches) {
+    matches.forEach((p, i) => {
         const row = document.createElement('div');
         row.className = 'search-result-item';
+        row.id = 'search-result-opt-' + i;
+        row.setAttribute('role', 'option');
         const stockLabel = p.stock_qty <= 0
             ? `<span class="stock-warning">nincs készleten (${p.stock_qty} db)</span>`
             : `${p.stock_qty} db`;
@@ -979,10 +1009,12 @@ function renderSearchResults(matches) {
             addToCart(p);
             searchInput.value = '';
             searchResults.innerHTML = '';
+            searchListbox.sync();
             searchSeq++;
         });
         searchResults.appendChild(row);
-    }
+    });
+    searchListbox.sync();
 }
 
 // --- Kosár ---

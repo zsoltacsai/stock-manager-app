@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:1100px;">
+<div role="main" class="import-panel" style="max-width:1100px;">
     <div class="import-card">
         <div class="tabs">
             <button class="tab-btn active" data-tab="tab-sync-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>Szinkronizálás</button>
@@ -323,7 +323,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <div id="backup-list"></div>
 
             <div style="margin-top:18px; border-top:1px solid var(--border); padding-top:14px;">
-                <label style="color:var(--danger);">Visszaállítás fájlból</label>
+                <label for="restore-file-input" style="color:var(--danger);">Visszaállítás fájlból</label>
                 <p class="muted" style="margin-top:-8px;">
                     Egy korábban letöltött vagy máshonnan kapott mentési fájl visszatöltése.
                     A visszaállítás előtt automatikusan készül egy biztonsági mentés a jelenlegi
@@ -708,8 +708,8 @@ if (!Auth::isLoggedIn($appSettings)) {
                     <table class="sample-table">
                         <thead>
                             <tr>
-                                <th>Megnevezés</th><th>Cikkszám</th><th>Csoport</th><th>Vonalkód</th>
-                                <th>Készlet</th><th>Nettó Besz.</th><th>Nettó Elad.</th><th>Bruttó Elad.</th><th>Áfa</th>
+                                <th scope="col">Megnevezés</th><th scope="col">Cikkszám</th><th scope="col">Csoport</th><th scope="col">Vonalkód</th>
+                                <th scope="col">Készlet</th><th scope="col">Nettó Besz.</th><th scope="col">Nettó Elad.</th><th scope="col">Bruttó Elad.</th><th scope="col">Áfa</th>
                             </tr>
                         </thead>
                         <tbody id="sample-body"></tbody>
@@ -926,7 +926,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <div style="border-top:1px solid var(--border); margin-top:24px; padding-top:16px;">
                 <strong>Előzmények</strong>
                 <table class="sample-table" style="margin-top:10px;">
-                    <thead><tr><th>Dátum</th><th>Honnan</th><th>Mire</th><th>Indította</th><th>Eredmény</th></tr></thead>
+                    <thead><tr><th scope="col">Dátum</th><th scope="col">Honnan</th><th scope="col">Mire</th><th scope="col">Indította</th><th scope="col">Eredmény</th></tr></thead>
                     <tbody id="update-history-body"><tr><td colspan="5" class="muted">Betöltés...</td></tr></tbody>
                 </table>
             </div>
@@ -1148,7 +1148,8 @@ if (!Auth::isLoggedIn($appSettings)) {
     <div class="modal-card">
         <h2>Vezetői PIN megerősítés</h2>
         <p class="muted" id="pin-confirm-text">Add meg a vezetői PIN-kódot a folytatáshoz (ha nincs beállítva dolgozói PIN-rendszer, hagyd üresen).</p>
-        <input type="password" id="pin-confirm-input" autocomplete="off">
+        <label for="pin-confirm-input" class="visually-hidden">Vezetői PIN</label>
+        <input type="password" id="pin-confirm-input" autocomplete="off" aria-labelledby="pin-confirm-text">
         <div class="modal-actions" style="margin-top:20px;">
             <button class="btn btn-secondary" id="pin-confirm-cancel" style="flex:1;">Mégse</button>
             <button class="btn btn-primary" id="pin-confirm-ok" style="flex:1;">Megerősítés</button>

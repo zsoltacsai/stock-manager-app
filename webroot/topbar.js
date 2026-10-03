@@ -14,6 +14,92 @@ window.escapeHtml = function (str) {
         .replace(/'/g, '&#039;');
 };
 
+// Phase 9 accessibility remediation (KBD-01/SEM-07/08, CRITICAL) — korábban
+// az app összes "élő keresési találat" listája (POS termékkeresés, vevő-
+// autocomplete, globális fejléc-keresés, telephelyek közötti átmozgatás
+// terméklistája stb.) kizárólag egérrel volt kiválasztható: a találat-elemek
+// `tabindex="-1"` sima <div>-ek voltak, kattintás-kezelővel. Ez a megosztott
+// segédfüggvény egy szabványos "combobox + inline listbox" ARIA-mintát
+// (aria-activedescendant) ad minden ilyen keresőmezőhöz úgy, hogy a DOM-
+// fókusz az input mezőn marad — Arrow Up/Down a találatok között mozgat,
+// Enter kiválasztja a kiemeltet (vagy az egyetlen találatot, ha csak egy
+// van), Escape bezárja a listát anélkül, hogy a mögöttes modalt is bezárná.
+// A meglévő kattintás-alapú kiválasztás (minden hívó oldal saját
+// click-listenerje a `.search-result-item`-eken) változatlan marad — a
+// billentyűzetes kiválasztás ugyanazt a DOM click-eseményt váltja ki
+// (`target.click()`), nem duplikálja a kiválasztási logikát.
+//
+// Használat: hívd meg EGYSZER, a keresőmező és a találat-konténer
+// létrehozásakor; minden egyes alkalommal, amikor a hívó oldal újra
+// legenerálja a találatokat (és minden találat-elemre ráteszi a
+// `role="option"` + egyedi `id` attribútumot), hívja meg a visszaadott
+// `sync()` függvényt, hogy a segéd felismerje az új elemeket és nullázza a
+// kiemelést.
+window.attachSearchListboxKeyboard = function (inputEl, resultsEl, opts) {
+    opts = opts || {};
+    let activeIndex = -1;
+
+    function options() {
+        return Array.prototype.slice.call(resultsEl.querySelectorAll('[role="option"]'));
+    }
+
+    function applyActive() {
+        const opts_ = options();
+        opts_.forEach(function (el, i) {
+            el.classList.toggle('active', i === activeIndex);
+        });
+        if (activeIndex >= 0 && opts_[activeIndex]) {
+            inputEl.setAttribute('aria-activedescendant', opts_[activeIndex].id);
+            if (opts_[activeIndex].scrollIntoView) opts_[activeIndex].scrollIntoView({ block: 'nearest' });
+        } else {
+            inputEl.removeAttribute('aria-activedescendant');
+        }
+    }
+
+    function sync() {
+        activeIndex = -1;
+        inputEl.setAttribute('aria-expanded', options().length ? 'true' : 'false');
+        applyActive();
+    }
+
+    inputEl.setAttribute('role', 'combobox');
+    inputEl.setAttribute('aria-autocomplete', 'list');
+    inputEl.setAttribute('aria-haspopup', 'listbox');
+    inputEl.setAttribute('aria-expanded', 'false');
+    if (resultsEl.id) inputEl.setAttribute('aria-controls', resultsEl.id);
+    resultsEl.setAttribute('role', 'listbox');
+
+    inputEl.addEventListener('keydown', function (e) {
+        const opts_ = options();
+        if (e.key === 'ArrowDown') {
+            if (!opts_.length) return;
+            e.preventDefault();
+            activeIndex = activeIndex < opts_.length - 1 ? activeIndex + 1 : 0;
+            applyActive();
+        } else if (e.key === 'ArrowUp') {
+            if (!opts_.length) return;
+            e.preventDefault();
+            activeIndex = activeIndex > 0 ? activeIndex - 1 : opts_.length - 1;
+            applyActive();
+        } else if (e.key === 'Enter') {
+            if (!opts_.length) return;
+            const target = activeIndex >= 0 ? opts_[activeIndex] : (opts_.length === 1 ? opts_[0] : null);
+            if (target) {
+                e.preventDefault();
+                target.click();
+            }
+        } else if (e.key === 'Escape') {
+            if (!opts_.length) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (opts.onEscape) { opts.onEscape(); } else { resultsEl.innerHTML = ''; }
+            sync();
+        }
+    });
+
+    return { sync: sync };
+};
+
 // Globális fetch-becsomagolás. Két dolgot csinál:
 //  1) ha munkamenet közben lejár a bejelentkezés (vagy valaki egy másik
 //     fülön kijelentkezik), bármelyik API-hívás 401-et ad vissza
@@ -161,6 +247,17 @@ if ('serviceWorker' in navigator) {
     const sidebarLogo = document.getElementById('sidebar-logo');
     const syncBtn = document.getElementById('sync-icon-btn');
     const toast = document.getElementById('sync-toast');
+    // Phase 9 accessibility remediation (STAT-01, CRITICAL) — a toast konténer
+    // már az oldal betöltésekor jelen van a DOM-ban (lásd a *.php sablonok
+    // <div id="sync-toast">-ját), ezért a role/aria-live itt, egyszer
+    // beállított értéke megbízhatóan bejelentésre kerül screen readerrel,
+    // amikor showToast() később megváltoztatja a textContent-et — csak egy
+    // ÚJONNAN, futásidőben beszúrt elem esetén lenne ez megbízhatatlan.
+    if (toast) {
+        toast.setAttribute('role', 'status');
+        toast.setAttribute('aria-live', 'polite');
+        toast.setAttribute('aria-atomic', 'true');
+    }
 
     const autoSyncEnabled = document.getElementById('auto-sync-enabled');
     const autoSyncInterval = document.getElementById('auto-sync-interval');
@@ -512,11 +609,28 @@ if ('serviceWorker' in navigator) {
     if (themeDarkRadio) themeDarkRadio.addEventListener('change', () => { if (themeDarkRadio.checked) saveTheme('dark'); });
     if (themeLightRadio) themeLightRadio.addEventListener('change', () => { if (themeLightRadio.checked) saveTheme('light'); });
 
-    function showToast(msg, kind) {
+    let toastHideTimer = null;
+    function showToast(msg, kind, opts) {
         if (!toast) return;
+        opts = opts || {};
+        // Phase 9 accessibility remediation (STAT-01) — a hibaüzenetek
+        // erősebb, megszakító bejelentést kapnak (role="alert"/assertive),
+        // a rutin siker/info visszaigazolások udvariasat (role="status"/
+        // polite), hogy ne szakítsunk félbe mindent agresszíven (lásd a
+        // remediation brief 2. pontja). Az opcionális `opts.onClick`/
+        // `opts.duration` a korábbi, külön DOM-elemet létrehozó
+        // showOrderPopup()-ot (STAT-02) vezeti át ugyanerre a már a
+        // betöltéskor jelenlévő, élő régióra — egy újonnan, futásidőben
+        // beszúrt elem megbízhatatlan lenne screen readerrel.
+        const isError = kind === 'error';
+        toast.setAttribute('role', isError ? 'alert' : 'status');
+        toast.setAttribute('aria-live', isError ? 'assertive' : 'polite');
         toast.textContent = msg;
         toast.className = 'sync-toast show' + (kind ? ' ' + kind : '');
-        setTimeout(() => toast.classList.remove('show'), 4000);
+        toast.style.cursor = opts.onClick ? 'pointer' : '';
+        toast.onclick = opts.onClick || null;
+        clearTimeout(toastHideTimer);
+        toastHideTimer = setTimeout(() => toast.classList.remove('show'), opts.duration || 4000);
     }
     // UX-12 (Phase 7 audit) — globálisan elérhetővé téve, hogy más, később
     // betöltött oldal-scriptek (kliensek.js, leltar.js, termekek.js,
@@ -2060,11 +2174,17 @@ if ('serviceWorker' in navigator) {
 
     const searchInput = document.getElementById('global-search-input');
     const searchResults = document.getElementById('global-search-results');
+    // Phase 9 accessibility remediation (SEM-08, HIGH) — ugyanaz a
+    // billentyűzet-navigálható combobox-minta, mint a POS termékkeresésnél.
+    const globalSearchListbox = window.attachSearchListboxKeyboard(searchInput, searchResults, {
+        onEscape: () => { searchResults.innerHTML = ''; },
+    });
 
     function openSearch() {
         searchModal.classList.add('open');
         searchInput.value = '';
         searchResults.innerHTML = '';
+        globalSearchListbox.sync();
         setTimeout(() => searchInput.focus(), 50);
     }
     function closeSearch() {
@@ -2087,6 +2207,7 @@ if ('serviceWorker' in navigator) {
         const q = searchInput.value.trim();
         if (q.length < 2) {
             searchResults.innerHTML = '';
+            globalSearchListbox.sync();
             return;
         }
         searchDebounce = setTimeout(async () => {
@@ -2096,6 +2217,7 @@ if ('serviceWorker' in navigator) {
             } catch (err) {
                 searchResults.innerHTML = `<p class="feedback error">A keresés sikertelen: ${escapeHtml(err.message)}</p>`;
             }
+            globalSearchListbox.sync();
         }, 200);
     });
 
@@ -2105,9 +2227,10 @@ if ('serviceWorker' in navigator) {
 
     function renderSearchResults(data) {
         const sections = [];
+        let optIdx = 0;
         if (data.products && data.products.length) {
             sections.push('<p class="muted" style="margin:10px 0 4px;">Termékek</p>' + data.products.map(p => `
-                <div class="search-result-item" onclick="location.href='termekek.php'">
+                <div class="search-result-item" role="option" id="global-result-opt-${optIdx++}" onclick="location.href='termekek.php'">
                     <span>${escapeHtml(p.name)}${p.barcode ? ' · ' + escapeHtml(p.barcode) : ''}</span>
                     <span>${fmtMoney(p.price)} · ${p.stock_qty} db</span>
                 </div>
@@ -2115,7 +2238,7 @@ if ('serviceWorker' in navigator) {
         }
         if (data.customers && data.customers.length) {
             sections.push('<p class="muted" style="margin:10px 0 4px;">Vásárlók</p>' + data.customers.map(c => `
-                <div class="search-result-item" onclick="location.href='vasarlok.php'">
+                <div class="search-result-item" role="option" id="global-result-opt-${optIdx++}" onclick="location.href='vasarlok.php'">
                     <span>${escapeHtml(c.name)}</span>
                     <span>${escapeHtml(c.phone || c.email || '')}</span>
                 </div>
@@ -2123,13 +2246,14 @@ if ('serviceWorker' in navigator) {
         }
         if (data.sales && data.sales.length) {
             sections.push('<p class="muted" style="margin:10px 0 4px;">Eladások</p>' + data.sales.map(s => `
-                <div class="search-result-item" onclick="location.href='eladasok.php'">
+                <div class="search-result-item" role="option" id="global-result-opt-${optIdx++}" onclick="location.href='eladasok.php'">
                     <span>Eladás #${s.id}${s.buyer_name ? ' · ' + escapeHtml(s.buyer_name) : ''}</span>
                     <span>${fmtMoney(s.total)} · ${s.created_at}</span>
                 </div>
             `).join(''));
         }
         searchResults.innerHTML = sections.length ? sections.join('') : '<p class="muted" style="margin-top:10px;">Nincs találat.</p>';
+        globalSearchListbox.sync();
     }
 
     // --- Értesítési központ ---
@@ -2212,16 +2336,16 @@ if ('serviceWorker' in navigator) {
     }
 
     function showOrderPopup(newCount, total) {
-        const popup = document.createElement('div');
-        popup.className = 'sync-toast show ok';
-        popup.style.cursor = 'pointer';
-        popup.style.zIndex = '60';
-        popup.textContent = newCount === 1
+        // Phase 9 accessibility remediation (STAT-02) — korábban minden
+        // hívás egy ÚJ <div>-et szúrt be a <body> végére, ami screen reader
+        // számára megbízhatatlan (a live-region-nek már a tartalomváltozás
+        // ELŐTT a DOM-ban kell lennie). Most a már jelenlévő, statikus
+        // #sync-toast elemet (showToast()) használjuk, hosszabb (7s)
+        // kiírási idővel és kattintható navigációval.
+        const msg = newCount === 1
             ? `Új rendelés érkezett a webáruházból! (összesen ${total} feldolgozatlan)`
             : `${newCount} új rendelés érkezett a webáruházból! (összesen ${total} feldolgozatlan)`;
-        popup.addEventListener('click', () => { location.href = 'beerkezo-eladasok.php'; });
-        document.body.appendChild(popup);
-        setTimeout(() => popup.remove(), 7000);
+        showToast(msg, 'ok', { onClick: () => { location.href = 'beerkezo-eladasok.php'; }, duration: 7000 });
     }
 
     async function pollWebshopOrders() {
@@ -2411,6 +2535,33 @@ if ('serviceWorker' in navigator) {
     const closeBtn = document.getElementById('mobile-nav-close');
     if (!toggle || !drawer || !backdrop) return; // pl. install.php-n egyik sincs jelen
 
+    // Phase 9 accessibility remediation (FOC-01, HIGH) — korábban a fiók
+    // kizárólag CSS-sel (width:0) volt elrejtve zárt állapotban, ami NEM
+    // veszi ki a linkjeit a billentyűzetes Tab-sorrendből: élő teszttel
+    // igazoltan minden oldalon, asztali nézetben is, a 16 sidebar-link után
+    // 18 láthatatlan fiók-linken kellett keresztül-Tabbolni. Az `inert`
+    // attribútum egyszerre veszi ki az elemet a Tab-sorrendből ÉS a screen
+    // reader accessibility-fájából (nem csak tabindex=-1 "trükk", ami a
+    // screen readert továbbra is megtévesztené) — pontosan ez a brief által
+    // kért "hidden/inert" mechanizmus. A fiók induló állapota zárt, ezért
+    // kezdetben inert.
+    drawer.inert = true;
+
+    // Phase 9 accessibility remediation (FOC-02, HIGH) — nyitott fiók esetén
+    // korábban semmi nem akadályozta, hogy a Tab a háttér (vizuálisan a
+    // backdroppal eltakart) tartalmára ugorjon — élőben reprodukálva: 18
+    // Tab-lépés után a fókusz egy háttérbeli, cím nélküli header-gombra
+    // került, miközben a fiók még nyitva volt. A <body> összes, a
+    // fiókon/backdropon KÍVÜLI közvetlen gyermekét inert-té tesszük, amíg a
+    // fiók nyitva van — ez egyúttal automatikus fókuszcsapdát is ad (nincs
+    // hova kiszöknie a Tabnak), screen reader browse módban is.
+    function setBackgroundInert(isInert) {
+        Array.prototype.forEach.call(document.body.children, (el) => {
+            if (el === drawer || el === backdrop) return;
+            if (isInert) el.inert = true; else el.removeAttribute('inert');
+        });
+    }
+
     function isOpen() { return drawer.classList.contains('open'); }
 
     function openDrawer() {
@@ -2418,6 +2569,8 @@ if ('serviceWorker' in navigator) {
         backdrop.classList.add('open');
         toggle.setAttribute('aria-expanded', 'true');
         document.body.classList.add('mobile-nav-open');
+        drawer.inert = false;
+        setBackgroundInert(true);
         if (closeBtn) closeBtn.focus();
     }
 
@@ -2426,6 +2579,8 @@ if ('serviceWorker' in navigator) {
         backdrop.classList.remove('open');
         toggle.setAttribute('aria-expanded', 'false');
         document.body.classList.remove('mobile-nav-open');
+        setBackgroundInert(false);
+        drawer.inert = true;
     }
 
     toggle.addEventListener('click', () => { isOpen() ? closeDrawer() : openDrawer(); });
@@ -2440,4 +2595,331 @@ if ('serviceWorker' in navigator) {
     window.addEventListener('resize', () => {
         if (isOpen() && window.innerWidth > 768) closeDrawer();
     });
+})();
+
+// ---------------------------------------------------------------------
+// Phase 9 accessibility remediation — SR-01/TBL-02 (CRITICAL), TBL-05/TBL-06
+// (HIGH). A Phase 8 reszponzív ".rt-cards" minta (termekek.php, eladasok.php,
+// beszerzesek.php, beerkezett-szamlak.php, beszallitok.php, kassza-riport.php,
+// inventory-report.php, beszerzesi-javaslat.php, vasarlok.php) ≤768px
+// szélességnél a táblázat-elemeken `display:block/flex`-et állít be (lásd
+// style.css .rt-cards szabályai), hogy kártya-elrendezést kapjanak — élő
+// Chromium accessibility-tree méréssel igazoltan ez a CSS-váltás kiveszi a
+// cellákat a table/row/cell szerepkörükből ("generic" node-ként jelennek
+// meg), mert a böngészők az implicit ARIA-szerepkört a számított `display`
+// értékből vezetik le. A hivatalos WAI-ARIA technika ilyenkor az explicit
+// role-ok visszaállítása — ezt egyetlen, minden ilyen táblázatra lefutó,
+// közös szkript végzi el (nem kellett mind a 8+ oldal saját renderelő
+// függvényét külön módosítani). Emellett (TBL-05/06) minden sorban
+// megkeresi a checkbox/Módosítás/Törlés vezérlőt, és a sor nevét
+// (`.rt-title` cella szövege) a vezérlő saját aria-label-jébe fűzi, hogy
+// képernyőolvasóval megkülönböztethetők legyenek (korábban minden sor
+// gombja azonos, generikus "Módosítás"/"Törlés" néven szólalt meg).
+(function () {
+    function enhanceRow(tr) {
+        tr.setAttribute('role', 'row');
+        const titleCell = tr.querySelector(':scope > td.rt-title');
+        const rowName = titleCell ? titleCell.textContent.trim() : '';
+
+        Array.prototype.forEach.call(tr.querySelectorAll(':scope > td'), (td) => {
+            const isTitle = td.classList.contains('rt-title');
+            td.setAttribute('role', isTitle ? 'rowheader' : 'cell');
+            const label = td.getAttribute('data-label');
+            if (!label || td.hasAttribute('aria-label')) return;
+            const onlyControl = td.children.length === 1
+                && /^(INPUT|BUTTON)$/.test(td.firstElementChild.tagName)
+                && td.textContent.trim() === '';
+            if (!onlyControl) {
+                td.setAttribute('aria-label', label + ': ' + td.textContent.trim());
+            }
+        });
+
+        if (!rowName) return;
+        const checkbox = tr.querySelector(':scope > td .row-select-checkbox');
+        if (checkbox && !checkbox.hasAttribute('aria-label')) {
+            checkbox.setAttribute('aria-label', 'Kijelölés: ' + rowName);
+        }
+        const editBtn = tr.querySelector(':scope > td .edit-btn');
+        if (editBtn && !editBtn.hasAttribute('aria-label')) {
+            editBtn.setAttribute('aria-label', (editBtn.textContent.trim() || 'Módosítás') + ' – ' + rowName);
+        }
+        const deleteBtn = tr.querySelector(':scope > td .toggle-delete-btn');
+        if (deleteBtn && !deleteBtn.hasAttribute('aria-label')) {
+            deleteBtn.setAttribute('aria-label', (deleteBtn.textContent.trim() || 'Törlés') + ' – ' + rowName);
+        }
+    }
+
+    function enhanceTable(table) {
+        table.setAttribute('role', 'table');
+        const thead = table.querySelector(':scope > thead');
+        if (thead) thead.setAttribute('role', 'rowgroup');
+        const tbody = table.querySelector(':scope > tbody');
+        if (!tbody) return;
+        tbody.setAttribute('role', 'rowgroup');
+        Array.prototype.forEach.call(tbody.querySelectorAll(':scope > tr'), enhanceRow);
+    }
+
+    document.querySelectorAll('table.rt-cards').forEach((table) => {
+        enhanceTable(table);
+        const tbody = table.querySelector(':scope > tbody');
+        if (!tbody) return;
+        // A legtöbb oldal a sorokat JS-ből, fetch után tölti be (gyakran
+        // többször is: szűrés, lapozás, rendezés) — minden tbody-tartalom-
+        // csere után újra lefuttatjuk a fenti szerepkör/név-kiegészítést.
+        // Csak childList-et figyelünk (nem attribútumot), így a saját
+        // setAttribute-hívásaink nem váltanak ki újabb, felesleges kört.
+        new MutationObserver(() => enhanceTable(table)).observe(tbody, { childList: true, subtree: true });
+    });
+})();
+
+// ---------------------------------------------------------------------
+// Phase 9 accessibility remediation — FOC-03/DLG-01/DLG-02 (HIGH). Az app
+// kb. 28 dialógusa mind ugyanazt az EGY közös ".modal-overlay"/".modal-card"
+// mintát használja (lásd style.css), de egyik sem kapott role="dialog"/
+// aria-modal-t, aria-labelledby-t, és — élőben reprodukálva a
+// termék-szerkesztő modalon — egyik sem csapdázza a Tabot: nyitott modal
+// mellett a Tab egy MÁSIK termék sorának "Törlés" gombjára tudott ugrani.
+// Mivel a modalokat ~28 külön helyen, önállóan nyitják/zárják (classList.
+// add/remove('open')) a hívó oldalak, ahelyett hogy mind a 28 helyet
+// módosítanánk, egyetlen közös megfigyelőt teszünk a megosztott
+// ".modal-overlay" komponensre — ez a dinamikusan (document.createElement-
+// tel) létrehozott modalokra (pl. #global-search-modal, #client-health-
+// modal) is érvényes, mert a MutationObserver a document.body TELJES,
+// később bővülő részfáját figyeli.
+(function () {
+    const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    let activeModal = null;
+    let lastTrigger = null;
+
+    function visibleFocusables(container) {
+        return Array.prototype.filter.call(
+            container.querySelectorAll(FOCUSABLE_SELECTOR),
+            (el) => el.offsetParent !== null
+        );
+    }
+
+    function ensureDialogSemantics(modal) {
+        if (modal.getAttribute('role') !== 'alertdialog') modal.setAttribute('role', 'dialog');
+        modal.setAttribute('aria-modal', 'true');
+        if (!modal.getAttribute('aria-labelledby')) {
+            const heading = modal.querySelector('.modal-card h2, .modal-card h3');
+            if (heading) {
+                if (!heading.id) heading.id = 'sm-modal-heading-' + Math.random().toString(36).slice(2, 9);
+                modal.setAttribute('aria-labelledby', heading.id);
+            }
+        }
+    }
+
+    function onModalOpened(modal) {
+        ensureDialogSemantics(modal);
+        activeModal = modal;
+        lastTrigger = document.activeElement;
+        // Ha a hívó oldal saját maga már beállított egy kezdő fókuszt (pl. a
+        // PIN-mezőre), azt NEM írjuk felül — csak akkor nyúlunk hozzá, ha a
+        // fókusz egy pillanattal később is a modalon KÍVÜL maradt (tehát a
+        // modalnak nincs saját kezdő-fókusz logikája).
+        setTimeout(() => {
+            if (modal.contains(document.activeElement)) return;
+            const focusables = visibleFocusables(modal);
+            if (focusables.length) {
+                focusables[0].focus();
+            } else {
+                if (!modal.hasAttribute('tabindex')) modal.setAttribute('tabindex', '-1');
+                modal.focus();
+            }
+        }, 0);
+    }
+
+    function onModalClosed(modal) {
+        if (activeModal === modal) activeModal = null;
+        if (lastTrigger && document.body.contains(lastTrigger) && typeof lastTrigger.focus === 'function') {
+            lastTrigger.focus();
+        }
+        lastTrigger = null;
+    }
+
+    // Tab-csapda: amíg van nyitott, megfigyelt modal, a Tab/Shift+Tab nem
+    // hagyhatja el a modal-card tartalmát. Capture fázisban figyelünk, hogy
+    // a modalon belüli egyedi keydown-kezelők (pl. #pin-confirm-modal saját
+    // Enter/Escape logikája) előtt fussunk le, de csak a Tab billentyűt
+    // kezeljük — minden mást változatlanul továbbengedünk.
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Tab' || !activeModal || !activeModal.classList.contains('open')) return;
+        const focusables = visibleFocusables(activeModal);
+        if (!focusables.length) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (!activeModal.contains(document.activeElement)) {
+            e.preventDefault();
+            (e.shiftKey ? last : first).focus();
+        } else if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+        }
+    }, true);
+
+    new MutationObserver((mutations) => {
+        mutations.forEach((m) => {
+            if (m.attributeName !== 'class') return;
+            const modal = m.target;
+            if (!(modal.classList && modal.classList.contains('modal-overlay'))) return;
+            const isOpen = modal.classList.contains('open');
+            const wasOpen = typeof m.oldValue === 'string' && m.oldValue.split(/\s+/).includes('open');
+            if (isOpen && !wasOpen) onModalOpened(modal);
+            else if (!isOpen && wasOpen) onModalClosed(modal);
+        });
+    }).observe(document.body, { attributes: true, attributeFilter: ['class'], attributeOldValue: true, subtree: true });
+})();
+
+// ---------------------------------------------------------------------
+// Phase 9 accessibility remediation — FORM-01 (CRITICAL). Minden oldal
+// validációs/mentési/hiba-visszajelzése egy statikusan a HTML-ben jelenlévő
+// ".feedback"/".modal-feedback" elem textContent/className cseréje —
+// egyiknek sem volt `aria-live`/`role`-ja, így egy sikertelen beküldés
+// screen reader számára néma maradt. Egyetlen közös megfigyelővel minden
+// ilyen elemre (a már a betöltéskor jelenlévőkre ÉS a később, dinamikusan
+// létrehozott modalokba kerülőkre is) rátesszük a megfelelő szemantikát —
+// a ".error" osztály jelenléte alapján erősebb (role="alert"/assertive)
+// vagy udvariasabb (role="status"/polite) bejelentést kap, ugyanazzal a
+// logikával, mint a showToast() (lásd fent).
+(function () {
+    function isFeedbackEl(el) {
+        return !!(el && el.classList && (el.classList.contains('feedback') || el.classList.contains('modal-feedback')));
+    }
+    function markLive(el) {
+        const isError = el.classList.contains('error');
+        el.setAttribute('role', isError ? 'alert' : 'status');
+        el.setAttribute('aria-live', isError ? 'assertive' : 'polite');
+    }
+    document.querySelectorAll('.feedback, .modal-feedback').forEach(markLive);
+    new MutationObserver((mutations) => {
+        mutations.forEach((m) => {
+            if (m.type === 'attributes' && m.target.nodeType === 1 && isFeedbackEl(m.target)) {
+                markLive(m.target);
+            } else if (m.type === 'childList') {
+                m.addedNodes.forEach((node) => {
+                    if (node.nodeType !== 1) return;
+                    if (isFeedbackEl(node)) markLive(node);
+                    if (node.querySelectorAll) node.querySelectorAll('.feedback, .modal-feedback').forEach(markLive);
+                });
+            }
+        });
+    }).observe(document.body, { attributes: true, attributeFilter: ['class'], childList: true, subtree: true });
+})();
+
+// ---------------------------------------------------------------------
+// Phase 9 accessibility remediation — SEM-11 (HIGH, teljesen névtelen
+// beállítás-kapcsolók a beallitasok.php/beszerzes.php/termekek.php/
+// beszallitok.php/vasarlok.php oldalakon) és SEM-13 (a soronkénti
+// .webshop-toggle-btn állapota). Minden ".toggle-switch" gomb állapota
+// eddig csak egy CSS ".on" osztályban élt — se accessible name, se
+// állapot nem jutott el screen readerhez. A ".toggle-line" konténerben
+// mindig van egy megelőző <span> szöveg a gomb mellett (ellenőrizve
+// mind az 5 érintett oldalon) — ebből vesszük az aria-label-t, ha a
+// gombnak még nincs saját title/aria-label-je (pl. a soronkénti
+// webshop-toggle-btn-nek már van title-je, azt nem írjuk felül).
+(function () {
+    function enhanceSwitch(btn) {
+        btn.setAttribute('role', 'switch');
+        btn.setAttribute('aria-checked', btn.classList.contains('on') ? 'true' : 'false');
+        if (!btn.getAttribute('aria-label') && !btn.getAttribute('title')) {
+            const line = btn.closest('.toggle-line');
+            const label = line && line.querySelector('span');
+            if (label) btn.setAttribute('aria-label', label.textContent.trim());
+        }
+    }
+    document.querySelectorAll('.toggle-switch').forEach(enhanceSwitch);
+    new MutationObserver((mutations) => {
+        mutations.forEach((m) => {
+            if (m.type === 'attributes' && m.target.classList && m.target.classList.contains('toggle-switch')) {
+                enhanceSwitch(m.target);
+            } else if (m.type === 'childList') {
+                m.addedNodes.forEach((node) => {
+                    if (node.nodeType !== 1) return;
+                    if (node.classList && node.classList.contains('toggle-switch')) enhanceSwitch(node);
+                    if (node.querySelectorAll) node.querySelectorAll('.toggle-switch').forEach(enhanceSwitch);
+                });
+            }
+        });
+    }).observe(document.body, { attributes: true, attributeFilter: ['class'], childList: true, subtree: true });
+})();
+
+// ---------------------------------------------------------------------
+// Phase 9 accessibility remediation — SEM-12/13 (MEDIUM). Számos ikon-only
+// gomb/link kizárólag `title`-t kapott névként (settings/sync/logout
+// fejléc-ikonok, kamerás vonalkód-gomb, kosártétel-törlés gomb, dinamikusan
+// beszúrt topbar-ikonok stb.) — a `title` a legtöbb böngészőben technikailag
+// számít accessible name-nek, de billentyűzet/touch fókusznál gyengén
+// fedezhető fel. Minden olyan `<a>`/`<button>`-re, aminek van title-je, de
+// NINCS saját aria-label-je ÉS nincs semmilyen látható szöveges tartalma
+// (tehát valóban ikon-only), ugyanazt a szöveget aria-label-ként is
+// beállítjuk — a title marad az egér-tooltiphez. A szöveget VISELŐ elemeket
+// (pl. a sidebar linkek, amiknek már van látható/rejtett szöveges
+// tartalmuk) a textContent-ellenőrzés szándékosan kihagyja.
+(function () {
+    function enhance(el) {
+        if (el.hasAttribute('aria-label')) return;
+        const title = el.getAttribute('title');
+        if (!title || el.textContent.trim() !== '') return;
+        el.setAttribute('aria-label', title);
+    }
+    document.querySelectorAll('a[title], button[title]').forEach(enhance);
+    new MutationObserver((mutations) => {
+        mutations.forEach((m) => {
+            if (m.type === 'attributes' && (m.target.tagName === 'A' || m.target.tagName === 'BUTTON')) {
+                enhance(m.target);
+            } else if (m.type === 'childList') {
+                m.addedNodes.forEach((node) => {
+                    if (node.nodeType !== 1) return;
+                    if (node.tagName === 'A' || node.tagName === 'BUTTON') enhance(node);
+                    if (node.querySelectorAll) node.querySelectorAll('a[title], button[title]').forEach(enhance);
+                });
+            }
+        });
+    }).observe(document.body, { attributes: true, attributeFilter: ['title'], childList: true, subtree: true });
+})();
+
+// ---------------------------------------------------------------------
+// Phase 9 accessibility remediation — TAB-01 (MEDIUM). Az app 6 helyen
+// (termék-szerkesztő modal, Beállítások, AI Asszisztens, Ügyfél-modal,
+// Telephelyek, Kedvezmények) használt, közös ".tabs"/".tab-btn"/
+// ".tab-panel" mintája valódi <button>-okból áll (billentyűzettel már
+// eddig is elérhető/aktiválható volt), de ARIA tab-szemantika nélkül —
+// screen reader egyszerű gomb-listát hallott "3/6 fül, kiválasztva"
+// helyett. Minden gombnak van egy data-tab="<panel id>" attribútuma,
+// pontosan a hozzá tartozó panel id-jára mutatva — ebből épül fel a
+// tablist/tab/tabpanel kapcsolat, egyetlen közös szkripttel mind a 6
+// helyre (nem kellett a 6 oldal saját tab-váltó logikáját módosítani).
+(function () {
+    function enhanceTabGroup(tabs) {
+        tabs.setAttribute('role', 'tablist');
+        tabs.querySelectorAll(':scope > .tab-btn').forEach((btn) => {
+            const panelId = btn.getAttribute('data-tab');
+            const panel = panelId && document.getElementById(panelId);
+            btn.setAttribute('role', 'tab');
+            if (!btn.id) btn.id = panelId + '-tab-btn';
+            if (panel) {
+                btn.setAttribute('aria-controls', panelId);
+                panel.setAttribute('role', 'tabpanel');
+                panel.setAttribute('aria-labelledby', btn.id);
+            }
+            btn.setAttribute('aria-selected', btn.classList.contains('active') ? 'true' : 'false');
+        });
+    }
+    document.querySelectorAll('.tabs').forEach(enhanceTabGroup);
+    // A tab-váltás a meglévő oldal-szkriptekben az "active" osztályt
+    // cseréli a gombon/panelen (lásd pl. product-modal.js) — ezt figyeljük,
+    // hogy az aria-selected mindig szinkronban maradjon a vizuális
+    // állapottal, anélkül hogy a kattintás-kezelőket módosítanánk.
+    new MutationObserver((mutations) => {
+        mutations.forEach((m) => {
+            const el = m.target;
+            if (el.nodeType === 1 && el.classList && el.classList.contains('tab-btn')) {
+                el.setAttribute('aria-selected', el.classList.contains('active') ? 'true' : 'false');
+            }
+        });
+    }).observe(document.body, { attributes: true, attributeFilter: ['class'], subtree: true });
 })();

@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:1000px;">
+<div role="main" class="import-panel" style="max-width:1000px;">
 
     <!-- 1. Fejléc: mai dátum + névnap / rendszerállapot -->
     <div class="import-card" id="dash-header-card">

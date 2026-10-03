@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:900px;">
+<div role="main" class="import-panel" style="max-width:900px;">
     <div class="import-card">
         <p class="muted" style="margin-top:0;">
             Egy regisztrált Kliens egy másik gépen futó FountainTrade Kliens-terminál, ami
@@ -53,7 +53,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         </div>
         <div class="sample-table-wrap">
 <table class="sample-table">
-            <thead><tr><th>Címke</th><th>Client ID</th><th>Állapot</th><th>Utoljára látva</th><th>Kliens verzió</th><th></th></tr></thead>
+            <thead><tr><th scope="col">Címke</th><th scope="col">Client ID</th><th scope="col">Állapot</th><th scope="col">Utoljára látva</th><th scope="col">Kliens verzió</th><th scope="col"></th></tr></thead>
             <tbody id="clients-body"></tbody>
         </table>
 </div>

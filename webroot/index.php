@@ -120,11 +120,11 @@ if (!Auth::isLoggedIn($appSettings)) {
         <table class="cart-table pos-cart-table">
             <thead>
                 <tr>
-                    <th>Termék</th>
-                    <th>Menny.</th>
-                    <th>Egységár</th>
-                    <th>Össz.</th>
-                    <th></th>
+                    <th scope="col">Termék</th>
+                    <th scope="col">Menny.</th>
+                    <th scope="col">Egységár</th>
+                    <th scope="col">Össz.</th>
+                    <th scope="col"></th>
                 </tr>
             </thead>
             <tbody id="cart-body"></tbody>
@@ -346,7 +346,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <input type="text" id="customer-picker-search" placeholder="Keresés név, telefon, email alapján...">
             <div class="sample-table-wrap" style="max-height:320px; overflow-y:auto;">
                 <table class="sample-table">
-                    <thead><tr><th>Név</th><th>Telefon</th><th>Település</th><th></th></tr></thead>
+                    <thead><tr><th scope="col">Név</th><th scope="col">Telefon</th><th scope="col">Település</th><th scope="col"></th></tr></thead>
                     <tbody id="customer-picker-body"></tbody>
                 </table>
             </div>

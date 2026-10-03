@@ -128,13 +128,13 @@ if (!Auth::isLoggedIn($appSettings)) {
         <table class="cart-table">
             <thead>
                 <tr>
-                    <th>Termék</th>
-                    <th>Menny.</th>
-                    <th>Áfa</th>
-                    <th>Nettó egységár</th>
-                    <th>Bruttó egységár</th>
-                    <th>Bruttó érték</th>
-                    <th></th>
+                    <th scope="col">Termék</th>
+                    <th scope="col">Menny.</th>
+                    <th scope="col">Áfa</th>
+                    <th scope="col">Nettó egységár</th>
+                    <th scope="col">Bruttó egységár</th>
+                    <th scope="col">Bruttó érték</th>
+                    <th scope="col"></th>
                 </tr>
             </thead>
             <tbody id="cart-body">

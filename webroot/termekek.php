@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<section class="filter-panel">
+<section role="main" class="filter-panel">
     <div class="filter-grid">
         <div>
             <label for="f-name">Név</label>
@@ -134,17 +134,17 @@ if (!Auth::isLoggedIn($appSettings)) {
         <table class="products-table rt-cards">
             <thead id="products-table-head">
                 <tr>
-                    <th style="width:32px;"><input type="checkbox" id="select-all-products" title="Mind kijelölése"></th>
-                    <th data-sort="name" class="sortable">Megnevezés</th>
-                    <th data-sort="cikkszam" class="sortable">Cikkszám</th>
-                    <th data-sort="group_name" class="sortable">Csoport</th>
-                    <th data-sort="barcode" class="sortable">Vonalkód</th>
-                    <th data-sort="stock_qty" class="sortable">Készlet</th>
-                    <th data-sort="purchase_price_net" class="sortable">Nettó Beszerzési ár</th>
-                    <th data-sort="net_price" class="sortable">Nettó Eladási ár</th>
-                    <th data-sort="price" class="sortable">Bruttó Eladási ár</th>
-                    <th title="Feltüntetve a webáruházban">WS</th>
-                    <th></th>
+                    <th scope="col" style="width:32px;"><input type="checkbox" id="select-all-products" title="Mind kijelölése"></th>
+                    <th scope="col" data-sort="name" class="sortable">Megnevezés</th>
+                    <th scope="col" data-sort="cikkszam" class="sortable">Cikkszám</th>
+                    <th scope="col" data-sort="group_name" class="sortable">Csoport</th>
+                    <th scope="col" data-sort="barcode" class="sortable">Vonalkód</th>
+                    <th scope="col" data-sort="stock_qty" class="sortable">Készlet</th>
+                    <th scope="col" data-sort="purchase_price_net" class="sortable">Nettó Beszerzési ár</th>
+                    <th scope="col" data-sort="net_price" class="sortable">Nettó Eladási ár</th>
+                    <th scope="col" data-sort="price" class="sortable">Bruttó Eladási ár</th>
+                    <th scope="col" title="Feltüntetve a webáruházban">WS</th>
+                    <th scope="col"></th>
                 </tr>
             </thead>
             <tbody id="products-body">

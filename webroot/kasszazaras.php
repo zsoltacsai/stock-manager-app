@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:640px;">
+<div role="main" class="import-panel" style="max-width:640px;">
     <div class="import-card hidden" id="close-no-session">
         <p class="muted" style="margin-top:0;">
             Nincs megadva lezárandó műszak. A kasszazárást a Kassza oldal fejlécében lévő
@@ -65,7 +65,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <h3 style="font-size:14px; margin-bottom:8px;">Pénzmozgások a műszak alatt</h3>
             <div class="sample-table-wrap">
 <table class="sample-table">
-                <thead><tr><th>Időpont</th><th>Típus</th><th>Összeg</th><th>Indoklás</th></tr></thead>
+                <thead><tr><th scope="col">Időpont</th><th scope="col">Típus</th><th scope="col">Összeg</th><th scope="col">Indoklás</th></tr></thead>
                 <tbody id="close-movements-body"></tbody>
             </table>
 </div>

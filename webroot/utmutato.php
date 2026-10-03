@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:820px;">
+<div role="main" class="import-panel" style="max-width:820px;">
     <div class="import-card">
         <h2 style="margin-top:0;">Első lépések</h2>
         <p>

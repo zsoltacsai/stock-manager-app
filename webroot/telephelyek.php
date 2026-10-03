@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:900px;">
+<div role="main" class="import-panel" style="max-width:900px;">
     <div class="import-card">
         <p class="muted" style="margin-top:0;">
             Egytelephelyes boltnál ez a funkció figyelmen kívül hagyható — minden változatlanul
@@ -65,7 +65,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             </div>
             <div class="sample-table-wrap">
 <table class="sample-table">
-                <thead><tr><th>Név</th><th>Cím</th><th>Alapértelmezett</th><th></th></tr></thead>
+                <thead><tr><th scope="col">Név</th><th scope="col">Cím</th><th scope="col">Alapértelmezett</th><th scope="col"></th></tr></thead>
                 <tbody id="locations-body"></tbody>
             </table>
 </div>
@@ -98,7 +98,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <div id="tab-transfer-history" class="tab-panel">
             <div class="sample-table-wrap">
 <table class="sample-table">
-                <thead><tr><th>Időpont</th><th>Termék</th><th>Honnan</th><th>Hová</th><th>Menny.</th></tr></thead>
+                <thead><tr><th scope="col">Időpont</th><th scope="col">Termék</th><th scope="col">Honnan</th><th scope="col">Hová</th><th scope="col">Menny.</th></tr></thead>
                 <tbody id="transfer-history-body"></tbody>
             </table>
 </div>

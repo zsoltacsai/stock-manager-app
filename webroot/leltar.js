@@ -104,7 +104,7 @@ function renderItems() {
                 <td>
                     ${isCompleted
                         ? (item.counted_qty ?? '—')
-                        : `<input type="number" class="counted-input" data-product-id="${item.product_id}" value="${item.counted_qty ?? ''}" placeholder="—" style="width:80px;">`}
+                        : `<input type="number" class="counted-input" data-product-id="${item.product_id}" value="${item.counted_qty ?? ''}" placeholder="—" style="width:80px;" aria-label="Megszámolt mennyiség – ${escapeHtml(item.name)}">`}
                 </td>
                 <td style="${diffColor}">${diffText}</td>
             </tr>

@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:900px;">
+<div role="main" class="import-panel" style="max-width:900px;">
     <div class="import-card">
         <p class="muted" style="margin-top:0;">
             A megőrzési idő a Beállítások → Tevékenységnapló fülön állítható (alapértelmezett 30 nap) —
@@ -47,7 +47,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <div class="sample-table-wrap">
 <table class="sample-table">
             <thead>
-                <tr><th>Időpont</th><th>Dolgozó</th><th>Művelet</th><th>Érintett</th><th>Részletek</th></tr>
+                <tr><th scope="col">Időpont</th><th scope="col">Dolgozó</th><th scope="col">Művelet</th><th scope="col">Érintett</th><th scope="col">Részletek</th></tr>
             </thead>
             <tbody id="audit-log-body"></tbody>
         </table>

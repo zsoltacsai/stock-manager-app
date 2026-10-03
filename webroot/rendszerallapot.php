@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:1000px;">
+<div role="main" class="import-panel" style="max-width:1000px;">
 
     <!-- 1.4.0 — összesített jelző + "Figyelmet igényel" a rendszerállapot
          tetején, ugyanabból a HealthMonitor-forrásból, mint a Dashboard
@@ -120,7 +120,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         </div>
         <div class="sample-table-wrap">
             <table class="sample-table">
-                <thead><tr><th>Idő</th><th>Kategória</th><th>Esemény</th><th>Állapot</th></tr></thead>
+                <thead><tr><th scope="col">Idő</th><th scope="col">Kategória</th><th scope="col">Esemény</th><th scope="col">Állapot</th></tr></thead>
                 <tbody id="events-log-body"></tbody>
             </table>
         </div>
@@ -131,7 +131,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <p class="muted" style="margin-top:-8px;">A "FAILED" kezdetű bejegyzések hibát jeleznek — termékenkénti részlet, lásd fent az összesítőt a "Rendszer komponensek" alatt.</p>
         <div class="sample-table-wrap">
             <table class="sample-table">
-                <thead><tr><th>Időpont</th><th>Irány</th><th>Termék</th><th>Üzenet</th></tr></thead>
+                <thead><tr><th scope="col">Időpont</th><th scope="col">Irány</th><th scope="col">Termék</th><th scope="col">Üzenet</th></tr></thead>
                 <tbody id="sync-log-body"></tbody>
             </table>
         </div>

@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:1100px;">
+<div role="main" class="import-panel" style="max-width:1100px;">
 
     <div class="import-card">
         <h2>Áttekintés</h2>
@@ -55,7 +55,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <h2>Legnagyobb készletértékű termékek</h2>
         <div class="sample-table-wrap">
             <table class="sample-table rt-cards">
-                <thead><tr><th>Termék</th><th>Készlet</th><th>Beszerzési ár (nettó)</th><th>Készletérték</th></tr></thead>
+                <thead><tr><th scope="col">Termék</th><th scope="col">Készlet</th><th scope="col">Beszerzési ár (nettó)</th><th scope="col">Készletérték</th></tr></thead>
                 <tbody id="ir-top-value-body"></tbody>
             </table>
         </div>
@@ -77,7 +77,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         </div>
         <div class="sample-table-wrap" style="margin-top:12px;">
             <table class="sample-table rt-cards">
-                <thead><tr><th>Termék</th><th>Csoport</th><th>Készlet</th><th>Minimum</th><th>Javasolt mennyiség</th><th>Előrejelzés</th><th>Beszállító</th></tr></thead>
+                <thead><tr><th scope="col">Termék</th><th scope="col">Csoport</th><th scope="col">Készlet</th><th scope="col">Minimum</th><th scope="col">Javasolt mennyiség</th><th scope="col">Előrejelzés</th><th scope="col">Beszállító</th></tr></thead>
                 <tbody id="ir-low-stock-body"></tbody>
             </table>
         </div>

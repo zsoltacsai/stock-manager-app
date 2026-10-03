@@ -74,7 +74,10 @@ final class ResponsiveMobileAuditPhase8RemediationTest extends TestCase
     {
         $html = $this->renderSidebar('dashboard.php');
 
-        preg_match('/<nav class="icon-sidebar">(.*?)<\/nav>/s', $html, $sidebarMatch);
+        // Phase 9 accessibility remediation (SEM-02) óta az icon-sidebar
+        // nav-nak saját aria-label-je is van — a mintát ezért kell [^>]*-ra
+        // bővíteni, nem az attribútum-sorrendhez/pontos szöveghez kötni.
+        preg_match('/<nav class="icon-sidebar"[^>]*>(.*?)<\/nav>/s', $html, $sidebarMatch);
         preg_match('/<nav id="mobile-nav-drawer"[^>]*>(.*?)<\/nav>/s', $html, $drawerMatch);
         $this->assertNotEmpty($sidebarMatch, 'Nem található az icon-sidebar blokk.');
         $this->assertNotEmpty($drawerMatch, 'Nem található a mobile-nav-drawer blokk.');

@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:900px;">
+<div role="main" class="import-panel" style="max-width:900px;">
     <div class="import-card">
         <div class="tabs">
             <button class="tab-btn active" data-tab="tab-coupons">Kuponok</button>
@@ -53,7 +53,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <div class="sample-table-wrap">
 <table class="sample-table">
                 <thead>
-                    <tr><th>Kód</th><th>Típus</th><th>Érték</th><th>Felhasználva</th><th>Lejárat</th><th>Állapot</th><th></th></tr>
+                    <tr><th scope="col">Kód</th><th scope="col">Típus</th><th scope="col">Érték</th><th scope="col">Felhasználva</th><th scope="col">Lejárat</th><th scope="col">Állapot</th><th scope="col"></th></tr>
                 </thead>
                 <tbody id="coupons-body"></tbody>
             </table>
@@ -68,7 +68,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <div class="sample-table-wrap">
 <table class="sample-table">
                 <thead>
-                    <tr><th>Kód</th><th>Kezdő egyenleg</th><th>Jelenlegi egyenleg</th><th>Lejárat</th><th>Állapot</th><th></th></tr>
+                    <tr><th scope="col">Kód</th><th scope="col">Kezdő egyenleg</th><th scope="col">Jelenlegi egyenleg</th><th scope="col">Lejárat</th><th scope="col">Állapot</th><th scope="col"></th></tr>
                 </thead>
                 <tbody id="gift-cards-body"></tbody>
             </table>

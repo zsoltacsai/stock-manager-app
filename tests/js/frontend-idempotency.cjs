@@ -52,6 +52,15 @@ function loadPage(scripts, { immediate = () => null, qsa = {} } = {}) {
         confirm: () => true,
         alert: () => {},
         escapeHtml: (s) => String(s ?? ''),
+        // Phase 9 accessibility remediation — telephelyek.js (és más oldal-
+        // szkriptek) a topbar.js-ben definiált window.attachSearchListbox-
+        // Keyboard()-ot hívják meg a kereső-mezőjük bekötésekor (lásd
+        // style.css/topbar.js). Ez a harness csak az adott oldal-szkriptet
+        // tölti be, nem a topbar.js-t (ugyanúgy, ahogy escapeHtml is csak
+        // stub itt) — egy minimális, no-op megfelelőt adunk neki, hogy a
+        // valós billentyűzet-logikát a böngészős élő teszt, ne ez az
+        // izolált node:vm harness ellenőrizze.
+        attachSearchListboxKeyboard: () => ({ sync() {} }),
         document: {
             getElementById: (id) => (els[id] ||= makeEl(id)),
             querySelectorAll: (sel) => qsa[sel] || [],

@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:900px;">
+<div role="main" class="import-panel" style="max-width:900px;">
     <div class="import-card">
         <div class="tabs">
             <button class="tab-btn active" data-tab="tab-ai-chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path></svg>Asszisztens</button>
@@ -118,7 +118,7 @@ if (!Auth::isLoggedIn($appSettings)) {
                 <button id="ai-history-filter-btn" class="btn btn-secondary" style="width:auto; padding:8px 14px;" type="button">Szűrés</button>
             </div>
             <table class="sample-table">
-                <thead><tr><th>Időpont</th><th>Agent</th><th>Provider</th><th>Modell</th><th>Eszközök</th><th>Időtartam</th><th>Állapot</th></tr></thead>
+                <thead><tr><th scope="col">Időpont</th><th scope="col">Agent</th><th scope="col">Provider</th><th scope="col">Modell</th><th scope="col">Eszközök</th><th scope="col">Időtartam</th><th scope="col">Állapot</th></tr></thead>
                 <tbody id="ai-history-body"><tr><td colspan="7" class="muted">Betöltés…</td></tr></tbody>
             </table>
             <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
@@ -189,7 +189,7 @@ if (!Auth::isLoggedIn($appSettings)) {
                 <button id="ai-proposals-filter-btn" class="btn btn-secondary" style="width:auto; padding:8px 14px;" type="button">Szűrés</button>
             </div>
             <table class="sample-table">
-                <thead><tr><th>Típus</th><th>Entitás</th><th>Súlyosság</th><th>Létrehozva</th><th>Lejárat</th><th>Állapot</th><th>Művelet</th></tr></thead>
+                <thead><tr><th scope="col">Típus</th><th scope="col">Entitás</th><th scope="col">Súlyosság</th><th scope="col">Létrehozva</th><th scope="col">Lejárat</th><th scope="col">Állapot</th><th scope="col">Művelet</th></tr></thead>
                 <tbody id="ai-proposals-body"><tr><td colspan="7" class="muted">Betöltés…</td></tr></tbody>
             </table>
             <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">

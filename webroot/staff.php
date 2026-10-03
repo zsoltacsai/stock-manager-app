@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel">
+<div role="main" class="import-panel">
     <div class="import-card">
         <div class="products-toolbar">
             <input type="text" id="search-input" placeholder="Keresés név alapján..." style="max-width:320px; margin-bottom:0;">
@@ -47,7 +47,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <div class="sample-table-wrap">
 <table class="sample-table">
             <thead>
-                <tr><th>Név</th><th>Jogszint</th><th>Állapot</th><th></th></tr>
+                <tr><th scope="col">Név</th><th scope="col">Jogszint</th><th scope="col">Állapot</th><th scope="col"></th></tr>
             </thead>
             <tbody id="staff-body"></tbody>
         </table>

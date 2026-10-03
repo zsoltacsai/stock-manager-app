@@ -38,7 +38,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 
 <div class="sync-toast" id="sync-toast"></div>
 
-<div class="import-panel" style="max-width:1100px;">
+<div role="main" class="import-panel" style="max-width:1100px;">
 
     <div class="import-card">
         <div class="filter-grid">
@@ -86,7 +86,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <h2>Fizetési mód szerinti bontás</h2>
         <div class="sample-table-wrap">
             <table class="sample-table">
-                <thead><tr><th>Fizetési mód</th><th>Darabszám</th><th>Összeg</th><th>Százalék</th></tr></thead>
+                <thead><tr><th scope="col">Fizetési mód</th><th scope="col">Darabszám</th><th scope="col">Összeg</th><th scope="col">Százalék</th></tr></thead>
                 <tbody id="sr-payment-body"></tbody>
             </table>
         </div>
@@ -96,7 +96,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         <h2>Napi bontás</h2>
         <div class="sample-table-wrap">
             <table class="sample-table">
-                <thead><tr><th>Dátum</th><th>Bruttó</th><th>Nettó</th><th>Eladások</th></tr></thead>
+                <thead><tr><th scope="col">Dátum</th><th scope="col">Bruttó</th><th scope="col">Nettó</th><th scope="col">Eladások</th></tr></thead>
                 <tbody id="sr-daily-body"></tbody>
             </table>
         </div>
@@ -119,7 +119,7 @@ if (!Auth::isLoggedIn($appSettings)) {
         </div>
         <div class="sample-table-wrap" style="margin-top:12px;">
             <table class="sample-table">
-                <thead><tr><th>Termék</th><th>Csoport</th><th>Darabszám</th><th>Forgalom</th><th>Árrés</th><th>Árrés %</th></tr></thead>
+                <thead><tr><th scope="col">Termék</th><th scope="col">Csoport</th><th scope="col">Darabszám</th><th scope="col">Forgalom</th><th scope="col">Árrés</th><th scope="col">Árrés %</th></tr></thead>
                 <tbody id="sr-top-body"></tbody>
             </table>
         </div>

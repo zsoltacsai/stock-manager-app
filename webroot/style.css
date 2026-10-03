@@ -18,6 +18,24 @@
        világos témában kell sötétebb (lásd lejjebb). */
     --danger-strong: #c62828;
     --stock-badge-warn-text: #452b00;
+
+    /* Modern-UI redesign — dark-theme sidebar tokens. Previously only the
+       light theme defined these (see below), so dark mode silently fell
+       back to --panel/--muted/--accent via var(--x, fallback) everywhere
+       they're used — an accident, not a deliberate choice. --sidebar-bg
+       reuses --bg (one shade darker than --panel) so the sidebar still
+       reads as its own column here too, the same way the light theme's
+       dark-green sidebar stands apart from its white panels. */
+    --sidebar-bg: var(--bg);
+    --sidebar-icon: var(--muted);
+    --sidebar-icon-hover: var(--text);
+    --sidebar-active-bg: var(--accent);
+    --sidebar-active-icon: #052e12;
+
+    /* Collapsed stays pixel-identical to the old hardcoded 72px; only
+       used by body/.icon-sidebar below and the new expanded state. */
+    --sidebar-width-collapsed: 72px;
+    --sidebar-width-expanded: 220px;
 }
 
 /* Világos téma — Beállítások → Megjelenés. Mivel minden szín CSS
@@ -193,13 +211,14 @@ html[data-theme="light"] a:focus-visible { outline-color: var(--accent-strong); 
 .icon-btn.auto-on .badge-dot { display: block; }
 
 /* Left icon sidebar (secondary quick-nav, mirrors the top nav's main pages) */
-body { padding-left: 72px; }
+body { padding-left: var(--sidebar-width-collapsed); transition: padding-left .18s ease; }
 .icon-sidebar {
-    position: fixed; top: 0; left: 0; bottom: 0; width: 72px;
+    position: fixed; top: 0; left: 0; bottom: 0; width: var(--sidebar-width-collapsed);
     background: var(--sidebar-bg, var(--panel));
     border-right: 1px solid var(--sidebar-bg, var(--border));
     display: flex; flex-direction: column; align-items: center;
     padding: 16px 0; gap: 10px; z-index: 40;
+    transition: width .18s ease;
     /* Phase 8 responsive remediation (RESP-01) — alacsony magasságú
        viewportnál (pl. fekvő telefon, ~390px magasság) a 15 elem (logó +
        14 link) nem fér el a képernyőn; eddig overflow:visible miatt a
@@ -234,6 +253,32 @@ body { padding-left: 72px; }
 }
 .icon-sidebar .sidebar-link.active:hover { background: var(--sidebar-active-bg, var(--accent)); }
 .icon-sidebar .sidebar-spacer { flex: 1; }
+
+/* Modern-UI redesign — collapsible sidebar (WordPress-admin style). The
+   collapsed look above is UNCHANGED (same 44px icon buttons, same native
+   title="" tooltips). Expanding only widens the rail and reveals a text
+   label next to each icon — it never changes which links exist or how
+   active/hover state works, so navigation behaves identically in both
+   states. The label is hidden via width:0+overflow, not display:none, so
+   it never affects layout/flow while collapsed. */
+.sidebar-link-label {
+    display: inline-block; width: 0; overflow: hidden; white-space: nowrap;
+    font-size: 14px; opacity: 0; transition: width .18s ease, opacity .12s ease;
+}
+html.sidebar-expanded .icon-sidebar { width: var(--sidebar-width-expanded); align-items: stretch; padding-left: 10px; padding-right: 10px; }
+html.sidebar-expanded .icon-sidebar .sidebar-logo { align-self: center; }
+html.sidebar-expanded .icon-sidebar .sidebar-link {
+    width: 100%; height: 44px; justify-content: flex-start; gap: 12px; padding: 0 10px;
+    border-radius: 8px;
+}
+html.sidebar-expanded .sidebar-link-label { width: auto; opacity: 1; }
+.sidebar-toggle-btn {
+    margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.08);
+    padding-top: 14px !important;
+}
+html.sidebar-expanded .sidebar-toggle-btn { justify-content: flex-start; }
+.sidebar-toggle-btn svg { transition: transform .18s ease; flex-shrink: 0; }
+html.sidebar-expanded .sidebar-toggle-btn svg { transform: rotate(180deg); }
 @media print { .icon-sidebar { display: none !important; } body { padding-left: 0 !important; } }
 /* On a phone-width screen, the 72px fixed sidebar eats a meaningful slice
    of the viewport — hiding it below tablet width gives that space back to
@@ -305,10 +350,12 @@ body.mobile-nav-open { overflow: hidden; }
 @media (max-width: 768px) {
     .mobile-nav-toggle { display: inline-flex; }
 }
+/* Modern-UI redesign — was `position: fixed`, floating over page content
+   at the bottom-right corner on every page regardless of scroll position;
+   now sits in normal document flow, at the actual end of the page. */
 #app-footer-badge {
-    position: fixed; bottom: 6px; right: 10px; font-size: 11px;
-    color: var(--muted); opacity: .7; z-index: 5; pointer-events: none;
-    user-select: text;
+    text-align: center; padding: 16px 10px 10px; font-size: 11px;
+    color: var(--muted); opacity: .7; user-select: text;
 }
 @media print { #app-footer-badge { display: none !important; } }
 @media (max-width: 768px) { #app-footer-badge { display: none; } }
@@ -435,6 +482,11 @@ select:hover { border-color: var(--accent); }
 }
 .pm-select-trigger:hover { border-color: var(--accent); }
 .pm-select-trigger[aria-expanded="true"] { outline: 2px solid var(--accent); border-color: var(--accent); }
+/* Modern-UI redesign — kept as the existing trigger+popover listbox per
+   the brief's own fallback rule (don't rewrite dropdown logic for a
+   visual pass); only the hierarchy/weight below changed. */
+.pm-select-trigger { font-weight: 500; }
+.pm-select-option.selected { font-weight: 600; }
 .pm-select-label { flex: 1; }
 .pm-select-chevron { width: 16px; height: 16px; color: var(--muted); flex-shrink: 0; }
 .pm-select-icon { display: flex; flex-shrink: 0; }
@@ -516,7 +568,7 @@ select:hover { border-color: var(--accent); }
 
 /* Kassza "gyakran vásárolt" gyorsgombok */
 .quick-chip {
-    background: var(--panel-light); border: 1px solid var(--border); border-radius: 20px;
+    background: var(--panel-light); border: 1px solid var(--border); border-radius: 8px;
     padding: 8px 14px; font-size: 13px; color: var(--text); cursor: pointer;
 }
 .quick-chip:hover { border-color: var(--accent); color: var(--accent); }
@@ -671,20 +723,37 @@ html[data-theme="light"] #global-search-input {
 .remove-btn svg { width: 16px; height: 16px; }
 .remove-btn:hover { background: rgba(239, 68, 68, 0.2); }
 
+/* Modern-UI redesign — "Fizetendő" is the strongest focal point on the
+   Kassza screen for a tired cashier scanning the page: a tinted panel
+   (reusing the already-established color-mix() pattern, see the `a`
+   underline color above) instead of a plain border-top row, a small
+   muted uppercase label, and a much larger, bold total figure. No
+   gradients — color-mix() against --panel gives a flat, subtle tint in
+   both themes. */
 .cart-total {
     display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    font-size: 20px;
-    font-weight: 600;
-    padding: 12px 4px;
-    border-top: 2px solid var(--border);
+    flex-direction: column;
+    gap: 2px;
+    padding: 14px 16px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: color-mix(in srgb, var(--accent) 8%, var(--panel));
     margin-bottom: 16px;
     position: sticky;
     bottom: 0;
-    background: var(--panel);
     z-index: 3;
 }
+.cart-total-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.cart-total-label {
+    font-size: 13px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .03em;
+}
+#cart-total-value {
+    font-size: 32px; font-weight: 700; line-height: 1.1;
+    color: var(--accent-strong, var(--accent));
+}
+#cart-total-count { font-size: 12px; color: var(--muted); }
+#cart-total-count.hidden { display: none; }
 
 .btn {
     width: 100%;
@@ -697,6 +766,17 @@ html[data-theme="light"] #global-search-input {
 }
 .btn-primary { background: var(--accent); color: #052e12; }
 .btn-primary:disabled { background: var(--panel-light); color: var(--muted); cursor: not-allowed; }
+
+/* Modern-UI redesign — second-strongest element on the Kassza screen
+   after the total (see .cart-total above): taller, bolder, with a
+   trailing arrow. Stays flat at rest per the brief ("ne legyen túlzottan
+   lekerekített" / no heavy shadow) — the shadow only appears on hover. */
+#checkout-btn {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 16px; font-size: 17px; border-radius: 10px;
+}
+#checkout-btn:not(:disabled):hover { box-shadow: 0 4px 14px rgba(34, 197, 94, 0.35); }
+#checkout-btn:not(:disabled)::after { content: '→'; font-weight: 700; }
 .btn-secondary {
     background: transparent;
     border: 1px solid var(--border);
@@ -1094,6 +1174,16 @@ html[data-theme="light"] #global-search-input {
 .stock-warning { color: var(--warn); font-weight: 600; font-size: 12px; }
 tr.row-negative-stock { background: rgba(239, 68, 68, 0.08); }
 tr.row-negative-stock td:first-child { color: var(--warn); }
+/* Modern-UI redesign — restrained low-stock treatment for the Kassza cart
+   specifically (soft red background already above, red text + a small
+   icon here) rather than a loud, full-row red highlight. Scoped to
+   .row-negative-stock so the unrelated "nincs készleten" search-result
+   badge and the muted "kézi tétel" label (both also use .stock-warning)
+   keep their existing look. */
+tr.row-negative-stock .stock-warning {
+    color: var(--danger); display: inline-flex; align-items: center; gap: 4px;
+}
+tr.row-negative-stock .stock-warning::before { content: '⚠'; font-size: 11px; }
 .profile-disabled { opacity: 0.5; }
 .feedback.error { color: var(--danger); }
 .feedback.ok { color: var(--accent); }
@@ -1123,4 +1213,7 @@ tr.row-negative-stock td:first-child { color: var(--warn); }
     .mobile-nav-drawer, .mobile-nav-backdrop { transition: none !important; }
     .flash-added { animation: none !important; background: transparent !important; }
     .saved-flash { animation: none !important; }
+    /* Modern-UI redesign — sidebar collapse/expand is this codebase's first
+       width transition; disabled here for consistency with the above. */
+    body, .icon-sidebar, .sidebar-link-label, .sidebar-toggle-btn svg { transition: none !important; }
 }

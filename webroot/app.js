@@ -31,6 +31,7 @@ const searchInput    = document.getElementById('search-input');
 const searchResults  = document.getElementById('search-results');
 const cartBody        = document.getElementById('cart-body');
 const cartTotalValue = document.getElementById('cart-total-value');
+const cartTotalCount = document.getElementById('cart-total-count');
 const checkoutBtn    = document.getElementById('checkout-btn');
 const checkoutFeedback = document.getElementById('checkout-feedback');
 
@@ -1235,6 +1236,20 @@ function computeGrandTotal() {
 
 function updateGrandTotalDisplay() {
     cartTotalValue.textContent = fmt(computeGrandTotal());
+
+    // Modern-UI redesign — small secondary line under the total ("3 termék
+    // · 3 db"), purely derived from data that already drives the total
+    // above (no new state, no business-logic change).
+    const lineCount = cart.size + manualItems.length;
+    if (lineCount === 0) {
+        cartTotalCount.classList.add('hidden');
+    } else {
+        let qtySum = 0;
+        for (const { qty } of cart.values()) qtySum += qty;
+        for (const item of manualItems) qtySum += item.qty;
+        cartTotalCount.textContent = `${lineCount} termék · ${qtySum} db`;
+        cartTotalCount.classList.remove('hidden');
+    }
 }
 
 function renderAppliedDiscounts() {

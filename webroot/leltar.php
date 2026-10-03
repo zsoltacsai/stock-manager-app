@@ -13,7 +13,7 @@ if (!Auth::isLoggedIn($appSettings)) {
 <!DOCTYPE html>
 <html lang="hu">
 <head>
-<script>(function(){try{var t=localStorage.getItem("sm_theme");if(t==="light")document.documentElement.setAttribute("data-theme","light");}catch(e){}})();</script>
+<script>(function(){try{var t=localStorage.getItem("sm_theme");if(t==="light")document.documentElement.setAttribute("data-theme","light");if(localStorage.getItem("sm_sidebar_collapsed")==="0")document.documentElement.classList.add("sidebar-expanded");}catch(e){}})();</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">

@@ -105,6 +105,7 @@ $__smSidebarLinks = [
 <?php foreach ($__smSidebarLinks as $__smLink): ?>
     <a href="<?= $__smLink['href'] ?>" class="sidebar-link<?= $__smLink['href'] === $__smSidebarCurrent ? ' active' : '' ?>" title="<?= $__smLink['title'] ?>">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><?= $__smLink['icon'] ?></svg>
+        <span class="sidebar-link-label"><?= $__smLink['title'] ?></span>
 <?php if (!empty($__smLink['badge_id'])): ?>
         <span class="sidebar-badge-dot hidden" id="<?= $__smLink['badge_id'] ?>" data-badge-group="<?= $__smLink['badge_group'] ?? $__smLink['badge_id'] ?>"></span>
 <?php endif; ?>
@@ -113,7 +114,19 @@ $__smSidebarLinks = [
     <div class="sidebar-spacer"></div>
     <a href="beallitasok.php" class="sidebar-link<?= $__smSidebarCurrent === 'beallitasok.php' ? ' active' : '' ?>" title="Beállítások">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        <span class="sidebar-link-label">Beállítások</span>
     </a>
+    <?php
+    // Modern-UI redesign — WordPress-admin-style collapsible sidebar. Only
+    // toggles a CSS class (see html.sidebar-expanded rules in style.css) via
+    // the standalone IIFE appended to topbar.js; adds/removes no links and
+    // doesn't touch $__smSidebarLinks, so every destination stays reachable
+    // and the active/hover states above are unaffected either way.
+    ?>
+    <button type="button" id="sidebar-toggle" class="sidebar-link sidebar-toggle-btn" title="Oldalsáv ki/bekapcsolása" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+        <span class="sidebar-link-label">Összecsukás</span>
+    </button>
 </nav>
 
 <?php

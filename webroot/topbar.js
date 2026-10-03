@@ -2923,3 +2923,31 @@ if ('serviceWorker' in navigator) {
         });
     }).observe(document.body, { attributes: true, attributeFilter: ['class'], subtree: true });
 })();
+
+// ---------------------------------------------------------------------
+// Modern-UI redesign — collapsible desktop sidebar (WordPress-admin
+// style). Self-contained, like the mobile-nav-drawer IIFE above: doesn't
+// depend on anything else in this file. The initial expanded/collapsed
+// class is already set pre-paint (see the inline <script> duplicated on
+// every page template, same mechanism as the dark/light theme FOUC guard)
+// — this IIFE only owns toggling it afterwards and persisting the choice.
+// ---------------------------------------------------------------------
+(function () {
+    const toggleBtn = document.getElementById('sidebar-toggle');
+    if (!toggleBtn) return; // pl. login.html-en nincs sidebar
+
+    function isExpanded() { return document.documentElement.classList.contains('sidebar-expanded'); }
+
+    function applyExpanded(expanded) {
+        document.documentElement.classList.toggle('sidebar-expanded', expanded);
+        toggleBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        toggleBtn.querySelector('.sidebar-link-label').textContent = expanded ? 'Összecsukás' : 'Kinyitás';
+    }
+    applyExpanded(isExpanded());
+
+    toggleBtn.addEventListener('click', () => {
+        const expanded = !isExpanded();
+        applyExpanded(expanded);
+        try { localStorage.setItem('sm_sidebar_collapsed', expanded ? '0' : '1'); } catch (e) { /* ignore */ }
+    });
+})();

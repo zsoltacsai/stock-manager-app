@@ -148,6 +148,16 @@ window.smSettingsPromise.then((data) => {
         setPaymentMethod(paymentMethodSelect.value || PAYMENT_METHODS[0].value);
     }
 }).catch(() => { /* marad a beépített alapértelmezés */ });
+
+// Kasszanyitás/-zárás megkövetelése opcionális (Settings::DEFAULTS
+// 'cash_session_required') — amíg a beállítás be nem töltődik, a korábbi
+// (kötelező) viselkedést feltételezzük, hogy ne villanjon fel tévesen a
+// "nincs kényszer" állapot egy valójában kényszerítő boltnál.
+let cashSessionRequired = true;
+window.smSettingsPromise.then((data) => {
+    cashSessionRequired = data.cash_session_required !== false;
+    updateCashStatusBadge();
+}).catch(() => { /* marad a kötelező (jelenlegi) viselkedés */ });
 const receiptLinkWrap = document.getElementById('receipt-link-wrap');
 const viewReceiptBtn = document.getElementById('view-receipt-btn');
 const receiptEmailInput = document.getElementById('receipt-email-input');
@@ -326,6 +336,10 @@ function currentLocationRegisters() {
 }
 
 function updateCashStatusBadge() {
+    if (!cashSessionRequired) {
+        cashStatusBtn.classList.add('hidden');
+        return;
+    }
     const regId = currentCashRegisterId();
     if (!regId) {
         cashStatusBtn.classList.add('hidden');
@@ -347,6 +361,7 @@ function updateCashStatusBadge() {
 // útvonalon megy (lásd api/sale.php docblokkja), ezt a Phase 7 audit sem
 // kifogásolta.
 function isCurrentCashRegisterOpen() {
+    if (!cashSessionRequired) return true;
     const regId = currentCashRegisterId();
     if (!regId) return true;
     const reg = currentLocationRegisters().find(r => r.id === regId);
@@ -381,7 +396,7 @@ function renderCashPanel() {
         cashMovementForm.classList.add('hidden');
         cashPanelOpenActions.classList.remove('hidden');
         const opened = Math.round(currentCashSession.opening_amount).toLocaleString('hu-HU');
-        cashPanelOpenSummary.textContent = `Nyitva — nyitó összeg: ${opened} Ft`;
+        cashPanelOpenSummary.textContent = `Nyitva — nyitó összeg: ${opened} Ft. Mostantól rögzíthetsz eladásokat ezen a pénztárgépen.`;
         cashCloseLink.href = `kasszazaras.php?id=${currentCashSession.id}`;
     } else {
         cashPanelClosed.classList.remove('hidden');

@@ -44,6 +44,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <button class="tab-btn active" data-tab="tab-sync-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>Szinkronizálás</button>
             <button class="tab-btn" data-tab="tab-logo-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>Logó</button>
             <button class="tab-btn" data-tab="tab-printer-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>Nyomtató</button>
+            <button class="tab-btn" data-tab="tab-cash-session-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"></rect><circle cx="12" cy="12" r="2"></circle></svg>Kassza</button>
             <button class="tab-btn" data-tab="tab-email-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22 6 12 13 2 6"></polyline></svg>Email</button>
             <button class="tab-btn" data-tab="tab-backup-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>Mentés</button>
             <button class="tab-btn" data-tab="tab-szamlazz-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>Számlázz.hu</button>
@@ -184,6 +185,22 @@ if (!Auth::isLoggedIn($appSettings)) {
                 <button id="settings-save-printer-btn" class="btn btn-primary">Mentés</button>
             </div>
             <p id="settings-printer-feedback" class="modal-feedback"></p>
+        </div>
+
+        <div id="tab-cash-session-settings" class="tab-panel">
+            <label class="checkbox-line">
+                <input type="checkbox" id="cash-session-required">
+                Kassza nyitás/zárás használata
+            </label>
+            <p class="muted">
+                Egypénztáros üzletben általában nincs szükség napi kasszanyitásra és
+                kasszazárásra — kikapcsolva az eladás nyitott műszak nélkül is
+                rögzíthető, és a kasszanyitási kényszer eltűnik a Kasszáról. A
+                pénztárgépek és a kasszazárás funkciója ettől függetlenül továbbra is
+                elérhető marad azoknak, akik mégis használni szeretnék.
+            </p>
+            <button id="settings-save-cash-session-btn" class="btn btn-primary" style="width:auto; padding:10px 18px;">Mentés</button>
+            <p id="settings-cash-session-feedback" class="modal-feedback"></p>
         </div>
 
         <div id="tab-email-settings" class="tab-panel">

@@ -338,6 +338,7 @@ if (!Auth::isLoggedIn($appSettings)) {
                 <button class="btn btn-secondary" data-cash-movement-type="cash_out" style="flex:1;">Pénzkiadás</button>
                 <a class="btn btn-primary" id="cash-close-link" href="kasszazaras.php" style="flex:1; text-align:center;">Kasszazárás</a>
             </div>
+            <button type="button" class="btn btn-secondary" data-close-cash-panel style="width:100%; margin-top:8px;">Vissza a kasszához</button>
         </div>
     </div>
 </div>

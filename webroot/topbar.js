@@ -410,6 +410,10 @@ if ('serviceWorker' in navigator) {
     const settingsSaveReceiptBtn = document.getElementById('settings-save-receipt-btn');
     const settingsReceiptFeedback = document.getElementById('settings-receipt-feedback');
 
+    const cashSessionRequiredCheckbox = document.getElementById('cash-session-required');
+    const settingsSaveCashSessionBtn = document.getElementById('settings-save-cash-session-btn');
+    const settingsCashSessionFeedback = document.getElementById('settings-cash-session-feedback');
+
     const loyaltyEnabled = document.getElementById('loyalty-enabled');
     const loyaltyHufPerPoint = document.getElementById('loyalty-huf-per-point');
     const loyaltyPointValue = document.getElementById('loyalty-point-value');
@@ -802,6 +806,8 @@ if ('serviceWorker' in navigator) {
         if (receiptHeaderLines) receiptHeaderLines.value = data.receipt_header_lines || '';
         if (receiptFooterLines) receiptFooterLines.value = data.receipt_footer_lines || '';
         if (receiptShowLogo) receiptShowLogo.checked = !!data.receipt_show_logo;
+
+        if (cashSessionRequiredCheckbox) cashSessionRequiredCheckbox.checked = data.cash_session_required !== false;
 
         if (loyaltyEnabled) loyaltyEnabled.checked = !!data.loyalty_enabled;
         if (loyaltyHufPerPoint) loyaltyHufPerPoint.value = String(data.loyalty_huf_per_point ?? 100);
@@ -1553,6 +1559,31 @@ if ('serviceWorker' in navigator) {
             } catch (err) {
                 settingsReceiptFeedback.textContent = 'Hiba: ' + err.message;
                 settingsReceiptFeedback.className = 'modal-feedback error';
+            }
+        });
+    }
+
+    if (settingsSaveCashSessionBtn) {
+        settingsSaveCashSessionBtn.addEventListener('click', async () => {
+            settingsCashSessionFeedback.textContent = 'Mentés...';
+            settingsCashSessionFeedback.className = 'modal-feedback';
+            try {
+                const res = await fetch('/api/settings.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        cash_session_required: cashSessionRequiredCheckbox.checked,
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'ismeretlen hiba');
+                applySettings(data);
+                settingsCashSessionFeedback.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;vertical-align:-1px;margin-right:4px;"><polyline points="20 6 9 17 4 12"></polyline></svg>Mentve';
+                settingsCashSessionFeedback.classList.add('saved-flash');
+                setTimeout(() => settingsCashSessionFeedback.classList.remove('saved-flash'), 1200);
+            } catch (err) {
+                settingsCashSessionFeedback.textContent = 'Hiba: ' + err.message;
+                settingsCashSessionFeedback.className = 'modal-feedback error';
             }
         });
     }

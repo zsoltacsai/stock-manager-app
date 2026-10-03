@@ -113,6 +113,22 @@ class Settings
         'google_refresh_token' => '',
         'google_folder_id'     => '',
 
+        // Kasszanyitás/-zárás (cash-session) megkövetelése eladáskor —
+        // SZÁNDÉKOSAN `true` az alapértelmezett, ellentétben a legtöbb
+        // opt-in automatizálással ebben a fájlban (amik `false`-ra
+        // alapértelmezettek, hogy ne aktiválódjanak csendben egy
+        // frissítés után). Itt a "jelenlegi működés megtartása" éppen
+        // `true`-t jelent: egy már pénztárgépet használó boltnál ez a
+        // kényszer MA is érvényes (lásd api/sale.php UX-02, Phase 7
+        // audit) — egy csendes alapértelmezett-kikapcsolás szó nélkül
+        // venné el ezt a meglévő védelmet a frissítő boltoktól. Kikapcsolva
+        // egy eladás nyitott műszak nélkül is rögzíthető (lásd
+        // api/sale.php) — a kasszanyitás/-zárás és a pénzmozgás-rögzítés
+        // saját végpontjait ez NEM érinti, azok továbbra is valódi,
+        // nyitott műszakot igényelnek, ha valaki ténylegesen használja
+        // őket.
+        'cash_session_required' => true,
+
         // Fizetési módok listája (kassza + beérkező webshop-rendelések
         // fizetésimód-választója) — bővíthető a Beállítások alatt, hogy pl.
         // egy webshopban használt "Stripe" is választható legyen helyben.

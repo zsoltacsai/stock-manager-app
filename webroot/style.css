@@ -111,6 +111,18 @@ html[data-theme="light"] .pm-select-option.selected .pm-select-icon svg { stroke
 
 * { box-sizing: border-box; }
 
+/* Themed scrollbar — purely cosmetic (no overflow/scroll-mechanics touched
+   anywhere), so mouse wheel, trackpad, touch, keyboard and PageUp/PageDown
+   scrolling all keep working exactly as before in every scroll container
+   (sidebar, search results, dropdowns, modals, page body). Targets the
+   supported Chromium/Windows environment via ::-webkit-scrollbar; the
+   scrollbar-width/-color pair is a harmless Firefox equivalent. */
+html { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background-color: var(--border); border-radius: 8px; }
+*::-webkit-scrollbar-thumb:hover { background-color: var(--muted); }
+
 body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -265,6 +277,12 @@ body { padding-left: var(--sidebar-width-collapsed); transition: padding-left .1
     display: inline-block; width: 0; overflow: hidden; white-space: nowrap;
     font-size: 14px; opacity: 0; transition: width .18s ease, opacity .12s ease;
 }
+/* Bugfix — the main content column never actually shrank when the sidebar
+   expanded: --sidebar-width-expanded was only ever consumed by the
+   sidebar's own width above, nothing updated body's padding-left to match,
+   so content kept flowing from the 72px collapsed offset and ended up
+   partly under the now-220px-wide sidebar. */
+html.sidebar-expanded body { padding-left: var(--sidebar-width-expanded); }
 html.sidebar-expanded .icon-sidebar { width: var(--sidebar-width-expanded); align-items: stretch; padding-left: 10px; padding-right: 10px; }
 html.sidebar-expanded .icon-sidebar .sidebar-logo { align-self: center; }
 html.sidebar-expanded .icon-sidebar .sidebar-link {
@@ -291,7 +309,14 @@ html.sidebar-expanded .sidebar-toggle-btn svg { transform: rotate(180deg); }
    fallback that replaces them. */
 @media (max-width: 768px) {
     .icon-sidebar { display: none; }
-    body { padding-left: 0; }
+    /* !important — a desktopon beállított html.sidebar-expanded body
+       padding-left szabály (lásd fent) magasabb specificitású, mint egy
+       sima `body` szelektor; a sidebar-expanded class mobil szélességen is
+       megmaradhat (asztali gépen hagyta el a felhasználó a böngészőt),
+       enélkül a mobil nézet feleslegesen 220px-et veszítene a bal
+       szélén, miközben maga a sidebar itt már el van rejtve. Ugyanaz a
+       minta, mint a @media print fenti sora. */
+    body { padding-left: 0 !important; }
 }
 
 /* Phase 8 responsive remediation — RESP-01: mobil navigáció fallback.

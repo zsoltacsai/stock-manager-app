@@ -4,642 +4,183 @@ Ez a fájl a FountainTrade verzióinak fontosabb változásait követi. A
 formátum lazán a [Keep a Changelog](https://keepachangelog.com/) elvét
 követi.
 
-## [Unreleased] — Accessibility remediáció (billentyűzet, fókuszkezelés, screen reader-előkészítés)
+## [1.6.0] — 2026-10-04 (AI Copilot + opcionális kasszakezelés és felület-modernizálás)
 
-Teljes alkalmazást érintő, WCAG 2.1/2.2-alapú audit nyomán — CRITICAL
-findingek (POS keresés billentyűzettel elérhetetlen, toast-rendszer nem
-jelez screen readernek, reszponzív kártyanézet elveszíti a
-táblázat-szemantikát) és HIGH findingek (modalok és a mobil navigációs
-fiók nem csapdázzák a fókuszt) javítva, egységes, központi
-mechanizmusokkal (nem oldalankénti duplikáció).
+**Négy nagy terület: (1) egy teljes AI Copilot réteg determinisztikus
+napi intelligenciával, emberi jóváhagyású beszerzési javaslatokkal és
+élő, streamelt válaszokkal; (2) a kasszanyitás/kasszazárás kényszerének
+opcionálissá tétele egypénztáros üzleteknek; (3) a Kassza felület
+modern, flat-UI megújítása összecsukható oldalsávval; (4) egy teljes
+körű audit-sorozat (biztonság, helyesség, adatintegritás, teljesítmény,
+UI/UX, reszponzivitás, akadálymentesítés) remediációja.** A Standalone/
+Szerver/Kliens üzemmódok és az 1.5.0-s kasszakezelési/számlázási
+üzleti logika alapjaiban változatlan.
 
-### Fixed
+### Added — AI Copilot
 
-- **POS/globális/vevő-/telephely-kereső billentyűzet-navigáció** — egy
-  megosztott `attachSearchListboxKeyboard()` segédfüggvény (`topbar.js`)
-  ad szabványos combobox+listbox ARIA-mintát (Arrow Up/Down, Enter,
-  Escape, `aria-activedescendant`) minden élő keresési találat-listának
-  — korábban ezek kizárólag egérrel voltak kiválaszthatók.
-- **Toast/visszajelzés-rendszer `aria-live`** — a `#sync-toast` és
-  minden `.feedback`/`.modal-feedback` elem `role="status"`/
-  `aria-live="polite"`-ot kap, hibaüzenetnél `role="alert"`/
-  `aria-live="assertive"`-re váltva.
-- **Reszponzív kártyanézet táblázat-szemantikája** — a `.rt-cards`
-  minta (9 lista-oldal) ≤768px szélességnél elvesztette a `table`/
-  `row`/`cell` ARIA-szerepköröket (a CSS `display`-váltás miatt); egy
-  központi szkript visszaállítja ezeket, és minden sor-jelölő
-  checkbox-nak/akció-gombnak a sor nevét tartalmazó, egyedi accessible
-  name-et ad.
-- **Mobil navigációs fiók fókusz-izolációja** — a fiók `inert` zárt
-  állapotban (linkjei nem kerülnek bele a Tab-sorrendbe), és `inert`-
-  teszi a hátteret nyitott állapotban (valódi fókuszcsapda).
-- **Modal fókuszcsapda** — egyetlen közös megfigyelő ad `role="dialog"`/
-  `aria-modal`/`aria-labelledby`-t és Tab/Shift+Tab-csapdát minden
-  `.modal-overlay` dialógusnak (~28 előfordulás); korábban élőben
-  reprodukálható volt, hogy egy nyitott termék-szerkesztő modal mellett
-  a Tab egy MÁSIK termék "Törlés" gombjára ugrott.
-- Kisebb javítások: `<main>` landmark, táblázat-fejléc `scope="col"`,
-  ARIA tabs-szemantika, néhány kontraszt-javítás, `prefers-reduced-motion`.
+- **Napi Intelligencia + AI-javaslatok emberi jóváhagyással** — a
+  meglévő `AnomalyDetector`-találatokból determinisztikus, jóváhagyásra
+  váró `ActionProposal` sorok (pl. `reorder_draft`); admin-only
+  "Javaslatok" fül, a jóváhagyás/elutasítás önmagában sosem hajt végre
+  üzleti műveletet.
+- **Validált AI-művelet-végrehajtás** — jóváhagyott javaslat ténylegesen
+  végrehajtható (`ActionExecutor`, friss elavulás-ellenőrzés végrehajtás
+  előtt, atomikus állapot-claim, teljes audit); elakadt végrehajtás
+  időablak után újra-lefoglalható.
+- **Élő (streamelt) Copilot-válaszok** mind a négy ügynökhöz (Ollama/
+  Anthropic/OpenAI, egységes SSE-eseményalakra fordítva, automatikus
+  visszaesés nem-streamelt módra), kontextus-korlátokkal és automatikus
+  tömörítéssel hosszú beszélgetéseknél, determinisztikus eszköz-hívás-
+  és költségkorlátokkal, őszinte ("sosem kitalált") árazás-becsléssel,
+  admin-konfigurálható modell-útválasztással az összetett kérdésekhez.
+- `ClientProxy` streamelő relé a Kliens/Szerver üzemmódhoz — a streamelt
+  válasz a Kliensen is darabonkénti progresszióval jelenik meg.
+- Provider-hiba-kategorizálás, egységesített audit-naplózás, korlátozott
+  újrapróbálkozás átmeneti hibákra, valódi (nem stub) Ollama-benchmark
+  eszköz (`tools/ai-benchmark.php`).
+- Független red-team biztonsági audit (F-01…F-09) és dedikált AI-
+  biztonsági audit (AI-01…AI-09) javításai — lásd "Fixed — Biztonság" és
+  "Fixed — AI biztonság" lent.
 
-### Dokumentált, változatlan korlát
+### Added — Kasszakezelés egyszerűsítése
 
-Valódi NVDA/JAWS/Narrator screen reader-validáció **nem történt** ebben
-a körben (a validálási környezetben nem állt rendelkezésre) — a fenti
-javítások kódszinten és a böngésző saját, élő accessibility-fáján
-keresztül vannak megerősítve, nem tényleges hangzó AT-kimenettel.
+- **Opcionális kasszanyitás/kasszazárás** — új `cash_session_required`
+  beállítás (Beállítások → Kassza, admin-jogosultsághoz kötött,
+  alapértelmezetten BEKAPCSOLVA — a meglévő, kasszakezelést használó
+  boltok védelme változatlan marad). Kikapcsolva egy eladás nyitott
+  műszak nélkül is rögzíthető, és a kasszanyitási kényszer/jelző eltűnik
+  a Kasszáról; a pénzmozgás-rögzítés és a kasszazárás saját végpontjai
+  ettől függetlenül továbbra is valódi, nyitott műszakot igényelnek.
+- A kasszanyitás felülete egyértelműbb: a sikeres nyitás utáni nézet
+  kapott egy "Vissza a kasszához" gombot és egy rövid, "mit tegyek most"
+  összegzést.
 
-## [Unreleased] — Reszponzív / mobil remediáció
+### Added — Felület-modernizálás
 
-Reszponzív/mobil audit (320–1920px viewport-mátrix, portrait/landscape)
-nyomán: 2 HIGH, 5 MEDIUM, 1 LOW confirmed finding javítva.
+- A Kassza képernyő modern, flat-UI megjelenést kapott light és dark
+  témában egyaránt: kiemelt, jól látható végösszeg, letisztultabb
+  fizetésimód-/kosár-elrendezés.
+- A bal oldali navigáció WordPress-admin-stílusú, összecsukható
+  oldalsávvá alakult (ikon-only ↔ ikon+felirat), állapota megmarad
+  újratöltés után; a tartalom terület a kinyitott sáv mellett is
+  helyesen alkalmazkodik.
+- Egységes, az alkalmazás témájához igazodó scrollbar-megjelenés az
+  összes görgethető felületen.
 
-### Fixed
+### Fixed — Biztonság (független red-team audit, F-01…F-09)
 
-- **Mobil navigáció** — ≤768px szélességnél a desktop ikon-sáv eltűnik;
-  helyette egy hamburger-gomb (`headermenu.php`) nyit egy off-canvas
-  navigációs fiókot (`sidebarmenu.php` `#mobile-nav-drawer`), ami a
-  MEGLÉVŐ linklistából épül fel (garantált parity a desktop sávval).
-- **Reszponzív táblázat → kártya** — egy megosztott `.rt-cards` CSS-
-  komponens (`data-label` attribútumokkal) 9 lista-oldalon alakítja
-  kártyás nézetté a táblázatokat keskeny képernyőn, önálló mobil
-  rendező-legördülővel és "mind kijelölése" tükör-vezérlővel, ahol a
-  desktopos táblázatnak bulk-műveletei vannak.
-- **POS kosár táblázat** mobil nézete saját, szűkített CSS-t kapott
-  (`.pos-cart-table`), hogy 480px alatt is használható maradjon.
-- **Modal action-gombok** `position:sticky`-vel a saját görgetési
-  konténerükön belül, hogy rövid magasságú (fekvő mobil) viewportnál se
-  váljanak elérhetetlenné.
-- **Touch-cél méretek**: mért rés alapján, elemenként választott
-  technika (láthatatlan hit-slop vagy tényleges átméretezés) az
-  érintési célterületek növelésére, átfedés nélkül.
+- Szerver szerepkörben a közvetlen API-/oldal-forgalom mindig
+  bejelentkezést igényel (fail closed); az AI Asszisztens oldal minden
+  dinamikus HTML-beillesztése escape-elve (korábban valódi, böngészőben
+  reprodukált tárolt XSS); visszárunál egy tétel többszöri
+  felsorolásával nem lehet az eladottnál többet visszatéríteni; a
+  Windows telepítő legkisebb-jogosultságú ACL-modellt használ (korábban
+  rekurzív "Users: Modify" volt); inaktivált dolgozó session/Kliens-
+  munkamenete azonnal elveszti jogosultságát; és négy további,
+  alacsonyabb súlyosságú javítás (kitalált eszköznév kiszűrése,
+  HMAC-nonce, proxy Origin-ellenőrzés, dolgozói azonosság proxyzott
+  kérésnél).
 
-## [Unreleased] — UX-audit javítások (hibaüzenetek, navigáció, visszajelzések)
+### Fixed — AI biztonság (AI-01…AI-09)
 
-Egy teljes körű UX-audit (13 finding, CRITICAL-tól LOW-ig) nyomán.
+- A tool-hívási keret a teljes AI-kérésre (nem csak az első iterációra)
+  érvényes; lejárt jóváhagyott javaslat nem hajtható végre; az
+  AI-állapot provider-/modell-részletei csak vezetőnek láthatók; egy
+  dolgozó egyszerre csak egy AI-kérést futtathat terminálonként; minden
+  provider-hívás/tool-végrehajtás előtt újraellenőrződik a dolgozói
+  jogosultság és a kliens-munkamenet érvényessége; Dashboard AI-kártya
+  és Copilot-prompt XSS-/prompt-injection-védelme.
 
-### Fixed
+### Fixed — Helyesség (B-01…B-15, N-1…N-5, A-03)
 
-- **UX-01 (CRITICAL)** — egy ottfelejtett `loadProducts()` hívás (a
-  szerveroldali keresésre váltás óta nem létező függvény) minden
-  sikeres eladás UTÁN egy "Hiba: loadProducts is not defined" szöveggel
-  felülírta a már kiírt siker-üzenetet — pusztán kozmetikai hiba volt
-  (az eladás ténylegesen mindig sikeres maradt), de minden egyes
-  eladásnál téves hiba-benyomást keltett.
-- **UX-02 (HIGH)** — ha a kasszás egy konkrét pénztárgépet jelölt meg,
-  de azon nem volt nyitott műszak, az eladás korábban ennek ellenére
-  létrejött, `cash_session_id = NULL`-lal — nyomtalanul, egyetlen
-  kasszazárás sem számolta el. Mostantól ilyenkor az eladás elutasításra
-  kerül, egyértelmű "Nincs nyitva műszak…" üzenettel.
-- **UX-03 (HIGH)** — a Leltározás (`leltar.php`) egy teljesen kész,
-  működő oldal volt, de nem szerepelt a bal oldali navigációban —
-  gyakorlatilag megtalálhatatlan volt URL ismerete nélkül.
-- **UX-04…UX-09 (MEDIUM)** — kupon/utalvány hibaüzenet a mező
-  közelében (nem a távoli checkout-visszajelzésben); a visszáru
-  sikerüzenete túléli a lista újra-renderelését; néma lista-csonkolás
-  jelzése; telephelyi/globális készlet-eltérés magyarázata; konzisztens
-  "Betöltés…" jelzés a lista-oldalakon; a Kimenő és Beérkezett számlák
-  ikonjának megkülönböztetése.
-- **UX-10…UX-13 (LOW)** — kereszthivatkozás Telephelyek↔Pénztárgépek
-  között; natív `prompt()` lecserélése egy maszkolt PIN-dialógusra a
-  mentés-visszaállításnál; natív `alert()` lecserélése az app saját,
-  nem-blokkoló inline visszajelzésére (toast); élő figyelmeztetés
-  negatív/érvénytelen ár gépelése közben.
+- Leltári korrekció a számlálás pillanatában érvényes rendszerkészletből
+  indul ki (nem az indításkoriból); telephelyi/ÁFA-kulcs/fizetési mód
+  validáció egységesen a backend oldalán; ajándékutalványos eladás
+  helyes értéke minden riportban/számlán; bizonytalan Számlázz.hu-
+  foglalás admin-feloldáshoz kötve; import-számparser determinisztikus
+  elutasítása a kétértelmű bemenetnek; `PDOException` külön kezelve a
+  `RuntimeException`-lánc előtt (nyers SQL sosem kerül a válaszba);
+  egységes ÁFA-allokáció (`VatAllocation`) a riport, a számla ÉS a
+  visszáru között — a számla és a részleges visszáruk összege fillérre
+  egyezik az eladás értékével; kasszanyitás/pénzmozgás/
+  készletmozgatás/visszáru/Számlázz.hu-módosítás dupla beküldése
+  idempotensen kezelve; WooCommerce rendelés-törlés/kuka-kezelés a
+  lemondással azonos módon.
 
-## [Unreleased] — Performance remediation (Phase 6 PERF-01…PERF-09)
+### Fixed — Adatbázis-integritás (DB-01…DB-12, séma v37)
 
-Bugfix/teljesítmény-javítás, új üzleti funkció nélkül (1.0 RC freeze). A
-Phase 6 mérésekkel igazolt szűk keresztmetszetek célzott javítása; a
-pénzügyi definíciók (DB-07), a mentés/visszaállítás biztonsága (DB-01,
-DB-08) és az auth-folyamat változatlan. Részletek: README „Teljesítmény,
-futtatási modell és kapacitás”.
+- MySQL-visszaállítás már nem állhat meg félúton (teljesség-ellenőrzés,
+  explicit FK-kikapcsolás, automatikus visszaállás hiba esetén);
+  párhuzamos visszáru/kasszazárás/készletkönyvelés adatbázis-szinten
+  védett; **régebbi kiadásról frissített adatbázisok megkapják a friss
+  telepítés hiányzó foreign key-eit** (SQLite: tábla-újraépítés, MySQL:
+  `ADD CONSTRAINT`, adatvesztés nélkül — élő upgrade-teszttel is
+  megerősítve, lásd Release Audit Phase 11); riport-konzisztencia (Top
+  termékek/kategóriák/árrés ugyanazt a forgalom-definíciót használja,
+  mint a napi zárás); hűségpont-főkönyv és NAV-számlaszám-sorozat
+  konzisztenciája mentés-visszaállítás után; időbélyegek normalizálása
+  (nincs többé időzóna-eltolás MySQL `DATETIME` oszlopban).
 
-### Fixed
+### Fixed — Teljesítmény
 
-- **PERF-03 — mentés/visszaállítás memóriája**: darabolt (streamelt)
-  AES-256-GCM titkosítás (`FTBKENC2`: 1 MiB-os rekordok, rekordonkénti
-  hitelesítés, index + „utolsó” jelző az AAD-ben — csere/csonkolás/bővítés
-  is visszafejtési hiba); a MySQL-dump ellenőrzése és visszaállítása
-  streamelt darabolással; a Dropbox/Google Drive feltöltés fájlból
-  streamel. A régi `FTBKENC1` és jelző nélküli mentések változatlanul
-  visszaállíthatók.
-- **PERF-01 — egyetlen `php -S` blokkolása**: a Windows-telepítő a
-  `tools/http-dispatcher.php` diszpécsert indítja (3 pénztári + 1 háttér
-  `php -S` 127.0.0.1-en, `$Port+1..$Port+4`); cron csak a háttérfolyamaton,
-  hosszú kérés sose foglalja az utolsó pénztári folyamatot, visszaállítás/
-  frissítés egyedül fut, import/leltárzárás alatt új író kérés vár. A
-  hosszú végpontok elengedik a PHP session-zárat.
-- **PERF-02 — riportok**: a korlátlan `IN (...)` listák és a teljes
-  eladáslista `fetchAll()`-ja helyett streamelt JOIN, `EXISTS`, korlátos
-  (500-as) IN-darabok; az eredmény bájtra azonos (D1/D2/D3 oracle-összevetés).
-- **PERF-05 — kassza gyorsgombok**: a 90 napos eladások a
-  `sales.created_at` indexéről indulnak (al-lekérdezéses aggregálás).
-- **PERF-07 — dátumszűrők**: `col >= nap AND col < nap+1` a
-  `substr()/DATE()` helyett (15 lekérdezés), azonos sorhalmaz.
-- **PERF-06 — import**: `idx_products_unit_name` (`unit, name`) index (V38
-  migráció) a dupla-mentés elleni név-keresésre (nem csak `name`: az
-  átvenné a név szerint rendezett keresések tervét). 50 000 soros import:
-  ~30 perc → ~8 s (D2) / ~12 s (D3).
-- **PERF-01 kiegészítés**: a riport-végpontok (`sales-report`,
-  `top-products-report`, `inventory-report`, `stock-movements-report`) és
-  a teljes katalógus (`products.php`) a „hosszú” osztályba tartoznak.
-- **PERF-04 / PERF-09 — katalógus**: a kassza és a Beszerzés
-  szerveroldali keresést használ (`/api/product-search.php`), a Termékek
-  oldal szerveroldalon lapoz (`/api/products-page.php`, 100 sor/oldal,
-  magyar ábécé szerinti rendezés), a `/api/products.php` streamel.
+- **Többfolyamatos Windows-kiszolgálás** (`tools/http-dispatcher.php`) —
+  a korábbi egyetlen, blokkolódó `php -S` folyamat helyett 3 pénztári +
+  1 háttérfolyamat, így egy hosszú kérés (riport, import, mentés/
+  frissítés) többé nem fagyasztja le a Kasszát. Egy régebbi kiadásról
+  frissített telepítésen ez a gép következő újraindításakor/
+  bejelentkezésekor automatikusan aktiválódik (lásd "Windows telepítő"
+  README-szakasz).
+- Streamelt (darabolt) mentés/visszaállítás-titkosítás — nagy
+  adatbázisnál is korlátos memóriahasználat.
+- Riportok (napi zárás, értékesítési riport, top termékek) streamelt
+  lekérdezésekre váltottak a korlátlan `IN(...)` listák/teljes
+  `fetchAll()` helyett — bájtra azonos eredménnyel.
+- A Kassza és a Beszerzés szerveroldali terméktalálati keresést használ,
+  a Termékek oldal szerveroldalon lapoz — egyik sem tölti be a teljes
+  katalógust a böngészőbe.
+- Import-teljesítmény: új index a dupla-mentés elleni név-keresésre
+  (50 000 soros import: ~30 perc → ~8-12 másodperc).
 
-### Nem változott (dokumentálva)
+### Fixed — UI/UX, reszponzivitás, akadálymentesítés
 
-- PERF-11 (PIN-belépés O(dolgozók)): a PIN-protokoll biztonságosan nem
-  enged közvetlen keresést; a diszpécser miatt már nem blokkol más kasszát.
-- PERF-12/13 (statikus fájlok tömörítése/cache, polling): INFO, lásd README.
-
-## [Unreleased] — AI Copilot: javaslatok, végrehajtás, streaming és éles-üzemi validáció (Fázis 8A/8B/9/10/11)
-
-**Az 1.0 RC feature freeze alóli, egyenként jóváhagyott kivételek —
-NINCS verziószám-emelés ehhez a szakaszhoz**, az öt kör (8A/8B/9/10/11)
-kódja már a `main`-en van, de formális kiadásként (release/tag) még
-nem lett elnevezve. Lásd README "AI Asszisztens" szakasza (Fázis 6-11
-alszakaszok) a teljes technikai indoklásért.
-
-### Added — Fázis 8A: AI Action Proposals (javaslat + emberi jóváhagyás)
-
-- A Napi Intelligencia MOST — a MEGLÉVŐ `AnomalyDetector`-találatokból,
-  saját anomália-logika nélkül — konkrét, jóváhagyásra váró
-  `ActionProposal` sorokat is generálhat (pl. `reorder_draft`), NEM csak
-  szöveges összefoglalót.
-- Új `action_proposals` tábla + `ai-proposal-list.php`/
-  `ai-proposal-detail.php`/`ai-proposal-approve.php`/
-  `ai-proposal-reject.php` végpontok, admin-only, CSRF-védett.
-- "Javaslatok" fül az AI Asszisztens oldalon — a jóváhagyás/elutasítás
-  ÖNMAGÁBAN SOSE hajt végre üzleti műveletet, kizárólag a javaslat
-  állapotát változtatja.
-
-### Added — Fázis 8B: validált AI-művelet-végrehajtás
-
-- Jóváhagyott `reorder_draft` javaslat mostantól ténylegesen
-  VÉGREHAJTHATÓ — új, minimális `purchase_order_drafts` tábla (NEM a
-  meglévő `purchases`, ami már beérkezett készletet ír le, lásd README
-  "Miért nem a meglévő `purchases` tábla?").
-- `ActionExecutor` + `ExecutableActionStrategy` interfész +
-  `ReorderDraftExecutor` — friss elavulás-ellenőrzés (`current_stock`
-  egyezés) VÉGREHAJTÁS ELŐTT, atomikus állapot-claim
-  (`executing`/`executed`/`execution_failed`), teljes audit.
-- Egy elakadt (folyamat-összeomlás miatt `executing`-ben ragadt)
-  végrehajtás egy időalapú ablak (alapértelmezett 30 perc) után
-  újra-lefoglalható — valódi, több párhuzamos OS-folyamatos teszttel
-  bizonyítva.
-
-### Added — Fázis 9: Copilot UX, élő (streamelt) válaszok, kontextus-/költség-korlátok
-
-- **Élő streamelés mind a négy agent-hez** egyetlen új SSE-végponton
-  (`ai-agent-stream.php`) keresztül — Ollama (NDJSON), Anthropic (SSE),
-  OpenAI (SSE) mindegyike a hivatalos dokumentáció alapján, egyetlen,
-  szigorúan whitelistelt, provider-független eseményalakra (`AiStreamEvent`)
-  fordítva. Automatikus, átlátszó visszaesés nem-streamelt módra, ha egy
-  provider/beállítás nem támogatja.
-- **Kontextus-korlátok és automatikus tömörítés** (`ConversationManager`)
-  — determinisztikus, forduló-alapú FIFO-tömörítés hosszú
-  beszélgetéseknél/nagy eszköz-eredményeknél, MINDIG érvényes JSON-t
-  megőrizve.
-- **Determinisztikus költség-/sebesség-korlátok** — eszköz-hívás-darabszám
-  (`AgentRunner`-szinten) és opcionális dollár-alapú korlát (a Copilot
-  ügynök-fan-out szintjén), plusz a MEGLÉVŐ audit-naplóra épülő
-  kérés-közötti minimális várakozás (`AiRateLimiter`).
-- **Őszinte (SOSE kitalált) árazás-becslés** (`AiPricing`) — jelenleg
-  KIZÁRÓLAG a helyi (Ollama, $0) bejegyzés szerepel; Anthropic/OpenAI
-  esetén a UI "nem ismert ehhez a modellhez" szöveget mutat, sose hamis
-  számot.
-- **Admin-konfigurálható modell-útválasztás** a Copilot összetett,
-  több-ügynökös kérdéseihez (`*_model_complex` beállítások) — a böngésző
-  sose választhat modellt.
-- **`ClientProxy` streamelő relé** (`forwardStreaming()`) — a Kliens/
-  Szerver architektúra streamelt válaszokat is valódi, darabonkénti
-  progresszióval relézi (nem pufferelve), időzítés-alapú, valódi
-  két-folyamatos teszttel bizonyítva; megszakítás-biztos mindkét hopon.
-- AI Asszisztens oldal: élő agent-/eszköz-progressz, folyamatosan bővülő
-  válaszszöveg, "Mégse" gomb, token-használat/becsült-költség sáv (a
-  MEGLÉVŐ AI-előzményekbe/Dashboardba is felszínre hozva — séma-módosítás
-  nélkül). Beállítások → AI asszisztens: teljes vezérlés a fentiekhez.
-
-### Changed — Fázis 10: éles-üzemi validáció, benchmark, megbízhatóság
-
-**Validáció/hardening kör, NEM új feature** — a Fázis 9-ben épített
-infrastruktúra TÉNYLEGES, mért viselkedésének dokumentálása, és a menet
-közben talált, valódi rések minimális javítása. Lásd README "Fázis 10"
-alszakasz a teljes technikai indoklásért.
-
-- **Provider-hiba-kategória végig a naplózásig/UI-ig** — új
-  `AgentRunResult::$failureCategory`/`CopilotRunResult::$failureCategory`
-  mező (időtúllépés/hitelesítés/rate-limit/stb. megkülönböztetve, nem
-  csak egy általános hibaüzenet) — új "Hibakategória" sor az
-  AI-előzményekben.
-- **Egységesített audit-naplózás** — a streamelt és nem-streamelt
-  végpontok korábbi, párhuzamos, duplikált naplózó-logikája megszűnt,
-  mindkettő a közös `AiAuditLogger::logRun()`/`logCopilotRun()`-t hívja.
-- **Pontosított HTTP-státusz → hiba-kategória leképezés** mindhárom
-  Providerben (érvénytelen `ai_provider` konfiguráció most
-  `configuration_error`, nem tévesen `unavailable`; `LocalProvider`
-  megkülönbözteti a 4xx-et az 5xx-től).
-- **Korlátozott (bounded) újrapróbálkozás** (`AiRetryPolicy`) átmeneti
-  (`rate_limit`/`timeout`/`unavailable`) hibákra — legfeljebb 3 kísérlet,
-  legfeljebb 2 másodperc összes várakozással, KIZÁRÓLAG a nem-streamelt
-  útvonalon (streamelt válasznál egy csendes ismétlés megduplázná a már
-  kiküldött tartalmat), strukturálisan elkülönítve az
-  `ActionExecutor`-tól/üzleti mutációktól.
-- **Két hivatalosan dokumentált, dátumozott árazási bejegyzés**
-  (`AiPricing.php`) a ténylegesen konfigurált `claude-sonnet-5`/
-  `gpt-6-sol` modellekhez (korábban csak a helyi Ollama $0 szerepelt).
-- Új, újrafuttatható `tools/ai-benchmark.php` CLI-eszköz a 7 kanonikus
-  munkateherhez (nem hamisít eredményt provider hiányában — egyértelműen
-  "nem elérhető"-t jelez).
-
-### Changed — Fázis 11: valódi felhő-provider (Anthropic/OpenAI) validáció
-
-**Validáció kör, NEM új feature, kódmódosítás NEM történt** — cél az
-`AnthropicProvider`/`OpenAiProvider` valódi API-kulccsal való
-ellenőrzése, ha rendelkezésre áll. Lásd README "Fázis 11" alszakasz.
-
-- Anthropic/OpenAI kulcs EBBEN a környezetben SEM állt rendelkezésre —
-  `configured: nem, usable: nem` mindkettőre, "No Fake Green" elv szerint
-  őszintén jelölve, nem szimulálva.
-- Hivatalos dokumentáció újra-ellenőrizve: Anthropic Messages API és
-  OpenAI Responses API protokollja, valamint a Fázis 10-es árazás
-  VÁLTOZATLAN. Új, dokumentált (nem javított) ismert korlát: az OpenAI
-  "long context" díjszabási sávja jelenleg NEM modellezett az
-  `AiPricing.php`-ban.
-- Biztonsági regresszió közvetlen forráskód-ellenőrzéssel ÚJRA
-  megerősítve: provider-példányosítás kizárólag a factory-n/health-check
-  osztályokon keresztül, `ActionExecutor` kizárólag a dedikált
-  végrehajtás-végponton, retry strukturálisan nem érhet el
-  eszköz-hívást/üzleti műveletet.
-- **Tiszta (izolált, konkurens terhelés NÉLKÜLI) valódi Ollama-benchmark**
-  megismételve a Fázis 10 konkurencia-torzításának kiküszöbölésével: 4/14
-  munkaterhelés-futás sikeres, 10/14 időtúllépés — SZINTE UGYANOLYAN
-  arányban, mint a Fázis 10 torzított mérése. Ez FELÜLVIZSGÁLJA a Fázis
-  10 hipotézisét: a lassúság fő oka NEM (kizárólag) a konkurens
-  CPU-terhelés, hanem hogy a gép a `qwen3:8b`-t kizárólag CPU-n futtatja
-  (`size_vram: 0`), GPU-gyorsítás nélkül.
-
-### Security — független red-team audit javításai (F-01…F-09)
-
-- **F-01 (HIGH)** — Szerver szerepkörben a közvetlen API-/oldal-forgalom
-  mindig bejelentkezést igényel (fail closed); a telepítő Szerver módban
-  bekéri az alkalmazás-jelszót (stdin-en át adja a PHP-eszköznek).
-- **F-02 (HIGH)** — az AI Asszisztens oldal minden `innerHTML`-
-  interpolációja escape-elve (terméknév/entity_name/evidence/eszköznév/
-  napi findings/hibaüzenet) — valódi böngészőben reprodukált tárolt XSS.
-- **F-03 (HIGH)** — visszárunál egy eladási tétel többszöri felsorolásával
-  már nem lehet az eladottnál többet visszatéríteni (endpoint-elutasítás +
-  tranzakción belüli összesített ellenőrzés).
-- **F-04 (HIGH)** — a Windows telepítő már nem ad rekurzív "Users:
-  Modify" jogot a teljes telepítésre; legkisebb jogosultságú ACL-modell.
-- **F-05 (MEDIUM)** — inaktivált (admin) dolgozó meglévő sessionje/Kliens-
-  munkamenete is elveszti a jogosultságát.
-- **F-06 (MEDIUM)** — a modell által kitalált, nem regisztrált eszköznév
-  sose kerül a `tools_used`-ba vagy a böngésző felé menő eseménybe.
-- **F-07 (LOW)** — HMAC-nonce csak érvényes aláírás után foglalódik.
-- **F-08 (LOW)** — a `ClientProxy` állapotváltoztató kérést csak a Kliens
-  saját eredetéről (Origin/Sec-Fetch-Site) továbbít.
-- **F-09 (LOW)** — proxyzott kérés dolgozói azonossága sose esik vissza a
-  Szerver saját PHP-sessionjére.
-- Nyitva maradt, ebben a körben szándékosan nem javított pontok: F-10,
-  F-11, P-01, P-02, P-03 (lásd README "Biztonsági invariánsok").
-
-### Fixed — correctness audit (B-01…B-04)
-
-- **B-01** — a leltári korrekció alapja a termék rendszerkészlete a
-  MEGSZÁMOLÁS pillanatában (új `stock_take_items.system_qty_at_count`,
-  séma v33), nem az indításkori `expected_qty`: az indítás és a számlálás
-  közötti eladás/visszáru/beszerzés már nem számít kétszer (pl. 10 →
-  indítás → eladás 2 → számolás 8 → lezárás = 8, korábban 6). A Leltár
-  oldal és a készletmozgás-napló is ezt az alapot mutatja; a v33 előtt
-  rögzített számlálások az `expected_qty`-ra esnek vissza.
-- **B-02** — MySQL/MariaDB: a V31/V32 migráció a kanonikus
-  `schema.mysql.sql` típusait használja (`DATETIME`/`DECIMAL`); a TEXT
-  `expires_at` oszlopra épített index (MySQL 1170) már nem akasztja meg a
-  frissítést, egy korábbi félbemaradt futás oszlopait javító `ALTER` hozza
-  rendbe. SQLite-on változatlan.
-- **B-03** — MySQL/MariaDB: a telephelyi készlet-könyvelés (kasszai eladás,
-  készletmozgatás) natív `ON DUPLICATE KEY UPDATE … GREATEST(0, …)`
-  UPSERT-et használ `ON CONFLICT … MAX()` helyett.
-- **B-04** — MySQL/MariaDB: kuponos eladás teljes visszárujánál a
-  `times_used` visszaírása `GREATEST(0, …)`-val működik (0 alá sosem megy).
-- MySQL-szerver ebben a körben nem állt rendelkezésre: a MySQL-ágakat
-  SQL-felvevő tesztek és a kanonikus sémával való statikus összevetés
-  ellenőrzi, élő MySQL-futtatás nem történt.
-
-### Fixed — correctness audit (B-05…B-11)
-
-- **B-05** — az eladás rögzíti a telephelyét (`sales.location_id`, séma
-  v34), a visszáru ugyanoda állítja vissza a telephelyi készletet; a
-  visszáru és az "Új készlet" mozgatás WooCommerce-pusht is ütemez.
-  Telephely nélküli (és a javítás előtti) eladásnál nincs találgatás.
-  Beszerzés/leltár/import modellje nem hordoz telephelyet — változatlanul
-  csak az összesítettet érintik.
-- **B-06** — az ajándékutalvány fizetési eszköz: az eladás értéke =
-  befizetett összeg + utalványos rész; napi zárás, riportok, trend, órás
-  bontás, Dashboard és AI-eszközök ezzel számolnak, külön
-  "Ajándékutalvány" fizetési sorral. A számla nem 0 Ft-os többé
-  utalványos eladásnál. A visszáru az utalványra visszaírt részt is
-  rögzíti (`returns.gift_card_refund`). Az utalványok ÁFA-jogi besorolása
-  nyitott, könyvelői kérdés (README).
-- **B-07** — egy elévült Számlázz.hu-foglalás (a folyamat a hívás körül
-  meghalt) nem foglalható újra automatikusan: bizonytalanná válik
-  ('invoice_uncertain' / 'uncertain_manual'), csak admin oldhatja fel. A
-  külső hívás előtt tartós "folyamatban" tükör-sor készül.
-- **B-08** — a WooCommerce felé küldött készlet levonja a piszkozat
-  webes rendelések mennyiségét (foglalás); a webhook, a leadás és az
-  elutasítás is ütemez pusht.
-- **B-09** — NAV XML: AAM/TAM tétel `vatExemption` (case+reason) elemmel,
-  nem 0%-os adóköteles kulccsal; ismeretlen ÁFA-kód végleges hiba, NAV-
-  hívás nélkül. Élő NAV-környezetben nem ellenőrizve.
-- **B-10** — az import számparsere determinisztikus: `#N/A`, szöveg,
-  hibás csoportosítás és a kétértelmű `1.234`/`1,234` soronkénti
-  elutasítás (nem csendes 0 / csonkítás); exponens és ezres-
-  csoportosítás helyesen; törtkészlet elutasítva.
-- **B-11** — a linkelt termék import általi készlet-/név-/ár-változása a
-  WooCommerce-push queue-ba kerül, és a pull nem írja vissza, amíg ki
-  nem ment.
-
-### Fixed — correctness audit (B-12…B-15, P-D)
-
-- **B-12** — a PDOException a RuntimeException leszármazottja: minden
-  végpont `catch (RuntimeException)` lánca elé `catch (PDOException)`
-  került (kassza, leltár, visszáru, készletmozgatás, kliens-kezelés,
-  WooCommerce-behúzás, mentés), a számlázó providerekben a nem-UNIQUE
-  DB-hiba továbbdobódik. DB-hiba → általános 500, átmeneti zár → 503
-  "próbáld újra"; nyers SQL nem kerül a válaszba (a részlet a szerver
-  naplójába). A `cash-movement.php`/`cash-session-open.php` idempotens
-  visszajátszása mostantól ténylegesen lefut: egy közel egyidejű dupla
-  beküldés második kérése a győztes eredményét kapja. A valódi üzleti
-  409-ek változatlanok.
-- **B-13** — egyetlen ÁFA-szabály (`Database::vatBreakdown()`) a napi
-  zárásban és az értékesítési riportban (→ Dashboard, AI): az érték
-  fillérre pontos szétosztása a sorokra, soronként kerekített nettó, ÁFA =
-  bruttó − nettó. A 3×10 Ft / 20 Ft kupon eset mindkét riportban bruttó
-  10.00 / nettó 7.87 / ÁFA 2.13.
-- **B-14** — a Dashboard AI-kártyája a szerver "mai" napját kéri
-  (`ai-daily-report.php?date=today`, `ReportPeriod::today()`), ugyanazt,
-  amit a napi jelentés workere használ — nem a böngésző UTC-dátumát.
-- **B-15** — az `ai-history-list` / `ai-action-proposals-list` lapozása
-  közös, korlátos helperen megy (`Pagination`, max. 100 000. oldal):
-  extrém `page` érték nem okoz túlcsordulást/HTTP 500-at.
-- **P-D** — a WooCommerce-ben lemondott/visszatérített/sikertelen rendelés
-  webhookja a piszkozat foglalását felszabadítja (elutasított állapot,
-  idempotens); egy már leadott rendelésnél a helyi eladás/készlet nem áll
-  vissza vakon, csak a webshop-készlet korrigálódik és figyelmeztetés
-  jelenik meg.
-
-### Fixed — post-remediation audit (N-1…N-4, WooCommerce törlés/kuka)
-
-- **N-1** — pénzmozgás egy közben lezárt kasszaműszakba: a "nyitott-e a
-  műszak" feltétel és a beszúrás egyetlen atomikus utasítás
-  (`INSERT … SELECT … FROM cash_sessions WHERE id = ? AND status = 'open'`,
-  SQLite-on és MySQL-en azonos jelentéssel, extra zár nélkül). Lezárt
-  műszakba nem íródhat mozgás; az üzleti 409 és az idempotens
-  visszajátszás változatlan.
-- **N-2** — készletmozgatás dupla kattintása: a Telephelyek oldal egy
-  mozgatás-kísérlethez stabil idempotencia-kulcsot küld (újraküldéskor
-  ugyanazt; a gomb a kérés alatt letiltva). A szerver a kulcsot a
-  `stock_transfers` sorában, a készletmódosítással EGY tranzakcióban
-  rögzíti (a kulcsos sor az első írás) — egy ugyanazzal a kulccsal érkező
-  kérés a győztes eredményét kapja (`replayed: true`), eltérő tartalomra
-  409; visszagörgetés után nem marad kulcs. A WooCommerce-push csak a
-  ténylegesen végrehajtott "Új készlet" mozgatás után ütemeződik.
-- **N-3** — részleges visszáru dupla beküldése: ugyanez a minta a
-  `returns` táblán (`return-create.php`, Eladások visszáru-űrlap és a
-  kassza "eladás visszavonása" gombja). Minden mellékhatás (készlet,
-  telephely, kupon/hűségpont/utalvány, WooCommerce-queue) pontosan egyszer;
-  a mennyiségi védelem (F-03) külön rétegként megmaradt. A visszáru
-  tranzakciója mostantól írással kezdődik, így egy párhuzamos visszáru
-  SQLite-on várakozik (nem kap azonnali "foglalt" hibát), és a friss
-  állapot alapján dönt.
-- **N-4** — Számlázz.hu módosító/sztornó számla összeomlás után: a
-  külső hívás előtt a művelet atomikusan `processing`-be kerül; egy
-  elévült foglalás vagy beragadt várakozó sor bizonytalanná
-  (`uncertain_manual`) válik, nem marad "hamarosan beküldésre kerül"
-  állapotban. Bizonytalan vagy folyamatban lévő művelet mellett új
-  módosítás/sztornó (új `operation_uuid`-val sem) nem indítható; az admin
-  a Számlázz.hu-n ellenőrzött állapot alapján vagy a megtalált
-  számlaszámot rögzíti (külső hívás nélkül), vagy kifejezetten megerősíti,
-  hogy nem készült számla — csak ekkor indul újra. Új állapot nincs.
-- **WooCommerce törlés / kuka** — az `order.deleted` webhook (csak
-  azonosító) és a `trash` státusz a lemondással azonos módon kezelve: egy
-  piszkozat foglalása pontosan egyszer felszabadul, ismételt törlés no-op,
-  leadott rendelés nem áll vissza vakon, elutasított no-op. Egy helyben
-  még ismeretlen rendelés lemondása/törlése "elutasított" sírkő-sort hoz
-  létre (a meglévő állapottal), így egy később érkező, elavult
-  `processing` webhook már nem foglalhat.
-- Séma v35: `stock_transfers` és `returns` kapott `idempotency_key`
-  (UNIQUE) és `idempotency_fingerprint` oszlopot (automatikus migráció).
-
-### Fixed — N-5: a számla összege egyezik az eladás értékével
-
-- **Gyökérok**: a riport a közös allokációs szabályt (`vatBreakdown()`,
-  B-13) használta, a számla viszont egységárat kerekített
-  (`round(ár × kedvezmény-arány, 2)`), majd a számla-XML egységnyi nettót
-  kerekítve szorzott. A 3 × 10 Ft / 20 Ft kuponos eladás: riport bruttó
-  10.00 / nettó 7.87 / ÁFA 2.13, számla 9.99 / 7.86. Kedvezmény nélkül is
-  eltérhetett a nettó (3 × 10 Ft: riport 23.62, számla 23.61).
-- **Javítás**: új `VatAllocation` — az EGYETLEN allokációs és kerekítési
-  szabály (a `Database::vatBreakdown()` erre delegál, a riportok
-  változatlanok). A számlatételek (`sale.php`, webshop-rendelés
-  leadása/számlázása) ugyanebből az allokációból készülnek; a
-  Számlázz.hu és a NAV XML-builder a tételértékeket változtatás nélkül
-  írja ki, ÁFÁ-t nem számol. Ha a sor nem osztható maradék nélkül a
-  mennyiséggel, a tétel legfeljebb három, 1 fillérnyi egységár-eltérésű
-  alsorra bomlik (egységár × mennyiség = sorérték). A tükör-összegek
-  (`invoices` net/vat/gross) is az allokációból. Az új számlák sztornója
-  az allokált sorértékeket fordítja vissza; a javítás előtti tárolt
-  tételek a korábbi módon renderelődnek. A B-09 ÁFA-mentességi leképezés,
-  az eladás-érték definíciója (B-06) és a módosító számla tételsora nem
-  változott.
-- Validáció: a generált Számlázz.hu és NAV XML parse-olva, helyi
-  Számlázz.hu stubbal end-to-end; élő Számlázz.hu / NAV elfogadás nincs
-  igazolva.
-
-### Fixed — A-03: a visszáru összege ugyanazt az allokációt követi, mint az eladás
-
-- **Gyökérok**: a `return-create.php` a visszatérítést saját arányos
-  kerekítéssel számolta (`round(nyers × befizetett / részösszeg, 2)`),
-  nem abból a közös allokációból (`VatAllocation`), amelyből az eladás,
-  a riport, a napi zárás és a számla készül. A 3 × 10 Ft / 20 Ft kuponos
-  eladás (sorai 3.34 / 3.33 / 3.33) három részleges visszárúja 3 × 3.33 =
-  9.99 lett, a napi zárásban 0.01 Ft forgalom maradt.
-- **Javítás**: a visszáru értéke (bruttó/nettó/ÁFA) és a fizetési módon
-  visszajáró összeg az EREDETI eladás közös allokációjának egységenkénti
-  felosztásából jön (`VatAllocation::returnAllocation()`), a tranzakción
-  belül frissen olvasott, már visszavett mennyiség utáni darabokra. Így a
-  részleges visszáruk összege — sorrendtől és részletezéstől függetlenül —
-  fillérre az eladás értéke, nettója és ÁFÁ-ja, kulcsonként is; teljes
-  visszavétel után a riporthatás 0. Új ÁFA-szabály nincs.
-- A visszáru értéke rögzül (séma v36: `returns.value_*`,
-  `return_items.value_*`); a napi zárás, az értékesítési riport és a
-  bevétel-trend ezt használja. A javítás előtt rögzített visszáruk a
-  korábbi módon számolódnak.
-
-### Security — AI security audit javításai (AI-01…AI-09)
-
-- **Tool-hívási keret (AI-01)**: az `ai_max_tool_calls` (alapból 20) mostantól
-  a teljes AI-kérésre érvényes tényleges végrehajtási keret: minden
-  tool-hívás előtt fogy, egy modellválaszon belül is, több fordulón át,
-  streamelve, és a Copilot al-ügynökeinek hívásai ugyanabból a keretből
-  fogynak. Korábban csak az iterációk elején ellenőrződött, így egyetlen
-  válasz 300 tool-hívása mind lefutott. A keret elfogyásakor további tool
-  nem fut, a futás „eszköz-hívási korlát” hibával áll le. Új kérés új
-  keretet kap; második limit nincs.
-- **Lejárt, jóváhagyott javaslat (AI-03)**: a javaslat lejárata a
-  végrehajtásig érvényes, nem csak a jóváhagyásig. A végrehajtási claim
-  feltételében szerepel az `expires_at`, így egy jóváhagyott, de lejárt
-  (vagy lejárt, sikertelen) javaslat nem hajtható végre, és `expired`
-  állapotba kerül; a listázó sweep a jóváhagyott, még végre nem hajtott
-  javaslatokat is lejártnak jelöli. A claim előtt elindult végrehajtás
-  befejeződik; a már végrehajtott javaslat eredménye változatlan.
-- **AI-állapot (`ai-health.php`, AI-04)**: a provider-állapot csak vezetőnek
-  szól. Pénztáros csak azt kapja vissza, hogy az AI be van kapcsolva, de
-  vezetői jogosultsággal használható, provider, modell és hibaüzenet
-  nélkül; a kérése nem indít health-hívást a provider felé. A kényszerített
-  ellenőrzés (`force=1`, Beállítások „Kapcsolat tesztelése”) pénztárosnak
-  403. A vezetői működés változatlan.
-- **Párhuzamos AI-futások (AI-05)**: egy dolgozó egy terminálról egyszerre
-  egy AI-kérést futtathat (streamelt és nem-streamelt végpontokon
-  egyaránt); a második párhuzamos kérés 429-et kap. A meglévő
-  `ai_min_seconds_between_requests` (mint eddig, a streamelt végponton) az
-  indítások között is számít, nem csak a befejezett futások után. Különböző dolgozók,
-  illetve ugyanaz a dolgozó különböző kliens-gépeken továbbra is
-  egymástól függetlenül futtathat.
-- **Futás közbeni jogosultság (AI-09)**: egy futó AI-kérés minden
-  provider-hívás és minden tool-végrehajtás előtt újraellenőrzi, hogy a
-  dolgozó még aktív vezető, a kliens-gép nincs letiltva/visszavonva, és a
-  kliens-munkamenet még érvényes; ha nem, a futás leáll. Ha a böngésző
-  megszakítja a streamet, a futás a következő eseménynél leáll.
-- **Dashboard AI-kártya (AI-02)**: a provider- és modellnév szövegként
-  jelenik meg (korábban HTML-ként, ami tárolt XSS-t tett lehetővé).
-- **Copilot-prompt (AI-06)**: az al-ügynökök válaszai adatként, nem hiteles
-  utasításként szerepelnek a promptban.
-- **Ollama URL (AI-07)**: elfogadott, vezető által beállított viselkedés —
-  a helyi AI-cím bármely http(s) cím lehet (a helyi Ollama tipikusan
-  loopback/LAN); nem modell- és nem pénztáros-vezérelt.
-- Validáció: helyi, szkriptelt AI-provider stubokkal és valódi php -S
-  folyamatokkal; élő OpenAI / Anthropic / Ollama viselkedés nincs igazolva.
-
-### Fixed — adatbázis-integritási audit (DB-01…DB-12), séma v37
-
-- **MySQL-visszaállítás (DB-01)**: a PHP-s visszaállítás (Windows-on eddig
-  mindig ez futott, mert a `command -v` ott nem létezik — most `where`)
-  a fejléc-kommentekkel egy darabba került `SET FOREIGN_KEY_CHECKS=0`-t
-  kihagyta, és az első hivatkozott szülőtáblánál félúton megállt,
-  részben visszaállított adatbázist hagyva. Most: a dump az élő adatbázis
-  érintése előtt ellenőrzött (teljesség, FountainTrade-táblák), az
-  FK-ellenőrzés a visszaállítás idejére explicit ki-, a végén (hiba esetén
-  is) visszakapcsol, az utasítások darabolása idézőjel- és kommenttudatos.
-  Ha a visszaállítás a módosítás közben bukik el, a visszaállítás előtti
-  biztonsági mentés automatikusan visszaáll, és a művelet hibát jelez;
-  ha ez sem sikerül, a hibaüzenet kézi helyreállítást kér. Az updater
-  visszagörgetése ugyanezt a mechanizmust használja.
-- **Párhuzamos visszáru (DB-02)**: a visszavehető mennyiség adatbázis-
-  szinten védett (`sale_items.returned_qty`, feltételes foglalás; MySQL-en
-  az eladás sorainak `SELECT … FOR UPDATE` zárolása) — két párhuzamos
-  visszáru együtt sem vehet vissza többet, mint amennyi eladásra került,
-  és a kedvezmény-visszaforgatás legfeljebb egyszer fut. A meglévő
-  visszáruk a v37 migrációban beszámítódnak.
-- **Kasszazárás (DB-03, P-A)**: a zárás első lépése a műszak zárolása,
-  így a várható összeg egyetlen konzisztens állapotból számolódik; a zárás
-  közben érkező pénzmozgás/eladás megvárja a zárást (utána lezárt műszakot
-  lát). SQLite-on a zárás már nem bukik el emiatt „database is locked”
-  hibával.
-- **Telephelyi készlet (DB-04)**: túladás utáni visszárunál a telephelyre
-  csak annyi kerül vissza, amennyi az összesített készletből még nincs
-  telephelyhez rendelve — a telephelyi bontás visszáru után sem haladja meg
-  az összesített készletet (korábban 1 db-ból 3 db „fantom”, elmozgatható
-  telephelyi készlet lett).
-- **ÁFA-kulcs és fizetési mód (DB-05)**: a backend az irányadó. Az eladás
-  (kézi tétel is), a termék- és beszerzés-mentés, a módosító számla és az
-  alapértelmezett ÁFA-beállítás csak a támogatott kulcsokat
-  (27/18/5/0/AAM/TAM), az eladás és a webes rendelés leadása csak a
-  beállított fizetési módokat fogadja el (a webes rendelésnél a rendelés
-  saját fizetési módját is, ahogy a felület kínálja). A NAV- és a
-  Számlázz.hu-számla sem fogad el más kulcsot.
-- **Számlaszám restore után (DB-06)**: egy régebbi mentés visszaállítása
-  után a NAV-számlaszám-sorozat (és a modificationIndex) nem esik a
-  visszaállítás előtti érték alá; az allokáció egy már szereplő
-  számlaszámot átlép.
-- **Riport-konzisztencia (DB-07)**: a Top termékek, a kategóriák, az
-  árrés-blokk és a termékenkénti forgalom ugyanazt a forgalom-definíciót
-  használja, mint a riport-összesítő és a napi zárás: az eladás
-  (kedvezmény utáni) értékének allokációja az eladáskori ÁFA-kulccsal, a
-  visszáru a tárolt allokált értékkel; az árrés-blokk a fizetési mód
-  szűrőt is alkalmazza. Korábban a kedvezmény előtti listaárral és a
-  termék jelenlegi ÁFA-kulcsával számolt.
-- **MySQL-mentés (DB-08)**: a PHP-s dump egyetlen konzisztens
-  InnoDB-pillanatképből készül (`START TRANSACTION WITH CONSISTENT
-  SNAPSHOT`), teljesség-jelzővel zárul; a `mysqldump` a jelszót ideiglenes
-  option-fájlból kapja, a kimenete csak a mentésbe kerül (korábban egy
-  figyelmeztetés a mentési fájl elejére kerülhetett).
-- **Hűségpont-főkönyv (DB-09)**: a főkönyvbe a ténylegesen alkalmazott
-  változás kerül (az egyenleg 0 alá nem mehet) — Σ főkönyv = egyenleg.
-- **FK-paritás (DB-10)**: a régebbi kiadásokról frissített adatbázisok a
-  v37 migrációban megkapják a friss telepítés FK-it (SQLite: tábla-
-  újraépítés, MySQL: `ADD CONSTRAINT`), adatvesztés nélkül; orphan adat
-  esetén az adott FK kimarad, és a Rendszeresemények között
-  figyelmeztetés jelenik meg. A MySQL friss séma is megkapta a
-  `sales.location_id` és a `return_items.sale_item_id` FK-t.
-- **Időbélyegek (DB-11, P-B)**: az adatbázisba írt időbélyegek
-  `ÉÉÉÉ-HH-NN óó:pp:mm` (helyi idő) alakúak — nincs ISO 8601 / időzóna-
-  eltolás MySQL `DATETIME` oszlopba; a korábban így tárolt SQLite-értékek
-  a v37 migrációban normalizálódnak (eltolás nélkül).
-- **Webes rendelés kerekítése (DB-12)**: a rendelés értéke a WooCommerce
-  sorösszege; a leadáskor egy két tizedessel nem ábrázolható sor két
-  eladási sorra bomlik (pl. 10.00 Ft / 3 db = 1 × 3.34 + 2 × 3.33), így az
-  eladás, a riport és a számla fillérre a WooCommerce-sor (korábban 9.99).
-- Validáció: SQLite-on valódi többfolyamatos tesztekkel; a MySQL-ágak
-  SQL-rögzítéssel és egy MySQL-t szimuláló PDO-val — **élő MySQL-szerveren
-  nem ellenőrizve**.
-- A fizetési visszatérítés külön fogalom maradt: a fizetési módon a
-  befizetett rész arányos része jár vissza; az ajándékutalványra jutó rész
-  változatlanul a teljes visszavételkor íródik vissza (B-06). A riport az
-  értéket vonja le, a fizetési mód szerinti bontás a ténylegesen
-  visszaadott pénzt mutatja.
-- Az eladás-sorok lekérdezése id szerint rendezett, így a közös allokáció
-  maradék fillérje minden hívónál ugyanarra a sorra esik.
-- A számla (N-5) nem változik; visszárunál továbbra sincs automatikus
-  jóváíró számla.
+- Eladás utáni hamis hibaüzenet eltüntetve; nyitott műszak nélküli
+  eladás egyértelmű, azonnali visszajelzéssel elutasítva (alapértelmezett
+  beállítás mellett — lásd "Added — Kasszakezelés egyszerűsítése"); a
+  Leltározás oldal bekerült a navigációba; kupon/utalvány hibaüzenet a
+  mező közelében; natív `alert()`/`prompt()` lecserélve az app saját,
+  nem-blokkoló visszajelzésére.
+- Mobil navigáció (hamburger-menü + off-canvas fiók), reszponzív
+  táblázat→kártya nézet 9 lista-oldalon, POS kosár és modal-gombsor
+  mobil-barát elrendezése, nagyobb érintési célterületek.
+- POS/globális/vevő-/telephely-kereső teljes billentyűzet-navigációja
+  (Arrow Up/Down, Enter, Escape); toast/visszajelzés-rendszer
+  `aria-live` jelzéssel screen readereknek; reszponzív kártyanézet
+  megőrzött táblázat-szemantikával; modal és mobil navigációs fiók
+  valódi fókuszcsapdával.
 
 ### Tests
 
-- Fázis 10: `AiRetryPolicyTest` (9 teszt), `AiAuditLoggerTest` (5 teszt),
-  plusz kiegészítések a meglévő Provider-/kontextus-/árazás-
-  tesztkészletekben.
-- Fázis 11: nincs új tesztfájl (valódi validáció, nem stub-bővítés) — a
-  MEGLÉVŐ teljes tesztkészlet újra lefuttatva, izoláltan (nincs konkurens
-  CPU-terhelés).
-- Teljes regresszió a Fázis 11 végén: **1470/1470 teszt zöld (6450
-  assertion, 2 kihagyott)** — torzítatlan, izolált mérés.
-- Pester-suite (`tests/Install-WindowsTests.ps1`): 74/74 zöld, mindkét
-  körben újra lefuttatva.
+- Új tesztfájlok a fenti területekhez: `ActionProposal`/
+  `ActionExecutor`-tesztek, `AiRetryPolicyTest`, `AiAuditLoggerTest`,
+  `CashSessionOptionalSettingHttpTest`, és kiegészítések a meglévő
+  Provider-/kontextus-/árazás-/korrektségi/adatbázis-tesztkészletekben.
+- Teljes regresszió ezen kiadás végén: lásd a Release Audit (Phase 11)
+  jelentését — 2189 teszt, 32434+ assertion, 0 hiba, 2 kihagyott,
+  egyetlen izolált futtatásban.
+- Pester-suite (`tests/Install-WindowsTests.ps1`): változatlanul zöld.
 
 ### Known limitations
 
-- Anthropic/OpenAI VALÓDI API-kulccsal streamelve MÉG NINCS élesben
-  ellenőrizve (Fázis 9/10/11 mindegyike kulcs hiányában dokumentálta ezt
-  — csak kontrollált, dokumentáció-hű stub-szerverekkel bizonyított) — a
-  helyi (Ollama) streamelés viszont valódi, futó példánnyal, élő
-  böngésző-teszttel ÉS izolált benchmarkkal bizonyítottan helyesen
-  működik (bár lassan, GPU-gyorsítás nélküli gépen).
-- Az OpenAI "long context" díjszabási sávja NEM modellezett
-  `AiPricing.php`-ban (Fázis 11-ben felfedezve, bizonyíték hiányában
-  szándékosan nem implementálva).
-- A Copilot jelenleg NEM tudatos a javaslatokról (nem listázza/magyarázza
-  őket) — dokumentált, jövőbeli bővítési lehetőség.
-- Nincs UI a `purchase_order_drafts` piszkozatok önálló böngészéséhez —
-  csak a kiváltó javaslat részletnézetében jelenik meg.
-- Nincs beszállítói/külső procurement-integráció — a piszkozat kézzel
-  vihető át valódi beszerzéssé a meglévő felületen.
+- Anthropic/OpenAI VALÓDI API-kulccsal streamelve nincs élesben
+  ellenőrizve (csak dokumentáció-hű stub-szerverekkel) — a helyi
+  (Ollama) streamelés valódi, futó példánnyal bizonyítottan működik.
+- Az OpenAI "long context" díjszabási sávja nem modellezett
+  `AiPricing.php`-ban.
+- Élő MySQL-szerveren, valódi NAV/Számlázz.hu/WooCommerce-fiókkal,
+  valódi screen readerrel (NVDA/JAWS/Narrator) ebben a körben sem
+  történt validáció — részletek: Release Audit (Phase 11) jelentése.
 - N-1…N-4 / törlés: a többfolyamatos bizonyítás SQLite-on (WAL) készült;
-  MySQL, WooCommerce és Számlázz.hu élő környezetben nincs validálva. MySQL
-  REPEATABLE READ mellett egy, a párhuzamos műszakzárás UPDATE-je előtt
-  commitolt mozgást a zárás pillanatképe kihagyhat — ez a zárás oldali
-  P-A kérdés, ebben a körben szándékosan nem módosítva.
+  MySQL, WooCommerce és Számlázz.hu élő környezetben nincs validálva.
 
 ## [1.5.0] — 2026-09-22 (Kasszakezelés + Több-terminálos Kliens/Szerver architektúra)
 

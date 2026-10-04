@@ -1,20 +1,23 @@
 # FountainTrade — Point of Sale & Inventory
 
-**Verzió: 1.5.0** (production release — Kasszakezelés + Kliens/Szerver architektúra)
+**Verzió: 1.6.0** (production release — AI Copilot + opcionális kasszakezelés és felület-modernizálás)
 
 FountainTrade 1.0 volt az első production kiadás, az 1.0 RC
 stabilizációs és biztonsági hardening ciklus lezárása után. Azóta több
-feature release (1.1.0, 1.1.1, 1.2.0, 1.3.0, 1.4.0 — lásd `CHANGELOG.md`)
-bővítette az alkalmazást; az 1.3.1 egy tiszta stabilizációs kör (audit +
-hibajavítás, új funkció nélkül) volt, az 1.4.1 kizárólag a Windows
-telepítő élményét/üzemeltethetőségét javította. Az 1.5.0 két nagy
-funkcióterületet hoz: pénztárgép-szintű kasszanyitás/kasszazárás
-(készpénz-elszámolás, műszakonként — lásd lent: "Kasszakezelés
-(pénztárgép-szintű nyitás/zárás)"), és egy opcionális **Kliens/Szerver
-üzemmód**, amivel több terminál (Windows-gép) egyetlen közös boltot,
-egyetlen közös adatbázist kezelhet — lásd lent: "Több-terminálos
-üzemmód: Önálló / Szerver / Kliens", és `CHANGELOG.md` "[1.5.0]"
-szakaszát a teljes részletekért.
+feature release (1.1.0, 1.1.1, 1.2.0, 1.3.0, 1.4.0, 1.5.0 — lásd
+`CHANGELOG.md`) bővítette az alkalmazást; az 1.3.1/1.4.1 tiszta
+stabilizációs körök (audit + hibajavítás, új funkció nélkül) voltak, az
+1.5.0 a pénztárgép-szintű kasszakezelést és az opcionális Kliens/Szerver
+üzemmódot hozta. Az 1.6.0 egy teljes **AI Copilot** réteget ad az
+alkalmazáshoz (determinisztikus napi intelligencia, emberi jóváhagyással
+futó beszerzési javaslatok, élő streamelt Copilot-válaszok — lásd lent:
+"AI Asszisztens"), **opcionálissá teszi a kasszanyitás/kasszazárás
+kényszerét** egypénztáros üzletek számára (Beállítások → Kassza), és egy
+letisztult, flat-UI Kassza-felületet + összecsukható oldalsávot vezet be
+— emellett egy teljes körű audit-sorozat (biztonság, adatintegritás,
+teljesítmény, UI/UX, reszponzivitás, akadálymentesítés) remediációját is
+tartalmazza. Lásd `CHANGELOG.md` "[1.6.0]" szakaszát a teljes
+részletekért.
 
 Egy önállóan üzemeltethető PHP alkalmazás egy kisbolt/webshop teljes napi
 üzemeltetéséhez: USB vonalkódolvasós kassza, beszerzés és leltár, több
@@ -27,9 +30,11 @@ Beérkező eladások).
 ## Követelmények
 
 - PHP 8.1+ (fejlesztve és tesztelve **PHP 8.3** ellen — ugyanaz a verzió,
-  amit a telepítési útmutató (`install.txt`) is használ), `curl`,
-  `xmlwriter`, `fileinfo` kiterjesztésekkel, plusz `pdo_sqlite`
-  (alapértelmezett) vagy `pdo_mysql` (ha MySQL-re váltasz — lásd lentebb)
+  amit a telepítési útmutató (`install.txt`) is használ), a következő
+  kiterjesztésekkel: `curl`, `xmlwriter`, `fileinfo`, `mbstring`, `gd`,
+  `zip`, `openssl`, `sqlite3`, plusz `pdo_sqlite` (alapértelmezett) vagy
+  `pdo_mysql` (ha MySQL-re váltasz — lásd lentebb). Ugyanezt a listát
+  ellenőrzi induláskor a Windows telepítő (`install-windows.ps1`) is.
 - A `data/`, `invoices/` és `webroot/assets/` mappáknak írhatónak kell
   lenniük a PHP folyamat számára (itt van az SQLite fájl / helyi
   mentések / számla-PDF-ek / feltöltött logó)
@@ -901,9 +906,18 @@ SQLite 3.53 (WAL), `memory_limit=128M` mellett készültek; MySQL-en
   így ugyanannak a böngészőnek egy másik lapja (pl. a kassza) sem vár egy
   AI-futásra.
 - **Meglévő telepítésen** az önfrissítés a `tools/http-dispatcher.php`-t
-  telepíti, de a Feladatütemező szerver-bejegyzését nem írja át — a
-  párhuzamos futtatásra való átálláshoz a `FountainTrade-Setup.bat`-ot
-  egyszer újra kell futtatni (idempotens, az adatokat nem érinti).
+  telepíti, és a frissítés sikeres befejezésekor automatikusan átírja a
+  rejtett szerver-launcher (`tools/run-server-hidden.vbs`) tartalmát is a
+  diszpécser-indításra (lásd `WindowsDispatcherActivator`) — a
+  Feladatütemező saját bejegyzését (Action) ehhez nem kell módosítani,
+  mert az a dispatcher bevezetése előtt/után byte-azonos. A váltás a
+  kiszolgáló folyamat **következő tényleges (újra)indulásakor** (gép
+  újraindítás, bejelentkezés, vagy egy esetleges összeomlás utáni
+  automatikus újraindítás) lép életbe — ez az `/api/system-status.php`
+  `dispatcher_pending_restart` mezőjén és a `rendszerallapot.php` oldalon
+  is látszik, amíg folyamatban van. A `FountainTrade-Setup.bat` egyszeri
+  újrafuttatása (idempotens, az adatokat nem érinti) továbbra is egy
+  biztonságos, azonnali alternatíva, de már nem az egyetlen út.
 - Nginx/Apache + PHP-FPM telepítésnél (`telepites-tavoli-szerver.txt`) a
   diszpécser nem kell: ott a párhuzamos kiszolgálást a PHP-FPM adja. Az
   ütemezési szabályok (cron-elkülönítés, kizárólagos visszaállítás, író-

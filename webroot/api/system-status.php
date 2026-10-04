@@ -3,6 +3,7 @@
 declare(strict_types=1);
 require __DIR__ . '/_bootstrap.php';
 require_once __DIR__ . '/../../src/AppVersion.php';
+require_once __DIR__ . '/../../src/WindowsDispatcherActivator.php';
 
 $lowStockThreshold = (int) ($appSettings['low_stock_default_threshold'] ?? 5);
 
@@ -49,4 +50,5 @@ send_json([
     'php_version' => PHP_VERSION,
     'app_version' => AppVersion::CURRENT,
     'recent_sync_log' => $db->getRecentSyncLog(20),
+    'dispatcher_pending_restart' => WindowsDispatcherActivator::isPendingRestart(dirname(__DIR__, 2)),
 ]);

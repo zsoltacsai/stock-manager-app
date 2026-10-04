@@ -7,6 +7,13 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     send_json(['error' => 'POST only'], 405);
 }
 
+if (!extension_loaded('fileinfo')) {
+    send_json(['error' => 'A képfeltöltéshez a PHP fileinfo kiterjesztése szükséges, ami jelenleg nincs bekapcsolva.'], 500);
+}
+if (!extension_loaded('gd')) {
+    send_json(['error' => 'A képfeltöltéshez a PHP GD kiterjesztése szükséges, ami jelenleg nincs bekapcsolva.'], 500);
+}
+
 if (empty($_FILES['image']) || $_FILES['image']['error'] !== UPLOAD_ERR_OK) {
     send_json(['error' => 'Nem érkezett feltöltött fájl.'], 400);
 }

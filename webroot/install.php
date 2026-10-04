@@ -35,6 +35,14 @@ if ($installToken === '' || !hash_equals($installToken, $suppliedToken)) {
     exit;
 }
 
+// Nem blokkoló figyelmeztetés — a Windows telepítő (install-windows.ps1)
+// már ellenőrzi ugyanezt a 9 kiterjesztést induláskor; ez a PHP-varázsló
+// (Linux/manuális telepítés) ugyanazt a korai jelzést adja meg, SQLite-
+// only telepítésnél a pdo_mysql hiánya pl. nem releváns, ezért nem
+// akasztja meg a folytatást, csak látható marad.
+$requiredExtensions = ['curl', 'xmlwriter', 'fileinfo', 'mbstring', 'gd', 'zip', 'openssl', 'sqlite3', 'pdo_sqlite'];
+$missingExtensions = array_values(array_filter($requiredExtensions, static fn(string $ext): bool => !extension_loaded($ext)));
+
 $errors = [];
 $values = [
     'shop_name'    => 'Fountainbridge Bolt',
@@ -181,6 +189,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ez a varázsló csak akkor szükséges, ha MySQL-t szeretnél használni, vagy meg
         akarod adni a bolt alapadatait indulásként. Bármikor kihagyható.
     </p>
+
+    <?php if ($missingExtensions): ?>
+        <p class="feedback error">
+            Hiányzó PHP kiterjesztés(ek): <?= htmlspecialchars(implode(', ', $missingExtensions)) ?>.
+            Egyes funkciók (pl. képfeltöltés, biztonsági mentés, MySQL) nem fognak
+            működni, amíg ezek nincsenek bekapcsolva — a telepítés ettől még folytatható.
+        </p>
+    <?php endif; ?>
 
     <?php foreach ($errors as $error): ?>
         <p class="feedback error"><?= htmlspecialchars($error) ?></p>

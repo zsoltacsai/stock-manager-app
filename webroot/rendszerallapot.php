@@ -49,6 +49,7 @@ if (!Auth::isLoggedIn($appSettings)) {
             <div id="health-overall-status"></div>
         </div>
         <div class="stats-grid" id="overview-stats" style="margin-top:14px;"></div>
+        <div id="dispatcher-pending-note" style="display:none;"></div>
         <p class="muted" style="margin-bottom:0;">
             <a href="beszerzesi-javaslat.php">Beszerzési javaslat megtekintése</a> —
             az alacsony készletű termékek beszállító szerint csoportosítva.

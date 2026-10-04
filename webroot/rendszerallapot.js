@@ -253,6 +253,15 @@ async function loadOverviewStats() {
             statBox(data.driver.toUpperCase(), 'Adatbázis'),
         ].join('');
 
+        const dispatcherNote = document.getElementById('dispatcher-pending-note');
+        if (data.dispatcher_pending_restart) {
+            dispatcherNote.style.display = '';
+            dispatcherNote.innerHTML = '<p class="feedback" style="background:var(--warn-bg,#fff8e1); border:1px solid var(--warn,#c9900c); border-radius:6px; padding:10px 14px; margin:12px 0 0;">A többfolyamatos kiszolgáló mód a gép következő újraindításakor/bejelentkezésekor lép életbe.</p>';
+        } else {
+            dispatcherNote.style.display = 'none';
+            dispatcherNote.innerHTML = '';
+        }
+
         syncLogBody.innerHTML = data.recent_sync_log.length
             ? data.recent_sync_log.map(row => `
                 <tr>

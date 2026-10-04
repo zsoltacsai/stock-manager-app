@@ -211,6 +211,27 @@ final class UpdateInstaller
                 throw new RuntimeException('Az egészség-ellenőrzés a várttól eltérő verziót talált a telepítés után (' . ($migrationResult['version'] ?? '?') . ' a(z) ' . $toVersion . ' helyett).');
             }
 
+            // Release preparation (v1.6.0) — a Windows telepítő Feladatütemező-
+            // bejegyzése (wscript.exe ... run-server-hidden.vbs) a dispatcher
+            // (PERF-01, Phase 6) bevezetése előtt/után BYTE-AZONOS; a tényleges
+            // `php -S` vs. dispatcher-indítás kizárólag e launcher-fájl
+            // TARTALMÁN múlik, amit a self-update korábban sosem frissített
+            // (gitignore-olt, nem telepített fájl). Ez best-effort, Windows-
+            // only, sosem hibáztatja meg a frissítést — lásd
+            // WindowsDispatcherActivator docblokkja.
+            try {
+                WindowsDispatcherActivator::activateIfNeeded($this->appRoot);
+            } catch (Throwable $e) {
+                $this->db->logSystemEvent(
+                    'updater',
+                    'dispatcher_activation_failed',
+                    'warning',
+                    'failure',
+                    'A frissítés sikeres volt, de a többfolyamatos kiszolgáló mód automatikus aktiválása nem sikerült. A rendszer a korábbi módban működik tovább.',
+                    $e->getMessage()
+                );
+            }
+
             $this->setMaintenanceMode(false);
             $this->cleanupStaging($extractDir);
             $this->cleanupOldRollbackSnapshots();

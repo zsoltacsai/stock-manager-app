@@ -1,5 +1,13 @@
 # FountainTrade — Point of Sale & Inventory
 
+## Licence and open-source use
+
+FountainTrade project-authored code is licensed under **AGPL-3.0-or-later**, except for third-party components carrying their own terms. See [LICENSE](LICENSE), [licensing details](docs/LICENSING.md), and [third-party notices](THIRD_PARTY_NOTICES.md).
+
+The self-hosted application is available without a FountainTrade subscription or central product activation. Optional setup, hosting, migration and support may be paid services. Application authentication and upstream licence declarations remain in place.
+
+AI assistance is disclosed in [AI_USAGE.md](docs/AI_USAGE.md). Historical provenance limitations are stated explicitly; this declaration is not a claim of complete historical prompt records.
+
 **Verzió: 1.6.0** (production release — AI Copilot + opcionális kasszakezelés és felület-modernizálás)
 
 FountainTrade 1.0 volt az első production kiadás, az 1.0 RC

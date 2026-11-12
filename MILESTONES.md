@@ -9,7 +9,7 @@ A FountainTrade mílestone-alapú fejlesztéssel készül. Ez a fájl a
 
 | Mílestone | Tartalom | Ág / PR | Állapot |
 | --- | --- | --- | --- |
-| **M0** | Fejlesztői infrastruktúra: CI, teszt-politika, izolált ág + PR folyamat, adatvédelmi őr | `milestone/m0-dev-infrastructure` | Folyamatban (PR megnyitva) |
+| **M0** | Fejlesztői infrastruktúra: CI, teszt-politika, izolált ág + PR folyamat, adatvédelmi őr | `milestone/m0-dev-infrastructure` → PR #2 | Kész, CI zöld — jóváhagyásra vár |
 | M1 | *Az Owner jelöli ki* | – | Nem indult el |
 
 > Új mílestone csak akkor kerül a táblába, ha az Owner kijelölte. A

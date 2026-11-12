@@ -38,13 +38,20 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          $needed = [version]'3.4.0'
           $legacy = Get-Module -ListAvailable Pester |
-            Where-Object { $_.Version -ge [version]'3.4.0' -and $_.Version -lt [version]'4.0.0' }
+            Where-Object { $_.Version -eq $needed }
           if (-not $legacy) {
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
             Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction SilentlyContinue | Out-Null
             Install-Module Pester -RequiredVersion 3.4.0 -Force -Scope CurrentUser -SkipPublisherCheck -Confirm:$false
           }
+          # A windows-latest runneren Pester 5 van telepítve; a tesztek
+          # legacy `Should Be` szintaxisa miatt KIFEJEZETTEN a 3.4.0-t
+          # kell betölteni, különben az automatikus modulbetöltés az 5.x-et
+          # választja, és minden teszt elbukik.
+          Import-Module Pester -RequiredVersion 3.4.0 -Force
+          Write-Host ("Betöltött Pester: {0}" -f (Get-Module Pester).Version)
 
       - name: Pester tesztek futtatása
         shell: powershell

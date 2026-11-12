@@ -50,7 +50,10 @@ jobs:
 
   tests:
     name: PHPUnit (PHP ${{ matrix.php }})
-    runs-on: ubuntu-latest
+    # A termék Windows-platformra készül (telepítő, Feladatütemező,
+    # elérési utak), ezért a teszt-suite is Windowson fut: a
+    # platform-specifikus viselkedést így valódi célkörnyezet ellenőrzi.
+    runs-on: windows-latest
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -74,13 +77,16 @@ jobs:
           node-version: '22'
 
       - name: PHPUnit letöltése és ellenőrzése
+        shell: bash
         run: bash scripts/ci/fetch-phpunit.sh
 
       - name: Teljes PHPUnit teszt-készlet
+        shell: bash
         run: php tools/phpunit.phar --colors=never
 
       - name: Adatvédelmi őr (data/ és invoices/ érintetlen)
         if: success()
+        shell: bash
         run: bash scripts/ci/data-guard.sh
 
   test-policy:

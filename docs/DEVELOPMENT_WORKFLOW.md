@@ -59,6 +59,11 @@ A Windows telepítő Pester-tesztjei külön workflow-ban futnak
 (`.github/workflows/windows-installer.yml`), csak akkor, ha a telepítő
 vagy annak tesztjei változnak. Ez **nem** része a `CI Gate`-nek.
 
+A PHPUnit suite **Windows runneren** fut, mert a termék Windows-platformra
+készül (telepítő, Feladatütemező, Windows-elérési utak); így a
+platform-specifikus viselkedést valódi célkörnyezet ellenőrzi. A PHP 8.3
+az autoritatív verzió, a PHP 8.4 előrejelző.
+
 ### Mit jelent a "zöld"?
 
 - Nincs szintaxis-hiba.
@@ -224,6 +229,9 @@ gh api repos/zsoltacsai/stock-manager-app/branches/main/protection
 
 ## 10. Ismert korlátok (M0)
 
+- A PHPUnit suite Windows runneren fut, mert a termék célplatformja a
+  Windows (telepítő, Feladatütemező, elérési utak). Linux-specifikus
+  viselkedést nem tesztelünk, mert nincs Linux-telepítés.
 - A PHP 8.4 job előrejelző: ha a suite ott elbukik egy PHP 8.4-es
   viselkedésváltozás miatt, a javítás külön PR-t érdemel; nem szabad a
   jobot csendben kikapcsolni.

@@ -32,7 +32,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Kód letöltése
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Pester tesztek futtatása (Pester 3.4.0)
         shell: powershell

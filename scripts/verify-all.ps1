@@ -64,7 +64,7 @@ Write-Host "PHP: $PhpPath"
 
 # A projekt tesztjeihez szükséges kiterjesztések (a minimálisan telepített
 # PHP – pl. a winget-es csomag – ezek nélkül nem tudja futtatni a suite-ot).
-$requiredExtensions = @('mbstring', 'pdo_sqlite', 'sqlite3', 'dom', 'xmlwriter', 'tokenizer', 'ctype')
+$requiredExtensions = @('mbstring', 'pdo_sqlite', 'sqlite3', 'dom', 'xmlwriter', 'tokenizer', 'ctype', 'fileinfo', 'gd')
 $loaded = & $PhpPath -m
 $missing = @()
 foreach ($extension in $requiredExtensions) {

@@ -64,6 +64,11 @@ készül (telepítő, Feladatütemező, Windows-elérési utak); így a
 platform-specifikus viselkedést valódi célkörnyezet ellenőrzi. A PHP 8.3
 az autoritatív verzió, a PHP 8.4 előrejelző.
 
+A teszt-job a futtatás előtt a `scripts/ci/check-php-extensions.sh`
+scripttel ellenőrzi a termék által igényelt 9 PHP-kiterjesztést
+(`install.txt`, `webroot/install.php`). Enélkül egy hiányzó kiterjesztés
+a termékkód 500-as válaszaként jelenne meg, ami félrevezető hibaüzenet.
+
 ### Mit jelent a "zöld"?
 
 - Nincs szintaxis-hiba.
@@ -131,7 +136,8 @@ kell megtenni — nem egy funkciófejlesztés mellékhatásaként.
 
 - PHP 8.3 (a projekt autoritatív verziója), legalább a következő
   kiterjesztésekkel: `mbstring`, `pdo_sqlite`, `sqlite3`, `dom`,
-  `xmlwriter`, `tokenizer`, `ctype`, `curl`, `openssl`, `zip`, `intl`, `gd`
+  `xmlwriter`, `tokenizer`, `ctype`, `curl`, `openssl`, `zip`, `intl`,
+  `gd`, `fileinfo`
 - Node.js 22+ (a `tests/js/*.cjs` frontend-harness tesztekhez)
 - Git for Windows
 

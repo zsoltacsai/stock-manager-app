@@ -36,7 +36,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Kód letöltése
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: PHP 8.3 beállítása
         uses: shivammathur/setup-php@v2
@@ -61,18 +61,26 @@ jobs:
         php: ['8.3', '8.4']
     steps:
       - name: Kód letöltése
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: PHP ${{ matrix.php }} beállítása
         uses: shivammathur/setup-php@v2
         with:
           php-version: '${{ matrix.php }}'
-          extensions: mbstring, pdo_sqlite, sqlite3, curl, openssl, zip, intl, gd
+          # A lista a termék saját követelménye (install.txt,
+          # webroot/install.php). A fileinfo és az xmlwriter a runneren
+          # alapból NINCS bekapcsolva — ezek hiányában a feltöltés-tesztek
+          # 500-at kapnak. Az intl a PHPMailer idn_to_ascii-jához kell.
+          extensions: curl, xmlwriter, fileinfo, mbstring, gd, zip, openssl, sqlite3, pdo_sqlite, intl
           coverage: none
           tools: none
 
+      - name: Kötelező PHP kiterjesztések ellenőrzése
+        shell: bash
+        run: bash scripts/ci/check-php-extensions.sh
+
       - name: Node.js beállítása (frontend JS-harness tesztekhez)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '22'
 
@@ -96,7 +104,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Kód letöltése (teljes történelem a diffhez)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -112,7 +120,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Kód letöltése
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Gitleaks telepítése (rögzített verzió + ellenőrzőösszeg)
         run: bash scripts/ci/fetch-gitleaks.sh

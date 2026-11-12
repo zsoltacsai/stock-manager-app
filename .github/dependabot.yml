@@ -1,0 +1,14 @@
+version: 2
+# Csak a GitHub Actions akciók verzióit követjük: a projekt
+# szándékosan Composer/npm nélküli, a frontend könyvtárak pedig
+# kézzel, commitolva vannak a webroot/vendor/ alatt.
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"

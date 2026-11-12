@@ -1,0 +1,70 @@
+# FountainTrade – Windows telepítő (Pester) ellenőrzés
+#
+# Csak akkor fut, ha a telepítő vagy annak tesztjei változnak. A Pester
+# tesztek a régi (Pester 3.x) `Should Be` szintaxist használják, ezért a
+# workflow kifejezetten a 3.4.0-s verziót biztosítja.
+#
+# Ez a workflow NEM része a kötelező "CI Gate" ellenőrzésnek: a telepítő
+# tesztek a projekt dokumentációja szerint nem CI-kapuzó lépések.
+
+name: Windows telepítő
+
+on:
+  pull_request:
+    paths:
+      - 'install-windows.ps1'
+      - 'install-windows-lib.ps1'
+      - 'tests/Install-WindowsTests.ps1'
+      - '.github/workflows/windows-installer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pester:
+    name: Pester (install-windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Kód letöltése
+        uses: actions/checkout@v5
+
+      - name: Pester tesztek futtatása (Pester 3.4.0)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # FONTOS: minden workflow-lépés KÜLÖN PowerShell-folyamat, ezért a
+          # modul telepítését, betöltését és a tesztek futtatását ugyanabban
+          # a lépésben kell elvégezni. (Korábbi hiba: a külön lépésben
+          # betöltött 3.4.0 nem öröklődött, így a tesztek Pester 5 alatt
+          # futottak, és a legacy `Should Be` szintaxis mindenhol elbukott.)
+          $needed = [version]'3.4.0'
+          $legacy = Get-Module -ListAvailable Pester |
+            Where-Object { $_.Version -eq $needed }
+          if (-not $legacy) {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction SilentlyContinue | Out-Null
+            Install-Module Pester -RequiredVersion 3.4.0 -Force -Scope CurrentUser -SkipPublisherCheck -Confirm:$false
+          }
+
+          # A windows-latest runneren Pester 5 is telepítve van; a tesztek
+          # legacy `Should Be` szintaxisa miatt KIFEJEZETTEN a 3.4.0-t
+          # töltjük be, és ellenőrizzük is, hogy tényleg az fut.
+          Import-Module Pester -RequiredVersion 3.4.0 -Force
+          $loaded = (Get-Module Pester | Sort-Object Version -Descending | Select-Object -First 1).Version
+          Write-Host ("Betöltött Pester: {0}" -f $loaded)
+          if ($loaded -ne $needed) {
+            throw "A betöltött Pester verzió $loaded, de 3.4.0 szükséges."
+          }
+
+          $result = Invoke-Pester -Script tests\Install-WindowsTests.ps1 -PassThru
+          Write-Host ("Pester: {0} sikeres, {1} elbukott, {2} kihagyott" -f $result.PassedCount, $result.FailedCount, $result.SkippedCount)
+          if ($result.FailedCount -gt 0) {
+            throw "$($result.FailedCount) Pester teszt elbukott."
+          }

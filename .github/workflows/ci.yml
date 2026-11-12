@@ -1,0 +1,148 @@
+# FountainTrade – folyamatos integráció (M0: fejlesztői infrastruktúra)
+#
+# Minden pull requestnél és minden main-re történő push-nál fut.
+# A main ágon egyetlen kötelező státusz-ellenőrzés van: a "CI Gate".
+# Az csak akkor zöld, ha az összes többi job sikeres (vagy szándékosan
+# kihagyott, pl. a teszt-politika push esetén).
+#
+# A részletes folyamat: docs/DEVELOPMENT_WORKFLOW.md
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PHPUNIT_VERSION: '10.5.66'
+  PHPUNIT_SHA256: '42bcac97bbf9fb1aecf5a7d6a1b37123a11e7e295458978f0e268999f6d9e50f'
+  GITLEAKS_VERSION: '8.30.1'
+  GITLEAKS_SHA256: '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb'
+
+jobs:
+  syntax:
+    name: PHP szintaxis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Kód letöltése
+        uses: actions/checkout@v5
+
+      - name: PHP 8.3 beállítása
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+          tools: none
+
+      - name: Minden követett PHP fájl szintaxis-ellenőrzése
+        run: bash scripts/ci/php-syntax-check.sh
+
+  tests:
+    name: PHPUnit (PHP ${{ matrix.php }})
+    # A termék Windows-platformra készül (telepítő, Feladatütemező,
+    # elérési utak), ezért a teszt-suite is Windowson fut: a
+    # platform-specifikus viselkedést így valódi célkörnyezet ellenőrzi.
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.3', '8.4']
+    steps:
+      - name: Kód letöltése
+        uses: actions/checkout@v5
+
+      - name: PHP ${{ matrix.php }} beállítása
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '${{ matrix.php }}'
+          # A lista a termék saját követelménye (install.txt,
+          # webroot/install.php). A fileinfo és az xmlwriter a runneren
+          # alapból NINCS bekapcsolva — ezek hiányában a feltöltés-tesztek
+          # 500-at kapnak. Az intl a PHPMailer idn_to_ascii-jához kell.
+          extensions: curl, xmlwriter, fileinfo, mbstring, gd, zip, openssl, sqlite3, pdo_sqlite, intl
+          coverage: none
+          tools: none
+
+      - name: Kötelező PHP kiterjesztések ellenőrzése
+        shell: bash
+        run: bash scripts/ci/check-php-extensions.sh
+
+      - name: Node.js beállítása (frontend JS-harness tesztekhez)
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: PHPUnit letöltése és ellenőrzése
+        shell: bash
+        run: bash scripts/ci/fetch-phpunit.sh
+
+      - name: Teljes PHPUnit teszt-készlet
+        shell: bash
+        run: php tools/phpunit.phar --colors=never
+
+      - name: Adatvédelmi őr (data/ és invoices/ érintetlen)
+        if: success()
+        shell: bash
+        run: bash scripts/ci/data-guard.sh
+
+  test-policy:
+    name: Teszt-politika
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Kód letöltése (teljes történelem a diffhez)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Termékkód-változás teszt nélkül?
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: bash scripts/ci/check-test-policy.sh
+
+  secrets:
+    name: Titok-szkennelés
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Kód letöltése
+        uses: actions/checkout@v5
+
+      - name: Gitleaks telepítése (rögzített verzió + ellenőrzőösszeg)
+        run: bash scripts/ci/fetch-gitleaks.sh
+
+      - name: Gitleaks futtatása a munkakönyvtáron
+        run: |
+          "${RUNNER_TEMP}/gitleaks" detect --no-git --source . --config .gitleaks.toml --redact --verbose
+
+  gate:
+    name: CI Gate
+    if: always()
+    needs: [syntax, tests, test-policy, secrets]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Összesített eredmény
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS_JSON"
+          echo "$NEEDS_JSON" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if echo "$NEEDS_JSON" | jq -e 'to_entries | any(.value.result == "failure" or .value.result == "cancelled")' > /dev/null; then
+            echo "::error::Egy vagy több CI job nem futott sikeresen."
+            exit 1
+          fi
+          echo "Minden CI job sikeres (vagy szándékosan kihagyott)."

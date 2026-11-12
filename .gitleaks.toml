@@ -1,0 +1,21 @@
+title = "FountainTrade – gitleaks konfiguráció"
+
+# A beépített szabálykészlet érvényes; csak az alábbi, dokumentált
+# hamis pozitívokat engedjük ki. Valódi titok továbbra is elbuktatja a
+# titok-szkennelést.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Cron-token HELYŐRZŐK a telepítési dokumentációban (install.txt, telepites-tavoli-szerver.txt, webroot/beallitasok.php) – nem valódi titkok."
+paths = [
+  '''install\.txt$''',
+  '''telepites-tavoli-szerver\.txt$''',
+  '''webroot/beallitasok\.php$''',
+]
+regexes = ['''IDE_A_(CRON_)?TOKEN''']
+
+[[allowlists]]
+description = "A tests/ mappa szintetikus, kitalált hitelesítő adatai (pl. nagyon-titkos-jelszo-123, teszt NAV-kulcsok). Éles titok sosem kerülhet ide; a többi szabály a tests/ mappában is aktív."
+targetRules = ['generic-api-key']
+paths = ['''^tests/''']

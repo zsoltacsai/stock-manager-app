@@ -43,6 +43,8 @@ Thumbs.db
 # Teszteléshez letöltött eszköz (nincs Composer ebben a projektben) —
 # lásd README "Automatizált tesztek" szakasz a letöltéshez.
 /tools/phpunit.phar
+# A CI titok-szkennelés rögzített verziójú binárisa (scripts/ci/fetch-gitleaks.sh)
+/tools/gitleaks
 /.phpunit.cache
 
 # install-windows.ps1 által telepítéskor GENERÁLT rejtett-ablakos

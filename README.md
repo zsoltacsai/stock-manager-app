@@ -6056,3 +6056,18 @@ teszt zöld**.
 - **Anthropic/OpenAI élő, valódi API-kulcsos ellenőrzés Fázis 10-ben SEM
   történt** (lásd a Fázis 9 azonos korlátja) — a `tools/ai-benchmark.php`
   ÚJRAFUTTATHATÓ valódi kulccsal, amint az rendelkezésre áll.
+
+## Fejlesztői munkafolyamat és mílestone-ok (M0)
+
+A projekt mílestone-alapú fejlesztéssel készül: minden változás izolált
+ágon, pull requestben érkezik, és csak zöld CI-val merge-elhető. A
+részletes folyamat, a CI-kapuk és az **adatmegőrzési szabályok**:
+[`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md). Az aktuális
+mílestone-állapot: [`MILESTONES.md`](MILESTONES.md).
+
+Helyi, egyparancsos ellenőrzés (szintaxis + teljes teszt-készlet +
+adatvédelmi őr):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/verify-all.ps1
+```

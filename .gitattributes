@@ -1,0 +1,5 @@
+# Shell-szkriptek mindig LF-fel tárolódnak: a CI Linuxon fut, ahol a
+# CRLF végződésű szkriptek hibásan futnak. Csak az új shell-szkriptekre
+# vonatkozik, a meglévő fájlokat nem érinti.
+*.sh text eol=lf
+.githooks/* text eol=lf
